@@ -40,7 +40,7 @@ import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoint
 const ACTOR = { kind: 'user' as const, id: LOCAL_USER_ID };
 
 /** Opens a stopped data root with one Workspace, Thread, and migrated databases. */
-function createFixture(): {
+async function createFixture(): Promise<{
   readonly backupRoot: string;
   readonly coreDb: CoreDb;
   readonly dataRoot: string;
@@ -48,17 +48,17 @@ function createFixture(): {
   readonly threadId: string;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
-} {
+}> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-checkpoint-cleanup-'));
   const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-checkpoint-cleanup-backup-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
 
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Checkpoint cleanup');
+  const workspace = await store.createWorkspace('Checkpoint cleanup');
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
-  const thread = store.createThread(workspace.id, 'Checkpoint cleanup thread');
+  const thread = await store.createThread(workspace.id, 'Checkpoint cleanup thread');
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
   return {
@@ -209,7 +209,7 @@ function schedulerSnapshot(dataRoot: string): {
 
 describe('cancelled-admission Task checkpoint cleanup', () => {
   it('reports a proved cancelled admission on dry-run and removes it only on apply', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const turnId = 'tu_00000000-0000-7ce2-a4ef-a80fb53e8b1d';
     const requestId = '0190f4c8-0000-7000-8000-000000000591';
     const siblingTurnId = 'tu_00000000-0000-720f-8cf6-feec28411135';
@@ -237,7 +237,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
       turnId: siblingTurnId,
       workspaceId: fixture.workspaceId,
     });
-    const keptTurn = fixture.store.createTurn(
+    const keptTurn = await fixture.store.createTurn(
       fixture.workspaceId,
       fixture.threadId,
       'Unrelated product history',
@@ -329,7 +329,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
   });
 
   it('removes a proved pre-persistence start-failure checkpoint only on apply', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const turnId = 'tu_00000000-0000-7a81-a9d4-017d6a90c247';
     const requestId = '0190f4c8-0000-7000-8000-000000000593';
     writeStartFailureLease(fixture.coreDb, {
@@ -428,7 +428,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
       reason: 'missing-provenance',
     },
   ])('preserves a checkpoint with $mutate', async ({ mutate, reason }) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const turnId = testEntityId('tu', `turn_preserve_${mutate}`);
     const requestId = `0190f4c8-0000-7000-8000-0000000005${mutate.length}`;
     if (mutate !== 'provenance' && mutate !== 'live-lease' && mutate !== 'multiple-leases') {
@@ -483,9 +483,11 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
       workspaceId: fixture.workspaceId,
     });
     if (mutate === 'lineage') {
-      const other = fixture.store.createWorkspace('Other lineage');
-      const otherThread = fixture.store.createThread(other.id, 'Other lineage thread');
-      fixture.store.createTurn(other.id, otherThread.id, 'Foreign Turn', ACTOR, null, { turnId });
+      const other = await fixture.store.createWorkspace('Other lineage');
+      const otherThread = await fixture.store.createThread(other.id, 'Other lineage thread');
+      await fixture.store.createTurn(other.id, otherThread.id, 'Foreign Turn', ACTOR, null, {
+        turnId,
+      });
     }
     if (mutate === 'runtime') {
       fixture.workspaceDb.sqlite
@@ -559,7 +561,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
 describe('cancelled-admission checkpoint cleanup preservation', () => {
   it('keeps a matching expired receipt during dry-run and apply', async () => {
     for (const apply of [false, true]) {
-      const fixture = createFixture();
+      const fixture = await createFixture();
       const turnId = testEntityId('tu', `turn_receipt_${apply}`);
       const requestId = '0190f4c8-0000-7000-8000-000000000991';
       const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
@@ -599,7 +601,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('preserves an unrelated expired receipt while removing a proved checkpoint', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const turnId = 'tu_00000000-0000-7f5a-b8f3-3a41e3c2b08d';
     const requestId = '0190f4c8-0000-7000-8000-000000000992';
     const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
@@ -634,7 +636,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     'apply',
     'refused',
   ] as const)('preserves an unrelated pending approval during %s', async (mode) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const turnId = testEntityId('tu', `turn_history_${mode}`);
     const requestId = '0190f4c8-0000-7000-8000-000000000994';
     const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
@@ -642,14 +644,14 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     }
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-    const unrelated = fixture.store.createTurn(
+    const unrelated = await fixture.store.createTurn(
       fixture.workspaceId,
       fixture.threadId,
       'Unrelated terminal approval',
       ACTOR
     );
     const timestamp = '2026-09-22T00:00:00.000Z';
-    fixture.store.createItem({
+    await fixture.store.createItem({
       approvalRequestId: `ap_${unrelated.id}`,
       completedAt: null,
       createdAt: timestamp,
@@ -663,7 +665,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       type: 'approval-request',
       owner: { kind: 'workspace', workspaceId: fixture.workspaceId },
     });
-    fixture.store.updateTurn(unrelated.id, {
+    await fixture.store.updateTurn(unrelated.id, {
       completedAt: timestamp,
       error: null,
       status: 'completed',
@@ -702,7 +704,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses malformed diagnostics and blocks every selected checkpoint', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const corruptId = identityFor(fixture, 'tu_00000000-0000-7f48-be95-803bf8edcd90');
     const cleanId = identityFor(fixture, 'tu_00000000-0000-7ea2-b600-fcf572339658');
     writeCancelledAdmission(fixture.coreDb, {
@@ -752,7 +754,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('treats incomplete context assembly as execution evidence', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-749c-8e69-38e10357fa79');
     const requestId = '0190f4c8-0000-7000-8000-000000000996';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -787,7 +789,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     ['item ids', JSON.stringify({ itemIds: 'bad' })],
     ['artifact ids', JSON.stringify({ artifactIds: {} })],
   ] as const)('refuses incorrectly typed %s diagnostics', async (_label, diagnostics) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, `turn_typed_${_label.replace(' ', '_')}`);
     const requestId = '0190f4c8-0000-7000-8000-000000000997';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -810,7 +812,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('still removes a checkpoint whose diagnostics are plain failure text', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-7248-a8ea-70525940472a');
     const requestId = '0190f4c8-0000-7000-8000-000000000998';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -834,7 +836,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses a runtime evidence row without using context digest as a shortcut', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-7cd8-ac6d-ce67f0efa520');
     const requestId = '0190f4c8-0000-7000-8000-000000001001';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -870,7 +872,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses a worker control record for the checkpoint Turn', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-7781-892a-3b253a33f2d9');
     const requestId = '0190f4c8-0000-7000-8000-000000001002';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -905,7 +907,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses an environment package bound to the checkpoint Turn', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-7c9c-a800-07ed48da3579');
     const requestId = '0190f4c8-0000-7000-8000-000000001003';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -968,7 +970,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
         })
       ),
     });
-    fixture.store.createAgentSession({
+    await fixture.store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-09-22T00:00:00.000Z',
       id: sessionId,
@@ -994,13 +996,13 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses an AgentSession that matches the start-failure lease', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-780f-be6c-5b90f496572f');
     const requestId = '0190f4c8-0000-7000-8000-000000001004';
     writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const sessionId = testEntityId('as', `as_${identity.turnId}`);
-    fixture.store.createAgentSession({
+    await fixture.store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-09-22T00:00:00.000Z',
       id: sessionId,
@@ -1026,7 +1028,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses cleanup while another holder owns the data-root lock', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-7e14-8c92-1734e9d4fbff');
     const requestId = '0190f4c8-0000-7000-8000-000000001005';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -1055,7 +1057,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('refuses apply when the backup destination already exists', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-72bf-ba1a-70e8fc2f5cee');
     const requestId = '0190f4c8-0000-7000-8000-000000001006';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
@@ -1096,12 +1098,12 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     ['malformed Item JSONL', 'items-json'],
     ['missing Item history', 'missing-items'],
   ] as const)('blocks cleanup when unrelated published history has %s', async (_label, kind) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, testEntityId('tu', `turn_corrupt_${kind}`));
     const requestId = '0190f4c8-0000-7000-8000-000000001099';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-    const unrelated = publishUnrelatedTurn(fixture.store, fixture.dataRoot);
+    const unrelated = await publishUnrelatedTurn(fixture.store, fixture.dataRoot);
     const historyPath = unrelatedHistoryPath(unrelated, kind);
     if (kind === 'turn-schema') {
       const record = JSON.parse(readFileSync(historyPath, 'utf8')) as { status: string };
@@ -1144,12 +1146,12 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
   });
 
   it('keeps an incomplete Item JSONL tail without treating it as corrupt history', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const identity = identityFor(fixture, 'tu_00000000-0000-71e2-bfd1-a8b0df334491');
     const requestId = '0190f4c8-0000-7000-8000-000000001098';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
-    const unrelated = publishUnrelatedTurn(fixture.store, fixture.dataRoot);
+    const unrelated = await publishUnrelatedTurn(fixture.store, fixture.dataRoot);
     const itemsPath = unrelatedHistoryPath(unrelated, 'items-json');
     appendFileSync(itemsPath, '{"id":');
     const itemsBefore = readFileSync(itemsPath);
@@ -1169,20 +1171,20 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
 });
 
 /** Publishes one valid Turn outside the selected checkpoint Workspace. */
-function publishUnrelatedTurn(
+async function publishUnrelatedTurn(
   store: FsStore,
   dataRoot: string
-): {
+): Promise<{
   readonly itemsPath: string;
   readonly threadId: string;
   readonly threadPath: string;
   readonly turnId: string;
   readonly turnPath: string;
   readonly workspaceId: string;
-} {
-  const workspace = store.createWorkspace('Unrelated history');
-  const thread = store.createThread(workspace.id, 'Unrelated history');
-  const turn = store.createTurn(workspace.id, thread.id, 'Unrelated work', ACTOR);
+}> {
+  const workspace = await store.createWorkspace('Unrelated history');
+  const thread = await store.createThread(workspace.id, 'Unrelated history');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Unrelated work', ACTOR);
   const turnRoot = join(
     dataRoot,
     'workspaces',
@@ -1204,7 +1206,7 @@ function publishUnrelatedTurn(
 
 /** Resolves the canonical file introduced by one corruption case. */
 function unrelatedHistoryPath(
-  unrelated: ReturnType<typeof publishUnrelatedTurn>,
+  unrelated: Awaited<ReturnType<typeof publishUnrelatedTurn>>,
   kind: 'turn-schema' | 'thread-json' | 'items-json' | 'missing-items'
 ): string {
   if (kind === 'thread-json') return unrelated.threadPath;

@@ -8,6 +8,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -23,20 +24,21 @@ const corpus = JSON.parse(
   readFileSync(new URL('../../../tests/fixtures/large-context/cases.json', import.meta.url), 'utf8')
 ) as { archives: Array<{ id: string; base64: string }> };
 const cleanups: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
 /** Exercises the real upload, canonical original, JSON composition and ZIP processor together. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-folder-route-'));
   cleanups.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
   cleanups.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
-  const workspace = store.createWorkspace('ZIP folder intake');
+  const store = await createDemoStore({ dataRoot });
+  const workspace = await store.createWorkspace('ZIP folder intake');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
   const app = createApp({ coreDb, dataRoot, store });
   return { dataRoot, coreDb, workspace, store, app };
@@ -101,7 +103,7 @@ function ordinarySessionApp(state: ReturnType<typeof fixture>) {
 
 describe('explicit ZIP folder intake', () => {
   it('keeps ordinary ZIP transfer separate, explicitly extracts, and reuses cache after restart', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       imported = await upload(state, 'valid-file');
     expect(await (await folder(state, 'read', imported)).json()).toMatchObject({
       status: 'unavailable',
@@ -133,7 +135,7 @@ describe('explicit ZIP folder intake', () => {
   });
 
   it('reports failed extraction with exact original retained and never publishes a partial folder', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       imported = await upload(state, 'traversal');
     const response = await folder(state, 'extract', imported);
     expect(response.status).toBe(200);
@@ -159,7 +161,7 @@ describe('explicit ZIP folder intake', () => {
   });
 
   it('rechecks current caller eligibility before returning cached inventory or rebuilding', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       imported = await upload(state, 'valid-file');
     expect((await folder(state, 'extract', imported)).status).toBe(200);
     state.app = ordinarySessionApp(state);
@@ -175,16 +177,16 @@ describe('explicit ZIP folder intake', () => {
   });
 
   it('does not disclose a private-origin folder to another ordinary member', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       imported = await upload(state, 'valid-file');
-    const thread = state.store.createThread(
+    const thread = await state.store.createThread(
       state.workspace.id,
       'Private ZIP source',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002' }
     );
-    const turn = state.store.createTurn(state.workspace.id, thread.id, 'Produce ZIP', {
+    const turn = await state.store.createTurn(state.workspace.id, thread.id, 'Produce ZIP', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000002',
     });
@@ -192,7 +194,7 @@ describe('explicit ZIP folder intake', () => {
     const staged = join(state.dataRoot, 'private-zip-stage');
     writeFileSync(staged, imported.bytes);
     const privateArtifactId = 'ar_00000000-0000-7000-8000-000000999991';
-    state.store.createArtifact(
+    await state.store.createArtifact(
       {
         ...artifact,
         id: privateArtifactId,
@@ -228,7 +230,7 @@ describe('explicit ZIP folder intake', () => {
   });
 
   it('refuses an unavailable requested version without substituting current inventory', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       imported = await upload(state, 'valid-file');
     expect((await folder(state, 'extract', { ...imported, artifactVersion: 2 })).status).toBe(404);
   });

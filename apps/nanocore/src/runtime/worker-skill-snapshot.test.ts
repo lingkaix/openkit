@@ -24,6 +24,7 @@ import {
   setWorkspaceSkillPin,
   skillSnapshotPath,
 } from '../catalog/resource-catalog.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -60,8 +61,8 @@ function skillTree(body = SKILL_BODY): CatalogTreeFile[] {
 
 describe('exact retained Worker Skill delivery', () => {
   let coreDb: ReturnType<typeof openCoreDb>;
-  let store: ReturnType<typeof createDemoStore>;
-  let turn: ReturnType<typeof store.createTurn>;
+  let store: Awaited<ReturnType<typeof createDemoStore>>;
+  let turn: Awaited<ReturnType<typeof store.createTurn>>;
   let first: ReturnType<typeof importWorkspaceSkill>;
   let environmentPackage: AgentEnvironmentPackage;
   let userId: string;
@@ -110,14 +111,14 @@ describe('exact retained Worker Skill delivery', () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-exact-worker-skill-')));
     applyMigrations(coreDb);
     userId = ensureLocalUser(coreDb);
     agentSessionId = allocateEntityId('as');
     const demo = createDemoWorkspaceForUser(userId);
-    store = createDemoStore({ dataRoot: coreDb.dataRoot }, userId);
-    turn = store.createTurn(demo.workspace.id, demo.thread.id, 'Use exact retained Skill', {
+    store = await createDemoStore({ dataRoot: coreDb.dataRoot }, userId);
+    turn = await store.createTurn(demo.workspace.id, demo.thread.id, 'Use exact retained Skill', {
       kind: 'user',
       id: userId,
     });
@@ -134,7 +135,8 @@ describe('exact retained Worker Skill delivery', () => {
     environmentPackage = resolvePackage();
   }, 60_000);
 
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     vi.restoreAllMocks();
     syncBuiltinESMExports();
     coreDb.sqlite.close();
@@ -282,7 +284,7 @@ describe('exact retained Worker Skill delivery', () => {
       const failure =
         tamper === 'missing snapshot' ? CatalogContentUnavailableError : CatalogIntegrityError;
       if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
-      else await expect(prepare()).rejects.toBeInstanceOf(failure);
+      else await expect(await prepare()).rejects.toBeInstanceOf(failure);
     });
   });
 
@@ -309,7 +311,7 @@ describe('exact retained Worker Skill delivery', () => {
     else if (claim === 'version') skill.version = 'invented-version';
     else if (claim === 'source') skill.sourceRef = 'invented-source';
     else skill.id = 'unavailable-entry';
-    await expect(prepare(candidate)).rejects.toThrow(
+    await expect(await prepare(candidate)).rejects.toThrow(
       claim === 'digest' || claim === 'entry' ? CatalogNotFoundError : CatalogIntegrityError
     );
   });
@@ -322,7 +324,7 @@ describe('exact retained Worker Skill delivery', () => {
       expectedRevision: first.catalog.revision,
     });
     expect(() => resolvePackage()).toThrow();
-    await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+    await expect(await prepare()).rejects.toThrow(CatalogNotFoundError);
   });
 
   it.each([
@@ -377,7 +379,7 @@ describe('exact retained Worker Skill delivery', () => {
     });
     syncBuiltinESMExports();
     if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
-    else await expect(prepare()).rejects.toThrow(failure);
+    else await expect(await prepare()).rejects.toThrow(failure);
     expect(changed).toBe(true);
   });
 
@@ -397,7 +399,7 @@ describe('exact retained Worker Skill delivery', () => {
         },
       },
     });
-    await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+    await expect(await prepare()).rejects.toThrow(CatalogNotFoundError);
   });
 
   it.each([
@@ -451,7 +453,7 @@ describe('exact retained Worker Skill delivery', () => {
     syncBuiltinESMExports();
     if (boundary === 'aep')
       expect(() => resolvePackage(selectedSetup)).toThrow(CatalogNotFoundError);
-    else await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+    else await expect(await prepare()).rejects.toThrow(CatalogNotFoundError);
     expect(changed).toBe(true);
   });
 
@@ -505,7 +507,7 @@ describe('exact retained Worker Skill delivery', () => {
       },
     });
     expect(() => resolvePackage()).toThrow(CatalogContentUnavailableError);
-    await expect(prepare()).rejects.toThrow(CatalogContentUnavailableError);
+    await expect(await prepare()).rejects.toThrow(CatalogContentUnavailableError);
   });
 
   it('refuses corrupt launch before any Sandbox backend call', async () => {

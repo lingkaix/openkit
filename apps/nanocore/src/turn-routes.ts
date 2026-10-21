@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  type ActorRef,
   isSealedTurnTerminal,
   ProductTurnSchema,
   type SubmitTurnInputRequestSchema,
@@ -8,6 +9,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentSetupResolverDependencies } from './agents/setup-resolver.js';
+import { prepareAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
@@ -31,7 +33,7 @@ import {
   startProductTurn,
   validateLiveProductTurnAdmission,
 } from './runtime/product-turn-start.js';
-import type { TurnExecutor } from './runtime/types.js';
+import type { TurnCommandRuntimeContext, TurnExecutor } from './runtime/types.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -144,7 +146,7 @@ export async function startTurn(
     scope: { workspaceId: input.workspaceId, threadId: input.threadId },
     input,
     responseKind: 'turn',
-    execute: async () => {
+    execute: async (commandReceipt) => {
       const threadBusy = store
         .listThreadTurns(input.workspaceId, input.threadId)
         .some((turn) => !isSealedTurnTerminal(turn.status));
@@ -164,6 +166,7 @@ export async function startTurn(
       const observed = observeTurnAdmission({
         execute: (admit) =>
           startProductTurn({
+            commandReceipt,
             providerCredentialConfigured,
             subscriptionAccounts,
             input,
@@ -251,9 +254,15 @@ export async function startTurn(
 export async function interruptProductTurn(input: {
   readonly store: FsStore;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly interruptInternalChatTurn?: (store: FsStore, turnId: string) => Promise<boolean>;
+  readonly interruptInternalChatTurn?: (
+    store: FsStore,
+    turnId: string,
+    context: TurnCommandRuntimeContext
+  ) => Promise<boolean>;
   /** Records fresh command acceptance without claiming terminal cleanup; replay omits it. */
   readonly onInterruptAccepted?: () => void;
+  /** Authenticated command actor; direct runtime callers retain their admitted Turn actor. */
+  readonly actor?: ActorRef;
   readonly coreDb: CoreDb | undefined;
   readonly turnExecutor: TurnExecutor;
   readonly workspaceId: string;
@@ -289,8 +298,33 @@ export async function interruptProductTurn(input: {
       turnId,
     },
     responseKind: 'turn',
-    execute: async () => {
-      /** Validates the accepted result before evidence; evidence failure leaves reached effects intact. */
+    execute: async (commandReceipt) => {
+      const { responseKind, ...receipt } = commandReceipt;
+      const command = {
+        receipt: {
+          ...receipt,
+          command: 'turn.interrupt' as const,
+          response: { kind: responseKind, id: turnId },
+        },
+        audit: {
+          ...prepareAuditEvent({
+            workspaceId,
+            threadId,
+            turnId,
+            requestId,
+            actor: input.actor ?? store.getTurn(workspaceId, threadId, turnId).triggerActor,
+            category: 'command',
+            action: 'turn.interrupt',
+            resource: `turn:${turnId}`,
+            outcome: 'succeeded',
+            summary: 'Stop request accepted.',
+            now: new Date(receipt.createdAt),
+          }),
+          createdAt: receipt.createdAt,
+          occurredAt: receipt.createdAt,
+        },
+      };
+      /** Accepts only after the execution owner has acknowledged its original command tuple. */
       const acceptedTurn = () => {
         const result = TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
         input.onInterruptAccepted?.();
@@ -306,8 +340,24 @@ export async function interruptProductTurn(input: {
         );
       }
 
-      if (await interruptInternalChatTurn?.(store, turnId)) {
-        return acceptedTurn();
+      if (interruptInternalChatTurn) {
+        try {
+          if (await interruptInternalChatTurn(store, turnId, { requestId, command })) {
+            // A terminal race must not accept a Stop that missed the native publication.
+            if (
+              store.getDataRoot() &&
+              !store.getCommandRequest('turn.interrupt', requestId, receipt.scope)
+            )
+              throw new Error('The internal terminal publication did not retain this Stop.');
+            return acceptedTurn();
+          }
+        } catch {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The internal interruption requires inspection of its retained outcome.',
+            409
+          );
+        }
       }
 
       if (coreDb) {
@@ -332,13 +382,14 @@ export async function interruptProductTurn(input: {
             queueEntryId: admission.queueEntryId,
             workspaceId,
           });
-          terminalizeGovernedWorkerTurn({
+          await terminalizeGovernedWorkerTurn({
             store,
             turnId,
             agentSessionId: null,
             requestId: admission.requestId,
             completedAt: new Date().toISOString(),
             outcome: 'cancelled',
+            command,
             errorCode: 'turn_cancelled',
             message: 'Queued Turn was cancelled before preparation.',
           });
@@ -354,13 +405,14 @@ export async function interruptProductTurn(input: {
             noOutstandingEffects: true,
             cause: 'turn-cancelled',
           });
-          terminalizeGovernedWorkerTurn({
+          await terminalizeGovernedWorkerTurn({
             store,
             turnId,
             agentSessionId: attempt.agentSessionId,
             requestId: admission.requestId,
             completedAt: new Date().toISOString(),
             outcome: 'cancelled',
+            command,
             errorCode: 'turn_cancelled',
             message: 'Turn was cancelled before any backend effect.',
           });
@@ -384,6 +436,7 @@ export async function interruptProductTurn(input: {
 
       await turnExecutor.interruptTurn(store, turnId, {
         requestId: requestId,
+        command,
       });
       return acceptedTurn();
     },

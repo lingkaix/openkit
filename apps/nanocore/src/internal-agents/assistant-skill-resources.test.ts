@@ -44,14 +44,14 @@ afterEach(() => {
 });
 
 /** Creates real identity, membership, conversation lineage, and catalog storage owners. */
-function fixture() {
+async function fixture() {
   const dataRoot = fs.mkdtempSync(join(tmpdir(), 'assistant-skill-resources-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Skill resource tests');
+  const workspace = await store.createWorkspace('Skill resource tests');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,
@@ -68,8 +68,8 @@ function fixture() {
     (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
     VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
     .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
-  const thread = store.createThread(workspace.id, 'Use selected resources');
-  const turn = store.createTurn(workspace.id, thread.id, 'Use selected resources', {
+  const thread = await store.createThread(workspace.id, 'Use selected resources');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Use selected resources', {
     kind: 'user',
     id: testEntityId('usr', 'skill-reader'),
   });
@@ -86,7 +86,7 @@ function fixture() {
   };
 }
 
-type Fixture = ReturnType<typeof fixture>;
+type Fixture = Awaited<ReturnType<typeof fixture>>;
 type Assembly = Awaited<ReturnType<typeof assembleResources>>;
 type ReadContext = Parameters<Assembly['read']>[1];
 const contexts = new WeakMap<Assembly, ReadContext>();
@@ -228,7 +228,7 @@ function expectNoSnapshotRead(spies: ReturnType<typeof observeReads>, snapshot: 
 
 describe('Assistant selected Skill assembly', () => {
   it('exposes the retained logical read handler without a direct model Tool bypass', async () => {
-    const f = fixture();
+    const f = await fixture();
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: [] });
 
     expect(Object.hasOwn(assembled, 'tool')).toBe(false);
@@ -240,7 +240,7 @@ describe('Assistant selected Skill assembly', () => {
     '',
     'not-a-command-uuid',
   ] as const)('refuses an absent or invalid captured command request %s before resource access', async (requestId) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const spies = observeReads();
     const input = { ...f, requestId, skillIds: ['alpha'] } as Parameters<
@@ -261,7 +261,7 @@ describe('Assistant selected Skill assembly', () => {
     { label: 'absent', skillIds: undefined },
     { label: 'empty', skillIds: [] },
   ])('keeps $label selection empty without reading the installed catalog', async ({ skillIds }) => {
-    const f = fixture();
+    const f = await fixture();
     importSkill(f);
     // An unselected installed catalog is not an implicit resource selection or required read.
     fs.writeFileSync(catalogDocumentPath(f.dataRoot, f.workspaceId), '{broken unselected catalog');
@@ -288,7 +288,7 @@ describe('Assistant selected Skill assembly', () => {
   });
 
   it('copies a sorted metadata-only index, resolves a pin before current, and retains exact catalog evidence', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = importSkill(f, 'alpha', '# Old pinned instructions\n');
     const current = importSkill(f, 'alpha', '# Current instructions\n');
     importSkill(f, 'zeta');
@@ -371,7 +371,7 @@ describe('Assistant selected Skill assembly', () => {
     'missing-version',
     'duplicate',
   ])('fails admission for a selected %s resource without substituting installed supply', async (condition) => {
-    const f = fixture();
+    const f = await fixture();
     importSkill(f);
     updateCatalog(f, (catalog) => {
       if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';
@@ -394,7 +394,7 @@ describe('Assistant selected Skill assembly', () => {
   });
 
   it('rejects a complete metadata index above 64 KiB instead of dropping or truncating selected entries', async () => {
-    const f = fixture();
+    const f = await fixture();
     importSkill(f);
     updateCatalog(f, (catalog) => {
       catalog.skills.entries[0]!.description = 'Selected description. '.repeat(4_000);
@@ -409,7 +409,7 @@ describe('Assistant selected Skill assembly', () => {
     'audience',
     'turn-lineage',
   ])('checks current %s authority before assembly even for empty selection', async (condition) => {
-    const f = fixture();
+    const f = await fixture();
     if (condition === 'membership')
       f.coreDb.sqlite
         .prepare(
@@ -426,7 +426,7 @@ describe('Assistant selected Skill assembly', () => {
         privateOwnerUserId: testEntityId('usr', 'another-user'),
       });
     if (condition === 'turn-lineage')
-      f.threadId = f.store.createThread(f.workspaceId, 'Different thread').id;
+      f.threadId = (await f.store.createThread(f.workspaceId, 'Different thread')).id;
 
     await admissionRefusal(assembleAssistantSkillResources({ ...f, skillIds: [] }), f);
   });
@@ -434,7 +434,7 @@ describe('Assistant selected Skill assembly', () => {
 
 describe('Assistant progressive Skill reads', () => {
   it('refuses purged metadata even when old exact payload bytes remain on disk', async () => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     updateCatalog(f, (catalog) => {
@@ -463,7 +463,7 @@ describe('Assistant progressive Skill reads', () => {
     'purged',
     'inventory',
   ] as const)('discards verified bytes when %s changes during the actual file read', async (condition) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const file = join(
@@ -518,7 +518,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('returns one strict logical success and throws owner failures instead of a model envelope', async () => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Logical guidance\n');
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const input = {
@@ -555,7 +555,7 @@ describe('Assistant progressive Skill reads', () => {
     'entryScope',
     'requestId',
   ] as const)('refuses missing or mismatched trusted %s before content access', async (field) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const input = {
@@ -595,7 +595,7 @@ describe('Assistant progressive Skill reads', () => {
     undefined,
     { aborted: false },
   ] as const)('rejects missing or forged cancellation context before content access', async (signal) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const spies = observeReads();
@@ -622,7 +622,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('preserves direct read cancellation before any content access', async () => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const controller = new AbortController();
@@ -649,7 +649,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('uses the verified complete tree while delivering empty files and refusing directory expansion', async () => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Exact tree\n', [
       { kind: 'directory', path: 'assets' },
       { kind: 'directory', path: 'assets/empty' },
@@ -681,7 +681,7 @@ describe('Assistant progressive Skill reads', () => {
     'changed-file',
     'missing-file',
   ] as const)('returns the catalog owner failure for %s without reading a replacement version', async (fault) => {
-    const f = fixture();
+    const f = await fixture();
     const original = importSkill(f, 'alpha', '# Exact old selection\n');
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     importSkill(f, 'alpha', '# Replacement must stay unread\n');
@@ -699,7 +699,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('does not replace original admission when default and pin advance during the actual read', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = importSkill(f, 'alpha', '# Retained first\n');
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const originalAdmission = structuredClone(assembled.admission);
@@ -736,7 +736,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('returns exact default and separately requested supporting bytes with digest provenance and no script execution', async () => {
-    const f = fixture();
+    const f = await fixture();
     const marker = join(f.dataRoot, 'script-ran');
     const body = '# Root instructions\nRead references/guide.md only when needed.\n';
     const guide = 'Supporting guidance. 世界\n';
@@ -775,7 +775,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('keeps the admitted retained version across default and pin changes, while a new assembly uses current selection', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = importSkill(f, 'alpha', '# First version\n');
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const next = importSkill(f, 'alpha', '# Later version\n');
@@ -803,7 +803,7 @@ describe('Assistant progressive Skill reads', () => {
     'audience',
     'turn-lineage',
   ])('denies a later read after %s changes before opening Skill bytes', async (condition) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     if (condition === 'removed' || condition === 'missing-version')
@@ -827,9 +827,8 @@ describe('Assistant progressive Skill reads', () => {
         privateOwnerUserId: testEntityId('usr', 'another-user'),
       });
     if (condition === 'turn-lineage')
-      f.store.getTurn(f.workspaceId, f.threadId, f.turnId).threadId = f.store.createThread(
-        f.workspaceId,
-        'Different thread'
+      f.store.getTurn(f.workspaceId, f.threadId, f.turnId).threadId = (
+        await f.store.createThread(f.workspaceId, 'Different thread')
       ).id;
     const spies = observeReads();
 
@@ -847,10 +846,14 @@ describe('Assistant progressive Skill reads', () => {
     'cancelled',
     'failed',
   ] as const)('ends saved Skill read admission when its Turn becomes %s', async (status) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
-    f.store.updateTurn(f.turnId, { status, completedAt: new Date().toISOString(), durationMs: 1 });
+    await f.store.updateTurn(f.turnId, {
+      status,
+      completedAt: new Date().toISOString(),
+      durationMs: 1,
+    });
     const signal = new AbortController().signal;
     const spies = observeReads();
     const selection = assembled.index[0]!;
@@ -875,7 +878,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('refuses unselected identities, versions, digests, authority fields, and unsafe paths', async () => {
-    const f = fixture();
+    const f = await fixture();
     importSkill(f);
     const foreign = importSkill(f, 'other', 'source-content-canary');
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
@@ -925,7 +928,7 @@ describe('Assistant progressive Skill reads', () => {
     'file-link',
     'root-link',
   ])('refuses %s snapshot integrity without falling back or exposing outside bytes', async (condition) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Admitted root\n', [
       {
         kind: 'file',
@@ -956,7 +959,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('refuses a linked supporting-file parent before inspecting or reading its leaf', async () => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Admitted root\n', [
       { kind: 'directory', path: 'references' },
       {
@@ -993,7 +996,7 @@ describe('Assistant progressive Skill reads', () => {
     { name: 'escaped JSON size', bytes: Buffer.from('"\\\n'.repeat(12_000)) },
     { name: 'UTF-8 byte size', bytes: Buffer.from('界'.repeat(22_000)) },
   ])('returns a bounded error for $name without truncating source bytes', async ({ bytes }) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Root\n', [
       { kind: 'file', path: 'support.txt', contentBase64: bytes.toString('base64') },
     ]);
@@ -1012,7 +1015,7 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it('accepts a large text response that fits the complete JSON ceiling without truncation', async () => {
-    const f = fixture();
+    const f = await fixture();
     const body = 'x'.repeat(64_000);
     importSkill(f, 'alpha', body);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
@@ -1046,7 +1049,7 @@ describe('Assistant Skill sanitization through the shared loop', () => {
     path,
     refusalCanary = 'hf_x',
   }) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(
       f,
       'alpha',
@@ -1142,7 +1145,7 @@ describe('Assistant Skill Tool in the shared loop', () => {
     false,
     true,
   ])('reads metadata first and performs only a requested ordinary Tool touch: %s', async (requestRead) => {
-    const f = fixture();
+    const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Body available on demand\n');
     const spies = observeReads();
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });

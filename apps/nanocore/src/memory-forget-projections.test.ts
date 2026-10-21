@@ -2,10 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -16,12 +17,12 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Exercises actual Memory and approval HTTP handlers with canonical SQLite/Git and synthetic User authority. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-forget-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
   const app = createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
@@ -63,7 +64,7 @@ function fixture() {
 
 describe('public Item-confirmed self Memory forget', () => {
   it('denies an absent Workspace before either forget operation creates its storage', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = f.content(f.userId, 'Keep this existing personal preference.');
     const saved = await f.call('memory.create', {
       requestId: randomUUID(),
@@ -109,7 +110,7 @@ describe('public Item-confirmed self Memory forget', () => {
   });
 
   it('separates the public approval grant from removal and suppresses public projections while preserving exact replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     const pageId = 'private-preference';
     const content = f.content(f.userId, 'Exact forgotten preference.\r\n');
     const summary = 'Private save summary that must become unavailable';
@@ -279,7 +280,7 @@ describe('public Item-confirmed self Memory forget', () => {
   });
 
   it('keeps two current authenticated selves separate and refuses foreign selectors and unauthenticated access', async () => {
-    const f = fixture();
+    const f = await fixture();
     const otherUserId = 'usr_00000000-0000-7000-8000-000000000002';
     const now = new Date().toISOString();
     f.coreDb.sqlite
@@ -356,4 +357,9 @@ describe('public Item-confirmed self Memory forget', () => {
     expect(denied.status).toBe(401);
     expect(JSON.stringify(denied.body)).not.toContain('private preference.');
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

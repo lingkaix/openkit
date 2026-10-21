@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { feedbackFilePath } from '../runtime/feedback.js';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 const fault = vi.hoisted(() => ({ root: '', filename: '', injections: 0 }));
@@ -35,13 +36,13 @@ afterEach(() => {
 });
 
 /** Creates canonical records with the real Store and file writers. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'store-publication-'));
   roots.push(root);
-  const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Publication');
-  const thread = store.createThread(workspace.id, 'Before');
-  const turn = store.createTurn(workspace.id, thread.id, 'Before request', actor);
+  const store = createTestStore({ dataRoot: root });
+  const workspace = await store.createWorkspace('Publication');
+  const thread = await store.createThread(workspace.id, 'Before');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Before request', actor);
   const sessionInput = {
     id: sessionId,
     agentId: 'agent_codex_host',
@@ -65,8 +66,8 @@ function fixture() {
 }
 
 describe('Store publishes only persisted record candidates', () => {
-  it('keeps a refused new Thread and its derived count out of live reads', () => {
-    const f = fixture();
+  it('keeps a refused new Thread and its derived count out of live reads', async () => {
+    const f = await fixture();
     const before = f.store.getWorkspace(f.workspace.id);
     const id = 'th_00000000-0000-7000-8000-000000000099';
     fault.root = f.root;
@@ -83,8 +84,8 @@ describe('Store publishes only persisted record candidates', () => {
     expect(reopened.getWorkspace(f.workspace.id).counts).toEqual(before.counts);
   });
 
-  it('keeps the live Thread and canonical bytes unchanged after a refused update', () => {
-    const f = fixture();
+  it('keeps the live Thread and canonical bytes unchanged after a refused update', async () => {
+    const f = await fixture();
     const path = join(f.threadRoot, 'thread.json');
     const before = readFileSync(path);
     fault.root = f.root;
@@ -101,8 +102,8 @@ describe('Store publishes only persisted record candidates', () => {
     );
   });
 
-  it('keeps a refused new AgentSession out of live and reopened reads', () => {
-    const f = fixture();
+  it('keeps a refused new AgentSession out of live and reopened reads', async () => {
+    const f = await fixture();
     fault.root = f.root;
     fault.filename = 'session.json';
     expect(() => f.store.createAgentSession(f.sessionInput)).toThrow(
@@ -115,9 +116,9 @@ describe('Store publishes only persisted record candidates', () => {
     expect(() => new FsStore({ dataRoot: f.root }).getAgentSession(sessionId)).toThrow(/not found/);
   });
 
-  it('keeps the live AgentSession and canonical bytes unchanged after a refused update', () => {
-    const f = fixture();
-    const session = f.store.createAgentSession(f.sessionInput);
+  it('keeps the live AgentSession and canonical bytes unchanged after a refused update', async () => {
+    const f = await fixture();
+    const session = await f.store.createAgentSession(f.sessionInput);
     const path = join(
       f.root,
       'workspaces',
@@ -140,8 +141,8 @@ describe('Store publishes only persisted record candidates', () => {
     expect(new FsStore({ dataRoot: f.root }).getAgentSession(session.id)).toEqual(session);
   });
 
-  it('keeps a refused terminal Turn out of live reads, feedback and terminal notifications', () => {
-    const f = fixture();
+  it('keeps a refused terminal Turn out of live reads, feedback and terminal notifications', async () => {
+    const f = await fixture();
     const path = join(f.threadRoot, 'turns', f.turn.id, 'turn.json');
     const before = readFileSync(path);
     const onTerminal = vi.fn();
@@ -166,9 +167,9 @@ describe('Store publishes only persisted record candidates', () => {
     expect(new FsStore({ dataRoot: f.root }).getTurnById(f.turn.id)).toEqual(f.turn);
   });
 
-  it('persists successful candidate values and exposes them after reopen', () => {
-    const f = fixture();
-    const created = f.store.createThread(f.workspace.id, 'Created');
+  it('persists successful candidate values and exposes them after reopen', async () => {
+    const f = await fixture();
+    const created = await f.store.createThread(f.workspace.id, 'Created');
     expect(new FsStore({ dataRoot: f.root }).getThread(f.workspace.id, created.id)).toEqual(
       created
     );
@@ -179,7 +180,7 @@ describe('Store publishes only persisted record candidates', () => {
     expect(new FsStore({ dataRoot: f.root }).getThread(f.workspace.id, f.thread.id)).toEqual(
       updated
     );
-    const session = f.store.createAgentSession(f.sessionInput);
+    const session = await f.store.createAgentSession(f.sessionInput);
     expect(new FsStore({ dataRoot: f.root }).getAgentSession(session.id)).toEqual(session);
     const updatedSession = f.store.updateAgentSession(session.id, {
       status: 'closed',

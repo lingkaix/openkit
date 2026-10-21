@@ -133,8 +133,8 @@ async function fixture() {
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspaces = [
-    store.createWorkspace('First consumer'),
-    store.createWorkspace('Second consumer'),
+    await store.createWorkspace('First consumer'),
+    await store.createWorkspace('Second consumer'),
   ];
   const workspaceDbs = workspaces.map((workspace) => {
     recordWorkspaceOwnerMembership({
@@ -239,8 +239,8 @@ async function fixture() {
       manager
         .current()
         .workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === workspaceId)?.catalog;
-    const thread = store.createThread(workspaceId, 'Consume shared MCP');
-    const turn = store.createTurn(workspaceId, thread.id, 'Call echo', {
+    const thread = await store.createThread(workspaceId, 'Consume shared MCP');
+    const turn = await store.createTurn(workspaceId, thread.id, 'Call echo', {
       kind: 'user',
       id: FIXTURE_LOCAL_USER_ID,
     });
@@ -264,7 +264,7 @@ async function fixture() {
       environmentPackage: pkg,
       createdAt: new Date().toISOString(),
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       id: pkg.scope.agentSessionId,
       workspaceId,
       threadId: thread.id,
@@ -275,7 +275,7 @@ async function fixture() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: pkg.agent.agentId,
       agentSessionId: pkg.scope.agentSessionId,
     });

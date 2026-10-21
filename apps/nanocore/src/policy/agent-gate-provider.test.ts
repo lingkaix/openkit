@@ -43,9 +43,9 @@ it('runs the native agent participant through the default Gateway model with rea
   const human = { kind: 'human' as const, id: userId };
   const agentId = 'policy-reviewer';
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Agent gate capture');
-  const thread = store.createThread(workspace.id, 'Admitted Tool request');
-  const turn = store.createTurn(
+  const workspace = await store.createWorkspace('Agent gate capture');
+  const thread = await store.createThread(workspace.id, 'Admitted Tool request');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Read the issue.',

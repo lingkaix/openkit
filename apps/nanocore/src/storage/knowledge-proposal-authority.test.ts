@@ -82,7 +82,7 @@ function candidatePage(
 }
 
 /** Creates fresh real Git and current Core membership; no standalone page mutation is admitted. */
-function createOwners(registerCleanup = onTestFinished) {
+async function createOwners(registerCleanup = onTestFinished) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-proposal-authority-'));
   const coreDb = openCoreDb(dataRoot);
   registerCleanup(() => {
@@ -92,7 +92,7 @@ function createOwners(registerCleanup = onTestFinished) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspaceId = store.createWorkspace('Knowledge proposal authority').id;
+  const workspaceId = (await store.createWorkspace('Knowledge proposal authority')).id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: FIXTURE_LOCAL_USER_ID });
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
@@ -107,7 +107,7 @@ function createOwners(registerCleanup = onTestFinished) {
     app: createApp({ coreDb, dataRoot, store }),
   };
 }
-type Owners = ReturnType<typeof createOwners>;
+type Owners = Awaited<ReturnType<typeof createOwners>>;
 
 /** Calls the actual native operation and preserves its failure code and status for refusal assertions. */
 async function call(f: Owners, operation: string, input: Record<string, unknown>) {
@@ -164,7 +164,7 @@ async function createFixture(
   includeStatus = true,
   registerCleanup = onTestFinished
 ) {
-  const f = createOwners(registerCleanup);
+  const f = await createOwners(registerCleanup);
   const publication = await call(f, 'knowledge.notebook.create', {
     requestId: authorityRequestId('human-source'),
     baseRevision: f.notebook.publishedRevision(),
@@ -400,7 +400,7 @@ describe('knowledge proposal authority', () => {
     'changed',
     'missing',
   ] as const)('preserves exact Proposal evidence when its independent original bytes are %s', async (name) => {
-    const f = createOwners();
+    const f = await createOwners();
     const sourceContent = 'Captured source bytes remain immutable evidence.\n';
     const source = await call(f, 'knowledge.source.register', {
       requestId: authorityRequestId('register-source'),
@@ -491,7 +491,7 @@ describe('knowledge proposal authority', () => {
       expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
     }
     await expectAuthorityFailure(
-      () => decide(f, 'deferred', `review-after-${terminalDecision}`),
+      async () => await decide(f, 'deferred', `review-after-${terminalDecision}`),
       'conflict'
     );
     expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toEqual(decisions);
@@ -588,7 +588,7 @@ describe('knowledge proposal authority', () => {
   it('rejects arbitrary stored work-history references without disclosing their identity', async () => {
     const f = await createFixture('proposal-trace-source-proof');
     await decide(f, 'accepted', 'review-trace-source-proof');
-    const thread = f.store.createThread(f.workspaceId, 'Trace source authority');
+    const thread = await f.store.createThread(f.workspaceId, 'Trace source authority');
     const caller = { ...access(f), outputThreadId: thread.id };
     const traceId = testEntityId('krt', 'trace-source-authority');
     const retrieval = await retrieveWorkspaceKnowledge({
@@ -657,7 +657,7 @@ describe('knowledge proposal authority', () => {
       'recovery_required'
     );
     await expectAuthorityFailure(
-      () => decide(f, 'accepted', 'review-replay-projection'),
+      async () => await decide(f, 'accepted', 'review-replay-projection'),
       'recovery_required'
     );
     expect(existsSync(missingObject)).toBe(false);
@@ -753,7 +753,7 @@ describe('knowledge proposal authority', () => {
         'recovery_required'
       );
       await expectAuthorityFailure(
-        () => decide(f, 'accepted', 'review-annotated-accepted'),
+        async () => await decide(f, 'accepted', 'review-annotated-accepted'),
         'recovery_required'
       );
       expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
@@ -781,8 +781,14 @@ describe('knowledge proposal authority', () => {
       () => f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId),
       'recovery_required'
     );
-    await expectAuthorityFailure(() => decide(f, 'accepted', 'review-tamper'), 'recovery_required');
-    await expectAuthorityFailure(() => reverse(f, accepted.review.reviewId), 'recovery_required');
+    await expectAuthorityFailure(
+      async () => await decide(f, 'accepted', 'review-tamper'),
+      'recovery_required'
+    );
+    await expectAuthorityFailure(
+      async () => await reverse(f, accepted.review.reviewId),
+      'recovery_required'
+    );
     expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
   });
 
@@ -816,7 +822,7 @@ describe('knowledge proposal authority', () => {
     const before = f.notebook.publishedRevision();
     const priorPage = currentPage(f, f.knowledgePageId);
     await expectAuthorityFailure(
-      () => decide(f, 'accepted', `review-unresolved-${subject}`),
+      async () => await decide(f, 'accepted', `review-unresolved-${subject}`),
       'conflict'
     );
     expect(existsSync(f.reviewPath)).toBe(false);
@@ -865,7 +871,7 @@ describe('knowledge proposal authority', () => {
     }
     const before = f.notebook.publishedRevision();
     await expectAuthorityFailure(
-      () => decide(f, 'accepted', `review-fail-${kind}`),
+      async () => await decide(f, 'accepted', `review-fail-${kind}`),
       kind === 'existing-target' ? 'conflict' : 'recovery_required'
     );
     expect(existsSync(f.reviewPath)).toBe(false);
@@ -997,9 +1003,12 @@ describe('knowledge proposal authority', () => {
     const edited = currentPage(f, f.knowledgePageId);
     expect(edited).toContain('manual_note: "preserve this edit"');
     f.store = new FsStore({ dataRoot: f.dataRoot });
-    f.store.updateWorkspace(f.workspaceId, { name: 'Persist unrelated workspace change' });
+    await f.store.updateWorkspace(f.workspaceId, { name: 'Persist unrelated workspace change' });
     f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
-    await expectAuthorityFailure(() => reverse(f, accepted.review.reviewId), 'conflict');
+    await expectAuthorityFailure(
+      async () => await reverse(f, accepted.review.reviewId),
+      'conflict'
+    );
     expect(currentPage(f, f.knowledgePageId)).toBe(edited);
   });
 
@@ -1017,7 +1026,7 @@ describe('knowledge proposal authority', () => {
     } else missing = removeCandidateBlob(f);
     const before = f.notebook.publishedRevision();
     await expectAuthorityFailure(
-      () => reverse(f, accepted.review.reviewId),
+      async () => await reverse(f, accepted.review.reviewId),
       kind === 'changed page bytes' ? 'conflict' : 'recovery_required'
     );
     expect(f.notebook.publishedRevision()).toBe(before);

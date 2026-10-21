@@ -22,7 +22,7 @@ export interface KnowledgeMaintenanceScheduleTurn {
 /** One already retained Turn; native execution and failure publication keep their existing owners. */
 export interface PreparedKnowledgeMaintenanceScheduleRun {
   readonly execute: () => Promise<void>;
-  readonly fail: (error: unknown) => void;
+  readonly fail: (error: unknown) => void | Promise<void>;
 }
 
 /** Native admission callbacks supply fresh authority, inputs and existing work-record publication. */
@@ -31,21 +31,24 @@ export interface DailyKnowledgeMaintenanceInput<Scope extends KnowledgeMaintenan
   readonly scopes: Iterable<Scope>;
   readonly listTurns: (scope: Scope) => readonly KnowledgeMaintenanceScheduleTurn[];
   /**
-   * Retains a scheduled maintenance Turn before returning execution, or a visible failed/skipped outcome before returning null.
+   * Awaits native scheduled maintenance admission before returning execution, or retains a visible failed/skipped outcome before returning null.
    * This boundary performs finite local preparation and current single-writer admission, never a Provider call.
    */
   readonly prepare: (
     scope: Scope,
     startedAt: string
-  ) => PreparedKnowledgeMaintenanceScheduleRun | null;
+  ) =>
+    | PreparedKnowledgeMaintenanceScheduleRun
+    | null
+    | Promise<PreparedKnowledgeMaintenanceScheduleRun | null>;
   /** Reports unexpected admission or failure-publication errors; this reporting sink must not throw. */
   readonly onError: (error: unknown) => void;
 }
 
 /** Admits each enabled scope at most once per UTC day using only its retained maintenance Turns. */
-export function scanDailyKnowledgeMaintenance<Scope extends KnowledgeMaintenanceScheduleScope>(
-  input: DailyKnowledgeMaintenanceInput<Scope>
-): void {
+export async function scanDailyKnowledgeMaintenance<
+  Scope extends KnowledgeMaintenanceScheduleScope,
+>(input: DailyKnowledgeMaintenanceInput<Scope>): Promise<void> {
   const startedAt = new Date(input.now).toISOString();
   const day = startedAt.slice(0, 10);
   for (const scope of input.scopes) {
@@ -63,7 +66,7 @@ export function scanDailyKnowledgeMaintenance<Scope extends KnowledgeMaintenance
         );
       });
       if (alreadyAdmitted) continue;
-      const prepared = input.prepare(scope, startedAt);
+      const prepared = await input.prepare(scope, startedAt);
       if (prepared) {
         // The durable Turn excludes another daily admission before provider work starts.
         void Promise.resolve().then(prepared.execute).catch(prepared.fail).catch(input.onError);

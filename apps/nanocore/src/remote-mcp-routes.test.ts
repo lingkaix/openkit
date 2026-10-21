@@ -29,6 +29,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
@@ -65,7 +66,7 @@ async function fixture(
       lastSeenAt: new Date().toISOString(),
     })
     .run();
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: testEntityId('usr', 'user_remote_mcp'),
@@ -320,7 +321,7 @@ describe('remote MCP App endpoint', () => {
   ] as const)('preserves the known %s scheduler refusal through HTTP and MCP without changing queue rows', async (target) => {
     const f = await fixture();
     const bearer = f.token();
-    const thread = f.store.createThread(
+    const thread = await f.store.createThread(
       DEMO_WORKSPACE_ID,
       'Private queue',
       undefined,
@@ -558,12 +559,15 @@ describe('remote MCP App endpoint', () => {
       threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
-    const thread = f.store.createThread(DEMO_WORKSPACE_ID, 'Recovery admission');
-    const turn = f.store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Interrupted work', {
+    const thread = await f.store.createThread(DEMO_WORKSPACE_ID, 'Recovery admission');
+    const turn = await f.store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Interrupted work', {
       kind: 'user',
       id: testEntityId('usr', 'user_remote_mcp'),
     });
-    f.store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
+    await f.store.updateTurn(turn.id, {
+      status: 'interrupted',
+      completedAt: new Date().toISOString(),
+    });
     for (const queueEntryId of ['queue_b9_retry', 'queue_b9_cancel'])
       createSchedulerAdmissionEntry(f.coreDb, {
         backendId: 'nanohost',
@@ -720,7 +724,7 @@ describe('remote MCP App endpoint', () => {
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const turn = f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Preserve this Turn', {
+    const turn = await f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Preserve this Turn', {
       kind: 'user',
       id: testEntityId('usr', 'user_remote_mcp'),
     });
@@ -789,10 +793,15 @@ describe('remote MCP App endpoint', () => {
       workspaceIds: [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const turn = f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'No assigned session', {
-      kind: 'user',
-      id: testEntityId('usr', 'user_remote_mcp'),
-    });
+    const turn = await f.store.createTurn(
+      DEMO_WORKSPACE_ID,
+      DEMO_THREAD_ID,
+      'No assigned session',
+      {
+        kind: 'user',
+        id: testEntityId('usr', 'user_remote_mcp'),
+      }
+    );
     const receipts = f.store.listCommandRequests();
     const result = await f.call(
       'openkit_call',
@@ -1563,13 +1572,13 @@ for (const projection of ['HTTP', 'MCP'] as const) {
   it(`keeps turn.interrupt cross-Workspace lineage refusal typed through ${projection} without effects`, async () => {
     const f = await fixture();
     try {
-      const foreignWorkspace = f.store.createWorkspace('Foreign');
-      const foreignThread = f.store.createThread(foreignWorkspace.id, 'Foreign Thread');
-      const addressed = f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Addressed', {
+      const foreignWorkspace = await f.store.createWorkspace('Foreign');
+      const foreignThread = await f.store.createThread(foreignWorkspace.id, 'Foreign Thread');
+      const addressed = await f.store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Addressed', {
         kind: 'user',
         id: testEntityId('usr', 'user_remote_mcp'),
       });
-      const foreign = f.store.createTurn(foreignWorkspace.id, foreignThread.id, 'Foreign', {
+      const foreign = await f.store.createTurn(foreignWorkspace.id, foreignThread.id, 'Foreign', {
         kind: 'user',
         id: testEntityId('usr', 'user_remote_mcp'),
       });
@@ -1834,3 +1843,8 @@ for (const projection of ['HTTP', 'MCP'] as const) {
     }
   });
 }
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+});

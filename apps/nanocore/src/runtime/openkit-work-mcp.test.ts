@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import * as threadVisibility from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -22,6 +22,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
@@ -81,18 +82,18 @@ it('advertises the canonical Knowledge and Work Tool projections in their fixed 
 });
 
 /** Creates real canonical owners; the capture double stands outside the Core publication seam. */
-function submissionFixture(turnInputs: Buffer[] = []) {
+async function submissionFixture(turnInputs: Buffer[] = []) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-submit-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
   const filePayloadPaths = turnInputs.map((bytes, ordinal) => {
     const path = join(dataRoot, `input-${ordinal}`);
     writeFileSync(path, bytes);
     return path;
   });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Submit a finished file',
@@ -126,7 +127,7 @@ function submissionFixture(turnInputs: Buffer[] = []) {
     workspaceCwd: '/workspace/output',
     workspaceRoots: [],
   });
-  store.updateTurn(turn.id, {
+  await store.updateTurn(turn.id, {
     status: 'running',
     agentId: environmentPackage.agent.agentId,
     agentSessionId: 'as_00000000-0000-75c5-83d7-1a74418e3a38',
@@ -230,7 +231,7 @@ function submissionFixture(turnInputs: Buffer[] = []) {
 }
 
 it('refuses old and unregistered Work spellings before an owner effect', async () => {
-  const fixture = submissionFixture();
+  const fixture = await submissionFixture();
   const before = fixture.counts();
   for (const name of [
     'work_submit_artifact',
@@ -260,7 +261,7 @@ function acknowledgedArtifactId(
 
 describe('synchronous Worker file submission', () => {
   it('captures a real finished file from the empty-roots package output and reads back its Artifact', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const path = '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md';
     const localRoot = join(fixture.dataRoot, 'sandbox-output');
     mkdirSync(localRoot);
@@ -292,7 +293,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('returns an Artifact id only after Artifact, reference, Review and receipt are durable', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const id = acknowledgedArtifactId(await fixture.submit());
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
     expect(
@@ -338,7 +339,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('replays the same id and immutable bytes without another export', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const first = acknowledgedArtifactId(await fixture.submit());
     fixture.captureArtifact.mockResolvedValue({
       bytes: Buffer.from('Changed file'),
@@ -361,7 +362,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('conflicts on changed path or metadata under the same accepted request', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await fixture.submit();
     await expect(fixture.submit('req_file_1', { title: 'Changed' })).rejects.toMatchObject({
       code: 'idempotency_key_conflict',
@@ -371,7 +372,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('publishes nothing for a proved missing path and permits a corrected same-Turn call', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     fixture.captureArtifact.mockRejectedValueOnce(
       Object.assign(new Error('File not found.'), { code: 'artifact_file_missing', status: 400 })
     );
@@ -382,7 +383,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('rejects reserved imported-history request proof before capture', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await expect(fixture.submit('import-lineage:historical')).rejects.toMatchObject({
       code: 'invalid_request',
     });
@@ -391,7 +392,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('rejects malformed media without capture or publication and permits correction', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await expect(
       fixture.submit('req_bad_media', { mediaType: 'image/png; invalid' })
     ).rejects.toMatchObject({ code: 'invalid_request' });
@@ -401,7 +402,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('rejects an exact injected credential match with no canonical writes', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const clean = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -422,7 +423,7 @@ describe('synchronous Worker file submission', () => {
     'literal',
     'original-route-hash',
   ])('rejects an injected %s value in persisted submission identity', async (kind) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const requestId =
       kind === 'literal' ? 'synthetic-injected-secret' : Buffer.alloc(32, 51).toString('base64url');
     await expect(fixture.submit(requestId)).rejects.toMatchObject({ code: 'invalid_request' });
@@ -431,7 +432,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('admits program-produced files independently of the sixteen MiB raw-output allowance', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     fixture.captureArtifact.mockResolvedValue({
       bytes: Buffer.alloc(8 * 1024 * 1024, 0xff),
       credentialCheckValues: fixture.credentialCheckValues,
@@ -450,7 +451,7 @@ describe('synchronous Worker file submission', () => {
   });
 
   it('publishes nothing when the Turn seals during capture', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const clean = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -459,7 +460,7 @@ describe('synchronous Worker file submission', () => {
     });
     fixture.captureArtifact.mockClear();
     fixture.captureArtifact.mockImplementation(async () => {
-      fixture.store.updateTurn(fixture.turn.id, {
+      await fixture.store.updateTurn(fixture.turn.id, {
         status: 'interrupted',
         completedAt: '2026-10-05T01:00:00.000Z',
       });
@@ -482,7 +483,7 @@ describe('submission authority and byte evidence', () => {
     'route-inference',
     'route-capability',
   ])('rejects a %s match with zero publication', async (kind) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -511,7 +512,7 @@ describe('submission authority and byte evidence', () => {
     'route-inference',
     'route-capability',
   ])('fails closed for unavailable %s evidence', async (kind) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -536,7 +537,7 @@ describe('submission authority and byte evidence', () => {
     '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs//report.md',
     '/undeclared/report.md',
   ])('rejects path %s before export', async (path) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await expect(fixture.submit('bad-path', { path })).rejects.toMatchObject({
       code: 'invalid_request',
     });
@@ -550,7 +551,7 @@ describe('submission authority and byte evidence', () => {
     'overlap',
     'nested-root-equality',
   ])('rejects %s eligibility before export', async (kind) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     if (kind === 'registration')
       fixture.environmentPackage.workspace.outputs[0]!.registerAsArtifacts = false;
     if (kind === 'retention') fixture.environmentPackage.workspace.outputs[0]!.retention = 'manual';
@@ -575,7 +576,7 @@ describe('submission authority and byte evidence', () => {
     'invalid-utf8',
     'invalid-json',
   ])('preserves exact arbitrary %s bytes', async (kind) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -608,7 +609,7 @@ describe('submission authority and byte evidence', () => {
   });
 
   it('refuses an authority tuple whose receipt is missing without recapture', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await fixture.submit();
     fixture.workspaceDb.sqlite.prepare('DELETE FROM idempotency_requests').run();
     await expect(fixture.submit()).rejects.toMatchObject({ code: 'recovery_required' });
@@ -619,9 +620,9 @@ describe('submission authority and byte evidence', () => {
     'agentId',
     'agentSessionId',
   ] as const)('refuses replay when canonical source %s contradicts the original AEP', async (field) => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await fixture.submit();
-    fixture.store.updateTurn(fixture.turn.id, {
+    await fixture.store.updateTurn(fixture.turn.id, {
       [field]:
         field === 'agentSessionId'
           ? testEntityId('as', 'contradictory-source')
@@ -633,7 +634,7 @@ describe('submission authority and byte evidence', () => {
   });
 
   it('refuses a receipt with a missing Review without recapture', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     await fixture.submit();
     fixture.workspaceDb.sqlite.prepare('DELETE FROM artifact_reviews').run();
     await expect(fixture.submit()).rejects.toMatchObject({ code: 'recovery_required' });
@@ -641,7 +642,7 @@ describe('submission authority and byte evidence', () => {
   });
 
   it('admits concurrent independent files whose combined bytes exceed the raw-output allowance', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     fixture.captureArtifact.mockResolvedValue({
       bytes: Buffer.alloc(8 * 1024 * 1024 + 1, 0xff),
       credentialCheckValues: fixture.credentialCheckValues,
@@ -651,7 +652,7 @@ describe('submission authority and byte evidence', () => {
   });
 
   it('reserves future disk writes before capture and refuses a competing request when capacity is held', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const fileAdmission = new FileStorageAdmission(
       fixture.dataRoot,
       () => 0n,
@@ -685,7 +686,7 @@ describe('submission authority and byte evidence', () => {
   });
 
   it('cancellation after capture publishes nothing', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const abort = new AbortController();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
@@ -713,7 +714,7 @@ describe('submission authority and byte evidence', () => {
 
 describe('submission seals and immutable exact output', () => {
   it('does not publish when accepted final status seals a still-running stored Turn', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -743,7 +744,7 @@ describe('submission seals and immutable exact output', () => {
   });
 
   it('preserves BOM and exact digest, redacts only the title and replays a decided Review', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const captured = await fixture.captureArtifact({
       packageSnapshotId: '',
       requestId: '',
@@ -782,7 +783,7 @@ describe('submission seals and immutable exact output', () => {
 
 describe('submission publication and handled rollback', () => {
   it('publishes the reference and Artifact events only after the complete canonical tuple exists', async () => {
-    const fixture = submissionFixture();
+    const fixture = await submissionFixture();
     const events: string[] = [];
     fixture.store.addTurnListener(fixture.turn.id, (event) => {
       events.push(event.event);
@@ -797,8 +798,8 @@ describe('submission publication and handled rollback', () => {
   });
 
   it('removes the new reference revision as well as Artifact authority when receipt persistence fails', async () => {
-    const fixture = submissionFixture();
-    fixture.store.createItem({
+    const fixture = await submissionFixture();
+    await fixture.store.createItem({
       id: 'it_00000000-0000-767c-97eb-d0af46940f44',
       type: 'assistant-message',
       status: 'completed',
@@ -878,7 +879,7 @@ function createPdfFixture(pages: readonly string[]): Buffer {
 }
 
 it('dispatches bounded source reads and refuses a path outside the accepted Turn inventory', async () => {
-  const fixture = submissionFixture();
+  const fixture = await submissionFixture();
   await expect(
     dispatchOpenkitWorkTool(fixture.input, 'work_source_read', {
       path: 'sources/artifacts/not-selected/1.txt',
@@ -899,7 +900,7 @@ async function sourceToolFixture(
   withKnowledge = false,
   turnInputs: Buffer[] = []
 ) {
-  const fixture = submissionFixture(turnInputs);
+  const fixture = await submissionFixture(turnInputs);
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
     coreDb: fixture.coreDb,
@@ -1480,4 +1481,9 @@ it('withholds a vision image after same-size canonical original corruption', asy
   expect(result.structuredContent).toMatchObject({ status: 'unavailable' });
   expect(result.content.some((block) => block.type === 'image')).toBe(false);
   expect(JSON.stringify(result)).not.toContain(f.source.originalDigest);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

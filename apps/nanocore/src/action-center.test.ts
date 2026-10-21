@@ -7,7 +7,7 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -20,6 +20,7 @@ import {
   updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
@@ -365,7 +366,7 @@ function recordPendingWorkspaceReview(
 describe('action center app API', () => {
   it('names the actual changed paths of a multi-page Proposal', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     onTestFinished(() => {
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { recursive: true, force: true });
@@ -409,7 +410,7 @@ describe('action center app API', () => {
 
   it('rejects a missing workspace without creating its canonical directory', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const workspaceRoot = join(
       coreDb.dataRoot,
       'workspaces',
@@ -434,12 +435,12 @@ describe('action center app API', () => {
 
   it('returns unified human attention rows for pending approval and question gates', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Needs human input'
     );
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run guarded work',
@@ -448,7 +449,7 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const questionTurn = store.createTurn(
+    const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Request a secret',
@@ -469,7 +470,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    const approvalItem = store.createItem({
+    const approvalItem = await store.createItem({
       id: 'it_00000000-0000-7a4e-a3f7-f8716b2eab5f',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -501,7 +502,7 @@ describe('action center app API', () => {
     } finally {
       approvalDb.sqlite.close();
     }
-    const questionItem = store.createItem({
+    const questionItem = await store.createItem({
       id: 'it_00000000-0000-786f-8510-7bf50e243b95',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -542,7 +543,7 @@ describe('action center app API', () => {
     } finally {
       questionDb.sqlite.close();
     }
-    const toolUseTurn = store.createTurn(
+    const toolUseTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Use an MCP tool',
@@ -563,7 +564,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7889-8a7a-bcb2cd747522',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -668,12 +669,12 @@ describe('action center app API', () => {
 
   it('projects eligible member actions and admits an administrator to foreign private requests', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Actor-scoped attention'
     );
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Request approval',
@@ -682,7 +683,7 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       }
     );
-    const questionTurn = store.createTurn(
+    const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Request responsible input',
@@ -703,7 +704,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    const approvalItem = store.createItem({
+    const approvalItem = await store.createItem({
       id: 'it_00000000-0000-785a-bff3-9cad41a613f3',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -735,7 +736,7 @@ describe('action center app API', () => {
     } finally {
       approvalDb.sqlite.close();
     }
-    const questionItem = store.createItem({
+    const questionItem = await store.createItem({
       id: 'it_00000000-0000-7474-b15d-84d3b876c505',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -937,7 +938,7 @@ describe('action center app API', () => {
         }
       }
 
-      store.updateThread('ws_00000000-0000-7000-8000-000000000001', thread.id, {
+      await store.updateThread('ws_00000000-0000-7000-8000-000000000001', thread.id, {
         visibility: 'private',
         privateOwnerUserId: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
       });
@@ -972,10 +973,10 @@ describe('action center app API', () => {
 
   it('projects only the exact unresolved current ready turn-output Artifact Review', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Versioned Artifact Review');
-    const thread = store.createThread(workspace.id, 'Review worker output');
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const workspace = await store.createWorkspace('Versioned Artifact Review');
+    const thread = await store.createThread(workspace.id, 'Review worker output');
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       'Produce reviewable output',
@@ -985,11 +986,11 @@ describe('action center app API', () => {
         turnId: 'tu_00000000-0000-7736-95e8-e0d3120ed060',
       }
     );
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
     const content = '# Current output';
     const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: testEntityId('ar', 'artifact_versioned_review'),
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -1070,7 +1071,7 @@ describe('action center app API', () => {
         },
       ]);
 
-      store.updateTurn(turn.id, { agentId: null });
+      await store.updateTurn(turn.id, { agentId: null });
       const contradictoryResponse = await app.request(
         ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
@@ -1079,7 +1080,7 @@ describe('action center app API', () => {
           (row) => row.id === `artifact-review:${currentReview.reviewId}`
         )
       ).toBe(false);
-      store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+      await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
 
       decideArtifactReview(workspaceDb, {
         actorId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1107,12 +1108,12 @@ describe('action center app API', () => {
   });
 
   it('omits approval and question requests without an exact completed Gate tuple', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Invalid human input gates'
     );
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Incomplete approval request',
@@ -1121,7 +1122,7 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const questionTurn = store.createTurn(
+    const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Ungated question request',
@@ -1142,7 +1143,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7dc5-a15f-0a5300c223d5',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1156,7 +1157,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7c05-8065-c7352ae9fde5',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1193,12 +1194,12 @@ describe('action center app API', () => {
   });
 
   it('omits approval and question rows after matching decisions and answers exist', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Resolved human input'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run guarded work',
@@ -1219,7 +1220,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: timestamp,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7153-98b7-1cf814bed058',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1233,7 +1234,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7938-bfa8-78284423ae95',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1248,7 +1249,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7d73-bda8-038e78a5a544',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1271,7 +1272,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7cbf-a902-22191d1cc0d9',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1301,12 +1302,12 @@ describe('action center app API', () => {
 
   it('projects scheduler admissions into the unified action center', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const queuedThread = store.createThread(
+    const store = await createDemoStore();
+    const queuedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Queued scheduler turn'
     );
-    const deniedThread = store.createThread(
+    const deniedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Denied scheduler turn'
     );
@@ -1411,8 +1412,8 @@ describe('action center app API', () => {
 
   it('projects Workspace admissions across authenticated trigger actors', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const shared = store.createThread(
+    const store = await createDemoStore();
+    const shared = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Shared other-user admission'
     );
@@ -1452,12 +1453,12 @@ describe('action center app API', () => {
 
   it('projects recovery evidence into the unified action center', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Recovery evidence'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Recover worker',
@@ -1567,12 +1568,12 @@ describe('action center app API', () => {
 
   it('advertises the user-input answer route for question actions', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Question route metadata'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Ask before continuing',
@@ -1581,7 +1582,7 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const questionItem = store.createItem({
+    const questionItem = await store.createItem({
       id: 'it_00000000-0000-73c4-a45a-aa883a62b5d1',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1644,8 +1645,8 @@ describe('action center app API', () => {
 
   it('projects durable staged workspace reviews when artifact rows are not available', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Durable workspace review');
+    const store = await createDemoStore();
+    const workspace = await store.createWorkspace('Durable workspace review');
     const patchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
@@ -1789,8 +1790,8 @@ describe('action center app API', () => {
     expectOriginIds,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace(`${origin} workspace review origin`);
+    const store = await createDemoStore();
+    const workspace = await store.createWorkspace(`${origin} workspace review origin`);
 
     try {
       const backing = createWorkspaceReviewBackingArtifact(store, workspace.id, {
@@ -1862,10 +1863,10 @@ describe('action center app API', () => {
 
   it('keeps contradictory Review owners inspect-only after the workspace review is resolved', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Resolved durable workspace review');
-    const thread = store.createThread(workspace.id, 'Resolved workspace review worker');
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const workspace = await store.createWorkspace('Resolved durable workspace review');
+    const thread = await store.createThread(workspace.id, 'Resolved workspace review worker');
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       'Produce resolved workspace changes',
@@ -1886,7 +1887,7 @@ describe('action center app API', () => {
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
 
     try {
-      const artifact = store.createArtifact({
+      const artifact = await store.createArtifact({
         id: artifactId,
         workspaceId: workspace.id,
         threadId: thread.id,
@@ -2023,8 +2024,8 @@ describe('action center app API', () => {
 
   it('projects requires-human workspace recovery rows and omits terminal reconciliation records', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Workspace recovery review');
+    const store = await createDemoStore();
+    const workspace = await store.createWorkspace('Workspace recovery review');
 
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
@@ -2146,4 +2147,9 @@ describe('action center app API', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

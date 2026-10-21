@@ -37,6 +37,7 @@ import { listServerPermissionDecisions } from '../policy/permission-decisions.js
 import { evaluateAdministratorWorkspaceAccess } from '../policy/server-access.js';
 import { policyDigest } from '../policy/statements.js';
 import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -56,12 +57,13 @@ import {
 } from './runtime-config-files.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const fn of cleanup.splice(0)) fn();
 });
 
 /** Real temporary configuration, private Artifact store and current durable token authority. */
-function fixture(withWorkspaceSchemas = false) {
+async function fixture(withWorkspaceSchemas = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-proposal-'));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => {
@@ -84,16 +86,16 @@ function fixture(withWorkspaceSchemas = false) {
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
   };
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspaceId,
     'Catalog update',
     allocateEntityId('th'),
     'administration',
     { visibility: 'private', privateOwnerUserId: actor.userId }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspaceId,
     thread.id,
     'Update catalog',
@@ -198,8 +200,8 @@ function fixture(withWorkspaceSchemas = false) {
 }
 
 /** Composes retained catalog supply, the real AEP producer, and current schema observations. */
-function mcpPolicyFixture(observed = true) {
-  const f = fixture(true);
+async function mcpPolicyFixture(observed = true) {
+  const f = await fixture(true);
   const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
   const created = createMcpConfig({
     dataRoot: f.dataRoot,
@@ -324,8 +326,8 @@ function activePolicyDocument(
 }
 
 describe('administration catalog configuration', () => {
-  it('refuses an active binding whose input Workspace has no current authority', () => {
-    const f = fixture();
+  it('refuses an active binding whose input Workspace has no current authority', async () => {
+    const f = await fixture();
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
     expect(() =>
@@ -347,7 +349,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('rechecks binding input authority when the Workspace closes after proposal', async () => {
-    const f = fixture();
+    const f = await fixture();
     recordWorkspaceOwnerMembership({
       coreDb: f.coreDb,
       ownerUserId: f.actor.userId,
@@ -385,7 +387,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('admits current human storage leases for exact reads and staging without publication', async () => {
-    const f = fixture();
+    const f = await fixture();
     recordWorkspaceOwnerMembership({
       coreDb: f.coreDb,
       workspaceId: f.workspaceId,
@@ -658,7 +660,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('reviews and applies a human Tool condition without pinning its observed input schema', async () => {
-    const f = mcpPolicyFixture();
+    const f = await mcpPolicyFixture();
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
     const proposal = f.service.propose(f.policyRequest(), f.home);
@@ -706,7 +708,7 @@ describe('administration catalog configuration', () => {
     'prohibit',
     'require_approval',
   ] as const)('prepares and applies unobserved %s with a digest-bound warning and later exact-name enforcement', async (effect) => {
-    const f = mcpPolicyFixture(false);
+    const f = await mcpPolicyFixture(false);
     const proposal = f.service.propose(f.policyRequest('future-tool', effect), f.home);
     const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
@@ -784,8 +786,11 @@ describe('administration catalog configuration', () => {
     expect(f.reload).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['prohibit', 'require_approval'] as const)('does not warn for observed %s', (effect) => {
-    const f = mcpPolicyFixture();
+  it.each([
+    'prohibit',
+    'require_approval',
+  ] as const)('does not warn for observed %s', async (effect) => {
+    const f = await mcpPolicyFixture();
     const proposal = f.service.propose(f.policyRequest('read', effect), f.home);
     expect(('warnings' in proposal.preview ? proposal.preview.warnings : undefined) ?? []).toEqual(
       []
@@ -793,7 +798,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('applies the confirmed warning unchanged when the Tool becomes observed', async () => {
-    const f = mcpPolicyFixture(false);
+    const f = await mcpPolicyFixture(false);
     const proposal = f.service.propose(f.policyRequest('future-tool'), f.home);
     const before = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (before.content.format !== 'json') throw new Error('Expected candidate JSON.');
@@ -807,7 +812,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('does not turn an observation loss into rejection of a confirmed restriction', async () => {
-    const f = mcpPolicyFixture();
+    const f = await mcpPolicyFixture();
     const proposal = f.service.propose(f.policyRequest(), f.home);
     f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
     expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
@@ -816,8 +821,8 @@ describe('administration catalog configuration', () => {
     });
   });
 
-  it('keeps active ordinary allow outside the admitted subset even for an unobserved Tool', () => {
-    const f = mcpPolicyFixture(false);
+  it('keeps active ordinary allow outside the admitted subset even for an unobserved Tool', async () => {
+    const f = await mcpPolicyFixture(false);
     const request = f.policyRequest('missing');
     const proposed = {
       ...request,
@@ -840,7 +845,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {
-    const f = fixture();
+    const f = await fixture();
     const principal = { kind: 'human' as const, id: f.actor.userId };
     const fields = {
       author: principal,
@@ -945,7 +950,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('applies Policy after the candidate Turn is terminal and replays the same outcome', async () => {
-    const f = fixture();
+    const f = await fixture();
     const principal = { kind: 'human' as const, id: f.actor.userId };
     const proposed = PolicyDocumentV1Schema.parse({
       schemaVersion: 1,
@@ -994,7 +999,7 @@ describe('administration catalog configuration', () => {
       },
       f.home
     );
-    f.store.updateTurn(f.turn.id, {
+    await f.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -1020,8 +1025,8 @@ describe('administration catalog configuration', () => {
     expect(await f.service.apply(confirmed)).toEqual(result);
   });
 
-  it('publishes only editable schema fields while preserving their constraints', () => {
-    const f = fixture();
+  it('publishes only editable schema fields while preserving their constraints', async () => {
+    const f = await fixture();
     const provider = f.service.schema('provider').schema;
     expect(Object.keys(provider.properties ?? {})).toEqual([
       'displayName',
@@ -1053,7 +1058,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('proposes through the Tool without writes, then applies exact Provider and Gateway catalogs', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = readFileSync(f.providerPath, 'utf8');
     const tools = createAdministrationConfigurationTools(f.manager.current(), f.files, {
       ...f.service,
@@ -1120,7 +1125,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('rejects unsupported fields, missing dependencies, stale revisions and changed confirmations without writes', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = readFileSync(f.providerPath, 'utf8');
     for (const changes of [
       { secretRef: 'secret' },
@@ -1175,7 +1180,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('rechecks revoked authority before discovery, proposal, application and replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     const proposal = f.service.propose(f.request, f.home);
     revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
     expect(() => f.service.read('provider')).toThrow();
@@ -1185,7 +1190,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('replays an extended retained apply outcome after reopening without repeating the effect', async () => {
-    const f = fixture();
+    const f = await fixture();
     const proposal = f.service.propose(f.request, f.home);
     const request = f.confirm(proposal);
     const outcomeId = deriveEntityId('ar', [
@@ -1247,7 +1252,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('retains persisted bytes and reports reload failure without repeating the effect', async () => {
-    const f = fixture();
+    const f = await fixture();
     const proposal = f.service.propose(f.request, f.home);
     f.reload.mockImplementation(() => {
       throw new Error('reload failed');
@@ -1267,7 +1272,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('accepts Token-derived session authority, denies Workspace Tokens and hides foreign candidates', async () => {
-    const f = fixture();
+    const f = await fixture();
     const session = createAdministrationConfiguration({
       ...f,
       actor: { kind: 'session', userId: f.actor.userId },
@@ -1286,7 +1291,7 @@ describe('administration catalog configuration', () => {
       },
     });
     await expect(scoped.apply(f.confirm(proposal))).rejects.toThrow('administrator authority');
-    const foreign = f.store.createThread(
+    const foreign = await f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Project thread',
       allocateEntityId('th'),
@@ -1298,7 +1303,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('conflicts on changed input under one request ID and fences interrupted writes', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = f.service.propose(f.request, f.home);
     const second = f.service.propose(
       { ...f.request, changes: { displayName: 'Renamed Codex' } },
@@ -1331,7 +1336,7 @@ describe('administration catalog configuration', () => {
   });
 
   it('exposes human apply through the administration route and denies revoked tokens', async () => {
-    const f = fixture();
+    const f = await fixture();
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (context, next) => {
       context.set('actor', f.actor);

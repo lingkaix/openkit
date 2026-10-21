@@ -6,12 +6,12 @@ import {
   WorkspaceReadResponseSchema,
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ownedDatabases: Array<ReturnType<typeof openCoreDb>> = [];
@@ -31,10 +31,10 @@ const HIDDEN_PRIVATE_TITLE = 'SECRET_OTHER_PRIVATE_THREAD';
  */
 describe('workspace routes', () => {
   it('lists only authorized Workspace ids without physical discovery', async () => {
-    const store = new FsStore({
+    const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-routes-authorized-')),
     });
-    const allowedWorkspace = store.createWorkspace('Allowed Workspace');
+    const allowedWorkspace = await store.createWorkspace('Allowed Workspace');
     // The canonical authority and Notebook content must belong to the same deployment root.
     const coreDb = openCoreDb(store.getDataRoot()!);
     ownedDatabases.push(coreDb);
@@ -46,7 +46,7 @@ describe('workspace routes', () => {
       workspaceId: allowedWorkspace.id,
     });
     const app = createApp({ coreDb, store });
-    store.createWorkspace('Denied Workspace');
+    await store.createWorkspace('Denied Workspace');
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Workspace listing must not discover physical Workspaces.');
     });
@@ -65,19 +65,19 @@ describe('workspace routes', () => {
   });
 
   it('keeps authorized collection records intact while direct Workspace reads count only the member audience', async () => {
-    const store = new FsStore({
+    const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-thread-counts-')),
     });
-    const workspace = store.createWorkspace('Counted Workspace');
-    store.createThread(workspace.id, 'own-private', undefined, 'conversation', {
+    const workspace = await store.createWorkspace('Counted Workspace');
+    await store.createThread(workspace.id, 'own-private', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    store.createThread(workspace.id, HIDDEN_PRIVATE_TITLE, undefined, 'conversation', {
+    await store.createThread(workspace.id, HIDDEN_PRIVATE_TITLE, undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
     });
-    store.createThread(workspace.id, 'shared-work', undefined, 'conversation', {
+    await store.createThread(workspace.id, 'shared-work', undefined, 'conversation', {
       visibility: 'workspace',
     });
     const coreDb = openCoreDb(store.getDataRoot()!);

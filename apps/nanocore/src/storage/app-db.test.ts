@@ -3,12 +3,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { KernelCommandContext } from '../generative-kernel/commands.js';
 import { createLightApp } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 
 const SCHEMA: LightAppSchemaInput = {
   format: 'openkit.light-app',
@@ -48,7 +49,7 @@ const SCHEMA: LightAppSchemaInput = {
 describe('AppDb', () => {
   it('reopens an existing app database without create-on-read', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-app-db-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const context: KernelCommandContext = {
       store,
       inflightCommands: new WeakMap(),
@@ -76,4 +77,9 @@ describe('AppDb', () => {
       openExistingAppDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', randomUUID())
     ).toThrow(KernelCommandError);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

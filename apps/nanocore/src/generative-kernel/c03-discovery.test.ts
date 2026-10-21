@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import {
   createLightApp,
@@ -19,7 +20,7 @@ import {
 it('retains pinned page/raw references across revision and restart while app records stay usable', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-c03-discovery-'));
   try {
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const base = {
       store,
       dataRoot,
@@ -79,7 +80,7 @@ it('retains pinned page/raw references across revision and restart while app rec
     expect(updated.schema!.collections).toEqual(before.schema!.collections);
     expect(before.schema).toMatchObject({ schemaRevision: 1, references: firstReferences });
 
-    const restarted = createDemoStore({ dataRoot });
+    const restarted = await createDemoStore({ dataRoot });
     expect(restarted.getWorkspace(DEMO_WORKSPACE_ID).id).toBe(DEMO_WORKSPACE_ID);
     const discovered = getLightApp(dataRoot, DEMO_WORKSPACE_ID, created.appId);
     expect(discovered.schema).toEqual(updated.schema);
@@ -97,4 +98,9 @@ it('retains pinned page/raw references across revision and restart while app rec
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

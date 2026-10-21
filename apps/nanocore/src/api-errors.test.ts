@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { CanonicalPublicationError } from './storage/canonical-publication-error.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -53,7 +54,7 @@ it('preserves authored errors and route-specific code and status', async () => {
   const command = asCommandError(error, 'command_missing', 409);
   expect(command.status).toBe(409);
   expect(await command.json()).toMatchObject({ code: 'command_missing', message: error.message });
-  const store = createDemoStore();
+  const store = await createDemoStore();
   const app = createAppWithWorkspaceAuthority({ store });
   vi.spyOn(store, 'listThreads').mockImplementation(() => {
     throw error;
@@ -142,4 +143,9 @@ it('keeps the named publication refusal and existing recovery code at the API bo
     code: 'recovery_required',
     message: failure.message,
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

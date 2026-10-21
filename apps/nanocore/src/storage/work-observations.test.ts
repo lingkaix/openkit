@@ -21,6 +21,7 @@ import {
 } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore } from '../test-support/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -39,13 +40,13 @@ afterEach(() => {
 });
 
 /** Creates an actual persisted admission and Workspace evidence database. */
-function fixture(value: 'off' | 'on' = 'on') {
+async function fixture(value: 'off' | 'on' = 'on') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observations-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Capture');
-  const thread = store.createThread(workspace.id, 'Capture');
-  const turn = store.createTurn(
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Capture');
+  const thread = await store.createThread(workspace.id, 'Capture');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Request',
@@ -70,7 +71,7 @@ function fixture(value: 'off' | 'on' = 'on') {
 }
 
 /** Admits an ordinary reply through the real Item writer, independently of native observation identity. */
-function admitReply(f: ReturnType<typeof fixture>, text: string) {
+async function admitReply(f: Awaited<ReturnType<typeof fixture>>, text: string) {
   const item = {
     id: testEntityId('it', `ordinary-${f.owner.turnId}`),
     owner: { kind: 'workspace', workspaceId: f.db.workspaceId },
@@ -81,7 +82,7 @@ function admitReply(f: ReturnType<typeof fixture>, text: string) {
     createdAt: '2026-09-22T00:00:10.000Z',
     completedAt: '2026-09-22T00:00:10.000Z',
   } as const;
-  f.store.createItem(item);
+  await f.store.createItem(item);
   return item;
 }
 
@@ -159,9 +160,9 @@ function assistant(bytes: Uint8Array): WorkObservationDraft {
 }
 
 describe('durable work observations', () => {
-  it('reads retained environments without inserting an Assistant Skill admission default', () => {
-    const f = fixture('off');
-    appendWorkObservation(f.db, {
+  it('reads retained environments without inserting an Assistant Skill admission default', async () => {
+    const f = await fixture('off');
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation: environment(f.db.workspaceId),
       bodies: [],
@@ -192,8 +193,8 @@ describe('durable work observations', () => {
       catalogRevision: 7,
       skills: [admittedSkill, { ...admittedSkill, skillId: 'source-skill-two' }],
     },
-  ])('retains exact Assistant Skill admission with full I/O off: %j', (admission) => {
-    const f = fixture('off');
+  ])('retains exact Assistant Skill admission with full I/O off: %j', async (admission) => {
+    const f = await fixture('off');
     const timeline = readThreadRuntimeActivity(f.db, {
       threadId: f.owner.threadId,
       turnIds: [f.owner.turnId],
@@ -203,11 +204,11 @@ describe('durable work observations', () => {
       observation: environment(f.db.workspaceId, admission),
       bodies: [],
     };
-    expect(appendWorkObservation(f.db, input).disposition).toBe('committed');
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('committed');
     const path = join(f.turnRoot, 'observations.jsonl');
     const bytes = readFileSync(path, 'utf8');
     expect(JSON.parse(bytes).payload.assistantSkillAdmission).toEqual(admission);
-    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
     expect(readFileSync(path, 'utf8')).toBe(bytes);
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
@@ -224,7 +225,7 @@ describe('durable work observations', () => {
         turnIds: [f.owner.turnId],
       })
     ).toEqual(timeline);
-    expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   });
 
@@ -242,14 +243,14 @@ describe('durable work observations', () => {
       ],
     },
     { catalogRevision: null, skills: [] },
-  ])('refuses changed valid Assistant Skill admission under one identity: %j', (changed) => {
-    const f = fixture('off');
+  ])('refuses changed valid Assistant Skill admission under one identity: %j', async (changed) => {
+    const f = await fixture('off');
     const input = {
       ...f.owner,
       observation: environment(f.db.workspaceId, { catalogRevision: 7, skills: [admittedSkill] }),
       bodies: [],
     };
-    appendWorkObservation(f.db, input);
+    await appendWorkObservation(f.db, input);
     const path = join(f.turnRoot, 'observations.jsonl');
     const bytes = readFileSync(path, 'utf8');
     expect(() =>
@@ -314,8 +315,8 @@ describe('durable work observations', () => {
       `extra Skill ${key}`,
       { catalogRevision: 7, skills: [{ ...admittedSkill, [key]: 'unowned content' }] },
     ]),
-  ])('rejects malformed Assistant Skill admission before persistence: %s', (_name, admission) => {
-    const f = fixture('off');
+  ])('rejects malformed Assistant Skill admission before persistence: %s', async (_name, admission) => {
+    const f = await fixture('off');
     const observation = environment(f.db.workspaceId, admission);
     expect(() =>
       parseWorkObservationRecord({ ...observation, turnId: f.owner.turnId, v: 1, seq: 1 })
@@ -325,8 +326,8 @@ describe('durable work observations', () => {
     expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
   });
 
-  it('reads appends and reopens observations with annotated owning Turn attribution', () => {
-    const f = fixture();
+  it('reads appends and reopens observations with annotated owning Turn attribution', async () => {
+    const f = await fixture();
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
     const turnPath = join(f.turnRoot, 'turn.json');
     const retained = JSON.parse(readFileSync(turnPath, 'utf8'));
@@ -339,14 +340,18 @@ describe('durable work observations', () => {
       }
     );
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
-    const appended = appendWorkObservation(f.db, { ...f.owner, observation: model(), bodies: [] });
+    const appended = await appendWorkObservation(f.db, {
+      ...f.owner,
+      observation: model(),
+      bodies: [],
+    });
     expect(appended.disposition).toBe('committed');
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
     expect(readWorkObservations(reopened, f.owner)).toEqual([appended.observation]);
     expect(
-      appendWorkObservation(reopened, { ...f.owner, observation: model(), bodies: [] }).disposition
+      (await appendWorkObservation(reopened, { ...f.owner, observation: model(), bodies: [] })).disposition
     ).toBe('duplicate');
     expect(JSON.parse(readFileSync(turnPath, 'utf8')).triggerActor).toEqual(retained.triggerActor);
     expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
@@ -360,16 +365,16 @@ describe('durable work observations', () => {
   it.each([
     'running',
     'pending',
-  ] as const)('does constant prior-row parse work per append after opening the %s writer', (status) => {
-    const f = fixture('off');
-    f.store.updateTurn(f.owner.turnId, { status });
-    appendWorkObservation(f.db, { ...f.owner, observation: model('warm'), bodies: [] });
+  ] as const)('does constant prior-row parse work per append after opening the %s writer', async (status) => {
+    const f = await fixture('off');
+    await f.store.updateTurn(f.owner.turnId, { status });
+    await appendWorkObservation(f.db, { ...f.owner, observation: model('warm'), bodies: [] });
     const parse = vi.spyOn(JSON, 'parse');
     try {
       for (let index = 0; index < 20; index++) {
         parse.mockClear();
         const id = `delta-${index}`;
-        appendWorkObservation(f.db, { ...f.owner, observation: model(id), bodies: [] });
+        await appendWorkObservation(f.db, { ...f.owner, observation: model(id), bodies: [] });
         const priorRows = parse.mock.calls.filter(
           ([text]) =>
             typeof text === 'string' &&
@@ -387,12 +392,12 @@ describe('durable work observations', () => {
     }
   });
 
-  it('revalidates externally changed ledgers and does not trust returned observation objects', () => {
-    const f = fixture('off');
+  it('revalidates externally changed ledgers and does not trust returned observation objects', async () => {
+    const f = await fixture('off');
     const input = { ...f.owner, observation: model(), bodies: [] };
-    const result = appendWorkObservation(f.db, input);
+    const result = await appendWorkObservation(f.db, input);
     (result.observation.payload.content as { state: string }).state = 'off';
-    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
     const path = join(f.turnRoot, 'observations.jsonl');
     const original = readFileSync(path, 'utf8');
     // Same-length replacement must invalidate state, not just growth or truncation.
@@ -401,7 +406,7 @@ describe('durable work observations', () => {
     expect(() => appendWorkObservation(f.db, input)).toThrow(/corrupt observation/);
     writeFileSync(path, original);
     appendFileSync(path, '{"torn":');
-    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
     expect(readFileSync(path, 'utf8')).toBe(original);
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
@@ -410,8 +415,8 @@ describe('durable work observations', () => {
     expect(() => appendWorkObservation(reopened, input)).toThrow(/corrupt observation/);
   });
 
-  it('refuses body effects for an observation kind without a body declaration', () => {
-    const f = fixture();
+  it('refuses body effects for an observation kind without a body declaration', async () => {
+    const f = await fixture();
     expect(() =>
       appendWorkObservation(f.db, {
         ...f.owner,
@@ -440,8 +445,8 @@ describe('durable work observations', () => {
     ).toThrow('This observation type has no admitted body');
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
   });
-  it('normalizes model sampling, content, body and publication additions while retaining their bytes', () => {
-    const f = fixture();
+  it('normalizes model sampling, content, body and publication additions while retaining their bytes', async () => {
+    const f = await fixture();
     const observation = {
       ...model('model-request'),
       payload: {
@@ -458,7 +463,7 @@ describe('durable work observations', () => {
       },
     };
     const bytes = Buffer.from('Owned model evidence');
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation,
       bodies: [{ id: 'model-body', bytes, mediaType: 'text/plain', boundary: 'model-request-v1' }],
@@ -480,7 +485,7 @@ describe('durable work observations', () => {
     writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
     const retained = readFileSync(path, 'utf8');
     expect(JSON.stringify(readWorkObservations(f.db, f.owner))).not.toContain('futureNote');
-    expect(appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }).disposition).toBe(
+    expect((await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).disposition).toBe(
       'duplicate'
     );
     expect(readFileSync(path, 'utf8')).toBe(retained);
@@ -491,8 +496,8 @@ describe('durable work observations', () => {
       })
     ).toThrow(/header identity/);
   });
-  it('normalizes live nested additions and reopens annotated history without rewriting its evidence', () => {
-    const f = fixture();
+  it('normalizes live nested additions and reopens annotated history without rewriting its evidence', async () => {
+    const f = await fixture();
     const bytes = Buffer.from('Retained descriptive evidence');
     const observation = assistant(bytes);
     const extended = structuredClone(observation);
@@ -505,7 +510,7 @@ describe('durable work observations', () => {
       mediaType: 'text/plain',
       boundary: 'outward-assistant-v1',
     };
-    const admitted = appendWorkObservation(f.db, {
+    const admitted = await appendWorkObservation(f.db, {
       ...f.owner,
       observation: extended,
       bodies: [body],
@@ -528,7 +533,7 @@ describe('durable work observations', () => {
     const retainedBytes = readFileSync(path, 'utf8');
     expect(JSON.stringify(readWorkObservations(f.db, f.owner))).not.toContain('futureNote');
     expect(
-      appendWorkObservation(f.db, { ...f.owner, observation, bodies: [body] }).disposition
+      (await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [body] })).disposition
     ).toBe('duplicate');
     expect(readFileSync(path, 'utf8')).toBe(retainedBytes);
     f.db.sqlite.close();
@@ -554,8 +559,8 @@ describe('durable work observations', () => {
   });
   it.skipIf(process.platform === 'win32').each(['before-publication', 'after-publication'])(
     'preserves the blob/reference boundary after SIGKILL %s and reopen',
-    (boundary) => {
-      const f = fixture();
+    async (boundary) => {
+      const f = await fixture();
       const workspaceId = f.db.workspaceId;
       const bytes = Buffer.from('  crash boundary 世界\n\tfinal\r\n');
       const observation = assistant(bytes);
@@ -644,7 +649,7 @@ process.kill(process.pid, 'SIGKILL');`,
           : ['runtime.observed', 'content.published']
       );
       expect(rows[0]?.refs).toBeUndefined();
-      expect(appendWorkObservation(reopened, { ...input, bodies: [] }).disposition).toBe(
+      expect((await appendWorkObservation(reopened, { ...input, bodies: [] })).disposition).toBe(
         'duplicate'
       );
       expect(readWorkObservations(reopened, f.owner)).toEqual(rows);
@@ -658,7 +663,7 @@ process.kill(process.pid, 'SIGKILL');`,
       }
 
       // Only an exact-content retry may endorse the orphan; metadata replay must not do so.
-      appendWorkObservation(reopened, input);
+      await appendWorkObservation(reopened, input);
       const published = readWorkObservations(reopened, f.owner);
       expect(published).toHaveLength(2);
       const publication = published[1]!;
@@ -680,20 +685,20 @@ process.kill(process.pid, 'SIGKILL');`,
           sha256: publication.refs![0]!.digest!,
         })
       ).toEqual(bytes);
-      expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
+      expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
       expect(readWorkObservations(reopened, f.owner)).toEqual(published);
     }
   );
 
-  it('retains exact Unicode/whitespace separately, then publishes; reload and replay preserve identity', () => {
-    const f = fixture();
+  it('retains exact Unicode/whitespace separately, then publishes; reload and replay preserve identity', async () => {
+    const f = await fixture();
     const bytes = Buffer.from('  hello 世界\n\tfinal\r\n');
     const input = {
       ...f.owner,
       observation: model(),
       bodies: [{ id: 'semantic', bytes, mediaType: 'text/plain', boundary: 'test-semantic-v1' }],
     };
-    const first = appendWorkObservation(f.db, input);
+    const first = await appendWorkObservation(f.db, input);
     expect(first.observation.refs).toBeUndefined();
     const rows = readWorkObservations(f.db, f.owner);
     expect(rows.map((row) => [row.type, row.seq])).toEqual([
@@ -715,8 +720,8 @@ process.kill(process.pid, 'SIGKILL');`,
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
-    expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
-    expect(appendWorkObservation(reopened, { ...input, bodies: [] }).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(reopened, { ...input, bodies: [] })).disposition).toBe('duplicate');
     expect(readWorkObservations(reopened, f.owner)).toEqual(rows);
     expect(() =>
       appendWorkObservation(reopened, {
@@ -727,7 +732,7 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(
       JSON.parse(readFileSync(join(f.turnRoot, 'turn.json'), 'utf8')).requiredFeatures
     ).toContain('openkit.work-observations.v1');
-    f.store.updateTurn(f.owner.turnId, {
+    await f.store.updateTurn(f.owner.turnId, {
       status: 'failed',
       error: { code: 'test', message: 'test' },
     });
@@ -736,15 +741,15 @@ process.kill(process.pid, 'SIGKILL');`,
     ).toContain('openkit.work-observations.v1');
   });
 
-  it('records deferred byte identity without retaining content, then publishes only exact admitted bytes', () => {
-    const f = fixture();
+  it('records deferred byte identity without retaining content, then publishes only exact admitted bytes', async () => {
+    const f = await fixture();
     const bytes = Buffer.from('exact deferred content 世界');
     const input = {
       ...f.owner,
       observation: model(),
       bodies: [{ id: 'semantic', bytes, mediaType: 'text/plain', boundary: 'test-semantic-v1' }],
     };
-    appendWorkObservation(f.db, { ...input, deferBodyPublication: true });
+    await appendWorkObservation(f.db, { ...input, deferBodyPublication: true });
     const [expected] = readWorkObservations(f.db, f.owner);
     expect(expected?.payload.bodies).toEqual([
       expect.objectContaining({ bytes: bytes.byteLength, state: 'expected' }),
@@ -758,15 +763,15 @@ process.kill(process.pid, 'SIGKILL');`,
         bodies: [{ ...input.bodies[0]!, bytes: Buffer.from('changed') }],
       })
     ).toThrow(/conflict/);
-    appendWorkObservation(f.db, input);
+    await appendWorkObservation(f.db, input);
     const rows = readWorkObservations(f.db, f.owner);
     expect(rows).toHaveLength(2);
-    expect(appendWorkObservation(f.db, { ...input, bodies: [] }).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(f.db, { ...input, bodies: [] })).disposition).toBe('duplicate');
     expect(readWorkObservations(f.db, f.owner)).toEqual(rows);
   });
 
-  it('keeps the expected fact when body metadata commit fails and completes an exact retry', () => {
-    const f = fixture();
+  it('keeps the expected fact when body metadata commit fails and completes an exact retry', async () => {
+    const f = await fixture();
     f.db.sqlite.exec(
       "CREATE TRIGGER fail_body BEFORE INSERT ON evidence_bundles BEGIN SELECT RAISE(ABORT, 'injected body commit failure'); END"
     );
@@ -786,18 +791,18 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
     expect(readWorkObservations(f.db, f.owner)[0]?.refs).toBeUndefined();
     f.db.sqlite.exec('DROP TRIGGER fail_body');
-    appendWorkObservation(f.db, input);
+    await appendWorkObservation(f.db, input);
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(2);
   });
 
-  it('discards even valid JSON without its LF and rejects corrupt interior records', () => {
-    const f = fixture();
-    appendWorkObservation(f.db, { ...f.owner, observation: model(), bodies: [] });
+  it('discards even valid JSON without its LF and rejects corrupt interior records', async () => {
+    const f = await fixture();
+    await appendWorkObservation(f.db, { ...f.owner, observation: model(), bodies: [] });
     const path = join(f.turnRoot, 'observations.jsonl');
     const row = readWorkObservations(f.db, f.owner)[0]!;
     appendFileSync(path, JSON.stringify({ ...row, id: 'lost-tail', seq: 2 }));
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
-    appendWorkObservation(f.db, { ...f.owner, observation: model('next'), bodies: [] });
+    await appendWorkObservation(f.db, { ...f.owner, observation: model('next'), bodies: [] });
     expect(readWorkObservations(f.db, f.owner).map((entry) => entry.id)).toEqual([
       'observation-one',
       'next',
@@ -820,10 +825,10 @@ process.kill(process.pid, 'SIGKILL');`,
     ]);
   });
 
-  it('rejects body capture when off or missing while retaining metadata under off', () => {
-    const f = fixture('off');
+  it('rejects body capture when off or missing while retaining metadata under off', async () => {
+    const f = await fixture('off');
     const metadata = { ...model(), payload: { ...model().payload, content: { state: 'off' } } };
-    appendWorkObservation(f.db, { ...f.owner, observation: metadata, bodies: [] });
+    await appendWorkObservation(f.db, { ...f.owner, observation: metadata, bodies: [] });
     expect(() =>
       appendWorkObservation(f.db, {
         ...f.owner,
@@ -856,8 +861,8 @@ process.kill(process.pid, 'SIGKILL');`,
     ).toBe('unknown');
   });
 
-  it('does not resurrect lawfully expired bodies on exact replay', () => {
-    const f = fixture();
+  it('does not resurrect lawfully expired bodies on exact replay', async () => {
+    const f = await fixture();
     const input = {
       ...f.owner,
       observation: model(),
@@ -865,7 +870,7 @@ process.kill(process.pid, 'SIGKILL');`,
         { id: 'body', bytes: Buffer.from('expires'), mediaType: 'text/plain', boundary: 'test' },
       ],
     };
-    appendWorkObservation(f.db, input);
+    await appendWorkObservation(f.db, input);
     const ref = readWorkObservations(f.db, f.owner)[1]!.refs![0]!;
     const root = join(
       f.dataRoot,
@@ -881,7 +886,7 @@ process.kill(process.pid, 'SIGKILL');`,
       olderThan: '2026-09-23T00:00:00.000Z',
     });
     expect(existsSync(root)).toBe(false);
-    expect(appendWorkObservation(f.db, input).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
     expect(existsSync(root)).toBe(false);
   });
 
@@ -901,8 +906,8 @@ process.kill(process.pid, 'SIGKILL');`,
     ).toThrow();
   });
 
-  it('projects child phases separately from bounded ordinary Item text, independent of raw expiry', () => {
-    const f = fixture();
+  it('projects child phases separately from bounded ordinary Item text, independent of raw expiry', async () => {
+    const f = await fixture();
     const origin = {
       ...assistant(Buffer.from('x')),
       id: 'origin',
@@ -920,11 +925,11 @@ process.kill(process.pid, 'SIGKILL');`,
         content: { state: 'not-applicable' },
       },
     };
-    appendWorkObservation(f.db, { ...f.owner, observation: origin, bodies: [] });
+    await appendWorkObservation(f.db, { ...f.owner, observation: origin, bodies: [] });
     // F1 oracle alignment keeps the bounds, native-ref exclusion and coverage controls on the ordinary source.
-    const reply = admitReply(f, 'Useful result '.repeat(100));
+    const reply = await admitReply(f, 'Useful result '.repeat(100));
     const bytes = Buffer.from('Raw capture canary is not the ordinary reply.');
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation: assistant(bytes),
       bodies: [{ id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' }],
@@ -969,12 +974,12 @@ process.kill(process.pid, 'SIGKILL');`,
     'denied',
     'missing',
     'corrupt',
-  ] as const)('does not read %s restricted bodies when projecting admitted ordinary Items', (state) => {
-    const f = fixture();
-    const reply = admitReply(f, 'Ordinary source canary.');
+  ] as const)('does not read %s restricted bodies when projecting admitted ordinary Items', async (state) => {
+    const f = await fixture();
+    const reply = await admitReply(f, 'Ordinary source canary.');
     const bytes = Buffer.from('Different restricted capture canary.');
     const observation = assistant(bytes);
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation,
       bodies: [{ id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' }],
@@ -1067,17 +1072,17 @@ process.kill(process.pid, 'SIGKILL');`,
     'user-message',
     'reasoning',
     'empty-reply',
-  ] as const)('does not fall back to a published raw body when the ordinary Item is %s', (source) => {
-    const f = fixture();
+  ] as const)('does not fall back to a published raw body when the ordinary Item is %s', async (source) => {
+    const f = await fixture();
     const bytes = Buffer.from('Safe-looking raw text must stay restricted.');
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation: assistant(bytes),
       bodies: [{ id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' }],
     });
-    if (source === 'empty-reply') admitReply(f, '');
+    if (source === 'empty-reply') await admitReply(f, '');
     if (source === 'user-message' || source === 'reasoning') {
-      f.store.createItem({
+      await f.store.createItem({
         id: testEntityId('it', `not-a-reply-${source}`),
         owner: { kind: 'workspace', workspaceId: f.db.workspaceId },
         ...f.owner,
@@ -1114,11 +1119,11 @@ process.kill(process.pid, 'SIGKILL');`,
     'absent',
     'unsupported',
     'unavailable',
-  ] as const)('keeps ordinary Items with capture off and %s collection without claiming completion', (collector) => {
-    const f = fixture('off');
-    const reply = admitReply(f, 'Admitted reply with full capture off.');
+  ] as const)('keeps ordinary Items with capture off and %s collection without claiming completion', async (collector) => {
+    const f = await fixture('off');
+    const reply = await admitReply(f, 'Admitted reply with full capture off.');
     if (collector !== 'absent') {
-      appendWorkObservation(f.db, {
+      await appendWorkObservation(f.db, {
         ...f.owner,
         observation: {
           id: 'collector-state',
@@ -1162,9 +1167,9 @@ process.kill(process.pid, 'SIGKILL');`,
     });
   });
 
-  it('screens the entire ordinary source before truncation without exposing reasoning or native identities', () => {
-    const f = fixture('off');
-    const reply = admitReply(f, 'Safe ordinary text 世界\nSecond line.');
+  it('screens the entire ordinary source before truncation without exposing reasoning or native identities', async () => {
+    const f = await fixture('off');
+    const reply = await admitReply(f, 'Safe ordinary text 世界\nSecond line.');
     const read = () =>
       readThreadRuntimeActivity(f.db, {
         threadId: f.owner.threadId,
@@ -1180,17 +1185,17 @@ process.kill(process.pid, 'SIGKILL');`,
       'Control\u0000character',
       `${'Safe prefix '.repeat(100)} api_key=f1-test-value`,
     ]) {
-      f.store.updateItem(reply.id, { text });
+      await f.store.updateItem(reply.id, { text });
       expect.soft(read().entries, text).toEqual([]);
     }
     expect(f.store.getTurnById(f.owner.turnId)?.status).toBe('running');
   });
 
-  it('counts the ordinary reply within the 50-entry bound and keeps fixed structural tool labels', () => {
-    const f = fixture('off');
-    const reply = admitReply(f, 'Bounded ordinary text '.repeat(100));
+  it('counts the ordinary reply within the 50-entry bound and keeps fixed structural tool labels', async () => {
+    const f = await fixture('off');
+    const reply = await admitReply(f, 'Bounded ordinary text '.repeat(100));
     for (let index = 0; index < 52; index++) {
-      appendWorkObservation(f.db, {
+      await appendWorkObservation(f.db, {
         ...f.owner,
         observation: {
           id: `tool-${index}`,
@@ -1254,9 +1259,9 @@ process.kill(process.pid, 'SIGKILL');`,
   it.each([
     'malformed-frame',
     'partial-frame',
-  ] as const)('keeps observed child activity partial after a %s collection gap', (reason) => {
-    const f = fixture();
-    appendWorkObservation(f.db, {
+  ] as const)('keeps observed child activity partial after a %s collection gap', async (reason) => {
+    const f = await fixture();
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation: {
         id: 'observed-child',
@@ -1279,7 +1284,7 @@ process.kill(process.pid, 'SIGKILL');`,
       },
       bodies: [],
     });
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation: {
         id: `gap-${reason}`,

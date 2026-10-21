@@ -70,7 +70,7 @@ export function registerArtifactFileRoutes(
         throw new OperationError('invalid_request', 'Artifact summary metadata is invalid.', 400);
       }
       const store = dependencies.requestStore(context);
-      const admitted = admitOperation(
+      const admitted = await admitOperation(
         definition,
         {
           ...context.req.query(),
@@ -168,7 +168,7 @@ export function registerArtifactFileRoutes(
         byteLength: Number(byteLength),
       };
       const store = dependencies.requestStore(context);
-      const admitted = admitOperation(
+      const admitted = await admitOperation(
         definition,
         value,
         { kind: 'public', actor: context.get('actor'), signal: context.req.raw.signal },
@@ -233,7 +233,7 @@ export function registerArtifactFileRoutes(
       }
       const body = { ...context.req.query(), artifactVersion: Number(version) };
       const store = dependencies.requestStore(context);
-      const admitted = admitOperation(
+      const admitted = await admitOperation(
         definition,
         body,
         { kind: 'public', actor: context.get('actor'), signal: context.req.raw.signal },

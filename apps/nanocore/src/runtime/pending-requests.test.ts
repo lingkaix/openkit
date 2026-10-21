@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -56,12 +57,12 @@ import { createDefaultWorkerMcpGateway, type WorkerMcpGateway } from './worker-m
 
 const NOW = '2026-09-30T00:00:00.000Z';
 
-it('permits denial of a person command intent whose exact detail is unavailable', () => {
-  const { store, coreDb, dataRoot } = openPendingApp();
+it('permits denial of a person command intent whose exact detail is unavailable', async () => {
+  const { store, coreDb, dataRoot } = await openPendingApp();
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const threadId = 'th_00000000-0000-7000-8000-000000000001';
   const actor = { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' };
-  const turn = store.createTurn(workspaceId, threadId, 'Exact destructive effect', {
+  const turn = await store.createTurn(workspaceId, threadId, 'Exact destructive effect', {
     kind: 'user',
     id: actor.userId,
   });
@@ -84,7 +85,7 @@ it('permits denial of a person command intent whose exact detail is unavailable'
       approval: { kind: 'destructive-action', title, description },
       now: NOW,
     });
-    store.createItem({
+    await store.createItem({
       id: record.requestItemId,
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
@@ -134,12 +135,12 @@ it('permits denial of a person command intent whose exact detail is unavailable'
  *
  * @returns App, store, data root, and the actual simulator executor.
  */
-function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
+async function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
   const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
   recordWorkspaceOwnerMembership({
@@ -369,8 +370,8 @@ describe('pending requests', () => {
     'denied',
     'withdrawn',
   ] as const)('refuses oversized exact effect before grant and still permits %s', async (ending) => {
-    const { app, coreDb, store, dataRoot } = openPendingApp('agent_demo');
-    const turn = store.createTurn(
+    const { app, coreDb, store, dataRoot } = await openPendingApp('agent_demo');
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Unclassified effect',
@@ -382,7 +383,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_missing_disclosure', 'large'.repeat(120000));
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: input.threadId,
@@ -455,15 +456,15 @@ describe('pending requests', () => {
     }
   });
 
-  it('freezes only sixteen complete outcomes and retains large multibyte values across restart', () => {
-    const { coreDb, dataRoot, store } = openPendingApp();
+  it('freezes only sixteen complete outcomes and retains large multibyte values across restart', async () => {
+    const { coreDb, dataRoot, store } = await openPendingApp();
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const question = '多字节🙂"\\'.repeat(20000);
     const answer = 'large answer "\\🙂'.repeat(600000);
     const trigger = 'original trigger 多🙂"\\';
     try {
-      const turn = store.createTurn(
+      const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Collect outcomes',
@@ -540,12 +541,12 @@ describe('pending requests', () => {
     }
   });
 
-  it('projects only complete canonical detail within the inclusive UTF-8 boundary', () => {
-    const { store, coreDb, dataRoot } = openPendingApp();
+  it('projects only complete canonical detail within the inclusive UTF-8 boundary', async () => {
+    const { store, coreDb, dataRoot } = await openPendingApp();
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
-      const turn = store.createTurn(
+      const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Preview boundary',
@@ -592,7 +593,7 @@ describe('pending requests', () => {
       expect(preview('not for this viewer', testEntityId('usr', 'another-user'))).toMatchObject({
         status: 'unavailable',
       });
-      const privateThread = store.createThread(
+      const privateThread = await store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'Private source',
         undefined,
@@ -651,9 +652,9 @@ describe('pending requests', () => {
     }
   });
 
-  it('does not settle or publish a contradictory request at boot', () => {
-    const { coreDb, store, dataRoot } = openPendingApp();
-    const turn = store.createTurn(
+  it('does not settle or publish a contradictory request at boot', async () => {
+    const { coreDb, store, dataRoot } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Broken request',
@@ -696,9 +697,9 @@ describe('pending requests', () => {
     'finished-refusal',
     'unnamed-decision',
     'foreign-decision-content',
-  ] as const)('isolates canonical pending request contradiction: %s', (fault) => {
-    const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+  ] as const)('isolates canonical pending request contradiction: %s', async (fault) => {
+    const { coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Canonical request',
@@ -710,7 +711,7 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -823,9 +824,9 @@ describe('pending requests', () => {
     'foreign-thread',
     'wrong-executor',
     'item-ahead',
-  ] as const)('isolates the owner canonical publication fixture: %s', (fault) => {
-    const { coreDb, store } = openPendingApp();
-    const raising = store.createTurn(
+  ] as const)('isolates the owner canonical publication fixture: %s', async (fault) => {
+    const { coreDb, store } = await openPendingApp();
+    const raising = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Canonical captured request',
@@ -837,7 +838,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(raising.id, 'ap_publication_matrix', 'matrix');
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: input.threadId,
@@ -941,9 +942,9 @@ describe('pending requests', () => {
     'package',
     'missing',
     'arguments-digest',
-  ] as const)('rejects a contradictory captured authorization binding: %s', (fault) => {
-    const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+  ] as const)('rejects a contradictory captured authorization binding: %s', async (fault) => {
+    const { coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Captured source',
@@ -955,7 +956,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_binding', 'binding');
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1001,8 +1002,8 @@ describe('pending requests', () => {
   });
 
   it('projects an unreadable canonical request as inspect-only in the Thread dashboard', async () => {
-    const { coreDb, dataRoot, store, app } = openPendingApp('agent_demo');
-    const turn = store.createTurn(
+    const { coreDb, dataRoot, store, app } = await openPendingApp('agent_demo');
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Unreadable request',
@@ -1014,7 +1015,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_unreadable', 'unreadable');
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1057,8 +1058,8 @@ describe('pending requests', () => {
   });
 
   it('does not mutate a contradictory request during archive closeout', async () => {
-    const { coreDb, store, dataRoot, app } = openPendingApp();
-    const turn = store.createTurn(
+    const { coreDb, store, dataRoot, app } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Broken request',
@@ -1079,7 +1080,7 @@ describe('pending requests', () => {
     const before = db.sqlite
       .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
       .get(record.requestId);
-    store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
     const response = await app.request(
       ...operationRequest(
         'thread.archive',
@@ -1118,9 +1119,9 @@ describe('pending requests', () => {
     'finished-refusal',
     'unnamed-decision',
     'foreign-decision-content',
-  ] as const)('isolates canonical pending request contradiction: %s', (fault) => {
-    const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+  ] as const)('isolates canonical pending request contradiction: %s', async (fault) => {
+    const { coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Canonical request',
@@ -1132,7 +1133,7 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1240,8 +1241,8 @@ describe('pending requests', () => {
   });
 
   it('offers no attention action for a missing request Item and keeps a valid sibling actionable', async () => {
-    const { coreDb, store, app } = openPendingApp();
-    const turn = store.createTurn(
+    const { coreDb, store, app } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Two requests',
@@ -1254,7 +1255,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       for (const id of ['good', 'bad']) {
-        store.createItem({
+        await store.createItem({
           id: testEntityId('it', `it_attention_${id}`),
           owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1324,8 +1325,8 @@ describe('pending requests', () => {
     'barrier',
     'boot',
   ] as const)('publishes a delivered person grant invalidation on its own completed Turn: %s', async (cause) => {
-    const { app, coreDb, dataRoot, store } = openPendingApp();
-    const turn = store.createTurn(
+    const { app, coreDb, dataRoot, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Host publication',
@@ -1338,7 +1339,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     const now = new Date().toISOString();
     try {
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1383,12 +1384,12 @@ describe('pending requests', () => {
           )
         )
       ).toBeNull();
-      store.updateTurn(turn.id, { status: 'completed', completedAt: now });
+      await store.updateTurn(turn.id, { status: 'completed', completedAt: now });
       const decision = readPendingRequest(db.sqlite, 'ap_person_late')!;
       expect(decision.delivery).toBe('delivered');
       expect(decision.publicationTurnId).not.toBe(turn.id);
       if (cause !== 'archive') {
-        const busy = store.createTurn(
+        const busy = await store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001',
           'Unrelated work',
@@ -1423,7 +1424,10 @@ describe('pending requests', () => {
         expect(refused.status).toBe(409);
         expect(await refused.json()).toMatchObject({ code: 'thread_busy' });
         if (cause === 'boot') store.setTurnAdmissionHooks(null);
-        store.updateTurn(busy.id, { status: 'completed', completedAt: new Date().toISOString() });
+        await store.updateTurn(busy.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
         if (cause === 'boot')
           recoverPendingRequestsAtBoot(store, {
             openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
@@ -1492,7 +1496,7 @@ describe('pending requests', () => {
     ['terminal-barrier', 'refusal-release'],
     ['boot-resume', 'initial-lookup'],
   ] as const)('contains delivery and Workspace opener failures at %s with fault %s', async (site, fault) => {
-    const { coreDb, dataRoot, store } = openPendingApp('agent_demo');
+    const { coreDb, dataRoot, store } = await openPendingApp('agent_demo');
     let unavailable = false;
     const recovers = fault !== 'permanent';
     let submissions = 0;
@@ -1522,7 +1526,7 @@ describe('pending requests', () => {
       ...dependencies,
       ...(site === 'terminal-barrier' ? { workerDelivery } : {}),
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Delivery failure',
@@ -1534,7 +1538,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_delivery_failure', 'failure');
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1554,7 +1558,10 @@ describe('pending requests', () => {
           "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id=?"
         )
         .run(NOW, input.requestId);
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       if (site === 'boot-resume') {
         if (fault === 'initial-lookup') {
           outcomeTurnId = readPendingRequest(db.sqlite, input.requestId)!.deliveryTurnId!;
@@ -1601,7 +1608,7 @@ describe('pending requests', () => {
         expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
       }
       if (fault === 'transient') {
-        const later = store.createTurn(
+        const later = await store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001',
           'Later user message',
@@ -1609,7 +1616,10 @@ describe('pending requests', () => {
           null,
           { agentId: 'agent_demo' }
         );
-        store.updateTurn(later.id, { status: 'completed', completedAt: new Date().toISOString() });
+        await store.updateTurn(later.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
         installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
       }
       expect(submissions).toBe(fault === 'initial-lookup' ? 0 : 1);
@@ -1626,12 +1636,12 @@ describe('pending requests', () => {
     'accepted',
     'agent-removed',
   ] as const)('submits a pending frozen boot admission once when its worker service is installed: %s', async (mode) => {
-    const { coreDb, dataRoot, store } = openPendingApp('agent_demo');
+    const { coreDb, dataRoot, store } = await openPendingApp('agent_demo');
     const dependencies = {
       openWorkspace: (workspaceId: string) => openWorkspaceDb(dataRoot, workspaceId),
     };
     installPendingRequestAdmission(store, dependencies);
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Pending boot admission',
@@ -1643,7 +1653,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_boot_queue', 'boot');
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1663,7 +1673,10 @@ describe('pending requests', () => {
           "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id=?"
         )
         .run(NOW, input.requestId);
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       const admitted = readPendingRequest(db.sqlite, input.requestId)!;
       expect(admitted.delivery).toBe('frozen');
       expect(
@@ -1715,15 +1728,15 @@ describe('pending requests', () => {
     }
   });
 
-  it('closes a removed Agent request at the active Turn terminal barrier', () => {
-    const { coreDb, dataRoot, store } = openPendingApp();
+  it('closes a removed Agent request at the active Turn terminal barrier', async () => {
+    const { coreDb, dataRoot, store } = await openPendingApp();
     let current = true;
     installPendingRequestAdmission(store, {
       coreDb,
       agentAuthority: () => current,
       openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Request while busy',
@@ -1735,7 +1748,7 @@ describe('pending requests', () => {
     applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_agent_barrier', 'barrier');
-      store.createItem({
+      await store.createItem({
         id: input.requestItemId,
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1751,7 +1764,10 @@ describe('pending requests', () => {
       });
       raiseRecordedPendingRequest(store, db.sqlite, input);
       current = false;
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       const record = readPendingRequest(db.sqlite, input.requestId)!;
       expect(record).toMatchObject({
         state: 'ended',
@@ -1768,9 +1784,9 @@ describe('pending requests', () => {
     }
   });
 
-  it('deduplicates an identical call, separates changed arguments, and stops at 16', () => {
-    const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+  it('deduplicates an identical call, separates changed arguments, and stops at 16', async () => {
+    const { coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Raise approvals',
@@ -1817,8 +1833,8 @@ describe('pending requests', () => {
     const gateway = createDefaultWorkerMcpGateway();
     const callTool = vi.spyOn(gateway, 'callTool');
     const listTools = vi.spyOn(gateway, 'listTools');
-    const { app, coreDb, executor, store } = openPendingApp('agent_demo', gateway);
-    const turn = store.createTurn(
+    const { app, coreDb, executor, store } = await openPendingApp('agent_demo', gateway);
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Raise one approval',
@@ -1826,7 +1842,7 @@ describe('pending requests', () => {
       null,
       { agentId: 'agent_demo' }
     );
-    store.createItem({
+    await store.createItem({
       id: testEntityId('it', 'it_ap_supply'),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1868,7 +1884,7 @@ describe('pending requests', () => {
     } finally {
       db.sqlite.close();
     }
-    store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
     const started = Promise.withResolvers<{ turnId: string; completion: Promise<void> }>();
     const startTurn = executor.startTurn.bind(executor);
     let completion: Promise<void> | undefined;
@@ -1956,8 +1972,8 @@ describe('pending requests', () => {
   }, 60_000);
 
   it('answers once, rejects a changed map and a secret question before a write, and withdraws', async () => {
-    const { app, coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+    const { app, coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Ask',
@@ -1974,7 +1990,7 @@ describe('pending requests', () => {
       isSecret: false,
     };
     try {
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2001,7 +2017,7 @@ describe('pending requests', () => {
         questionDigest: 'digest-path',
         now: NOW,
       });
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2031,7 +2047,7 @@ describe('pending requests', () => {
     } finally {
       db.sqlite.close();
     }
-    store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
     const secret = await app.request(
       ...operationRequest(
         'question.answer',
@@ -2128,9 +2144,9 @@ describe('pending requests', () => {
     coreDb.sqlite.close();
   });
 
-  it('settles an unfinished claim to outcome-unknown and does not execute it again', () => {
-    const { coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+  it('settles an unfinished claim to outcome-unknown and does not execute it again', async () => {
+    const { coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Claim',
@@ -2164,8 +2180,8 @@ describe('pending requests', () => {
   });
 
   it('refuses archive while a Turn is running and a request is pending, then closes an idle Thread out', async () => {
-    const { app, coreDb, store } = openPendingApp();
-    const turn = store.createTurn(
+    const { app, coreDb, store } = await openPendingApp();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Busy',
@@ -2174,7 +2190,7 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
-      store.createItem({
+      await store.createItem({
         id: testEntityId('it', 'it_ap_archive'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2222,7 +2238,7 @@ describe('pending requests', () => {
         'th_00000000-0000-7000-8000-000000000001'
       ).status
     ).not.toBe('archived');
-    store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
     const archived = await app.request(
       ...operationRequest(
         'thread.archive',
@@ -2260,9 +2276,9 @@ describe('pending requests', () => {
     coreDb.sqlite.close();
   });
 
-  it('keeps a contradictory request inspect-only and a sibling request decidable after reload', () => {
-    const { coreDb, dataRoot, store } = openPendingApp('agent_demo');
-    const goodTurn = store.createTurn(
+  it('keeps a contradictory request inspect-only and a sibling request decidable after reload', async () => {
+    const { coreDb, dataRoot, store } = await openPendingApp('agent_demo');
+    const goodTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Good',
@@ -2271,8 +2287,8 @@ describe('pending requests', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const other = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other');
-    const otherTurn = store.createTurn(
+    const other = await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other');
+    const otherTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       other.id,
       'Other',
@@ -2284,7 +2300,7 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
-      store.createItem({
+      await store.createItem({
         id: testEntityId('it', 'it_ap_good'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2298,7 +2314,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-70b9-a8af-9e7514095096',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: other.id,
@@ -2337,7 +2353,7 @@ describe('pending requests', () => {
     } finally {
       db.sqlite.close();
     }
-    store.updateTurn(otherTurn.id, { status: 'completed', completedAt: NOW });
+    await store.updateTurn(otherTurn.id, { status: 'completed', completedAt: NOW });
     const decision = {
       owner: otherTurn.owner,
       threadId: other.id,
@@ -2352,11 +2368,11 @@ describe('pending requests', () => {
       createdAt: NOW,
       completedAt: NOW,
     };
-    store.createItem(
+    await store.createItem(
       { ...decision, id: 'it_00000000-0000-75e0-a0f5-4cc89dcbc3d9' },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    store.createItem(
+    await store.createItem(
       {
         ...decision,
         id: 'it_00000000-0000-7a9d-8492-cb28e485aef7',
@@ -2374,7 +2390,7 @@ describe('pending requests', () => {
         store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', other.id)
       )?.reason
     ).toBe('two-resolutions');
-    store.updateTurn(goodTurn.id, { status: 'completed', completedAt: NOW });
+    await store.updateTurn(goodTurn.id, { status: 'completed', completedAt: NOW });
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getApproval('ap_good').status).toBe('pending');
     expect(() => reloaded.getApproval('ap_bad')).toThrow(/not found/i);
@@ -2389,4 +2405,9 @@ vi.mock('./agent-environment.js', async (importOriginal) => {
     '../test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

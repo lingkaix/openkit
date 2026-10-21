@@ -20,7 +20,7 @@ import {
   ScriptTarget,
   transpileModule,
 } from 'typescript';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import {
@@ -46,6 +46,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
@@ -202,14 +203,14 @@ function createTestSetup(
  * @param input User-visible turn input.
  * @returns Accepted turn.
  */
-function createTurnFixture(
+async function createTurnFixture(
   input: string,
   coreDb?: ReturnType<typeof openCoreDb>,
   triggerActor: ActorRef = USER_TRIGGER_ACTOR,
   serverAdminTokenId?: string
 ) {
-  const store = createDemoStore();
-  const turn = store.createTurn(
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     input,
@@ -249,8 +250,8 @@ function prepareCredentialAttemptFixture(
 }
 
 describe('agent environment package resolver', () => {
-  it('binds explicit encoded-slash authority into immutable package and session material identity', () => {
-    const turn = createTurnFixture('Read packages');
+  it('binds explicit encoded-slash authority into immutable package and session material identity', async () => {
+    const turn = await createTurnFixture('Read packages');
     const resolve = (allowEncodedSlash?: boolean) => {
       const network = WorkerSandboxAccessSchema.parse({
         network: [
@@ -303,14 +304,14 @@ describe('agent environment package resolver', () => {
     expect(historicalBytes).not.toContain('allowEncodedSlash');
   });
 
-  it.each(['repo', 'turn'])('preserves authored root %s with unique output ids', (id) => {
+  it.each(['repo', 'turn'])('preserves authored root %s with unique output ids', async (id) => {
     const commit = 'a'.repeat(40);
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-71a6-8411-162df1495423',
       backend: { kind: 'openshell' },
-      turn: createTurnFixture('Use the authored writable root'),
+      turn: await createTurnFixture('Use the authored writable root'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [
         {
@@ -352,7 +353,7 @@ describe('agent environment package resolver', () => {
     );
   });
 
-  it('declares the generated session-private output slot without authored roots', () => {
+  it('declares the generated session-private output slot without authored roots', async () => {
     for (const agentSessionId of [
       'as_00000000-0000-7c9c-b4e7-e63935d82972',
       'as_00000000-0000-73ec-a8b5-63b6ea02f99c',
@@ -362,7 +363,7 @@ describe('agent environment package resolver', () => {
         agentSetup: createTestSetup(),
         agentSessionId,
         backend: { kind: 'openshell' },
-        turn: createTurnFixture('Write a report'),
+        turn: await createTurnFixture('Write a report'),
         triggerActor: USER_TRIGGER_ACTOR,
         workspaceRoots: [],
       });
@@ -388,13 +389,13 @@ describe('agent environment package resolver', () => {
     { cpu: { maxCores: 1 } },
     { unsupportedLimit: 0 },
     { cpu: null },
-  ])('refuses non-empty authored resources before runtime effects: %j', (resources) => {
+  ])('refuses non-empty authored resources before runtime effects: %j', async (resources) => {
     const setup = createTestSetup();
     const input = {
       agentSetup: { ...setup, manifest: { ...setup.manifest, resources } },
       agentSessionId: 'as_00000000-0000-7426-8df2-e55089bbdb33',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Respect authored resource intent'),
+      turn: await createTurnFixture('Respect authored resource intent'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -415,7 +416,10 @@ describe('agent environment package resolver', () => {
     ).toThrow(DeterministicAgentPreparationError);
   });
 
-  it.each([undefined, {}])('keeps absent and empty authored resources usable: %j', (resources) => {
+  it.each([
+    undefined,
+    {},
+  ])('keeps absent and empty authored resources usable: %j', async (resources) => {
     const setup = createTestSetup();
     const input = {
       agentSetup: {
@@ -424,7 +428,7 @@ describe('agent environment package resolver', () => {
       },
       agentSessionId: 'as_00000000-0000-7ecf-b59f-13550be570d8',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Use supported default resources'),
+      turn: await createTurnFixture('Use supported default resources'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -438,7 +442,7 @@ describe('agent environment package resolver', () => {
     expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
-  it('resolves the shipped DeepSeek template with its authored dsh binary', () => {
+  it('resolves the shipped DeepSeek template with its authored dsh binary', async () => {
     const loaded = loadAgentManifests(
       fileURLToPath(new URL('../../data-templates/', import.meta.url))
     );
@@ -464,7 +468,7 @@ describe('agent environment package resolver', () => {
       agentSetup: result.setup,
       agentSessionId: 'as_00000000-0000-7001-b4c5-8b4af882f9c3',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Resolve the shipped DeepSeek Agent'),
+      turn: await createTurnFixture('Resolve the shipped DeepSeek Agent'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -480,7 +484,7 @@ describe('agent environment package resolver', () => {
     ).toEqual(manifest.runtime.binaries);
   });
 
-  it('resolves the shipped Codex template without unsupported runtime provenance', () => {
+  it('resolves the shipped Codex template without unsupported runtime provenance', async () => {
     const loaded = loadAgentManifests(
       fileURLToPath(new URL('../../data-templates/', import.meta.url))
     );
@@ -504,7 +508,7 @@ describe('agent environment package resolver', () => {
       agentSetup: result.setup,
       agentSessionId: 'as_00000000-0000-7457-afb9-637a90c8f930',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Resolve the shipped Codex Agent'),
+      turn: await createTurnFixture('Resolve the shipped Codex Agent'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -526,12 +530,12 @@ describe('agent environment package resolver', () => {
     expect(resolved.control.transcript.runtimeProvenance).toBeUndefined();
   });
 
-  it('previews a future Turn without fabricating admitted capture coverage', () => {
+  it('previews a future Turn without fabricating admitted capture coverage', async () => {
     const input = {
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-74aa-82e0-950d23a646f3',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Plan without capture admission'),
+      turn: await createTurnFixture('Plan without capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -541,7 +545,7 @@ describe('agent environment package resolver', () => {
     expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
-  it('partitions compatibility by the exact allowed logical models but not the preferred one', () => {
+  it('partitions compatibility by the exact allowed logical models but not the preferred one', async () => {
     const setup = createTestSetup();
     const second = {
       ...setup.logicalModels.allowed[0]!,
@@ -552,7 +556,7 @@ describe('agent environment package resolver', () => {
       agentSetup: setup,
       agentSessionId: 'as_00000000-0000-7a8d-adea-a1c24d14f076',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Model admission'),
+      turn: await createTurnFixture('Model admission'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -595,12 +599,12 @@ describe('agent environment package resolver', () => {
     ).toThrow();
   });
 
-  it('projects exact admitted capture coverage without partitioning session compatibility', () => {
+  it('projects exact admitted capture coverage without partitioning session compatibility', async () => {
     const input = {
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-7bdf-9f78-5d5577660e04',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Use immutable capture admission'),
+      turn: await createTurnFixture('Use immutable capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -621,12 +625,12 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('keeps Turn capture addresses out of AgentSession compatibility', () => {
+  it('keeps Turn capture addresses out of AgentSession compatibility', async () => {
     const input = {
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-7bdf-9f78-5d5577660e04',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('first capture'),
+      turn: await createTurnFixture('first capture'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -642,7 +646,7 @@ describe('agent environment package resolver', () => {
     expect(a.control.transcript.root).not.toBe(b.control.transcript.root);
   });
 
-  it('rejects missing capture admission before credential authority resolution', () => {
+  it('rejects missing capture admission before credential authority resolution', async () => {
     const input = {
       agentSetup: createTestSetup({
         credentialDeclarations: [
@@ -656,7 +660,7 @@ describe('agent environment package resolver', () => {
       }),
       agentSessionId: 'as_00000000-0000-7ac4-9c81-26d001fa7434',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('Reject missing capture admission'),
+      turn: await createTurnFixture('Reject missing capture admission'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -665,8 +669,8 @@ describe('agent environment package resolver', () => {
     ).toThrow('expected object');
   });
 
-  it('refuses retired repository MCP supply without a catalog binding', () => {
-    const resolve = (mcpIds: string[]) =>
+  it('refuses retired repository MCP supply without a catalog binding', async () => {
+    const resolve = async (mcpIds: string[]) =>
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ mcpIds }),
@@ -674,19 +678,19 @@ describe('agent environment package resolver', () => {
         backend: { kind: 'openshell' },
         createdAt: '2026-09-15T00:00:00.000Z',
         requestId: 'request_repository',
-        turn: createTurnFixture('Publish an admitted commit'),
+        turn: await createTurnFixture('Publish an admitted commit'),
         triggerActor: USER_TRIGGER_ACTOR,
         workspaceCwd: '/workspace',
         workspaceRoots: [],
       });
-    expect(resolve([]).supply.mcpServers.some((server) => server.id === 'openkit-repository')).toBe(
-      false
-    );
-    expect(() => resolve(['openkit-repository'])).toThrow(/MCP|catalog/);
+    expect(
+      (await resolve([])).supply.mcpServers.some((server) => server.id === 'openkit-repository')
+    ).toBe(false);
+    await expect(resolve(['openkit-repository'])).rejects.toThrow(/MCP|catalog/);
   });
 
-  it('requires one explicit container backend', () => {
-    const turn = createTurnFixture('Use the repository');
+  it('requires one explicit container backend', async () => {
+    const turn = await createTurnFixture('Use the repository');
     const common = {
       captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSetup: createTestSetup(),
@@ -707,7 +711,7 @@ describe('agent environment package resolver', () => {
     ).toThrow('Host Agent Environment Package backends are not supported.');
   });
 
-  it('projects the exact trigger actor into V2 scope without legacy identity fields', () => {
+  it('projects the exact trigger actor into V2 scope without legacy identity fields', async () => {
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
@@ -718,7 +722,7 @@ describe('agent environment package resolver', () => {
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_actor_1',
       triggerActor: AUTOMATION_TRIGGER_ACTOR,
-      turn: createTurnFixture('Project exact actor'),
+      turn: await createTurnFixture('Project exact actor'),
       workspaceCwd: '/workspace/repo',
       workspaceRoots: [],
     });
@@ -733,7 +737,7 @@ describe('agent environment package resolver', () => {
   it.each([
     true,
     false,
-  ])('projects complete admitted model parameters into the AEP: %s', (complete) => {
+  ])('projects complete admitted model parameters into the AEP: %s', async (complete) => {
     const setupResult = resolveAgentSetup(createTestSetup().manifest, {
       gatewayConfig: {
         schemaVersion: 1,
@@ -780,7 +784,7 @@ describe('agent environment package resolver', () => {
       agentSetup: setupResult.setup,
       agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
       backend: { kind: 'openshell' },
-      turn: createTurnFixture('Use admitted model parameters'),
+      turn: await createTurnFixture('Use admitted model parameters'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     });
@@ -802,7 +806,7 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('projects unequal mixed-family member parameters into the AEP', () => {
+  it('projects unequal mixed-family member parameters into the AEP', async () => {
     const setupResult = resolveAgentSetup(createTestSetup().manifest, {
       gatewayConfig: {
         schemaVersion: 1,
@@ -863,7 +867,7 @@ describe('agent environment package resolver', () => {
       agentSetup: setupResult.setup,
       agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
       backend: { kind: 'openshell' },
-      turn: createTurnFixture('Use admitted model parameters'),
+      turn: await createTurnFixture('Use admitted model parameters'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     });
@@ -882,8 +886,8 @@ describe('agent environment package resolver', () => {
     expect(setupResult.setup.logicalModels.allowed[0]?.modelFamilyId).toBeNull();
   });
 
-  it('projects one resolved opaque manifest into the generic relay launch contract', () => {
-    const turn = createTurnFixture('Run the opaque worker');
+  it('projects one resolved opaque manifest into the generic relay launch contract', async () => {
+    const turn = await createTurnFixture('Run the opaque worker');
     const setupResult = resolveAgentSetup(createTestSetup({ adapter: 'future-adapter' }).manifest, {
       gatewayConfig: {
         schemaVersion: 1,
@@ -969,8 +973,8 @@ describe('agent environment package resolver', () => {
     expect(resolved.extensions.openkit).not.toHaveProperty('resultMessagePath');
   });
 
-  it('rejects retired remote Gateway topology inputs', () => {
-    const turn = createTurnFixture('Run remotely');
+  it('rejects retired remote Gateway topology inputs', async () => {
+    const turn = await createTurnFixture('Run remotely');
     expect(() =>
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
@@ -992,8 +996,8 @@ describe('agent environment package resolver', () => {
     ).toThrow();
   });
 
-  it('preserves authored development grants with trusted inference and rejects incomplete provenance', () => {
-    const turn = createTurnFixture('Reject authority conflict');
+  it('preserves authored development grants with trusted inference and rejects incomplete provenance', async () => {
+    const turn = await createTurnFixture('Reject authority conflict');
     const common = {
       captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSessionId: 'as_00000000-0000-76c8-91aa-7a4046e1d69a',
@@ -1138,12 +1142,12 @@ describe('agent environment package resolver', () => {
     );
   });
 
-  it('resolves catalog Skill supply onto the AgentSession-private worker-supply root', () => {
+  it('resolves catalog Skill supply onto the AgentSession-private worker-supply root', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-skill-catalog-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     try {
-      const turn = createTurnFixture('Use catalog skill');
+      const turn = await createTurnFixture('Use catalog skill');
       const created = importWorkspaceSkill({
         activate: true,
         createdAt: '2026-09-08T00:00:00.000Z',
@@ -1194,12 +1198,12 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('resolves a pinned Skill digest instead of a later current version', () => {
+  it('resolves a pinned Skill digest instead of a later current version', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-skill-pin-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     try {
-      const turn = createTurnFixture('Use pinned skill');
+      const turn = await createTurnFixture('Use pinned skill');
       const first = importWorkspaceSkill({
         activate: true,
         createdAt: '2026-09-08T00:00:00.000Z',
@@ -1271,8 +1275,8 @@ describe('agent environment package resolver', () => {
     'pi',
     'opencode',
     'deepseek',
-  ])('resolves selected MCP supply for %s without exposing its server topology', (adapter) => {
-    const turn = createTurnFixture('Use static supply');
+  ])('resolves selected MCP supply for %s without exposing its server topology', async (adapter) => {
+    const turn = await createTurnFixture('Use static supply');
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({
@@ -1354,8 +1358,8 @@ describe('agent environment package resolver', () => {
     expect(resolved).not.toHaveProperty('providers');
   });
 
-  it('projects one prepared worker Context Package through the existing generated context slot', () => {
-    const turn = createTurnFixture('Use the prepared Context Package');
+  it('projects one prepared worker Context Package through the existing generated context slot', async () => {
+    const turn = await createTurnFixture('Use the prepared Context Package');
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
@@ -1401,8 +1405,8 @@ describe('agent environment package resolver', () => {
     ]);
   });
 
-  it('refuses an unsupported filesystem source without inspecting host Git', () => {
-    expect(() =>
+  it('refuses an unsupported filesystem source without inspecting host Git', async () => {
+    await expect(async () =>
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
@@ -1410,7 +1414,7 @@ describe('agent environment package resolver', () => {
         backend: { kind: 'openshell' },
         createdAt: '2026-07-18T00:00:00.000Z',
         requestId: 'req_filesystem',
-        turn: createTurnFixture('Use an ordinary filesystem root'),
+        turn: await createTurnFixture('Use an ordinary filesystem root'),
         triggerActor: USER_TRIGGER_ACTOR,
         workspaceCwd: null,
         workspaceRoots: [
@@ -1423,14 +1427,14 @@ describe('agent environment package resolver', () => {
           },
         ],
       })
-    ).toThrow(
+    ).rejects.toThrow(
       'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.'
     );
   });
 
-  it('records catalog-resolved workspace lineage without inventing provider attachments', () => {
+  it('records catalog-resolved workspace lineage without inventing provider attachments', async () => {
     const baseCommit = 'a'.repeat(40);
-    const turn = createTurnFixture('Use a catalog source');
+    const turn = await createTurnFixture('Use a catalog source');
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
@@ -1500,7 +1504,7 @@ describe('agent environment package resolver', () => {
     expect(resolved).not.toHaveProperty('providers');
   });
 
-  it('does not apply responsible-user identity to server-scoped Vault authority', () => {
+  it('does not apply responsible-user identity to server-scoped Vault authority', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-direct-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -1553,7 +1557,7 @@ describe('agent environment package resolver', () => {
     });
 
     try {
-      const turn = createTurnFixture('Run Pi directly', coreDb, AUTOMATION_TRIGGER_ACTOR);
+      const turn = await createTurnFixture('Run Pi directly', coreDb, AUTOMATION_TRIGGER_ACTOR);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7cc7-8867-edb4d3f5bad9');
       const resolve = () =>
         resolveAgentEnvironmentPackage({
@@ -1686,7 +1690,7 @@ describe('agent environment package resolver', () => {
   it.each([
     'target',
     'imported-history',
-  ] as const)('enforces %s issuance at the AEP effect boundary', (issuance) => {
+  ] as const)('enforces %s issuance at the AEP effect boundary', async (issuance) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-workspace-binding-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -1739,7 +1743,7 @@ describe('agent environment package resolver', () => {
     const backendResolver = vi.fn(() => vaultUnlockState.backend());
 
     try {
-      const turn = createTurnFixture('Use the Workspace GitHub account', coreDb);
+      const turn = await createTurnFixture('Use the Workspace GitHub account', coreDb);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_01890f3e-0000-7000-8000-000000000061');
       const resolve = () =>
         resolveAgentEnvironmentPackage({
@@ -1862,7 +1866,7 @@ describe('agent environment package resolver', () => {
         version: 'Vault reference requires inspection before worker credential injection.',
         health: 'Vault backend is unavailable for worker credential injection.',
       }[failure];
-      const turn = createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
+      const turn = await createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7791-97f9-e9eb064522fc');
       expect(() =>
         resolveAgentEnvironmentPackage({
@@ -1903,7 +1907,7 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('previews nonmember administrator credentials without effects and denies a revoked bearer', () => {
+  it('previews nonmember administrator credentials without effects and denies a revoked bearer', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-compatibility-preview-'));
     const coreDb = openCoreDb(dataRoot);
     const now = '2026-07-18T00:00:00.000Z';
@@ -1945,7 +1949,7 @@ describe('agent environment package resolver', () => {
       tokenId: 'token_admin_preview',
       workspaceIds: [],
     });
-    const turn = createTurnFixture(
+    const turn = await createTurnFixture(
       'Preview compatibility without effects',
       coreDb,
       triggerActor,
@@ -2075,7 +2079,7 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('denies stale AEP authority before Vault resolution or injection side effects', () => {
+  it('denies stale AEP authority before Vault resolution or injection side effects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-vault-authority-'));
     const coreDb = openCoreDb(dataRoot);
     const now = '2026-07-18T00:00:00.000Z';
@@ -2147,7 +2151,7 @@ describe('agent environment package resolver', () => {
           requestId: 'req_stale_authority',
           runtimeEnvCredentialSink: (credential) =>
             runtimeEnvCredentials.push(credential.credentialValue),
-          turn: createTurnFixture('Reject stale Vault authority'),
+          turn: await createTurnFixture('Reject stale Vault authority'),
           triggerActor: USER_TRIGGER_ACTOR,
           vaultBackend: () => {
             backendCalls += 1;
@@ -2207,7 +2211,7 @@ describe('agent environment package resolver', () => {
       referenceScope: { ownerScope: 'server' as const },
       triggerActor: USER_TRIGGER_ACTOR,
     },
-  ])('rejects a mismatched $name credential grant before sinks or injection records', ({
+  ])('rejects a mismatched $name credential grant before sinks or injection records', async ({
     expectedError,
     grantTarget,
     name,
@@ -2254,7 +2258,7 @@ describe('agent environment package resolver', () => {
     });
 
     try {
-      expect(() =>
+      await expect(async () =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
@@ -2290,13 +2294,13 @@ describe('agent environment package resolver', () => {
           requestId: `req_scope_${name}`,
           runtimeEnvCredentialSink: (credential) =>
             runtimeEnvCredentials.push(credential.credentialValue),
-          turn: createTurnFixture(`Reject ${name} scope`),
+          turn: await createTurnFixture(`Reject ${name} scope`),
           triggerActor,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         })
-      ).toThrow(expectedError);
+      ).rejects.toThrow(expectedError);
       expect(runtimeEnvCredentials).toEqual([]);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
@@ -2306,7 +2310,7 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('writes no receipt when a credential sink fails after Vault resolution', () => {
+  it('writes no receipt when a credential sink fails after Vault resolution', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-direct-sink-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -2349,7 +2353,7 @@ describe('agent environment package resolver', () => {
     });
 
     try {
-      const turn = createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
+      const turn = await createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672');
       expect(() =>
         resolveAgentEnvironmentPackage({
@@ -2402,8 +2406,8 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('rejects retired backend-local inference inputs', () => {
-    const turn = createTurnFixture('Reject backend-local inference');
+  it('rejects retired backend-local inference inputs', async () => {
+    const turn = await createTurnFixture('Reject backend-local inference');
     const common = {
       captureCoverage: { scope: 'server', value: 'off' } as const,
       agentSessionId: 'as_00000000-0000-77fd-9abd-2be1e88aca0a',
@@ -2428,8 +2432,8 @@ describe('agent environment package resolver', () => {
     ).toThrow();
   });
 
-  it('preserves the manifest network grant exact binary scope', () => {
-    const turn = createTurnFixture('Use a declared public endpoint');
+  it('preserves the manifest network grant exact binary scope', async () => {
+    const turn = await createTurnFixture('Use a declared public endpoint');
     const setup = createTestSetup({
       network: [
         {
@@ -2483,13 +2487,13 @@ describe('public network AEP admission', () => {
     },
   ];
 
-  it('classifies canonical shared MCP destinations before admitting public network access', () => {
+  it('classifies canonical shared MCP destinations before admitting public network access', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-shared-mcp-public-'));
     const coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const turn = createTurnFixture('Shared managed destination', coreDb);
+      const turn = await createTurnFixture('Shared managed destination', coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: USER_TRIGGER_ACTOR.id,
@@ -2593,7 +2597,7 @@ describe('public network AEP admission', () => {
     }
   });
 
-  it('admits public grants through the boot-supplied runtime and observes active configuration reload', () => {
+  it('admits public grants through the boot-supplied runtime and observes active configuration reload', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-public-boot-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2603,8 +2607,8 @@ describe('public network AEP admission', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = createDemoStore({ dataRoot });
-    const turn = createTurnFixture('Public boot admission', coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createTurnFixture('Public boot admission', coreDb);
     const agentSetup = createTestSetup({ network });
     const gatewayConfig = createTestGatewayConfig({
       logicalModelId: 'reasoning',
@@ -2733,7 +2737,7 @@ describe('public network AEP admission', () => {
     }
   });
 
-  it('preserves immutable public evidence and rechecks current grant removal and actor revocation', () => {
+  it('preserves immutable public evidence and rechecks current grant removal and actor revocation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-public-grant-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2750,7 +2754,12 @@ describe('public network AEP admission', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const turn = createTurnFixture('Public endpoint', coreDb, USER_TRIGGER_ACTOR, 'token_public');
+    const turn = await createTurnFixture(
+      'Public endpoint',
+      coreDb,
+      USER_TRIGGER_ACTOR,
+      'token_public'
+    );
     const agentSetup = createTestSetup({ network });
     const current: PublicNetworkConfiguration = {
       agentManifests: [agentSetup.manifest],
@@ -2925,13 +2934,13 @@ describe('public network AEP admission', () => {
     }
   });
 
-  it('refuses missing current admission metadata without falling back to ordinary grants', () => {
+  it('refuses missing current admission metadata without falling back to ordinary grants', async () => {
     const input = {
       captureCoverage: { scope: 'server' as const, value: 'off' as const },
       agentSetup: createTestSetup({ network }),
       agentSessionId: 'as_00000000-0000-7ccf-863b-bd6e69a9430a',
       backend: { kind: 'openshell' as const },
-      turn: createTurnFixture('No current metadata'),
+      turn: await createTurnFixture('No current metadata'),
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
@@ -2943,7 +2952,7 @@ it.each([
   { effort: 'none' as const, levels: ['none', 'high'], expected: ['none', 'high'] },
   { effort: undefined, levels: [], expected: [] },
   { effort: undefined, levels: undefined, expected: undefined },
-] as const)('projects only recorded Turn effort and advertised model levels into immutable package bytes: %j', ({
+] as const)('projects only recorded Turn effort and advertised model levels into immutable package bytes: %j', async ({
   effort,
   levels,
   expected,
@@ -2965,7 +2974,7 @@ it.each([
     agentSessionId: 'as_00000000-0000-72de-9f15-4d6e5bc250fb',
     backend: { kind: 'openshell' as const },
     turn: {
-      ...createTurnFixture('Effort projection'),
+      ...(await createTurnFixture('Effort projection')),
       ...(effort !== undefined ? { reasoningEffort: effort } : {}),
     },
     triggerActor: USER_TRIGGER_ACTOR,
@@ -2989,12 +2998,12 @@ it.each([
 });
 
 // RET §Native Transcripts And Runtime Logs; RET-2 selects once into immutable AEP evidence.
-it('RET-2 binds the default and later policy selection into separate AEPs, keeping capture OFF', () => {
+it('RET-2 binds the default and later policy selection into separate AEPs, keeping capture OFF', async () => {
   let config = createInMemoryRuntimeConfigSnapshot({
     dataRoot: null,
     openKitConfig: OpenKitConfigSchema.parse({ schemaVersion: 1 }),
   });
-  const turn = createTurnFixture('Select native log bound');
+  const turn = await createTurnFixture('Select native log bound');
   const resolve = (suffix: string) =>
     resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
@@ -3025,4 +3034,9 @@ it('RET-2 binds the default and later policy selection into separate AEPs, keepi
     AgentEnvironmentPackageSchema.parse(JSON.parse(firstBytes)).observability.evidence
       ?.nativeLogMaxBytes
   ).toBe(16_777_216);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

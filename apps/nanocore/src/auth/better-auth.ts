@@ -40,7 +40,7 @@ interface CreateBetterAuthOptions {
   /** Startup operator config used for public URL, CORS, and sign-up policy. */
   openKitConfig?: OpenKitConfig;
   /** Ensures product-owned personal scope before an active user's new session is recorded. */
-  onActiveUserSession?: (userId: string) => void;
+  onActiveUserSession?: (userId: string) => Promise<void>;
 }
 
 /**
@@ -105,7 +105,7 @@ export function createBetterAuth(
             if (!isCanonicalUserActive(coreDb, session.userId)) {
               throw new APIError('FORBIDDEN', { message: 'User is disabled.' });
             }
-            options.onActiveUserSession?.(session.userId);
+            await options.onActiveUserSession?.(session.userId);
           },
         },
       },

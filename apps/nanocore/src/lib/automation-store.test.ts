@@ -844,8 +844,8 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
   let db = state.db;
   ensureLocalUser(db);
   let files = new FsStore({ dataRoot: state.root });
-  const workspace = files.createWorkspace('Monthly proof');
-  const thread = files.createThread(workspace.id, 'Existing target');
+  const workspace = await files.createWorkspace('Monthly proof');
+  const thread = await files.createThread(workspace.id, 'Existing target');
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,

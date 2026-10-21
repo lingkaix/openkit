@@ -18,6 +18,7 @@ import {
   admitWorkerImageEnvironment,
   writeWorkerImageSettlement,
 } from '../runtime/worker-image-settlements.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -34,7 +35,8 @@ import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const roots: string[] = [];
 const dbs: CoreDb[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   dbs.splice(0).forEach((db) => {
     db.sqlite.close();
@@ -49,7 +51,7 @@ const values = { DEFAULT: 'image', EMPTY: '', HOME: '/managed/image-home' };
 const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
 
 /** Real Core admission, file revision/CAS and safe reload; no native or image effect. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'openkit-native-admin-'));
   roots.push(root);
   const db = openCoreDb(root);
@@ -87,7 +89,7 @@ function fixture() {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
-  const store = createDemoStore({ dataRoot: root });
+  const store = await createDemoStore({ dataRoot: root });
   const service = createAgentNativeEnvironmentService({
     coreDb: db,
     store,
@@ -121,8 +123,8 @@ function fixture() {
 }
 
 describe('Agent public native environment administration', () => {
-  it('refuses unadmitted defaults and actors without current administrator authority', () => {
-    const f = fixture();
+  it('refuses unadmitted defaults and actors without current administrator authority', async () => {
+    const f = await fixture();
     expect(() => f.service.view(actor, f.fileId)).toThrow(
       expect.objectContaining({
         code: 'worker_environment_preparation_required',
@@ -143,8 +145,8 @@ describe('Agent public native environment administration', () => {
       reload: { matchesDesired: true },
     });
   });
-  it('rejects stale identities and protected/null edits before existing file CAS or reload', () => {
-    const f = fixture();
+  it('rejects stale identities and protected/null edits before existing file CAS or reload', async () => {
+    const f = await fixture();
     f.admit();
     const update = vi.spyOn(f.files, 'updateFile');
     const reload = vi.spyOn(f.manager, 'reload');
@@ -167,20 +169,20 @@ describe('Agent public native environment administration', () => {
     expect(reload).not.toHaveBeenCalled();
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
   });
-  it('reads pending/acknowledged/unknown projections from bindings and hides private sibling Threads', () => {
-    const f = fixture();
+  it('reads pending/acknowledged/unknown projections from bindings and hides private sibling Threads', async () => {
+    const f = await fixture();
     f.admit();
     recordWorkspaceOwnerMembership({
       coreDb: f.db,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: actor.userId,
     });
-    const thread = f.store.createThread(
+    const thread = await f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Visible',
       'th_00000000-0000-7000-8000-000000000002'
     );
-    const hidden = f.store.createThread(
+    const hidden = await f.store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private sibling',
       'th_00000000-0000-7000-8000-000000000003',
@@ -327,7 +329,7 @@ describe('Agent public native environment administration', () => {
   });
 
   it('publishes typed private runtime environment operations and refuses non-administrators before reading values', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.admit();
     let viewer = actor as import('../auth/identity.js').Actor;
     const app = new Hono<{ Variables: AuthVariables }>();
@@ -383,8 +385,8 @@ describe('Agent public native environment administration', () => {
     ).toBe(403);
   });
 
-  it('persists literal overrides/removals through real CAS without claiming a failed reload or native application', () => {
-    const f = fixture();
+  it('persists literal overrides/removals through real CAS without claiming a failed reload or native application', async () => {
+    const f = await fixture();
     f.admit();
     const previous = f.files.readFile(f.fileId).file.revision!;
     const result = f.service.update(actor, {

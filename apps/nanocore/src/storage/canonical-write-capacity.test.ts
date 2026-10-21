@@ -1,9 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
@@ -13,7 +23,12 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
-import { openCoreDb } from './db.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import * as immutableContent from './immutable-content.js';
 import { applyMigrations } from './migrate.js';
 import {
   appendCanonicalTextFile,
@@ -23,7 +38,10 @@ import {
 } from './workspace-file-records.js';
 
 const roots: string[] = [];
-afterEach(() => {
+const cores: ReturnType<typeof openCoreDb>[] = [];
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+  for (const core of cores.splice(0)) if (core.sqlite.open) core.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 function root() {
@@ -32,16 +50,19 @@ function root() {
   return path;
 }
 /** Retained inline records exercise the existing writer; new uploads use file descriptors. */
-function fixture(content = 'prior original') {
-  const dataRoot = root(),
-    store = new FsStore({ dataRoot }),
-    workspace = store.createWorkspace('Canonical capacity');
+async function fixture(content = 'prior original') {
+  const dataRoot = root();
+  const coreDb = openCoreDb(dataRoot);
+  cores.push(coreDb);
+  applyMigrations(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = await store.createWorkspace('Canonical capacity');
   const bytes = content;
   const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const artifactId = allocateEntityId('ar');
   const requestId = randomUUID(),
     time = new Date().toISOString();
-  store.createArtifact({
+  await store.createArtifact({
     id: artifactId,
     workspaceId: workspace.id,
     threadId: null,
@@ -118,8 +139,8 @@ it('accounts for exact reference/event append bytes and restores the scope after
   appendCanonicalTextFile(target, '{"outside":"unchanged owner"}\n');
   expect(readFileSync(target, 'utf8')).toContain('outside');
 });
-it('refuses a retained large inline body copy while preserving its original bytes', () => {
-  const f = fixture('x'.repeat(1024 * 1024));
+it('refuses a retained large inline body copy while preserving its original bytes', async () => {
+  const f = await fixture('x'.repeat(1024 * 1024));
   const records = loadWorkspaceFileRecords(f.dataRoot).find(
     (r) => r.workspace.id === f.workspace.id
   )!;
@@ -142,7 +163,7 @@ it('refuses a retained large inline body copy while preserving its original byte
   expect(readFileSync(payload)).toEqual(before);
 });
 it('does not rewrite canonical Notebook pages during record persistence under capacity pressure', async () => {
-  const f = fixture();
+  const f = await fixture();
   const coreDb = openCoreDb(f.dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -217,8 +238,8 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
     coreDb.sqlite.close();
   }
 });
-it('skips equal JSON cores but reserves retained additive fields when the core changes', () => {
-  const f = fixture(),
+it('skips equal JSON cores but reserves retained additive fields when the core changes', async () => {
+  const f = await fixture(),
     target = join(f.workspaceRoot, 'artifacts', f.artifactId, 'artifact.json');
   const json = JSON.parse(readFileSync(target, 'utf8'));
   json.futureMetadata = 'u'.repeat(1024 * 1024);
@@ -250,4 +271,87 @@ it('skips equal JSON cores but reserves retained additive fields when the core c
   ).toThrow('capacity');
   expect(readFileSync(target)).toEqual(before);
   expect(existsSync(target)).toBe(true);
+});
+
+it.each([
+  'missing',
+  'short',
+  'digest-mismatched',
+  'unsynchronized',
+] as const)('refuses a public Item whose immutable input is %s without committing a reference', async (fault) => {
+  const dataRoot = root();
+  const coreDb = openCoreDb(dataRoot);
+  cores.push(coreDb);
+  applyMigrations(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = await store.createWorkspace('Immutable Item');
+  const thread = await store.createThread(workspace.id, 'Immutable Item');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Publish', {
+    kind: 'user',
+    id: 'usr_00000000-0000-7000-8000-000000000001',
+  });
+  const db = openWorkspaceDb(dataRoot, workspace.id);
+  const before = db.sqlite.prepare('SELECT * FROM control_product_entries').all();
+  const publish = immutableContent.publishImmutableProductJson;
+  let faultApplied = false;
+  const open = fsPromises.open;
+  if (fault === 'unsynchronized') {
+    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+      const handle = await open(...args);
+      if (String(args[0]).includes('sha256') && args[1] === 'wx') {
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          faultApplied = true;
+          throw Object.assign(new Error('synchronization fault'), { code: 'EIO' });
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+  } else {
+    vi.spyOn(immutableContent, 'publishImmutableProductJson').mockImplementation(
+      async (...args) => {
+        const content = await publish(...args);
+        const path = join(args[0].root, content.reference.locator.path);
+        if (fault === 'missing') rmSync(path);
+        else {
+          const bytes = readFileSync(path);
+          chmodSync(path, 0o600);
+          if (fault === 'short') writeFileSync(path, bytes.subarray(0, bytes.length - 1));
+          else {
+            bytes[0] = bytes[0]! ^ 1;
+            writeFileSync(path, bytes);
+          }
+        }
+        faultApplied = true;
+        return content;
+      }
+    );
+  }
+  try {
+    await expect(
+      (async () =>
+        await store.createItem({
+          id: allocateEntityId('it'),
+          owner: { kind: 'workspace', workspaceId: workspace.id },
+          threadId: thread.id,
+          turnId: turn.id,
+          type: 'assistant-message',
+          text: 'Exact immutable input',
+          status: 'in_progress',
+          createdAt: turn.startedAt!,
+          completedAt: null,
+        }))()
+    ).rejects.toThrow();
+    expect(faultApplied, 'the fault must reach the actual immutable Product bytes').toBe(true);
+    expect(db.sqlite.prepare('SELECT * FROM control_product_entries').all()).toEqual(before);
+    vi.restoreAllMocks();
+    syncBuiltinESMExports();
+    await getControlStoreWorkerClient().shutdown();
+    expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([]);
+  } finally {
+    vi.restoreAllMocks();
+    syncBuiltinESMExports();
+    await getControlStoreWorkerClient().shutdown();
+    db.sqlite.close();
+  }
 });

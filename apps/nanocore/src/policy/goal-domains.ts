@@ -98,7 +98,7 @@ const CapturedDomain = z
 
 /** Returns a safe repair instruction for unsupported native proposal semantics; grants no authority. */
 export function goalDomainSupportError(input: {
-  readonly statement: GoalDomainStatement;
+  readonly statement: Pick<GoalDomainStatement, 'scope' | 'lifetime'>;
   readonly workspaceId: string;
   readonly goalId: string;
   readonly store: FsStore;

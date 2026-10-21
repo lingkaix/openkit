@@ -23,6 +23,7 @@ import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
 import {
@@ -979,6 +980,7 @@ describe('vault admin app API', () => {
       scope: 'server-admin',
       workspaceIds: [],
     });
+    initializeTestCore(localDataRoot);
     const localApp = createApp({ dataRoot: localDataRoot });
     const serverApp = createApp({
       auth: createSignedOutAuthStub(),

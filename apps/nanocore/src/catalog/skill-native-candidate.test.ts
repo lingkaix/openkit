@@ -35,7 +35,7 @@ const tree = [
 ];
 
 /** Real public operations and retained Artifact/SQLite owners; no Worker execution is modeled. */
-function fixture(
+async function fixture(
   options: { privateOwner?: string; personal?: boolean; administrator?: boolean } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-skill-candidate-'));
@@ -47,17 +47,17 @@ function fixture(
   const privateOwnerUserId = options.privateOwner === 'self' ? userId : options.privateOwner;
   const store = new FsStore({ dataRoot });
   const workspace = options.personal
-    ? store.ensureQuickChatWorkspace(userId)
-    : store.createWorkspace('Synthetic native Skill');
+    ? await store.ensureQuickChatWorkspace(userId)
+    : await store.createWorkspace('Synthetic native Skill');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspace.id,
     'Synthetic producing work',
     undefined,
     'conversation',
     privateOwnerUserId ? { visibility: 'private', privateOwnerUserId } : { visibility: 'workspace' }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Prepare a candidate only.',
@@ -67,7 +67,7 @@ function fixture(
   );
   const body = JSON.stringify(tree);
   const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-  const artifact = store.createArtifact({
+  const artifact = await store.createArtifact({
     id: allocateEntityId('ar'),
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -118,7 +118,7 @@ function fixture(
 }
 
 /** Crosses the real HTTP/native admission boundary with the current retained bearer. */
-function call(f: ReturnType<typeof fixture>, operation: OperationId, input: unknown) {
+function call(f: Awaited<ReturnType<typeof fixture>>, operation: OperationId, input: unknown) {
   return f.app.request(
     ...operationRequest(
       operation,
@@ -134,7 +134,7 @@ function call(f: ReturnType<typeof fixture>, operation: OperationId, input: unkn
 
 describe('native Artifact-origin Skill candidates', () => {
   it('submits exact inactive bytes, replays one receipt, promotes by a real human decision and pins the retained version', async () => {
-    const f = fixture();
+    const f = await fixture();
     const response = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(response.status, await response.clone().text()).toBe(201);
     const submitted = await response.json();
@@ -230,7 +230,7 @@ describe('native Artifact-origin Skill candidates', () => {
     'revoked',
     'stale',
   ] as const)('refuses %s before candidate effects', async (reason) => {
-    const f = fixture({
+    const f = await fixture({
       ...(reason.includes('private')
         ? { privateOwner: reason === 'foreign-private' ? allocateEntityId('usr') : 'self' }
         : {}),
@@ -239,7 +239,7 @@ describe('native Artifact-origin Skill candidates', () => {
     if (reason === 'revoked') revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
     if (reason === 'stale') f.input.artifact.version += 1;
     if (reason === 'foreign-workspace') {
-      const other = f.store.createWorkspace('Other synthetic Workspace');
+      const other = await f.store.createWorkspace('Other synthetic Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         workspaceId: other.id,
@@ -256,7 +256,7 @@ describe('native Artifact-origin Skill candidates', () => {
   });
 
   it('keeps own-private input in its owner-only personal Workspace', async () => {
-    const f = fixture({ personal: true, privateOwner: 'self' });
+    const f = await fixture({ personal: true, privateOwner: 'self' });
     const response = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(response.status, await response.clone().text()).toBe(201);
     expect(
@@ -265,7 +265,7 @@ describe('native Artifact-origin Skill candidates', () => {
   });
 
   it('rechecks current authority on receipt replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect((await call(f, 'catalog.skill-candidate-submit', f.input)).status).toBe(201);
     revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
     const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision;
@@ -278,7 +278,7 @@ describe('native Artifact-origin Skill candidates', () => {
     'rejected',
     'withdrawn',
   ] as const)('records a real human %s decision without activation', async (disposition) => {
-    const f = fixture();
+    const f = await fixture();
     const response = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(response.status, await response.clone().text()).toBe(201);
     const submitted = await response.json();
@@ -312,7 +312,7 @@ describe('native Artifact-origin Skill candidates', () => {
     'both',
     'neither',
   ] as const)('refuses %s candidate input alternatives before candidate effects', async (choice) => {
-    const f = fixture();
+    const f = await fixture();
     const { artifact: _artifact, ...base } = f.input;
     const response = await call(
       f,
@@ -324,7 +324,7 @@ describe('native Artifact-origin Skill candidates', () => {
   });
 
   it('reports an interrupted receipt without replaying a completed catalog effect', async () => {
-    const f = fixture();
+    const f = await fixture();
     vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
       throw new Error('Synthetic receipt failure.');
     });

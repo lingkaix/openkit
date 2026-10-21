@@ -10,14 +10,16 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -26,7 +28,9 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  * @returns Temporary data root path.
  */
 function createDataRoot(): string {
-  return mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+  initializeTestCore(dataRoot);
+  return dataRoot;
 }
 
 /** Creates a simulated app whose runtime config owner reads the real test data root. */
@@ -110,7 +114,7 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     try {
       writeServerConfig(dataRoot);
-      const store = createDemoStore({ dataRoot });
+      const store = await createDemoStore({ dataRoot });
       const app = createApp({ dataRoot, store });
       const before = readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8');
       const readResponse = await app.request(
@@ -148,7 +152,7 @@ describe('runtime config file API', () => {
   it('lists and reads allowed runtime config files with stable revisions', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot, store: createDemoStore({ dataRoot }) });
+    const app = createApp({ dataRoot, store: await createDemoStore({ dataRoot }) });
 
     const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as {
@@ -176,7 +180,7 @@ describe('runtime config file API', () => {
   it('lists, reads, and updates workspace config files under the current user workspace', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     mkdirSync(join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001', 'config'), {
       recursive: true,
     });
@@ -230,7 +234,7 @@ describe('runtime config file API', () => {
   it('lists, reads, validates, and updates workspace data source catalog files', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const configRoot = join(
       dataRoot,
       'workspaces',
@@ -299,7 +303,7 @@ describe('runtime config file API', () => {
     applyMigrations(coreDb);
     const localUserId = ensureLocalUser(coreDb);
     writeServerConfig(dataRoot);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const configRoot = join(
       dataRoot,
       'workspaces',
@@ -386,7 +390,7 @@ describe('runtime config file API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     writeServerConfig(dataRoot);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -707,4 +711,9 @@ describe('runtime config file API', () => {
     expect(existsSync(join(dataRoot, 'config', 'server.jsonc'))).toBe(true);
     expect(reload.plan.applied).toEqual([]);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

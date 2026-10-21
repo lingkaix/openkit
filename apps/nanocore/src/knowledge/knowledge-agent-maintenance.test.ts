@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -10,6 +10,7 @@ import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-mana
 import { internalContextSourceDigest } from '../internal-agents/rolling-context.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -22,11 +23,12 @@ import {
   maintainKnowledgeAgent,
   prepareKnowledgeMaintenance,
 } from './knowledge-agent-maintenance.js';
+import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 /** Actual owners and virtual Tools surround a fake role runner; no provider or retrieval process is needed. */
-function fixture(
+async function fixture(
   enabled = true,
   protectedPages: string[] = [],
   initialFiles: (workspaceId: string) => Record<string, string> = () => ({})
@@ -35,7 +37,8 @@ function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await getControlStoreWorkerClient().shutdown();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
@@ -44,7 +47,7 @@ function fixture(
   const timestamp = new Date().toISOString();
   const workspaceId = allocateEntityId('ws');
   // One native initialization is sufficient: these cases need the human text, not a prior empty commit.
-  const workspace = store.importWorkspaceSnapshot({
+  const workspace = await store.importWorkspaceSnapshot({
     workspace: {
       id: workspaceId,
       name: 'Maintenance fixture',
@@ -76,15 +79,15 @@ function fixture(
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
   const humanRevision = notebook.publishedRevision();
-  const ordinary = store.createThread(workspace.id, 'Ordinary shared work');
-  const ordinaryTurn = store.createTurn(
+  const ordinary = await store.createThread(workspace.id, 'Ordinary shared work');
+  const ordinaryTurn = await store.createTurn(
     workspace.id,
     ordinary.id,
     'Explicit human expression',
     actor,
     null
   );
-  store.createItem({
+  await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: ordinary.id,
@@ -96,7 +99,7 @@ function fixture(
     createdAt: timestamp,
     completedAt: timestamp,
   });
-  store.updateTurn(ordinaryTurn.id, {
+  await store.updateTurn(ordinaryTurn.id, {
     status: 'completed',
     completedAt: timestamp,
     internalExecution: {
@@ -155,7 +158,10 @@ function fixture(
     });
     await execute('knowledge.notebook.update', { summary: 'Record labels' });
     input.validateResult('Done.');
-    store.updateTurn(input.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: input.turn.id, text: 'Done.' };
   });
   const dependencies: KnowledgeMaintenanceDependencies = {
@@ -179,8 +185,8 @@ function fixture(
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
-    pin: (input) => {
-      store.updateTurn(input.turn.id, {
+    pin: async (input) => {
+      await store.updateTurn(input.turn.id, {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'test-role-model',
@@ -206,8 +212,98 @@ function fixture(
 }
 
 describe('Workspace Knowledge Manager maintenance admission', () => {
+  it('leaves no prepared Thread or Turn when its receipt is rejected and retries once', async () => {
+    const f = await fixture();
+    const root = f.dependencies.coreDb.dataRoot;
+    const workspaceRoot = join(root, 'workspaces', f.workspace.id);
+    const threadsBefore = f.store.listThreads(f.workspace.id).map((thread) => thread.id);
+    const turnsBefore = threadsBefore.flatMap((id) =>
+      f.store.listThreadTurns(f.workspace.id, id).map((turn) => turn.id)
+    );
+    const filesBefore = readdirSync(workspaceRoot, { recursive: true })
+      .filter((path) => /(?:^|[/\\])(?:thread|turn)\.json$/.test(path as string))
+      .sort();
+    const scope = { workspaceId: f.workspace.id, actorId: f.input.actor.id };
+    let db = f.dependencies.openWorkspace(f.workspace.id);
+    try {
+      // A persistent fixture trigger also reaches the command owner's separate connection.
+      db.sqlite.exec(`
+        CREATE TRIGGER reject_maintenance_receipt BEFORE INSERT ON idempotency_requests
+        WHEN NEW.command_name = 'knowledge.maintain'
+        BEGIN SELECT RAISE(ABORT, 'maintenance receipt rejected'); END;
+      `);
+      await expect(runKnowledgeMaintenanceCommand(f.dependencies, f.input)).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      expect(f.run).not.toHaveBeenCalled();
+      expect(
+        f.store.getCommandRequest('knowledge.maintain', f.input.requestId, scope, db)
+      ).toBeNull();
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT request_id FROM idempotency_requests WHERE command_name = 'knowledge.maintain'"
+          )
+          .all()
+      ).toEqual([]);
+      const inMemory = f.store.listThreads(f.workspace.id).map((thread) => thread.id);
+      const turnsInMemory = inMemory.flatMap((id) =>
+        f.store.listThreadTurns(f.workspace.id, id).map((turn) => turn.id)
+      );
+      const canonicalFiles = readdirSync(workspaceRoot, { recursive: true })
+        .filter((path) => /(?:^|[/\\])(?:thread|turn)\.json$/.test(path as string))
+        .sort();
+      db.sqlite.exec('DROP TRIGGER reject_maintenance_receipt');
+      await getControlStoreWorkerClient().shutdown();
+      db.sqlite.close();
+      db = f.dependencies.openWorkspace(f.workspace.id);
+      const reopened = new FsStore({ dataRoot: root });
+      const afterReopen = reopened.listThreads(f.workspace.id).map((thread) => thread.id);
+      expect(
+        reopened.getCommandRequest('knowledge.maintain', f.input.requestId, scope, db)
+      ).toBeNull();
+      expect({
+        inMemory,
+        turnsInMemory,
+        canonicalFiles,
+        afterReopen,
+        turnsAfterReopen: afterReopen.flatMap((id) =>
+          reopened.listThreadTurns(f.workspace.id, id).map((turn) => turn.id)
+        ),
+      }).toEqual({
+        inMemory: threadsBefore,
+        turnsInMemory: turnsBefore,
+        canonicalFiles: filesBefore,
+        afterReopen: threadsBefore,
+        turnsAfterReopen: turnsBefore,
+      });
+
+      const result = await runKnowledgeMaintenanceCommand(f.dependencies, f.input);
+      expect(result.outcome).toBe('published');
+      expect(await runKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
+      expect(f.run).toHaveBeenCalledTimes(1);
+      expect(f.store.listThreads(f.workspace.id).map((thread) => thread.id)).toEqual([
+        ...threadsBefore,
+        result.threadId,
+      ]);
+      expect(
+        f.store.listThreadTurns(f.workspace.id, result.threadId).map((turn) => turn.id)
+      ).toEqual([result.turnId]);
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT request_id FROM idempotency_requests WHERE command_name = 'knowledge.maintain'"
+          )
+          .all()
+      ).toEqual([{ request_id: f.input.requestId }]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it('returns actionable feedback until a native notebook outcome exists', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.run.mockImplementationOnce(async (run) => {
       expect(run.validateResult(JSON.stringify({ summary: 'No changes are needed.' }))).toBe(
         'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.'
@@ -221,7 +317,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
       expect(
         run.validateResult(JSON.stringify({ summary: 'No changes are needed.' }))
       ).toBeUndefined();
-      f.store.updateTurn(run.turn.id, {
+      await f.store.updateTurn(run.turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -235,7 +331,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     );
   });
   it('narrows the editable snapshot and human diffs to explicitly selected archived pages plus the overview', async () => {
-    const f = fixture();
+    const f = await fixture();
     const page = (id: string) =>
       serializeKnowledgePageFixture(
         {
@@ -293,7 +389,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
           { callId: randomUUID(), toolOccurrence: 2, signal: run.signal }
         );
       run.validateResult('No changes required.');
-      f.store.updateTurn(run.turn.id, {
+      await f.store.updateTurn(run.turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -310,8 +406,8 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     );
   });
   it('publishes through the existing owner with exact human edits and selected ordinary expressions as inputs', async () => {
-    const f = fixture();
-    const own = f.store.createTurn(
+    const f = await fixture();
+    const own = await f.store.createTurn(
       f.workspace.id,
       f.ordinaryTurn.threadId,
       'Prior KM input',
@@ -319,7 +415,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
       null
     );
     const timestamp = new Date().toISOString();
-    f.store.createItem({
+    await f.store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: own.threadId,
@@ -331,7 +427,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    f.store.updateTurn(own.id, {
+    await f.store.updateTurn(own.id, {
       status: 'completed',
       completedAt: timestamp,
       internalExecution: {
@@ -395,7 +491,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
   });
   it('includes a human page removal outside the active editing snapshot', async () => {
     let content = '';
-    const f = fixture(true, [], (workspaceId) => {
+    const f = await fixture(true, [], (workspaceId) => {
       content = `---
  type: KnowledgePage
  title: Removed lesson
@@ -416,15 +512,15 @@ An obsolete human lesson.
       return { 'obsolete.md': content };
     });
     // Only the deletion is new human input since this prior maintenance checkpoint.
-    const thread = f.store.createThread(f.workspace.id, 'Previous maintenance');
-    const prior = f.store.createTurn(
+    const thread = await f.store.createThread(f.workspace.id, 'Previous maintenance');
+    const prior = await f.store.createTurn(
       f.workspace.id,
       thread.id,
       'Previous maintenance',
       f.input.actor,
       null
     );
-    f.store.updateTurn(prior.id, {
+    await f.store.updateTurn(prior.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
       internalExecution: {
@@ -470,10 +566,10 @@ An obsolete human lesson.
     expect(payload.files).not.toContain('obsolete.md');
   });
   it('retains the settled native result before a later provider failure', async () => {
-    const f = fixture();
+    const f = await fixture();
     const execute = f.run.getMockImplementation()!;
     f.run.mockImplementationOnce(async (run) => {
-      await execute({ ...run, validateResult: () => {} });
+      await execute({ ...run, validateResult: () => undefined });
       const current = f.store.getTurnById(run.turn.id);
       expect(
         current.items.filter((item) => item.type === 'status' && item.knowledgeMaintenanceResult)
@@ -491,7 +587,7 @@ An obsolete human lesson.
     ).toEqual(result);
   });
   it('saves the exact multi-page Proposal when publication is not delegated', async () => {
-    const f = fixture(false);
+    const f = await fixture(false);
     const result = await maintainKnowledgeAgent(f.dependencies, f.input);
     expect(result.outcome).toBe('review-required');
     const proposal = f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!);
@@ -506,8 +602,8 @@ An obsolete human lesson.
     );
   });
   it('retains scheduled work before capture, pins before provider execution and does not process a failed range', async () => {
-    const f = fixture();
-    const prepared = prepareKnowledgeMaintenance(f.dependencies, {
+    const f = await fixture();
+    const prepared = await prepareKnowledgeMaintenance(f.dependencies, {
       ...f.input,
       trigger: 'schedule',
     });
@@ -524,7 +620,7 @@ An obsolete human lesson.
     });
     expect(skipped).toMatchObject({ outcome: 'skipped', threadId: retained.threadId });
     expect(f.run).not.toHaveBeenCalled();
-    prepared.fail();
+    await prepared.fail();
     expect(f.store.getTurnById(retained.id).status).toBe('failed');
     let providerReached = false;
     f.run.mockImplementationOnce(async (run) => {
@@ -559,11 +655,11 @@ An obsolete human lesson.
     );
   });
   it('reuses the scheduled maintenance Thread after model admission failed before pinning', async () => {
-    const f = fixture();
+    const f = await fixture();
     vi.spyOn(f.dependencies, 'pin').mockImplementationOnce(() => {
       throw new Error('Synthetic unavailable model.');
     });
-    const unavailable = prepareKnowledgeMaintenance(f.dependencies, {
+    const unavailable = await prepareKnowledgeMaintenance(f.dependencies, {
       ...f.input,
       trigger: 'schedule',
     });
@@ -583,12 +679,12 @@ An obsolete human lesson.
       kind: 'automation',
       summary: 'Knowledge Manager scheduled maintenance.',
     });
-    const next = prepareKnowledgeMaintenance(f.dependencies, {
+    const next = await prepareKnowledgeMaintenance(f.dependencies, {
       ...f.input,
       requestId: randomUUID(),
     });
     expect(f.store.getTurnById(next.turnId).threadId).toBe(failed.threadId);
     expect(f.run).not.toHaveBeenCalled();
-    next.fail();
+    await next.fail();
   });
 });

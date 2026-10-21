@@ -19,7 +19,7 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 describe('dashboard and search Thread audiences', () => {
   it('binds private creation to the actor and keeps explicitly shared work shared', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Creation team');
+    const workspace = await store.createWorkspace('Creation team');
     const app = createApp({ store });
     for (const visibility of ['private', 'workspace'] as const) {
       const response = await ((input: Record<string, unknown>) =>
@@ -59,10 +59,10 @@ describe('dashboard and search Thread audiences', () => {
     }
   });
 
-  it('keeps visibility and private ownership immutable under metadata updates', () => {
+  it('keeps visibility and private ownership immutable under metadata updates', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Immutable audience');
-    const thread = store.createThread(workspace.id, 'Private', undefined, 'conversation', {
+    const workspace = await store.createWorkspace('Immutable audience');
+    const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
@@ -80,11 +80,17 @@ describe('dashboard and search Thread audiences', () => {
 
   it('requires shared inception for formal Task and Goal work without converting private history', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Formal admission');
-    const thread = store.createThread(workspace.id, 'Private source', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    });
+    const workspace = await store.createWorkspace('Formal admission');
+    const thread = await store.createThread(
+      workspace.id,
+      'Private source',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const app = createApp({ store });
     for (const _mode of ['task']) {
       const response = await app.request(
@@ -112,8 +118,8 @@ describe('dashboard and search Thread audiences', () => {
 
   it('creates a new shared Goal from a private origin without changing its audience', async () => {
     const store = new FsStore();
-    const ws = store.createWorkspace('Goal inception');
-    const origin = store.createThread(ws.id, 'Private origin', undefined, 'conversation', {
+    const ws = await store.createWorkspace('Goal inception');
+    const origin = await store.createThread(ws.id, 'Private origin', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
@@ -142,7 +148,7 @@ describe('dashboard and search Thread audiences', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Team');
+    const workspace = await store.createWorkspace('Team');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -160,68 +166,65 @@ describe('dashboard and search Thread audiences', () => {
         `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(workspace.id, stamp, stamp, stamp);
-    const threads = [
-      'local-private',
-      'other-private',
-      'Task',
-      'Goal',
-      'missing',
-      'contradictory',
-    ].map((label) => {
-      const thread = store.createThread(workspace.id, `${label} needle`);
-      const raw = thread as unknown as Record<string, unknown>;
-      delete raw.privateOwnerUserId;
-      if (label.endsWith('private'))
-        Object.assign(raw, {
-          visibility: 'private',
-          privateOwnerUserId: label.startsWith('local')
-            ? 'usr_00000000-0000-7000-8000-000000000001'
-            : 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-        });
-      else Object.assign(raw, { visibility: 'workspace' });
-      const turn = store.createTurn(workspace.id, thread.id, `${label} needle`, {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      });
-      store.createItem({
-        id: testEntityId('it', `it_${label}`),
-        owner: { kind: 'workspace', workspaceId: workspace.id },
-        threadId: thread.id,
-        turnId: turn.id,
-        type: 'assistant-message',
-        status: 'completed',
-        text: `${label} needle content`,
-        createdAt: stamp,
-        completedAt: stamp,
-      });
-      if (label !== 'missing' && label !== 'contradictory')
-        store.createArtifact({
-          id: testEntityId('ar', `ar_${label}`),
-          workspaceId: workspace.id,
-          threadId: thread.id,
-          turnId: turn.id,
-          kind: 'summary',
-          title: `${label} needle artifact`,
-          status: 'ready',
-          summary: `${label} needle summary`,
-          version: 1,
-          content: { format: 'text', body: `${label} output` },
-          contentDigest: `sha256:${createHash('sha256').update(`${label} output`).digest('hex')}`,
-          lastMutationRequestId: `artifact-${label}`,
-          origin: {
-            kind: 'turn-output',
+    const threads = await Promise.all(
+      ['local-private', 'other-private', 'Task', 'Goal', 'missing', 'contradictory'].map(
+        async (label) => {
+          const thread = await store.createThread(workspace.id, `${label} needle`);
+          const raw = thread as unknown as Record<string, unknown>;
+          delete raw.privateOwnerUserId;
+          if (label.endsWith('private'))
+            Object.assign(raw, {
+              visibility: 'private',
+              privateOwnerUserId: label.startsWith('local')
+                ? 'usr_00000000-0000-7000-8000-000000000001'
+                : 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+            });
+          else Object.assign(raw, { visibility: 'workspace' });
+          const turn = await store.createTurn(workspace.id, thread.id, `${label} needle`, {
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          });
+          await store.createItem({
+            id: testEntityId('it', `it_${label}`),
+            owner: { kind: 'workspace', workspaceId: workspace.id },
             threadId: thread.id,
             turnId: turn.id,
-            requestId: `artifact-${label}`,
-          },
-          createdAt: stamp,
-          updatedAt: stamp,
-        });
-      return thread;
-    });
+            type: 'assistant-message',
+            status: 'completed',
+            text: `${label} needle content`,
+            createdAt: stamp,
+            completedAt: stamp,
+          });
+          if (label !== 'missing' && label !== 'contradictory')
+            await store.createArtifact({
+              id: testEntityId('ar', `ar_${label}`),
+              workspaceId: workspace.id,
+              threadId: thread.id,
+              turnId: turn.id,
+              kind: 'summary',
+              title: `${label} needle artifact`,
+              status: 'ready',
+              summary: `${label} needle summary`,
+              version: 1,
+              content: { format: 'text', body: `${label} output` },
+              contentDigest: `sha256:${createHash('sha256').update(`${label} output`).digest('hex')}`,
+              lastMutationRequestId: `artifact-${label}`,
+              origin: {
+                kind: 'turn-output',
+                threadId: thread.id,
+                turnId: turn.id,
+                requestId: `artifact-${label}`,
+              },
+              createdAt: stamp,
+              updatedAt: stamp,
+            });
+          return thread;
+        }
+      )
+    );
     const sharedTurn = store.listThreadTurns(workspace.id, threads[2]!.id)[0]!;
     for (const label of ['local-private', 'other-private'])
-      store.createItem({
+      await store.createItem({
         id: testEntityId('it', `it_link_${label}`),
         owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: threads[2]!.id,
@@ -365,7 +368,7 @@ describe('dashboard and search Thread audiences', () => {
         expect(hiddenReview.status).toBe(scope === 'server-admin' ? 200 : 404);
         if (scope === 'server-admin') {
           exposeUnavailableAudience = false;
-          const receiving = store.createThread(workspace.id, 'Attachment audience');
+          const receiving = await store.createThread(workspace.id, 'Attachment audience');
           const attached = await app.request(
             ...operationRequest(
               'conversation.submit',

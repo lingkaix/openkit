@@ -24,6 +24,7 @@ import {
   loadWorkspaceResourceCatalog,
   publishWorkspaceResourceCatalog,
 } from '../catalog/resource-catalog.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -98,7 +99,8 @@ vi.mock('node:fs', async (importOriginal) => {
 const MESSAGE =
   'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.';
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   durability.afterRead = undefined;
   durability.readFailurePath = undefined;
   durability.mkdirFailurePath = undefined;
@@ -106,11 +108,13 @@ afterEach(() => {
 });
 
 /** Exercises the actual file owner with authored catalogs, including edits before reload. */
-function fixture(withOtherWorkspace = false) {
+async function fixture(withOtherWorkspace = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-source-selection-'));
   roots.push(dataRoot);
-  const store = createDemoStore({ dataRoot });
-  const otherWorkspaceId = withOtherWorkspace ? store.createWorkspace('Other team').id : null;
+  const store = await createDemoStore({ dataRoot });
+  const otherWorkspaceId = withOtherWorkspace
+    ? (await store.createWorkspace('Other team')).id
+    : null;
   const write = (id: string, content: string) => {
     const path = join(
       dataRoot,
@@ -172,8 +176,8 @@ function catalog(kind: string, id = 'documents') {
 const selection = [{ id: 'documents', sourceRef: 'documents', access: 'read-write' }];
 
 describe('registered config detail read coherence', () => {
-  it('binds the revision to one actual source read when an external writer replaces the file', () => {
-    const f = fixture();
+  it('binds the revision to one actual source read when an external writer replaces the file', async () => {
+    const f = await fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const original =
       '// Original café\n{"schemaVersion":1,"workspace":{"name":"Original","roots":[]}}\n';
@@ -201,8 +205,8 @@ describe('registered config detail read coherence', () => {
     expect(readFileSync(path, 'utf8')).toBe(replacement);
   });
 
-  it('keeps a missing registered file absent and reports not found', () => {
-    const f = fixture();
+  it('keeps a missing registered file absent and reports not found', async () => {
+    const f = await fixture();
     const id = 'agents/missing.agent.jsonc';
     const path = join(f.dataRoot, 'config', id);
 
@@ -212,8 +216,8 @@ describe('registered config detail read coherence', () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  it('propagates source read failure without changing authored bytes', () => {
-    const f = fixture();
+  it('propagates source read failure without changing authored bytes', async () => {
+    const f = await fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const original = '{"schemaVersion":1,"workspace":{"name":"Unreadable","roots":[]}}\n';
     const path = f.write(id, original);
@@ -224,8 +228,8 @@ describe('registered config detail read coherence', () => {
     expect(readFileSync(path, 'utf8')).toBe(original);
   });
 
-  it('refuses a foreign Workspace symlink before reading its content', () => {
-    const f = fixture(true);
+  it('refuses a foreign Workspace symlink before reading its content', async () => {
+    const f = await fixture(true);
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const path = join(
       f.dataRoot,
@@ -256,8 +260,8 @@ describe('configuration-stage work-slot source refusal', () => {
     ['create', 'catalog-first'],
     ['update', 'agent-first'],
     ['update', 'catalog-first'],
-  ] as const)('accepts shared Git/folder docs on both %s writes in %s order', (mode, order) => {
-    const f = fixture(true);
+  ] as const)('accepts shared Git/folder docs on both %s writes in %s order', async (mode, order) => {
+    const f = await fixture(true);
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       catalog('git', 'docs')
@@ -295,8 +299,8 @@ describe('configuration-stage work-slot source refusal', () => {
     ['update', 'agent'],
     ['create', 'data-source'],
     ['update', 'data-source'],
-  ] as const)('refuses only-folder docs before the %s %s write changes bytes', (mode, kind) => {
-    const f = fixture(true);
+  ] as const)('refuses only-folder docs before the %s %s write changes bytes', async (mode, kind) => {
+    const f = await fixture(true);
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       catalog('workspace-dir', 'docs')
@@ -338,8 +342,8 @@ describe('configuration-stage work-slot source refusal', () => {
     ['update', 'inline'],
     ['create', 'sourceRef'],
     ['update', 'sourceRef'],
-  ] as const)('accepts an unrelated Agent %s while an authored %s selection still refuses its own write', (mode, shape) => {
-    const f = fixture();
+  ] as const)('accepts an unrelated Agent %s while an authored %s selection still refuses its own write', async (mode, shape) => {
+    const f = await fixture();
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       catalog('workspace-dir')
@@ -390,8 +394,8 @@ describe('configuration-stage work-slot source refusal', () => {
   it.each([
     'create',
     'update',
-  ] as const)('refuses a non-Git Agent input before %s stores bytes', (mode) => {
-    const f = fixture();
+  ] as const)('refuses a non-Git Agent input before %s stores bytes', async (mode) => {
+    const f = await fixture();
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       catalog('workspace-dir')
@@ -421,8 +425,8 @@ describe('configuration-stage work-slot source refusal', () => {
   it.each([
     'create',
     'update',
-  ] as const)('refuses a configured folder root before %s stores bytes', (mode) => {
-    const f = fixture();
+  ] as const)('refuses a configured folder root before %s stores bytes', async (mode) => {
+    const f = await fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
     const path = join(
       f.dataRoot,
@@ -456,8 +460,8 @@ describe('configuration-stage work-slot source refusal', () => {
     if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
   });
 
-  it('keeps unselected non-Git catalog registration valid but refuses changing a selected Git source to a folder', () => {
-    const f = fixture();
+  it('keeps unselected non-Git catalog registration valid but refuses changing a selected Git source to a folder', async () => {
+    const f = await fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
     const created = f.files.createFile({
       id,
@@ -485,8 +489,8 @@ describe('configuration-stage work-slot source refusal', () => {
     expect(f.files.readFile(id).content).toBe(previous.content);
   });
 
-  it('refuses catalog creation that would activate an already authored non-Git materialization selection', () => {
-    const f = fixture();
+  it('refuses catalog creation that would activate an already authored non-Git materialization selection', async () => {
+    const f = await fixture();
     f.write('agents/team.agent.jsonc', agent(selection));
     expect(() =>
       f.files.createFile({
@@ -511,8 +515,8 @@ describe('configuration-stage work-slot source refusal', () => {
     ).toBe(false);
   });
 
-  it('still loads authored folder selections and roots without rewriting their bytes', () => {
-    const f = fixture();
+  it('still loads authored folder selections and roots without rewriting their bytes', async () => {
+    const f = await fixture();
     const source = catalog('workspace-dir');
     const sourcePath = f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
@@ -545,7 +549,7 @@ describe('configuration-stage work-slot source refusal', () => {
     'runtime.file-create',
     'runtime.file-update',
   ])('projects the exact refusal through %s', async (operation) => {
-    const f = fixture();
+    const f = await fixture();
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       catalog('workspace-dir')
@@ -571,8 +575,8 @@ describe('configuration-stage work-slot source refusal', () => {
     });
   });
 
-  it('accepts selected Git with additive input metadata', () => {
-    const f = fixture();
+  it('accepts selected Git with additive input metadata', async () => {
+    const f = await fixture();
     f.write(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
       catalog('git')
@@ -582,8 +586,8 @@ describe('configuration-stage work-slot source refusal', () => {
     expect(created.file.exists).toBe(true);
   });
 
-  it('refuses an inline folder input without a catalog reference before storage', () => {
-    const f = fixture();
+  it('refuses an inline folder input without a catalog reference before storage', async () => {
+    const f = await fixture();
     const id = 'agents/team.agent.jsonc';
     expect(() =>
       f.files.createFile({
@@ -607,8 +611,8 @@ describe('configuration-stage work-slot source refusal', () => {
     expect(existsSync(join(f.dataRoot, 'config', id))).toBe(false);
   });
 
-  it('accepts an empty input list through creation and update', () => {
-    const f = fixture();
+  it('accepts an empty input list through creation and update', async () => {
+    const f = await fixture();
     const id = 'agents/team.agent.jsonc';
     const content = agent([]);
     const created = f.files.createFile({ id, kind: 'agent', content });
@@ -624,8 +628,8 @@ describe('configuration-stage work-slot source refusal', () => {
 });
 
 describe('authored configuration durability', () => {
-  it('syncs exact replacement bytes and mode before rename, then syncs its parent and reopens', () => {
-    const f = fixture();
+  it('syncs exact replacement bytes and mode before rename, then syncs its parent and reopens', async () => {
+    const f = await fixture();
     const id = 'agents/durable.agent.jsonc';
     const original = agent([], 'agent_durable_fixture');
     const path = f.write(id, original);
@@ -666,8 +670,8 @@ describe('authored configuration durability', () => {
   it.each([
     'before',
     'after',
-  ] as const)('rejects success when synchronization fails %s the configuration rename', (boundary) => {
-    const f = fixture();
+  ] as const)('rejects success when synchronization fails %s the configuration rename', async (boundary) => {
+    const f = await fixture();
     const id = 'agents/durable.agent.jsonc';
     const original = agent([], 'agent_durable_fixture');
     const path = f.write(id, original);
@@ -711,8 +715,8 @@ function assistantSelectionContent(skillIds?: readonly unknown[]): string {
 }
 
 /** Supplies real inactive local and foreign Skills after the file service snapshot was created. */
-function assistantSelectionFixture(mode: 'create' | 'update') {
-  const f = fixture(true);
+async function assistantSelectionFixture(mode: 'create' | 'update') {
+  const f = await fixture(true);
   for (const [workspaceId, id] of [
     ['ws_00000000-0000-7000-8000-000000000001', 'local-guidance'],
     [f.otherWorkspaceId as string, 'foreign-guidance'],
@@ -769,11 +773,11 @@ describe('Workspace Assistant Skill selection configuration', () => {
     invalidSelections.flatMap(([label, ids]) =>
       (['create', 'update'] as const).map((mode) => ({ label, ids, mode }))
     )
-  )('refuses $label references on $mode without changing authored or catalog bytes', ({
+  )('refuses $label references on $mode without changing authored or catalog bytes', async ({
     ids,
     mode,
   }) => {
-    const f = assistantSelectionFixture(mode);
+    const f = await assistantSelectionFixture(mode);
     const localCatalog = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const foreignCatalog = catalogDocumentPath(f.dataRoot, f.otherWorkspaceId as string);
     const catalogBefore = readFileSync(localCatalog);
@@ -803,11 +807,11 @@ describe('Workspace Assistant Skill selection configuration', () => {
     (['absent', 'empty', 'selected'] as const).flatMap((selection) =>
       (['create', 'update'] as const).map((mode) => ({ selection, mode }))
     )
-  )('persists $selection selection on $mode using current same-Workspace catalog identities', ({
+  )('persists $selection selection on $mode using current same-Workspace catalog identities', async ({
     selection,
     mode,
   }) => {
-    const f = assistantSelectionFixture(mode);
+    const f = await assistantSelectionFixture(mode);
     const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const catalogBefore = readFileSync(catalogPath);
     expect(
@@ -829,8 +833,8 @@ describe('Workspace Assistant Skill selection configuration', () => {
     ).toEqual(ids ?? []);
   });
 
-  it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', () => {
-    const f = assistantSelectionFixture('update');
+  it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', async () => {
+    const f = await assistantSelectionFixture('update');
     const selected = assistantSelectionContent(['local-guidance']);
     f.write(selected);
     const current = loadWorkspaceResourceCatalog(
@@ -859,11 +863,11 @@ describe('Workspace Assistant Skill selection configuration', () => {
     (['corrupt', 'missing'] as const).flatMap((authority) =>
       (['create', 'update'] as const).map((mode) => ({ authority, mode }))
     )
-  )('refuses $authority current catalog authority on $mode with a redacted error and unchanged authored bytes', ({
+  )('refuses $authority current catalog authority on $mode with a redacted error and unchanged authored bytes', async ({
     authority,
     mode,
   }) => {
-    const f = assistantSelectionFixture(mode);
+    const f = await assistantSelectionFixture(mode);
     const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     if (authority === 'corrupt') writeFileSync(catalogPath, '{invalid');
     else rmSync(catalogPath);
@@ -883,8 +887,8 @@ describe('Workspace Assistant Skill selection configuration', () => {
     else expect(existsSync(catalogPath)).toBe(false);
   });
 
-  it('keeps exact revision refusal for an otherwise valid existing Skill selection', () => {
-    const f = assistantSelectionFixture('update');
+  it('keeps exact revision refusal for an otherwise valid existing Skill selection', async () => {
+    const f = await assistantSelectionFixture('update');
     const newer = `${f.previous}\n// Concurrent authored edit\n`;
     writeFileSync(f.path, newer);
     expect(() => f.write(assistantSelectionContent(['local-guidance']))).toThrowError(
@@ -895,8 +899,8 @@ describe('Workspace Assistant Skill selection configuration', () => {
 });
 
 describe('Workspace Assistant Skill read-only validation', () => {
-  it('validates a real selected Skill without repairing an unrelated missing Workspace subtree', () => {
-    const f = assistantSelectionFixture('update');
+  it('validates a real selected Skill without repairing an unrelated missing Workspace subtree', async () => {
+    const f = await assistantSelectionFixture('update');
     const unrelated = join(
       f.dataRoot,
       'workspaces',
@@ -930,8 +934,8 @@ describe('Workspace Assistant Skill read-only validation', () => {
   it.each([
     'create',
     'update',
-  ] as const)('does not repair an unrelated Workspace subtree while refusing an invalid %s selection', (mode) => {
-    const f = assistantSelectionFixture(mode);
+  ] as const)('does not repair an unrelated Workspace subtree while refusing an invalid %s selection', async (mode) => {
+    const f = await assistantSelectionFixture(mode);
     const unrelated = join(
       f.dataRoot,
       'workspaces',
@@ -956,8 +960,8 @@ describe('Workspace Assistant Skill read-only validation', () => {
     expect(readFileSync(catalogPath)).toEqual(catalogBefore);
   });
 
-  it('does not reject a valid Skill because an unrelated layout mkdir would fail', () => {
-    const f = assistantSelectionFixture('update');
+  it('does not reject a valid Skill because an unrelated layout mkdir would fail', async () => {
+    const f = await assistantSelectionFixture('update');
     const unrelated = join(
       f.dataRoot,
       'workspaces',
@@ -990,11 +994,11 @@ describe('Workspace Assistant Skill catalog confinement', () => {
     (['directory', 'file'] as const).flatMap((redirect) =>
       (['create', 'update'] as const).map((mode) => ({ redirect, mode }))
     )
-  )('rejects a catalog $redirect symlink to another Workspace on $mode without changing either authority', ({
+  )('rejects a catalog $redirect symlink to another Workspace on $mode without changing either authority', async ({
     redirect,
     mode,
   }) => {
-    const f = assistantSelectionFixture(mode);
+    const f = await assistantSelectionFixture(mode);
     const localDirectory = join(
       f.dataRoot,
       'workspaces',

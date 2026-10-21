@@ -88,7 +88,7 @@ function insertMember(coreDb: CoreDb, workspaceId: string, userId: string): void
 }
 
 /** Creates one direct route fixture without duplicating central-authorizer tests. */
-function createFixture(): RouteFixture {
+async function createFixture(): Promise<RouteFixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sharing-routes-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -106,8 +106,8 @@ function createFixture(): RouteFixture {
   }
 
   const store = new FsStore();
-  const workspaceId = store.createWorkspace('Shared Workspace').id;
-  const foreignWorkspaceId = store.createWorkspace('Foreign Workspace').id;
+  const workspaceId = (await store.createWorkspace('Shared Workspace')).id;
+  const foreignWorkspaceId = (await store.createWorkspace('Foreign Workspace')).id;
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -171,8 +171,8 @@ afterEach(() => {
 });
 
 describe('Workspace sharing routes', () => {
-  it('registers the exact closed operation surface and access owners', () => {
-    const fixture = createFixture();
+  it('registers the exact closed operation surface and access owners', async () => {
+    const fixture = await createFixture();
 
     expect(getRegisteredAppApiOperationIds(fixture.app)).toEqual(
       Object.entries(OPERATION_DEFINITIONS)
@@ -212,7 +212,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('projects only the centrally authorized Workspace set', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const body = readAuthorizedWorkspaces(
       fixture.coreDb,
       fixture.store,
@@ -226,7 +226,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('projects actual ownership without membership for a usable server-admin bearer', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
@@ -261,7 +261,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('hides own invitations for fenced and deleting Workspaces', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const now = '2026-07-19T00:00:00.000Z';
     for (const [invitationId, workspaceId] of [
       ['inv_00000000-0000-7fa0-886a-4a5b14d6d0c8', fixture.workspaceId],
@@ -298,7 +298,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('commits one lifecycle audit and pointer receipt, replays, and rejects changed input', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const requestId = '00000000-0000-4000-8000-000000000001';
     const input = {
       inviteeEmail: 'invitee@example.com',
@@ -372,7 +372,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('writes only a receipt for an exact no-op and returns typed revision conflicts', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const noOp = await fixture.app.request(
       ...operationRequest(
         'workspace.ownership-transfer',
@@ -426,7 +426,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('fails closed on child-lineage mismatch and request-owned audit without a receipt', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const invitation = fixture.coreDb.sqlite.transaction(() => {
       const now = '2026-07-19T00:00:00.000Z';
       fixture.coreDb.sqlite
@@ -498,7 +498,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('allows leave only from current policy authority or the exact own tombstone receipt', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.actorState.current = {
       kind: 'session',
       userId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
@@ -554,7 +554,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('keeps deployment recovery and user disable behind explicit administrator authority', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const denied = await fixture.app.request(
       ...operationRequest(
         'workspace.access-recovery-read',
@@ -647,7 +647,7 @@ describe('Workspace sharing routes', () => {
   });
 
   it('rejects administrator recovery for the owner-only personal Workspace', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const workspaceId = quickChatWorkspaceIdForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     recordWorkspaceOwnerMembership({
       coreDb: fixture.coreDb,
@@ -699,7 +699,7 @@ describe('Workspace sharing routes', () => {
 });
 
 it('keeps safe sharing request field detail in the common validation projection', async () => {
-  const fixture = createFixture();
+  const fixture = await createFixture();
   const response = await fixture.app.request(
     ...operationRequest(
       'workspace.invitation-create',

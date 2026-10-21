@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
@@ -66,20 +67,20 @@ const INFERENCE_TOKEN = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 const CAPABILITY_TOKEN = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
 
 /** Builds the real Core admission, Native binding, package ledger, and default gateway. */
-function createFixture() {
+async function createFixture() {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(NOW));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-control-cancellation-'));
   let coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Cancel one exact worker Turn',
@@ -102,7 +103,7 @@ function createFixture() {
       workspaceRoots: [],
     })
   );
-  store.createAgentSession({
+  await store.createAgentSession({
     id: environmentPackage.scope.agentSessionId,
     agentId: environmentPackage.agent.agentId,
     workspaceId: workspaceIdForOwner(turn.owner),
@@ -112,7 +113,7 @@ function createFixture() {
     createdAt: NOW,
     updatedAt: NOW,
   });
-  store.updateTurn(turn.id, { agentSessionId: environmentPackage.scope.agentSessionId });
+  await store.updateTurn(turn.id, { agentSessionId: environmentPackage.scope.agentSessionId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
   applyScopedMigrations(workspaceDb);
   recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt: NOW, environmentPackage });
@@ -431,8 +432,8 @@ describe('Core cancellation-only final admission', () => {
   it.each([
     'cancelled',
     'interrupted',
-  ] as const)('preserves the %s first final after refused ordinary output and seals all route families', (status) => {
-    const fixture = createFixture();
+  ] as const)('preserves the %s first final after refused ordinary output and seals all route families', async (status) => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       const product = fixture.productState();
@@ -478,8 +479,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('refuses reconnect on closing authority without consuming its exact first final', () => {
-    const fixture = createFixture();
+  it('refuses reconnect on closing authority without consuming its exact first final', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       expectRefusal(fixture, () =>
@@ -506,8 +507,8 @@ describe('Core cancellation-only final admission', () => {
     'turn-cancelled',
     'raw-output-exhausted',
     'raw-output-unavailable',
-  ])('rebuilds a %s first-final opportunity after restart without changing its deadline', (cause) => {
-    const fixture = createFixture();
+  ])('rebuilds a %s first-final opportunity after restart without changing its deadline', async (cause) => {
+    const fixture = await createFixture();
     try {
       fixture.close(cause);
       expectOrdinaryEffectsRefused(fixture);
@@ -526,8 +527,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('replays the exact accepted final after restart on both closing and closed lineage', () => {
-    const fixture = createFixture();
+  it('replays the exact accepted final after restart on both closing and closed lineage', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       fixture.gateway.recordFinalStatus(finalInput(fixture));
@@ -581,8 +582,8 @@ describe('Core cancellation-only final admission', () => {
     ['blocked', 'length'],
     ['cancelled', 'completed'],
     ['interrupted', 'error'],
-  ] as const)('refuses closing first final %s/%s without consuming the valid cancellation final', (status, stopReason) => {
-    const fixture = createFixture();
+  ] as const)('refuses closing first final %s/%s without consuming the valid cancellation final', async (status, stopReason) => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       expectRefusal(fixture, () =>
@@ -597,8 +598,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('refuses invalid final schema without consuming the valid cancellation final', () => {
-    const fixture = createFixture();
+  it('refuses invalid final schema without consuming the valid cancellation final', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       expectRefusal(fixture, () =>
@@ -620,8 +621,8 @@ describe('Core cancellation-only final admission', () => {
     'worker-final-status',
     'restart-native-recovery',
     'authority-revoked',
-  ])('refuses the first final when closing belongs to %s', (cause) => {
-    const fixture = createFixture();
+  ])('refuses the first final when closing belongs to %s', async (cause) => {
+    const fixture = await createFixture();
     try {
       fixture.close(cause);
       expectRefusal(fixture, () => fixture.gateway.recordFinalStatus(finalInput(fixture)));
@@ -630,8 +631,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('rejects each changed lineage field and each wrong token without consuming the first final', () => {
-    const fixture = createFixture();
+  it('rejects each changed lineage field and each wrong token without consuming the first final', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       for (const field of [
@@ -672,8 +673,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('rejects a process binding that differs from the exact durable attempt', () => {
-    const fixture = createFixture();
+  it('rejects a process binding that differs from the exact durable attempt', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       fixture.gateway.registerSession(fixture.environmentPackage, {
@@ -688,8 +689,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('refuses an explicitly revoked gateway binding', () => {
-    const fixture = createFixture();
+  it('refuses an explicitly revoked gateway binding', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       expect(fixture.gateway.unregisterSession(fixture.lineage.packageSnapshotId)).toBe(true);
@@ -699,8 +700,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('refuses a cancellation first final after the attempt has an accepted fence', () => {
-    const fixture = createFixture();
+  it('refuses a cancellation first final after the attempt has an accepted fence', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       const correlation = schedulerExecutionCorrelation(
@@ -721,8 +722,11 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it.each([false, true])('refuses expired cancellation authority after restart=%s', (restart) => {
-    const fixture = createFixture();
+  it.each([
+    false,
+    true,
+  ])('refuses expired cancellation authority after restart=%s', async (restart) => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       const attempt = requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
@@ -738,8 +742,8 @@ describe('Core cancellation-only final admission', () => {
   it.each([
     'startup',
     'heartbeat',
-  ] as const)('refuses a first cancellation final at the expired Native %s deadline', (kind) => {
-    const fixture = createFixture();
+  ] as const)('refuses a first cancellation final at the expired Native %s deadline', async (kind) => {
+    const fixture = await createFixture();
     try {
       if (kind === 'heartbeat') {
         fixture.gateway.recordHeartbeat({
@@ -762,8 +766,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('refuses contradictory cancellation and recovery evidence without resetting deadlines', () => {
-    const fixture = createFixture();
+  it('refuses contradictory cancellation and recovery evidence without resetting deadlines', async () => {
+    const fixture = await createFixture();
     try {
       fixture.close();
       // Inject the adapter's existing stale classification; no recovery owner is replaced.
@@ -778,8 +782,8 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it('refuses a final sequence below the accepted event high-watermark without consuming the valid final', () => {
-    const fixture = createFixture();
+  it('refuses a final sequence below the accepted event high-watermark without consuming the valid final', async () => {
+    const fixture = await createFixture();
     try {
       fixture.gateway.appendEvent({
         authorization: `Bearer ${CONTROL_TOKEN}`,
@@ -807,7 +811,7 @@ describe('Core cancellation-only final admission', () => {
     false,
     true,
   ])('preserves the real-backend first final through startup classification and maintenance=%s', async (maintenance) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const ports = recoveryPorts();
     try {
       const backend = recordLaunchedBackend(fixture);
@@ -856,7 +860,7 @@ describe('Core cancellation-only final admission', () => {
     'heartbeat',
     'absolute',
   ] as const)('refuses the real-backend first final and retains cleanup at the original %s deadline', async (kind) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const ports = recoveryPorts();
     try {
       const backend = recordLaunchedBackend(fixture);
@@ -920,7 +924,7 @@ describe('Core cancellation-only final admission', () => {
     'fenced',
     'non-cancellation',
   ] as const)('does not wait for a real-backend first final with existing %s evidence', async (contradiction) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const ports = recoveryPorts();
     try {
       recordLaunchedBackend(fixture);
@@ -976,7 +980,7 @@ describe('Core cancellation-only final admission', () => {
   });
 
   it('accepts the P03 cancellation envelope after HTTP append refusal and preserves incomplete evidence through exact replay', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     try {
       fixture.close();
       let app = workerControlHttp(fixture);
@@ -1068,4 +1072,9 @@ describe('Core cancellation-only final admission', () => {
       fixture.dispose();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

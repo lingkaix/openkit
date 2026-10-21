@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   ArtifactReviewRangeFeedback,
   BindThreadMaterialRequest,
@@ -18,10 +19,51 @@ import type {
   WorkspaceMaterialRevisionView,
   WorkspaceMaterialView,
 } from '@openkit/app-api-schemas';
-import { JudgementRecordReaderSchema } from '@openkit/app-api-schemas';
-import { type ActorRef, deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  BindThreadMaterialRequestSchema,
+  BindThreadMaterialResponseSchema,
+  CorrectMaterialRangeRequestSchema,
+  CreateWorkspaceMaterialRequestSchema,
+  CreateWorkspaceMaterialResponseSchema,
+  ExcludeThreadMaterialRequestSchema,
+  ExcludeThreadMaterialResponseSchema,
+  JudgementRecordReaderSchema,
+  JudgementRecordSchema,
+  RestoreThreadMaterialRequestSchema,
+  RestoreThreadMaterialResponseSchema,
+  SaveWorkspaceMaterialRevisionRequestSchema,
+  SaveWorkspaceMaterialRevisionResponseSchema,
+  UnbindThreadMaterialRequestSchema,
+  UnbindThreadMaterialResponseSchema,
+} from '@openkit/app-api-schemas';
+import {
+  type ActorRef,
+  ActorRefSchema,
+  deriveEntityId,
+  MaterialIdSchema,
+  MaterialRevisionIdSchema,
+  responsibleUserIdForActor,
+  ThreadIdSchema,
+  UserActorRefSchema,
+} from '@openkit/protocol';
+import { z } from 'zod';
 
+import { commandRequestKey } from './lib/store.js';
+import {
+  appendMaterialJudgement,
+  correctMaterialRange,
+  readMaterialJudgement,
+} from './material-range-corrections.js';
+import { OperationError } from './operation-error.js';
+import { commandInputHash, IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import {
+  getCommandRequestRecordFromDb,
+  recordControlCommandRequestRecordInDb,
+} from './storage/command-request-records.js';
+import { assertControlProductWriter, readProduct } from './storage/control-store-products.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { WorkspaceDb } from './storage/db.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
 
 /** Closed Material failure codes owned by S16. */
 type WorkspaceMaterialErrorCode =
@@ -29,6 +71,19 @@ type WorkspaceMaterialErrorCode =
   | 'recovery_required'
   | 'source_digest_mismatch'
   | 'stale';
+
+/** Known Material refusals can cross the trusted native boundary without exposing SQL diagnostics. */
+export class WorkspaceMaterialError extends Error {
+  readonly status: 400 | 409;
+  constructor(
+    readonly code: WorkspaceMaterialErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = 'WorkspaceMaterialError';
+    this.status = code === 'source_digest_mismatch' ? 400 : 409;
+  }
+}
 
 /** Material authority row with private request proof. */
 type MaterialRow = WorkspaceMaterialView & { readonly lastMutationRequestId: string };
@@ -150,6 +205,759 @@ export type ExcludeThreadMaterialInput = BindingCommand<ExcludeThreadMaterialReq
 
 /** Accepted restore command with its composite owner identity. */
 export type RestoreThreadMaterialInput = BindingCommand<RestoreThreadMaterialRequest>;
+
+/** Original command identity and fingerprint; the result pointer is decided on the native handle. */
+const MaterialReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum([
+      'material.create',
+      'material.save',
+      'material.bind',
+      'material.unbind',
+      'material.exclude',
+      'material.restore',
+      'material.range-correct',
+      'evaluation.judgement-add',
+    ]),
+    requestId: z.string().min(1),
+    scope: z.record(z.string(), z.string()),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    responseKind: z.enum([
+      'material',
+      'material_revision',
+      'thread_material_binding',
+      'evaluation_judgement',
+    ]),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+/** Accepted time belongs to the admitted command, never to public caller metadata. */
+const acceptedFields = { acceptedAt: z.string().datetime() };
+/** Each binding mutation names its exact composite owner. */
+const bindingFields = { ...acceptedFields, materialId: MaterialIdSchema, threadId: ThreadIdSchema };
+/** Human exact-range assessment excludes selection and the separate content-correction command. */
+const materialRangeJudgement = JudgementRecordSchema.refine(
+  (value) =>
+    value.target.kind === 'material-range' && ['accept', 'reject', 'rate'].includes(value.kind)
+);
+
+/** Closed Material-family programs; queue consumption has verified binding proof and no manufactured receipt. */
+export const ControlMaterialCommandInputSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      mode: z.literal('create'),
+      input: CreateWorkspaceMaterialRequestSchema.extend({
+        ...acceptedFields,
+        actor: ActorRefSchema,
+      }),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('save'),
+      input: SaveWorkspaceMaterialRevisionRequestSchema.extend({
+        ...acceptedFields,
+        actor: ActorRefSchema,
+        materialId: MaterialIdSchema,
+      }),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('bind'),
+      input: BindThreadMaterialRequestSchema.extend(bindingFields),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('unbind'),
+      input: UnbindThreadMaterialRequestSchema.extend(bindingFields),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('exclude'),
+      input: ExcludeThreadMaterialRequestSchema.extend(bindingFields),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('restore'),
+      input: RestoreThreadMaterialRequestSchema.extend(bindingFields),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('range-judgement'),
+      input: materialRangeJudgement,
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('range-correct'),
+      input: CorrectMaterialRangeRequestSchema.extend({
+        ...acceptedFields,
+        actor: UserActorRefSchema,
+      }),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('consume'),
+      input: z
+        .object({
+          threadId: ThreadIdSchema,
+          materialId: MaterialIdSchema,
+          revisionId: MaterialRevisionIdSchema,
+          bindingMutationRequestId: z.string().min(1),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+/** Structured-clone inputs for this single family's existing deciding bodies. */
+export type ControlMaterialCommandInput = z.infer<typeof ControlMaterialCommandInputSchema>;
+
+/** Accepted new Material revision content bound; this does not limit retained-source range text. */
+export const CONTROL_MATERIAL_CONTENT_BYTES = 16_777_216;
+
+/** A lone surrogate has no exact UTF-8 encoding; Node 24's check refuses it instead of substituting U+FFFD. */
+function assertMaterialUtf8Text(content: string): void {
+  if (!(content as string & { isWellFormed(): boolean }).isWellFormed())
+    throw new OperationError(
+      'invalid_request',
+      'Material text must have an exact UTF-8 representation.',
+      400
+    );
+}
+
+/** One exact UTF-8 field in the command's single transferred buffer. */
+const MaterialTextSpanSchema = z
+  .object({
+    offset: z.number().int().nonnegative(),
+    byteLength: z.number().int().nonnegative(),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+type MaterialTextSpan = z.infer<typeof MaterialTextSpanSchema>;
+/** The source range keeps its existing UTF-16 selectors; only its text uses the binary carrier. */
+const MaterialWireRangeSchema = z
+  .object({
+    kind: z.literal('material-range'),
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    originalText: MaterialTextSpanSchema,
+  })
+  .strict();
+const [acceptAssessment, rejectAssessment, , , rateAssessment] = JudgementRecordSchema.options;
+/** Existing assessment variants with exact source text carried outside their JSON framing. */
+const MaterialWireJudgementSchema = z.discriminatedUnion('kind', [
+  acceptAssessment.extend({ target: MaterialWireRangeSchema }),
+  rejectAssessment.extend({ target: MaterialWireRangeSchema }),
+  rateAssessment.extend({ target: MaterialWireRangeSchema }),
+]);
+
+/** Closed Material transport metadata; content strings never enter the JSON envelope or pending correlation map. */
+export const ControlMaterialWireInputSchema = z.discriminatedUnion('mode', [
+  ControlMaterialCommandInputSchema.options[0],
+  z
+    .object({
+      mode: z.literal('save'),
+      input: SaveWorkspaceMaterialRevisionRequestSchema.omit({ content: true }).extend({
+        ...acceptedFields,
+        actor: ActorRefSchema,
+        materialId: MaterialIdSchema,
+        content: MaterialTextSpanSchema,
+      }),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  ControlMaterialCommandInputSchema.options[2],
+  ControlMaterialCommandInputSchema.options[3],
+  ControlMaterialCommandInputSchema.options[4],
+  ControlMaterialCommandInputSchema.options[5],
+  z
+    .object({
+      mode: z.literal('range-judgement'),
+      input: MaterialWireJudgementSchema,
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('range-correct'),
+      input: CorrectMaterialRangeRequestSchema.omit({ target: true, replacementText: true }).extend(
+        {
+          ...acceptedFields,
+          actor: UserActorRefSchema,
+          target: MaterialWireRangeSchema,
+          replacementText: MaterialTextSpanSchema,
+        }
+      ),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  ControlMaterialCommandInputSchema.options[8],
+]);
+/** Transient transport projection, never a retained Material shape. */
+export type ControlMaterialWireInput = z.infer<typeof ControlMaterialWireInputSchema>;
+
+/** Lists the exact ordered fields in the one request-owned binary carrier. */
+export function controlMaterialTextSpans(
+  input: ControlMaterialWireInput
+): readonly MaterialTextSpan[] {
+  if (input.mode === 'save') return [input.input.content];
+  if (input.mode === 'range-correct')
+    return [input.input.target.originalText, input.input.replacementText];
+  if (input.mode === 'range-judgement') return [input.input.target.originalText];
+  return [];
+}
+
+/** Creates small framing before the client admits and allocates its single owned buffer. */
+export function prepareControlMaterialTransfer(input: ControlMaterialCommandInput): {
+  readonly input: ControlMaterialWireInput;
+  readonly parts: readonly string[];
+} {
+  const parts: string[] = [];
+  let offset = 0;
+  const span = (text: string): MaterialTextSpan => {
+    assertMaterialUtf8Text(text);
+    const byteLength = Buffer.byteLength(text, 'utf8');
+    const result = { offset, byteLength, digest: contentDigest(text) };
+    offset += byteLength;
+    parts.push(text);
+    return result;
+  };
+  let wire: unknown = input;
+  if (input.mode === 'save') {
+    if (Buffer.byteLength(input.input.content, 'utf8') > CONTROL_MATERIAL_CONTENT_BYTES)
+      throw new OperationError(
+        'invalid_request',
+        'Material content exceeds 16,777,216 UTF-8 bytes.',
+        400
+      );
+    wire = { ...input, input: { ...input.input, content: span(input.input.content) } };
+  } else if (input.mode === 'range-correct') {
+    const originalText = span(input.input.target.originalText);
+    const replacementText = span(input.input.replacementText);
+    wire = {
+      ...input,
+      input: { ...input.input, target: { ...input.input.target, originalText }, replacementText },
+    };
+  } else if (input.mode === 'range-judgement') {
+    if (input.input.target.kind !== 'material-range')
+      throw new OperationError(
+        'invalid_request',
+        'The judgement must target an exact Material range.',
+        400
+      );
+    wire = {
+      ...input,
+      input: {
+        ...input.input,
+        target: { ...input.input.target, originalText: span(input.input.target.originalText) },
+      },
+    };
+  }
+  return { input: ControlMaterialWireInputSchema.parse(wire), parts };
+}
+
+/** Verifies every complete field before SQL, preserving BOM and refusing malformed UTF-8 or changed bytes. */
+export function prepareControlMaterialCommand(
+  value: ControlMaterialWireInput,
+  content?: ArrayBuffer
+): ControlMaterialCommandInput {
+  const wire = ControlMaterialWireInputSchema.parse(value);
+  const spans = controlMaterialTextSpans(wire);
+  if (spans.length === 0) {
+    if (content !== undefined)
+      throw new OperationError(
+        'invalid_request',
+        'The Material command has unexpected binary content.',
+        400
+      );
+    return ControlMaterialCommandInputSchema.parse(wire);
+  }
+  if (!(content instanceof ArrayBuffer))
+    throw new OperationError(
+      'invalid_request',
+      'The Material command requires its exact binary content.',
+      400
+    );
+  const texts: string[] = [];
+  let offset = 0;
+  for (const span of spans) {
+    if (span.offset !== offset || span.byteLength > content.byteLength - offset)
+      throw new OperationError(
+        'invalid_request',
+        'Material binary content length is inconsistent.',
+        400
+      );
+    const bytes = new Uint8Array(content, offset, span.byteLength);
+    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== span.digest)
+      throw new OperationError(
+        'source_digest_mismatch',
+        'Material binary content does not match its digest.',
+        400
+      );
+    try {
+      texts.push(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+    } catch {
+      throw new OperationError(
+        'invalid_request',
+        'Material binary content is not complete UTF-8.',
+        400
+      );
+    }
+    offset += span.byteLength;
+  }
+  if (offset !== content.byteLength)
+    throw new OperationError(
+      'invalid_request',
+      'Material binary content has unclaimed bytes.',
+      400
+    );
+  if (wire.mode === 'save') {
+    if (wire.input.content.byteLength > CONTROL_MATERIAL_CONTENT_BYTES)
+      throw new OperationError(
+        'invalid_request',
+        'Material content exceeds 16,777,216 UTF-8 bytes.',
+        400
+      );
+    if (wire.input.content.digest !== wire.input.contentDigest)
+      throw new OperationError(
+        'source_digest_mismatch',
+        'Material content does not match its admitted digest.',
+        400
+      );
+    return ControlMaterialCommandInputSchema.parse({
+      ...wire,
+      input: { ...wire.input, content: texts[0] },
+    });
+  }
+  if (wire.mode === 'range-correct')
+    return ControlMaterialCommandInputSchema.parse({
+      ...wire,
+      input: {
+        ...wire.input,
+        target: { ...wire.input.target, originalText: texts[0] },
+        replacementText: texts[1],
+      },
+    });
+  if (wire.mode === 'range-judgement')
+    return ControlMaterialCommandInputSchema.parse({
+      ...wire,
+      input: { ...wire.input, target: { ...wire.input.target, originalText: texts[0] } },
+    });
+  throw new OperationError('invalid_request', 'The Material binary command mode is invalid.', 400);
+}
+
+/** Fully materialized results checked before the worker commits and again before resolving a caller. */
+export const ControlMaterialCommandResultSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('create'),
+    value: CreateWorkspaceMaterialResponseSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('save'),
+    value: SaveWorkspaceMaterialRevisionResponseSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('bind'),
+    value: BindThreadMaterialResponseSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('unbind'),
+    value: UnbindThreadMaterialResponseSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('exclude'),
+    value: ExcludeThreadMaterialResponseSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('restore'),
+    value: RestoreThreadMaterialResponseSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('range-judgement'),
+    value: z.object({ judgement: JudgementRecordSchema }),
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('range-correct'),
+    value: z.object({ judgement: JudgementRecordSchema }),
+    replayed: z.boolean(),
+  }),
+  z.object({
+    mode: z.literal('consume'),
+    value: z.object({ outcome: z.enum(['consumed', 'superseded']) }),
+    replayed: z.boolean(),
+  }),
+]);
+/** Result tied to the admitted mode, never a generic Work Resource record. */
+export type ControlMaterialCommandResult = z.infer<typeof ControlMaterialCommandResultSchema>;
+
+/** Opens the existing native Workspace writer and waits for the complete Material tuple and original receipt. */
+export async function executeControlMaterialCommand<T extends ControlMaterialCommandInput>(
+  db: WorkspaceDb,
+  input: T
+): Promise<Extract<ControlMaterialCommandResult, { mode: T['mode'] }>> {
+  const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId });
+  const database = `workspace:${scope.path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: db.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  const result = await client.material(database, input);
+  if (result.mode !== input.mode)
+    throw new OperationError(
+      'recovery_required',
+      'The Material acknowledgement has a different command mode.',
+      409
+    );
+  return result as Extract<ControlMaterialCommandResult, { mode: T['mode'] }>;
+}
+
+/** Applies a complete Material command and its receipt on the worker's existing savepoint and handle. No callback, file effect or await occurs here. */
+export function applyControlMaterialCommand(
+  db: WorkspaceDb,
+  value: ControlMaterialCommandInput
+): ControlMaterialCommandResult {
+  assertControlProductWriter(db.sqlite);
+  const command = ControlMaterialCommandInputSchema.parse(value);
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  const requireThread = (threadId: string) => {
+    if (!readProduct(db.sqlite, owner, 'thread', threadId))
+      throw materialError('stale', 'The requested Thread does not exist.');
+  };
+  if (command.mode === 'consume') {
+    requireThread(command.input.threadId);
+    const input = command.input;
+    return {
+      mode: 'consume',
+      value: {
+        outcome: consumeQueuedThreadMaterialRevision(
+          db,
+          input.threadId,
+          input.materialId,
+          input.revisionId,
+          input.bindingMutationRequestId
+        ),
+      },
+      replayed: false,
+    };
+  }
+  const receipt = command.receipt;
+  const input = command.input;
+  let expectedCommand: typeof receipt.command;
+  let expectedKind: typeof receipt.responseKind;
+  let expectedScope: Record<string, string> = { workspaceId: db.workspaceId };
+  let expectedInput: unknown;
+  switch (command.mode) {
+    case 'create':
+      expectedCommand = 'material.create';
+      expectedKind = 'material';
+      expectedInput = {
+        title: command.input.title,
+        kind: command.input.kind,
+        sensitivity: command.input.sensitivity,
+      };
+      break;
+    case 'save':
+      expectedCommand = 'material.save';
+      expectedKind = 'material_revision';
+      expectedScope = { ...expectedScope, materialId: command.input.materialId };
+      expectedInput = {
+        expectedRevisionId: command.input.expectedRevisionId,
+        contentDigest: command.input.contentDigest,
+      };
+      break;
+    case 'bind':
+    case 'unbind':
+    case 'exclude':
+    case 'restore': {
+      expectedCommand = `material.${command.mode}`;
+      expectedKind = 'thread_material_binding';
+      const { materialId, threadId, acceptedAt: _, requestId: __, ...expected } = command.input;
+      expectedScope = { ...expectedScope, threadId, materialId };
+      expectedInput = expected;
+      break;
+    }
+    case 'range-judgement': {
+      expectedCommand = 'evaluation.judgement-add';
+      expectedKind = 'evaluation_judgement';
+      const { kind, target, choice, note, extensions, actor } = command.input;
+      expectedInput = { actor, judgement: { kind, target, choice, note, extensions } };
+      break;
+    }
+    case 'range-correct': {
+      expectedCommand = 'material.range-correct';
+      expectedKind = 'evaluation_judgement';
+      const { acceptedAt: _, ...expected } = command.input;
+      expectedInput = expected;
+      break;
+    }
+  }
+  if (
+    receipt.command !== expectedCommand ||
+    receipt.responseKind !== expectedKind ||
+    receipt.requestId !== input.requestId ||
+    !isDeepStrictEqual(receipt.scope, expectedScope) ||
+    receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+    receipt.inputHash !== commandInputHash(expectedInput) ||
+    receipt.expiresAt <= receipt.createdAt ||
+    ('workspaceId' in input && input.workspaceId !== db.workspaceId)
+  ) {
+    throw new OperationError(
+      'invalid_request',
+      'The Material command receipt does not match its admitted input.',
+      400
+    );
+  }
+  if (
+    command.mode === 'save' &&
+    contentDigest(command.input.content) !== command.input.contentDigest
+  )
+    throw materialError('source_digest_mismatch', 'Material content does not match its digest.');
+  const prior = getCommandRequestRecordFromDb(db, receipt.key, receipt.createdAt);
+  if ('threadId' in command.input) {
+    try {
+      requireThread(command.input.threadId);
+    } catch (error) {
+      if (prior)
+        throw materialError(
+          'recovery_required',
+          'The Material binding receipt has no matching Thread owner.'
+        );
+      throw error;
+    }
+  }
+  if (prior) {
+    if (
+      prior.command !== receipt.command ||
+      prior.requestId !== receipt.requestId ||
+      commandRequestKey(prior.command, prior.requestId, prior.scope) !== receipt.key
+    )
+      throw materialError(
+        'recovery_required',
+        'The retained Material receipt identity is inconsistent.'
+      );
+    if (prior.inputHash !== receipt.inputHash) throw new IdempotencyKeyConflictError();
+    if (prior.response.kind !== expectedKind)
+      throw materialError(
+        'recovery_required',
+        'The Material receipt has invalid response lineage.'
+      );
+    switch (command.mode) {
+      case 'create':
+        try {
+          getWorkspaceMaterial(db, prior.response.id);
+        } catch {
+          throw materialError(
+            'recovery_required',
+            'The Material create receipt has no matching owner.'
+          );
+        }
+        return { mode: command.mode, value: { materialId: prior.response.id }, replayed: true };
+      case 'save': {
+        const revision = findRevision(db, command.input.materialId, prior.response.id);
+        if (revision?.createdByRequestId !== receipt.requestId)
+          throw materialError(
+            'recovery_required',
+            'The Material save receipt has no matching revision owner.'
+          );
+        try {
+          getWorkspaceMaterialRevision(db, command.input.materialId, prior.response.id);
+        } catch {
+          throw materialError(
+            'recovery_required',
+            'The Material save receipt has no matching revision owner.'
+          );
+        }
+        return {
+          mode: command.mode,
+          value: { materialId: command.input.materialId, revisionId: prior.response.id },
+          replayed: true,
+        };
+      }
+      case 'bind':
+      case 'unbind':
+      case 'exclude':
+      case 'restore': {
+        const input = command.input;
+        if (
+          prior.response.id !== input.materialId ||
+          !findBinding(db, input.threadId, input.materialId)
+        )
+          throw materialError(
+            'recovery_required',
+            'The Material binding receipt has no matching owner.'
+          );
+        try {
+          getWorkspaceMaterial(db, input.materialId);
+        } catch {
+          throw materialError(
+            'recovery_required',
+            'The Material binding receipt has no matching Material owner.'
+          );
+        }
+        const outcome =
+          command.mode === 'bind'
+            ? 'bound'
+            : command.mode === 'unbind'
+              ? 'unbound'
+              : command.mode === 'exclude'
+                ? 'excluded'
+                : 'included';
+        return ControlMaterialCommandResultSchema.parse({
+          mode: command.mode,
+          value: { materialId: input.materialId, threadId: input.threadId, outcome },
+          replayed: true,
+        });
+      }
+      case 'range-judgement':
+      case 'range-correct': {
+        if (command.input.target.kind !== 'material-range')
+          throw new OperationError(
+            'invalid_request',
+            'The judgement must target an exact Material range.',
+            400
+          );
+        const judgement = readMaterialJudgement(db, command.input.target, receipt.requestId);
+        if (!judgement || prior.response.id !== receipt.requestId)
+          throw materialError(
+            'recovery_required',
+            'The Material receipt has no matching judgement owner.'
+          );
+        if (command.mode === 'range-judgement') {
+          for (const key of [
+            'kind',
+            'target',
+            'choice',
+            'note',
+            'extensions',
+            'actor',
+            'workspaceId',
+            'requestId',
+          ] as const)
+            if (!isDeepStrictEqual(judgement[key], command.input[key]))
+              throw materialError(
+                'recovery_required',
+                'The retained Material judgement differs from its request.'
+              );
+        } else if (
+          judgement.kind !== 'correct' ||
+          judgement.choice.outcome !== command.input.decision ||
+          judgement.choice.replacementText !== command.input.replacementText ||
+          !isDeepStrictEqual(judgement.actor, command.input.actor) ||
+          judgement.note !== command.input.note ||
+          !isDeepStrictEqual(judgement.extensions, command.input.extensions)
+        )
+          throw materialError(
+            'recovery_required',
+            'The retained Material correction differs from its request.'
+          );
+        return { mode: command.mode, value: { judgement }, replayed: true };
+      }
+    }
+  }
+  let result: ControlMaterialCommandResult;
+  switch (command.mode) {
+    case 'create':
+      result = {
+        mode: command.mode,
+        value: createWorkspaceMaterial(db, command.input),
+        replayed: false,
+      };
+      break;
+    case 'save':
+      result = {
+        mode: command.mode,
+        value: saveWorkspaceMaterialRevision(db, command.input),
+        replayed: false,
+      };
+      break;
+    case 'bind':
+      result = {
+        mode: command.mode,
+        value: bindThreadMaterial(db, command.input),
+        replayed: false,
+      };
+      break;
+    case 'unbind':
+      result = {
+        mode: command.mode,
+        value: unbindThreadMaterial(db, command.input),
+        replayed: false,
+      };
+      break;
+    case 'exclude':
+      result = {
+        mode: command.mode,
+        value: excludeThreadMaterial(db, command.input),
+        replayed: false,
+      };
+      break;
+    case 'restore':
+      result = {
+        mode: command.mode,
+        value: restoreThreadMaterial(db, command.input),
+        replayed: false,
+      };
+      break;
+    case 'range-judgement':
+      result = {
+        mode: command.mode,
+        value: { judgement: appendMaterialJudgement(db, command.input) },
+        replayed: false,
+      };
+      break;
+    case 'range-correct':
+      result = {
+        mode: command.mode,
+        value: { judgement: correctMaterialRange(db, command.input) },
+        replayed: false,
+      };
+      break;
+  }
+  const responseId =
+    command.mode === 'save'
+      ? (result.value as SaveWorkspaceMaterialRevisionResponse).revisionId
+      : command.mode === 'range-judgement' || command.mode === 'range-correct'
+        ? receipt.requestId
+        : (result.value as CreateWorkspaceMaterialResponse).materialId;
+  const { responseKind: _, ...originalReceipt } = receipt;
+  recordControlCommandRequestRecordInDb(db, {
+    ...originalReceipt,
+    response: { kind: expectedKind, id: responseId },
+  });
+  return result;
+}
 
 const MATERIAL_SELECT = `SELECT
   workspace_id AS workspaceId, material_id AS materialId, title, kind,
@@ -448,6 +1256,13 @@ export function saveWorkspaceMaterialRevision(
     if (findRevision(workspaceDb, input.materialId, revisionId)) {
       throw materialError('recovery_required', 'The request-owned revision has no receipt.');
     }
+    assertMaterialUtf8Text(input.content);
+    if (Buffer.byteLength(input.content, 'utf8') > CONTROL_MATERIAL_CONTENT_BYTES)
+      throw new OperationError(
+        'invalid_request',
+        'Material content exceeds 16,777,216 UTF-8 bytes.',
+        400
+      );
     if (contentDigest(input.content) !== input.contentDigest) {
       throw materialError('source_digest_mismatch', 'Material content does not match its digest.');
     }
@@ -802,13 +1617,10 @@ function contentDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
 
-/** Creates one structural S16 error. @param code Stable code. @param message Failure summary. @returns Typed error. */
+/** Creates one S16 error. @param code Stable code. @param message Failure summary. @returns Typed error. */
 function materialError(
   code: WorkspaceMaterialErrorCode,
   message: string
 ): Error & { readonly code: WorkspaceMaterialErrorCode; readonly status: 400 | 409 } {
-  return Object.assign(new Error(message), {
-    code,
-    status: code === 'source_digest_mismatch' ? (400 as const) : (409 as const),
-  });
+  return new WorkspaceMaterialError(code, message);
 }

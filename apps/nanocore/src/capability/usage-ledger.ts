@@ -19,6 +19,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -61,6 +62,8 @@ export const CanonicalCapabilityCallExtensionsSchema = CapabilityCallExtensionsS
 
 /** Exportable capability call ledger record. */
 export interface CapabilityCallLedgerRecord extends CapabilityCall {
+  /** Proved no-contact refusal from the original Main submission decision; absence means unknown here. */
+  upstreamContacted?: false;
   /** Canonical optional content for storage and archives, never a live protocol projection. */
   extensions?: z.infer<typeof CanonicalCapabilityCallExtensionsSchema> | undefined;
   /** Capability family used by gateway dispatch and idempotency. */
@@ -746,6 +749,21 @@ export function listWorkspaceCapabilityCalls(
   workspaceDb: WorkspaceDb,
   workspaceId: string
 ): CapabilityCallLedgerRecord[] {
+  const noContact = new Set<string>();
+  for (const decision of listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)) {
+    const context = decision.contextSummary;
+    if (
+      decision.result === 'deny' &&
+      decision.reasonCode === 'mcp_approval_submission_refused' &&
+      context !== null &&
+      typeof context === 'object' &&
+      !Array.isArray(context)
+    ) {
+      const facts = context as Record<string, unknown>;
+      if (facts.upstreamContacted === false && typeof facts.capabilityCallId === 'string')
+        noContact.add(facts.capabilityCallId);
+    }
+  }
   return workspaceDb.sqlite
     .prepare(
       `SELECT * FROM capability_calls
@@ -753,7 +771,10 @@ export function listWorkspaceCapabilityCalls(
        ORDER BY started_at, call_id`
     )
     .all(workspaceId)
-    .map((row) => capabilityCallFromRow(row));
+    .map((row) => {
+      const call = capabilityCallFromRow(row);
+      return noContact.has(call.id) ? { ...call, upstreamContacted: false as const } : call;
+    });
 }
 
 /**

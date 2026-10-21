@@ -14,6 +14,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { initializeTestCore } from '../test-support/store.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
 const roots: string[] = [];
@@ -27,6 +28,7 @@ describe('runtime and provider subscription operation cutover', () => {
   it('reaches runtime.schemas and provider-subscription.provider-list through canonical JSON bindings', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b4-projections-'));
     roots.push(dataRoot);
+    initializeTestCore(dataRoot);
     const app = createApp({ dataRoot });
     for (const id of ['runtime.schemas', 'provider-subscription.provider-list']) {
       const response = await app.request(`/api/app/operations/${id}`, {
@@ -57,6 +59,7 @@ it('retires all ten former runtime bindings for the authorized local actor witho
     baseUrl: 'https://provider.example.test/v1',
   });
   writeFileSync(path, content);
+  initializeTestCore(dataRoot);
   const app = createApp({ dataRoot });
   const read = await app.request('/api/app/operations/runtime.file-read', {
     method: 'POST',
@@ -476,6 +479,7 @@ it('reaches all ten owned runtime responses with explicit local authority', asyn
   roots.push(dataRoot);
   mkdirSync(join(dataRoot, 'config'), { recursive: true });
   writeFileSync(join(dataRoot, 'config/server.jsonc'), '{"schemaVersion":1}');
+  initializeTestCore(dataRoot);
   const app = createApp({ dataRoot });
   const invoke = async (id: string, input: Record<string, unknown>, expectedStatus = 200) => {
     const response = await app.request(`/api/app/operations/${id}`, {

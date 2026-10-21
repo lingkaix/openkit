@@ -1,9 +1,9 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createTestStore } from '../test-support/store.js';
 
 const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false, fullReads: 0 }));
 
@@ -39,19 +39,18 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
 import { appendCanonicalTextFile, appendWorkspaceItemRevision } from './workspace-file-records.js';
 
 describe('canonical append writes', () => {
-  it('does not acknowledge a failed observation commit through cached state or replay', () => {
+  it('does not acknowledge a failed observation commit through cached state or replay', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observation-sync-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Durability');
-    const thread = store.createThread(workspace.id, 'Durability');
-    const turn = store.createTurn(
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Durability');
+    const thread = await store.createThread(workspace.id, 'Durability');
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       'Durability',
@@ -80,13 +79,13 @@ describe('canonical append writes', () => {
       bodies: [],
     };
     try {
-      appendWorkObservation(db, input);
+      await appendWorkObservation(db, input);
       input.observation.id = 'next';
       partialWriteState.failSync = true;
       expect(() => appendWorkObservation(db, input)).toThrow('injected durability failure');
       expect(() => appendWorkObservation(db, input)).toThrow('injected durability failure');
       partialWriteState.failSync = false;
-      expect(appendWorkObservation(db, input).disposition).toBe('duplicate');
+      expect((await appendWorkObservation(db, input)).disposition).toBe('duplicate');
       expect(readWorkObservations(db, input).map((row) => row.id)).toEqual(['warm', 'next']);
     } finally {
       partialWriteState.failSync = false;

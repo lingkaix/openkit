@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -27,18 +28,21 @@ describe('worker recovery routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Recovery read refusal');
+    const workspace = await store.createWorkspace('Recovery read refusal');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const thread = store.createThread(workspace.id, 'Interrupted retry');
-    const turn = store.createTurn(workspace.id, thread.id, 'Retry interrupted worker', {
+    const thread = await store.createThread(workspace.id, 'Interrupted retry');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Retry interrupted worker', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
+    await store.updateTurn(turn.id, {
+      status: 'interrupted',
+      completedAt: new Date().toISOString(),
+    });
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(workspaceDb);
     const scope = { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id };
@@ -159,32 +163,32 @@ describe('worker recovery routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const localThread = store.createThread(
+    const localThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Local recovery thread'
     );
-    const foreignWorkspace = store.createWorkspace('Foreign recovery workspace');
-    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign recovery thread');
-    const foreignTurn = store.createTurn(
+    const foreignWorkspace = await store.createWorkspace('Foreign recovery workspace');
+    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign recovery thread');
+    const foreignTurn = await store.createTurn(
       foreignWorkspace.id,
       foreignThread.id,
       'Foreign recovery turn',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Hidden attempt',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
-    const privateTurn = store.createTurn(
+    const privateTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       privateThread.id,
       'Protected Turn content',
@@ -276,4 +280,9 @@ describe('worker recovery routes', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

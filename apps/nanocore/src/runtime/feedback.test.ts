@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import type { BetterAuthServer } from '../auth/middleware.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
@@ -31,17 +32,17 @@ function createHeaderAuthStub(): BetterAuthServer {
 }
 
 describe('turn feedback', () => {
-  it('refuses missing or unknown feedback formats before decoding and does not replace them', () => {
+  it('refuses missing or unknown feedback formats before decoding and does not replace them', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-format-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Feedback',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    await store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const path = feedbackFilePath(store, turn);
     for (const marker of [{}, { schemaVersion: 2 }]) {
       const invalid = JSON.stringify({ ...marker, rating: 'future' });
@@ -53,11 +54,11 @@ describe('turn feedback', () => {
       expect(readFileSync(path, 'utf8')).toBe(invalid);
     }
   });
-  it('preserves descriptive disk additions across update and reopen while returning only known fields', () => {
+  it('preserves descriptive disk additions across update and reopen while returning only known fields', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-extension-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Feedback',
@@ -66,7 +67,7 @@ describe('turn feedback', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    await store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const path = feedbackFilePath(store, turn);
     const retained = JSON.parse(readFileSync(path, 'utf8'));
     expect(retained.schemaVersion).toBe(1);
@@ -76,7 +77,7 @@ describe('turn feedback', () => {
     expect(
       updateTurnFeedback(store, turn.id, { rating: 'good', note: 'Updated' }, turn.triggerActor)
     ).not.toHaveProperty('futureNote');
-    expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id).rating).toBe('good');
+    expect(readTurnFeedback(await createDemoStore({ dataRoot }), turn.id).rating).toBe('good');
     expect(JSON.parse(readFileSync(path, 'utf8')).futureNote).toBe('retained');
     writeFileSync(path, JSON.stringify({ ...retained, rating: 'future' }));
     expect(() => readTurnFeedback(store, turn.id)).toThrow();
@@ -86,10 +87,10 @@ describe('turn feedback', () => {
     );
     expect(() => readTurnFeedback(store, turn.id)).toThrow();
   });
-  it('creates a feedback file when a turn completes', () => {
+  it('creates a feedback file when a turn completes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Run tests',
@@ -100,7 +101,7 @@ describe('turn feedback', () => {
     );
     const completedAt = new Date().toISOString();
 
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       completedAt,
       status: 'completed',
@@ -131,8 +132,8 @@ describe('turn feedback', () => {
 
   it('updates rating and note through the feedback route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Run tests',
@@ -141,7 +142,7 @@ describe('turn feedback', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    await store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
     const res = await app.request(
@@ -170,8 +171,8 @@ describe('turn feedback', () => {
 
   it('returns a typed 400 response for invalid feedback bodies', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Run tests',
@@ -180,7 +181,7 @@ describe('turn feedback', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    await store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
     const res = await app.request(
@@ -201,11 +202,11 @@ describe('turn feedback', () => {
     });
   });
 
-  it('retains replacement feedback on reopen and removes temporary files after success', () => {
+  it('retains replacement feedback on reopen and removes temporary files after success', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-replacement-'));
     try {
-      const store = createDemoStore({ dataRoot });
-      const turn = store.createTurn(
+      const store = await createDemoStore({ dataRoot });
+      const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Feedback replacement',
@@ -214,7 +215,10 @@ describe('turn feedback', () => {
           id: 'usr_00000000-0000-7000-8000-000000000001',
         }
       );
-      store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+      await store.updateTurn(turn.id, {
+        completedAt: new Date().toISOString(),
+        status: 'completed',
+      });
       const path = feedbackFilePath(store, store.getTurnById(turn.id));
       const entriesBefore = readdirSync(dirname(path)).sort();
       updateTurnFeedback(
@@ -229,7 +233,7 @@ describe('turn feedback', () => {
         { note: 'Replacement feedback', rating: 'good' },
         turn.triggerActor
       );
-      expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id)).toMatchObject({
+      expect(readTurnFeedback(await createDemoStore({ dataRoot }), turn.id)).toMatchObject({
         note: 'Replacement feedback',
         rating: 'good',
       });
@@ -241,7 +245,10 @@ describe('turn feedback', () => {
 
   it('retains attributable feedback history across actors and reopen', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
-    const ownerStore = createDemoStore({ dataRoot }, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    const ownerStore = await createDemoStore(
+      { dataRoot },
+      'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'
+    );
     const workspace = ownerStore.listWorkspaces().find((item) => item.kind === 'code') ?? null;
     const thread = workspace ? (ownerStore.listThreads(workspace.id)[0] ?? null) : null;
 
@@ -249,11 +256,14 @@ describe('turn feedback', () => {
       throw new Error('Expected default server-mode workspace and thread.');
     }
 
-    const turn = ownerStore.createTurn(workspace.id, thread.id, 'Run tests', {
+    const turn = await ownerStore.createTurn(workspace.id, thread.id, 'Run tests', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    ownerStore.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    await ownerStore.updateTurn(turn.id, {
+      completedAt: new Date().toISOString(),
+      status: 'completed',
+    });
     const coreDb = openCoreDb(dataRoot);
     onTestFinished(() => {
       coreDb.sqlite.close();
@@ -341,11 +351,19 @@ describe('turn feedback', () => {
       },
     ];
     await expect(res.json()).resolves.toMatchObject({ history });
-    const reopened = createDemoStore({ dataRoot }, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    const reopened = await createDemoStore(
+      { dataRoot },
+      'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'
+    );
     expect(readTurnFeedback(reopened, turn.id)).toMatchObject({
       note: 'Shared feedback.',
       rating: 'bad',
       history,
     });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

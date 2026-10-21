@@ -5,24 +5,29 @@ import { InternalRoleProfilesConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import { runKnowledgeManagerAgent } from './knowledge-manager-agent.js';
 import { internalContextDigest } from './rolling-context.js';
 
 type ProviderResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>;
 
 /** Retains the real role, Gateway, capture and Turn; only the external Provider is deferred. */
-function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limit') {
+async function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limit') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-deadline-'));
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Knowledge deadline');
-  const thread = store.createThread(workspace.id, 'Knowledge', undefined, 'knowledge-manager');
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Knowledge deadline');
+  const thread = await store.createThread(
+    workspace.id,
+    'Knowledge',
+    undefined,
+    'knowledge-manager'
+  );
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-  const turn = store.createTurn(workspace.id, thread.id, 'Answer once.', actor, null, {
+  const turn = await store.createTurn(workspace.id, thread.id, 'Answer once.', actor, null, {
     agentId: 'knowledge-manager',
     executorKind: 'assistant',
   });
@@ -202,7 +207,7 @@ describe('Knowledge Manager run deadline', () => {
     'omitted-limits',
     'no-profile',
   ] as const)('completes one Provider call after 120 seconds and before 300 seconds with %s', async (profile) => {
-    const f = fixture(profile);
+    const f = await fixture(profile);
     virtualDeadlineClock();
     const result = f.run();
     await f.dispatched;
@@ -231,7 +236,7 @@ describe('Knowledge Manager run deadline', () => {
     profile,
     deadline,
   }) => {
-    const f = fixture(profile);
+    const f = await fixture(profile);
     virtualDeadlineClock();
     const result = f.run();
     await f.dispatched;
@@ -269,7 +274,7 @@ describe('Knowledge Manager run deadline', () => {
   });
 
   it('keeps caller cancellation distinct from a deadline and never retries the call', async () => {
-    const f = fixture('omitted-limits');
+    const f = await fixture('omitted-limits');
     virtualDeadlineClock();
     const result = f.run();
     await f.dispatched;

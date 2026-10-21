@@ -8,7 +8,11 @@ import {
   WorkerTranscriptItemRecordSchema,
 } from '@openkit/worker-protocol';
 import type { z } from 'zod';
-import { createArtifactReview, getArtifactReview } from '../artifact-reviews.js';
+import {
+  assertArtifactReviewPublication,
+  type createArtifactReview,
+  getArtifactReview,
+} from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -95,37 +99,37 @@ export interface WorkerTranscriptImportResult {
 }
 
 /** Imports transcript candidates. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Collected files. @param options Accepted proof. @returns IDs and diagnostics. */
-export function importWorkerTranscript(
+export async function importWorkerTranscript(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   payload: WorkerTranscriptPayload,
   options: WorkerTranscriptImportOptions = {}
-): WorkerTranscriptImportResult {
+): Promise<WorkerTranscriptImportResult> {
   return importTranscript(store, environmentPackage, payload, options, () =>
     requireWorkerCredentialCheckValues(payload.credentialCheckValues)
   );
 }
 
 /** Imports local simulator candidates through the canonical admission path. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Local candidates and explicit no-injection proof. @param options Accepted proof. @returns IDs and diagnostics. */
-export function importLocalSimulatorTranscript(
+export async function importLocalSimulatorTranscript(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   payload: LocalSimulatorTranscriptPayload,
   options: WorkerTranscriptImportOptions = {}
-): WorkerTranscriptImportResult {
+): Promise<WorkerTranscriptImportResult> {
   return importTranscript(store, environmentPackage, payload, options, () =>
     requireLocalSimulatorCredentialCheckValues(payload.credentialCheckValues)
   );
 }
 
 /** Shares canonical admission while keeping each execution owner's evidence validation separate. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Candidates. @param options Accepted proof. @param requireEvidence Execution-specific validator. @returns IDs and diagnostics. */
-function importTranscript(
+async function importTranscript(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   payload: Omit<WorkerTranscriptPayload, 'credentialCheckValues'>,
   options: WorkerTranscriptImportOptions,
   requireEvidence: () => CredentialCheckValues
-): WorkerTranscriptImportResult {
+): Promise<WorkerTranscriptImportResult> {
   const result: WorkerTranscriptImportResult = {
     artifactIds: [],
     dedupedEventSequences: [],
@@ -140,7 +144,7 @@ function importTranscript(
     return result;
   }
   const checkValues = payload.itemsJsonl?.trim() ? requireEvidence() : null;
-  importItemRecords(
+  await importItemRecords(
     store,
     environmentPackage,
     payload.itemsJsonl ?? '',
@@ -221,14 +225,14 @@ function importEventRecords(
 }
 
 /** Imports assistant Items. @param store Canonical store. @param environmentPackage Expected AEP. @param jsonl Item JSONL. @param recordedAt Stable time. @param result Mutable result. @param checkValues Original credential evidence. */
-function importItemRecords(
+async function importItemRecords(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   jsonl: string,
   recordedAt: string | undefined,
   result: WorkerTranscriptImportResult,
   checkValues: CredentialCheckValues | null
-): void {
+): Promise<void> {
   for (const record of parseJsonl(jsonl, '$.items', result.diagnostics)) {
     const parsed = WorkerTranscriptItemRecordSchema.safeParse(record.value);
 
@@ -269,7 +273,7 @@ function importItemRecords(
       throw new Error(`Worker transcript item replay conflict: ${item.id}`);
     }
     if (!existing) {
-      store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION);
+      await store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION);
     }
 
     result.itemIds.push(item.id);
@@ -460,7 +464,7 @@ export function preflightArtifactTuple(
   ) {
     throw transcriptError('recovery_required', 'The deterministic Artifact tuple is incomplete.');
   }
-  createArtifactReview(workspaceDb, reviewInput);
+  assertArtifactReviewPublication(workspaceDb, reviewInput);
   return true;
 }
 

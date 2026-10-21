@@ -17,6 +17,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -28,7 +29,8 @@ import type { AdministrationEnvironmentTools } from './administration-tools.js';
 
 type ModelResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>;
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0)) close();
 });
 
@@ -70,7 +72,7 @@ function answer(): ModelResponse {
 }
 
 /** Real private admission, authored configuration, candidate publication and public interruption. */
-function fixture(
+async function fixture(
   options: { blockedCall?: 1 | 2; deadlineMs?: number; defaultProfile?: boolean } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'administration-lifetime-'));
@@ -98,11 +100,17 @@ function fixture(
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
   };
-  const store = createDemoStore({ dataRoot });
-  const thread = store.createThread(workspaceId, 'Administration', undefined, 'administration', {
-    visibility: 'private',
-    privateOwnerUserId: userId,
-  });
+  const store = await createDemoStore({ dataRoot });
+  const thread = await store.createThread(
+    workspaceId,
+    'Administration',
+    undefined,
+    'administration',
+    {
+      visibility: 'private',
+      privateOwnerUserId: userId,
+    }
+  );
   const provider = {
     id: 'synthetic',
     kind: 'custom',
@@ -379,7 +387,7 @@ describe('Administration admitted Turn lifetime', () => {
       expectedDeadlineMs: 4_000,
     },
   ])('retains the shared Assistant admission deadline for $label', async (options) => {
-    const f = fixture(options);
+    const f = await fixture(options);
     const pending = f.submit();
     await admittedInference(f.entered.promise, pending);
     const admitted = f.retained().turns[0]!;
@@ -408,7 +416,7 @@ describe('Administration admitted Turn lifetime', () => {
     false,
     true,
   ])('publishes exactly one review-only Policy candidate after client disconnect %s', async (disconnect) => {
-    const f = fixture();
+    const f = await fixture();
     const channel = new AbortController();
     const first = f.submit(channel.signal);
     const inferenceSignal = await admittedInference(f.entered.promise, first);
@@ -482,7 +490,7 @@ describe('Administration admitted Turn lifetime', () => {
   it.each([
     1, 2,
   ] as const)('turn.interrupt stops admitted inference %s and fences its late result', async (blockedCall) => {
-    const f = fixture({ blockedCall });
+    const f = await fixture({ blockedCall });
     const pending = f.submit();
     const inferenceSignal = await admittedInference(f.entered.promise, pending);
     const turn = f.retained().turns[0]!;
@@ -530,7 +538,7 @@ describe('Administration admitted Turn lifetime', () => {
 
   it('reports a stalled ordinary answer as an answer deadline, not continuation summary failure', async () => {
     // Retained local timing showed preparation can take over 1 second before model admission.
-    const f = fixture({ deadlineMs: 4_000 });
+    const f = await fixture({ deadlineMs: 4_000 });
     const pending = f.submit();
     await admittedInference(f.entered.promise, pending);
     const response = await pending;

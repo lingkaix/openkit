@@ -11,7 +11,7 @@ import {
 import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/runtime-config.js';
-import type { FsStore } from '../lib/store.js';
+import type { CommandRequestRecord, FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -25,6 +25,7 @@ import type { FileStorageAdmission } from '../storage/artifacts/file-admission.j
 import type { CoreDb } from '../storage/db.js';
 import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
+import type { IdempotentCommandReceipt } from './idempotent-command.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import {
   getSchedulerPreparationClaims,
@@ -39,6 +40,10 @@ interface StartProductTurnInput
     AgentSetupResolverDependencies,
     'providerCredentialConfigured' | 'subscriptionAccounts'
   > {
+  /** Original initiating command facts committed with the first native Turn publication. */
+  readonly commandReceipt?: IdempotentCommandReceipt;
+  /** Exact selected Worker conversation response, including its original routing metadata. */
+  readonly commandReceiptResponse?: CommandRequestRecord['response'];
   /** Required Core database for durable scheduler admission. */
   readonly coreDb?: CoreDb;
   /** Parsed protocol turn-start request. */
@@ -83,11 +88,11 @@ interface StartProductTurnInput
   readonly onTurnCreated?: (
     turn: z.infer<typeof TurnSchema>,
     agentSessionId: string | null
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 /**
- * Accepts the exact pending product Turn before independent preparation and execution; receipt publication remains with the initiating command owner.
+ * Accepts the exact pending product Turn and supplied initiating receipt before independent preparation and execution.
  *
  * @param input Product turn startup input.
  * @returns Accepted turn handle.
@@ -285,6 +290,10 @@ export async function startProductTurn(input: StartProductTurnInput) {
         status: 'pending',
         agentId: requestedAgentId,
         executorKind: 'worker',
+        ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
+        ...(input.commandReceiptResponse
+          ? { commandReceiptResponse: input.commandReceiptResponse }
+          : {}),
         ...(input.triggerSource !== undefined ? { triggerSource: input.triggerSource } : {}),
         ...(input.fileInputs?.length
           ? {
@@ -349,8 +358,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
   void completion.catch(() => undefined);
   // Let the existing observation owner install its closeout before signalling durable acceptance.
   await Promise.resolve();
-  input.onTurnCreated?.(turn, turn.agentSessionId ?? null);
-  // The command owner writes its receipt in the current microtask turn. Dispatch also checks it
+  await input.onTurnCreated?.(turn, turn.agentSessionId ?? null);
+  // The command owner completes its receipt before dispatch. Dispatch also checks it
   // durably, so a crash or partial cross-store publication cannot authorize preparation effects.
   await new Promise<void>((resolve) => setImmediate(resolve));
   void runSchedulerDispatchLoop({

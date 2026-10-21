@@ -9,6 +9,7 @@ import { parse, stringify } from 'yaml';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -30,12 +31,12 @@ interface Fixture {
 const fixtures: Fixture[] = [];
 
 /** Compose the public operation producer and real Git, SQLite and retrieval consumers. */
-function fixture(): Fixture {
+async function fixture(): Promise<Fixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'knowledge-consolidation-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: DEMO_WORKSPACE_ID,
@@ -176,6 +177,7 @@ function semanticLedgers(f: ReturnType<typeof fixture>) {
 }
 
 afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   await closeRetrievalServices();
   for (const f of fixtures.splice(0)) {
     f.workspaceDb.sqlite.close();
@@ -188,7 +190,7 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
   it.each([
     0, 0.75, 1,
   ])('preserves numeric Claim confidence %s and source pins through ordinary draft, active, archive and restart', async (confidence) => {
-    const f = fixture();
+    const f = await fixture();
     const reference = await source(f);
     const id = `release-${String(confidence).replace('.', '-')}`;
     const fields = { confidence, source_refs: [reference] };
@@ -250,7 +252,7 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
   }, 60_000);
 
   it('excludes subject-targeted unresolved OKF conflicts from public lexical and pinned retrieval after restart', async () => {
-    const f = fixture();
+    const f = await fixture();
     const reference = await source(f);
     const target = { scopeId: f.pageScopeId, objectId: 'release-cadence' };
     const conflict = (state: 'unresolved' | 'resolved', subjects: string[]) =>
@@ -307,7 +309,7 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
   }, 60_000);
 
   it('refuses an exact human Proposal acceptance while a published OKF Observation conflicts with its pinned source', async () => {
-    const f = fixture();
+    const f = await fixture();
     const reference = await source(f);
     const targetId = 'contested-result';
     await publish(f, {
@@ -386,7 +388,7 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
   }, 60_000);
 
   it('refuses a conflict subject whose exact page digest does not match its current reference owner', async () => {
-    const f = fixture();
+    const f = await fixture();
     await publish(f, {
       'actual-subject.md': page('Claim', 'An existing release assertion.', { confidence: 1 }),
     });

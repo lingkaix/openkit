@@ -22,6 +22,7 @@ import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -79,7 +80,8 @@ vi.mock('node:timers/promises', async (importOriginal) => ({
 }));
 
 // A fixture can time out before it returns its close handle; do not carry its spy into the next case.
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   harnessLoop.client = null;
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -192,7 +194,7 @@ async function faultFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -368,7 +370,7 @@ async function faultFixture() {
     await post('/api/nanohost/transport/session/readiness', { physicalEpoch: DIGEST })
   ).toEqual({ status: 204, body: '' });
   // The real dispatcher requires the exact pending Turn and initiating command receipt (D83).
-  store.createTurn(
+  await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Exercise a bounded worker fault',
@@ -749,7 +751,7 @@ describe('first-release worker faults (real Core crossings)', () => {
         ],
         now: NOW,
       };
-      f.store.createItem({
+      await f.store.createItem({
         id: request.requestItemId,
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',

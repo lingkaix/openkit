@@ -2,7 +2,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { type CommandRequestResponse, commandRequestKey } from '../lib/store.js';
+import {
+  type CommandRequestName,
+  type CommandRequestResponse,
+  commandRequestKey,
+} from '../lib/store.js';
+import { ControlPendingCommandInputSchema } from '../runtime/pending-requests.js';
 import {
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
@@ -15,7 +20,9 @@ import {
   ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
+  decode as decodeControlProduct,
   type PreparedControlEntry,
+  readProduct,
 } from './control-store-products.js';
 
 /** Exact prepared operation families; B2 must exclude these from legacy receipt insert/prune paths before activation. */
@@ -24,9 +31,52 @@ export const CONTROL_ADMISSION_COMMANDS = [
   'thread.update',
   'thread.archive',
   'turn.start',
+  'task.start',
   'turn.input.submit',
   'conversation.submit',
+  'turn.interrupt',
 ] as const;
+
+/** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
+export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
+  ...CONTROL_ADMISSION_COMMANDS,
+  'approval.respond',
+  'user_input.answer',
+  'pending_request.withdraw',
+  'artifact.submit',
+  'artifact.review.select',
+  'artifact.review.decide',
+  'goal.create',
+  'goal.intent.revise',
+  'goal.card.create',
+  'goal.card.edit',
+  'goal.card.cancel',
+  'goal.plan.propose',
+  'goal.plan.approve',
+  'goal.cancel',
+  'goal.completion.accept',
+  'knowledge.maintain',
+  'knowledge.tell',
+  'knowledge.server.maintain',
+  'knowledge.server.tell',
+  'material.create',
+  'material.save',
+  'material.bind',
+  'material.unbind',
+  'material.exclude',
+  'material.restore',
+  'material.range-correct',
+] as const satisfies readonly CommandRequestName[];
+
+/** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
+export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
+  AND response_kind='evaluation_judgement' AND response_id=request_id
+  AND (EXISTS (SELECT 1 FROM artifact_reviews AS review, json_each(review.judgements) AS annotation
+    WHERE review.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
+      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)
+    OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision, json_each(revision.judgements) AS annotation
+    WHERE revision.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
+      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)))`;
 
 /** Original receipt facts; expiry policy remains with the existing command producer, not another ledger. */
 const ReceiptSchema = z
@@ -51,8 +101,13 @@ const ReceiptSchema = z
 export const ControlAdmissionSchema = z
   .object({
     receipt: ReceiptSchema,
-    products: z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
-    entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    products: z.lazy(() =>
+      z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries)
+    ),
+    entries: z.lazy(() => z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries)),
+    pending: z
+      .lazy(() => z.array(ControlPendingCommandInputSchema).max(CONTROL_PRODUCT_LIMITS.entries))
+      .optional(),
     audit: AuditEventSchema.extend({
       createdAt: z.string().datetime(),
       occurredAt: z.string().datetime(),
@@ -92,11 +147,11 @@ export function pruneControlAdmissionReceipts(
       : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
   sqlite
     .prepare(
-      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_ADMISSION_COMMANDS.map(() => '?').join(',')}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${CONTROL_NATIVE_RECEIPT_COMMANDS.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
     )
     .run(
       referenceTime,
-      ...CONTROL_ADMISSION_COMMANDS,
+      ...CONTROL_NATIVE_RECEIPT_COMMANDS,
       ...(owner.kind === 'workspace' ? [owner.workspaceId] : [])
     );
 }
@@ -117,7 +172,7 @@ export function applyControlAdmission(
     receipt.expiresAt <= receipt.createdAt
   )
     throw new ControlProductPreconditionError();
-  const response = normalizeCommandRequestResponse(
+  let response = normalizeCommandRequestResponse(
     receipt.command,
     receipt.response as CommandRequestResponse
   );
@@ -138,7 +193,40 @@ export function applyControlAdmission(
       throw new ControlProductPreconditionError();
     return { replayed: true, response: retained.response };
   }
-  const event = input.audit;
+  let products = input.products;
+  let event = input.audit;
+  if (receipt.command === 'thread.create' && owner.kind === 'workspace') {
+    const threads = input.products.filter((product) => product.kind === 'thread');
+    if (threads.length === 1) {
+      const candidate = decodeControlProduct('thread', threads[0]!.record, owner);
+      if (candidate.visibility === 'private' && candidate.entryPath === 'conversation') {
+        if (
+          threads[0]!.expectedRevision !== 0 ||
+          typeof candidate.privateOwnerUserId !== 'string' ||
+          input.entries.length > 0 ||
+          input.products.some(
+            (product) => product.kind !== 'thread' && product.kind !== 'workspace'
+          )
+        )
+          throw new ControlProductPreconditionError();
+        for (const product of input.products)
+          decodeControlProduct(product.kind, product.record, owner);
+        const selected = sqlite
+          .prepare(
+            "SELECT id FROM control_threads WHERE json_extract(record_json,'$.visibility')='private' AND json_extract(record_json,'$.entryPath')='conversation' AND json_extract(record_json,'$.privateOwnerUserId')=? ORDER BY julianday(json_extract(record_json,'$.createdAt')),id LIMIT 1"
+          )
+          .get(candidate.privateOwnerUserId) as { id: string } | undefined;
+        if (selected) {
+          // Selection is native and preserves existing, including archived, history even when fresh commands race.
+          const existing = readProduct(sqlite, owner, 'thread', selected.id);
+          if (!existing) throw new ControlProductPreconditionError();
+          response = { kind: 'thread', id: selected.id };
+          products = [];
+          event = { ...event, threadId: selected.id, resource: `thread:${selected.id}` };
+        }
+      }
+    }
+  }
   if (
     event.action !== receipt.command ||
     event.requestId !== receipt.requestId ||
@@ -147,7 +235,7 @@ export function applyControlAdmission(
   )
     throw new ControlProductPreconditionError();
   pruneControlAdmissionReceipts(sqlite, owner, receipt.createdAt);
-  applyControlProducts(sqlite, owner, input.products, entries);
+  applyControlProducts(sqlite, owner, products, entries);
   const targetKind =
     response.kind === 'thread' ? 'thread' : response.kind === 'turn' ? 'turn' : null;
   if (

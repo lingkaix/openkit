@@ -11,7 +11,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import {
   importWorkspaceSkill,
@@ -19,6 +19,7 @@ import {
   setWorkspaceSkillPin,
 } from '../catalog/resource-catalog.js';
 import { buildWorkerContextPackageWorkspaceInput } from '../context/worker-context-package.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -32,8 +33,8 @@ import {
 } from './worker-governance-backend.js';
 
 describe('NanoHost worker governance helpers', () => {
-  it('exports a generated output under the exact AgentSession namespace and refuses undeclared paths', () => {
-    const environmentPackage = createNanoHostPackage();
+  it('exports a generated output under the exact AgentSession namespace and refuses undeclared paths', async () => {
+    const environmentPackage = await createNanoHostPackage();
     const agentSessionId = environmentPackage.scope.agentSessionId;
     const path = `/openkit/sessions/${agentSessionId}/outputs/report.md`;
     expect(resolveNanoHostExportPath(environmentPackage, path)).toEqual({
@@ -50,8 +51,8 @@ describe('NanoHost worker governance helpers', () => {
     }
   });
 
-  it('prefixes a main-worktree export with the exact AEP-bound work slot', () => {
-    const environmentPackage = createNanoHostPackage();
+  it('prefixes a main-worktree export with the exact AEP-bound work slot', async () => {
+    const environmentPackage = await createNanoHostPackage();
     const mainWorktree = (
       environmentPackage.extensions.openkit as {
         sessionWorkspace: { layout: { slots: Array<{ id: string; path: string }> } };
@@ -111,7 +112,7 @@ describe('NanoHost worker governance helpers', () => {
   });
 
   it('canonicalizes one strict AEP as the first immutable NanoHost import', async () => {
-    const environmentPackage = createNanoHostPackage();
+    const environmentPackage = await createNanoHostPackage();
     const reordered = AgentEnvironmentPackageSchema.parse(
       sortJsonObjectKeys(environmentPackage, true)
     );
@@ -183,10 +184,10 @@ describe('NanoHost worker governance helpers', () => {
     applyMigrations(coreDb);
     try {
       const userId = ensureLocalUser(coreDb);
-      const store = createDemoStore({ dataRoot }, userId);
+      const store = await createDemoStore({ dataRoot }, userId);
       const { workspace, thread } = createDemoWorkspaceForUser(userId);
       const agentSessionId = allocateEntityId('as');
-      const turn = store.createTurn(workspace.id, thread.id, 'Use catalog skill', {
+      const turn = await store.createTurn(workspace.id, thread.id, 'Use catalog skill', {
         kind: 'user',
         id: userId,
       });
@@ -322,9 +323,9 @@ describe('NanoHost worker governance helpers', () => {
 });
 
 /** Creates one canonical NanoHost AEP from the shared authored-manifest fixture. */
-function createNanoHostPackage(): AgentEnvironmentPackage {
-  const store = createDemoStore();
-  const turn = store.createTurn(
+async function createNanoHostPackage(): Promise<AgentEnvironmentPackage> {
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Materialize NanoHost backend',
@@ -376,8 +377,8 @@ function sortJsonObjectKeys(value: unknown, descending = false): unknown {
 }
 
 describe('public exact grant materialization', () => {
-  it('projects only the existing enforceable tuple and no public request inspector', () => {
-    const environmentPackage = createNanoHostPackage();
+  it('projects only the existing enforceable tuple and no public request inspector', async () => {
+    const environmentPackage = await createNanoHostPackage();
     const rule = {
       action: 'allow',
       id: 'public-search',
@@ -412,8 +413,8 @@ describe('public exact grant materialization', () => {
   });
 });
 
-it('exports only the exact admitted Turn capture, even with a changed transcript declaration', () => {
-  const pkg = createNanoHostPackage();
+it('exports only the exact admitted Turn capture, even with a changed transcript declaration', async () => {
+  const pkg = await createNanoHostPackage();
   const { threadId, turnId } = pkg.scope;
   const runtime = pkg.control.adapter.targetRuntime;
   const root = `/openkit/threads/${threadId}/${runtime}/capture/${turnId}`;
@@ -437,7 +438,7 @@ it.each([
   true,
   false,
 ])('includes recorded effort controls in canonical immutable package bytes: %s', async (recorded) => {
-  const retained = createNanoHostPackage();
+  const retained = await createNanoHostPackage();
   const candidate = AgentEnvironmentPackageSchema.parse({
     ...retained,
     llm: {
@@ -491,8 +492,8 @@ describe('encoded-slash Core policy intent', () => {
     undefined,
     false,
     true,
-  ])('preserves package authority %s at the intent boundary', (allowEncodedSlash) => {
-    const pkg = createNanoHostPackage();
+  ])('preserves package authority %s at the intent boundary', async (allowEncodedSlash) => {
+    const pkg = await createNanoHostPackage();
     pkg.policy.network!.rules = [
       {
         action: 'allow',
@@ -507,7 +508,7 @@ describe('encoded-slash Core policy intent', () => {
     ]);
     expect(parse(endpoints).success).toBe(true);
   });
-  it('rejects malformed, forbidden and unsupported authority rather than dropping it', () => {
+  it('rejects malformed, forbidden and unsupported authority rather than dropping it', async () => {
     for (const change of [
       { allowEncodedSlash: 'true' },
       { allowEncodedSlash: null },
@@ -517,13 +518,13 @@ describe('encoded-slash Core policy intent', () => {
       { futureAuthority: true },
     ]) {
       expect(parse([{ ...endpoint, ...change }]).success).toBe(false);
-      const pkg = createNanoHostPackage();
+      const pkg = await createNanoHostPackage();
       pkg.policy.network!.rules = [{ action: 'allow', id: 'package-read', ...endpoint, ...change }];
       if ('allowEncodedSlash' in change)
         expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
     }
   });
-  it('refuses encoded-slash authority on a rule that would otherwise be silently omitted', () => {
+  it('refuses encoded-slash authority on a rule that would otherwise be silently omitted', async () => {
     for (const change of [
       { id: 'openkit-worker-control' },
       { id: 'openkit-worker-inference' },
@@ -531,7 +532,7 @@ describe('encoded-slash Core policy intent', () => {
       { action: 'deny' },
       { port: undefined },
     ]) {
-      const pkg = createNanoHostPackage();
+      const pkg = await createNanoHostPackage();
       pkg.policy.network!.rules = [
         { action: 'allow', id: 'package-read', ...endpoint, allowEncodedSlash: true, ...change },
       ];
@@ -566,7 +567,7 @@ describe('encoded-slash Core policy intent', () => {
 it('prepares a large Context Package original as a verified bounded source and rejects later replacement or links', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'context-source-import-'));
   try {
-    const base = createNanoHostPackage();
+    const base = await createNanoHostPackage();
     const { workspaceId, threadId, turnId, agentSessionId } = base.scope;
     const root = join(
       dataRoot,
@@ -659,4 +660,9 @@ it('prepares a large Context Package original as a verified bounded source and r
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

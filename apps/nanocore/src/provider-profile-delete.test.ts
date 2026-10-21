@@ -15,6 +15,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { resolveLogicalModel } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -26,12 +27,13 @@ import { createVaultReference, getVaultReference } from './vault/vault-reference
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 
 const cleanups: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
 /** Real file, Core and encrypted-backend fixture for exact provider removal. */
-function fixture(subscription = false) {
+async function fixture(subscription = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-profile-delete-'));
   cleanups.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -82,7 +84,7 @@ function fixture(subscription = false) {
       backendLocator: `${backend.kind}://server/vault/vault_00000000-0000-7d1d-9a06-27e8a2468878`,
     });
   }
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const references = {
     'config/gateway.jsonc': {
       schemaVersion: 1,
@@ -185,7 +187,7 @@ function fixture(subscription = false) {
 
 describe('provider profile removal', () => {
   it('revokes the key before removing the exact profile file', async () => {
-    const f = fixture();
+    const f = await fixture();
     const response = await f.deletion();
     expect(response.status).toBe(204);
     expect(await response.text()).toBe('');
@@ -196,7 +198,7 @@ describe('provider profile removal', () => {
     expect(f.backend.listReferences()[0]?.revoked).toBe(true);
   });
   it('rejects a stale revision before changing either effect domain', async () => {
-    const f = fixture();
+    const f = await fixture();
     const before = readFileSync(join(f.dataRoot, 'config', f.id));
     const response = await f.deletion('stale-revision');
     expect(response.status).toBe(409);
@@ -208,7 +210,7 @@ describe('provider profile removal', () => {
     expect(f.backend.listReferences()[0]?.revoked).toBe(false);
   });
   it('preserves all authored references and keeps the active registry until restart', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect(f.runtimeConfigManager.current().diagnostics).toEqual([]);
     expect((await f.deletion()).status).toBe(204);
     expect(Object.keys(f.references).map((path) => readFileSync(join(f.dataRoot, path)))).toEqual(
@@ -244,7 +246,7 @@ describe('provider profile removal', () => {
     );
   });
   it('leaves a shared subscription slot and its credentials untouched', async () => {
-    const f = fixture(true);
+    const f = await fixture(true);
     const pair = { subscriptionProviderId: 'openai-codex' as const, accountSlotId: 'shared' };
     await f.accountManager.createAccount(pair);
     const handle = await f.accountManager.getPairHandle(pair);
@@ -267,7 +269,7 @@ describe('provider profile removal', () => {
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual(coreRows);
   });
   it('rejects a workspace token before any file or Vault effect', async () => {
-    const f = fixture();
+    const f = await fixture();
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'workspace',
@@ -304,7 +306,7 @@ describe('provider profile removal', () => {
     expect(f.backend.listReferences()[0]?.revoked).toBe(false);
   });
   it('reports backend revocation failure and preserves the file and Core row', async () => {
-    const f = fixture();
+    const f = await fixture();
     vi.spyOn(f.backend, 'revoke').mockImplementationOnce(() => {
       throw new Error('private failure');
     });
@@ -318,7 +320,7 @@ describe('provider profile removal', () => {
     );
   });
   it('reports a Core failure after backend revocation without restoring material or removing the file', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.coreDb.sqlite.exec(
       "CREATE TRIGGER refuse_revoke BEFORE UPDATE ON vault_references BEGIN SELECT RAISE(ABORT, 'test-only Core failure'); END"
     );
@@ -333,7 +335,7 @@ describe('provider profile removal', () => {
   });
 
   it('refuses a symlink target before any Vault effect', async () => {
-    const f = fixture();
+    const f = await fixture();
     const target = join(f.dataRoot, 'config', f.id);
     const outside = join(f.dataRoot, 'outside-provider.jsonc');
     const bytes = readFileSync(target);
@@ -356,7 +358,7 @@ describe('provider profile removal', () => {
     expect(f.backend.listReferences()[0]?.revoked).toBe(false);
   });
   it('refuses non-Provider and escaped file identities before effects', async () => {
-    const f = fixture();
+    const f = await fixture();
     for (const id of ['server.jsonc', '../outside.provider.jsonc']) {
       const response = await f.app.request(
         ...operationRequest(

@@ -17,7 +17,7 @@ import {
   RegisterKnowledgeSourceResponseSchema,
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
@@ -27,6 +27,7 @@ import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import { readManagedSourceText } from './knowledge/source-reading.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -68,7 +69,7 @@ async function importedStore(
 ): Promise<FsStore> {
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   const store = new FsStore({ dataRoot });
-  store.importWorkspaceSnapshot({
+  await store.importWorkspaceSnapshot({
     workspace: demo.workspace,
     threads: [demo.thread],
     turns: [],
@@ -221,8 +222,8 @@ describe('Knowledge proposal decision lineage', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const foreignWorkspace = store.createWorkspace('Foreign Knowledge Workspace');
+    const store = await createDemoStore({ dataRoot });
+    const foreignWorkspace = await store.createWorkspace('Foreign Knowledge Workspace');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: foreignWorkspace.id,
@@ -360,7 +361,7 @@ describe('Knowledge Store save-time validation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
@@ -405,7 +406,7 @@ describe('Knowledge Store save-time validation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
@@ -481,7 +482,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
     const sourceContent = 'Release cadence is weekly.';
     const registerRes = await app.request(
@@ -956,7 +957,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'release cadence',
@@ -1112,7 +1113,7 @@ describe('Knowledge Manager answer operation', () => {
 
   it('returns insufficient evidence instead of speculating', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-insufficient-evidence-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
@@ -1150,7 +1151,7 @@ describe('Knowledge Manager answer operation', () => {
 
   it('retains model uncertainty when the available page does not answer the question', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-weak-overlap-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
@@ -1211,7 +1212,7 @@ describe('Knowledge Manager answer operation', () => {
   // Two complete queries include real Kernel work and both admitted notebook sources.
   it('answers a one-term query that appears on the selected page', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-one-term-answer-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
@@ -1296,7 +1297,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const app = createApp({ coreDb, dataRoot, store: createDemoStore({ dataRoot }) });
+    const app = createApp({ coreDb, dataRoot, store: await createDemoStore({ dataRoot }) });
 
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
@@ -1470,7 +1471,7 @@ describe('Knowledge Manager answer operation', () => {
     let coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    let store = createDemoStore({ dataRoot });
+    let store = await createDemoStore({ dataRoot });
     let app = createApp({ coreDb, dataRoot, store });
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
@@ -1631,7 +1632,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
@@ -1752,7 +1753,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
@@ -1872,7 +1873,7 @@ describe('Knowledge Manager answer operation', () => {
   });
 
   it('rejects public semantic caller overrides', async () => {
-    const app = createApp({ store: createDemoStore() });
+    const app = createApp({ store: await createDemoStore() });
     const proposalBytes = proposalPageBytes(
       'caller-override',
       'Caller override',
@@ -1944,7 +1945,7 @@ describe('Knowledge Manager answer operation', () => {
     authorizeDemoWorkspace(coreDb);
     try {
       const { app, createResponses } = createKnowledgeAnswerApp(
-        { coreDb, dataRoot, store: createDemoStore({ dataRoot }) },
+        { coreDb, dataRoot, store: await createDemoStore({ dataRoot }) },
         [],
         'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret'
       );
@@ -1978,7 +1979,7 @@ describe('Knowledge Manager answer operation', () => {
   it('redacts unexpected Knowledge Manager failures', async () => {
     const unsafeMessage =
       'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret';
-    const readStore = createDemoStore();
+    const readStore = await createDemoStore();
     vi.spyOn(readStore, 'listKnowledge').mockImplementation(() => {
       throw new Error(unsafeMessage);
     });
@@ -2024,7 +2025,7 @@ describe('Knowledge Manager answer operation', () => {
     }
 
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-proposal-redaction-'));
-    const proposalStore = createDemoStore({ dataRoot });
+    const proposalStore = await createDemoStore({ dataRoot });
     const proposalFailure = vi
       .spyOn(proposalStore, 'createKnowledgeProposal')
       .mockImplementation(() => {
@@ -2104,3 +2105,8 @@ function workspacePageScope(dataRoot: string): string {
 function workspacePageUri(dataRoot: string, objectId: string): string {
   return formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId });
 }
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+});

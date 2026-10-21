@@ -9,7 +9,7 @@ import {
   SubmitArtifactReviewDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import { GetArtifactResponseSchema, ListArtifactsResponseSchema } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createArtifactReview,
   deriveArtifactReviewFollowUpTurnId,
@@ -29,6 +29,7 @@ import {
 } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -124,20 +125,20 @@ function postJson(
  * @param sourceTurnId Completed source Turn identity.
  * @returns Created unresolved Review view.
  */
-function createReviewFixture(
+async function createReviewFixture(
   store: FsStore,
   workspaceDb: ReturnType<typeof openWorkspaceDb>,
   artifactId: string,
   content: string,
   sourceTurnId: string
-): ReturnType<typeof createArtifactReview> {
+): Promise<ReturnType<typeof createArtifactReview>> {
   const sourceTurn = store.getTurnById(sourceTurnId);
   const createdAt = sourceTurn.startedAt ?? sourceTurn.completedAt;
   if (!createdAt) {
     throw new Error('Artifact Review fixture requires a started source Turn.');
   }
   const requestId = `produce-${artifactId}`;
-  store.createArtifact({
+  await store.createArtifact({
     id: artifactId,
     workspaceId: workspaceDb.workspaceId,
     threadId: sourceTurn.threadId,
@@ -173,12 +174,12 @@ function createReviewFixture(
 
 describe('Core artifact routes', () => {
   it('lists and reads exact markdown inline Artifact content', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact content thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Create artifact',
@@ -189,7 +190,7 @@ describe('Core artifact routes', () => {
     );
     const requestId = 'artifact-read-markdown-1';
     const body = '# Output';
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-76a7-971b-3c2e3b40da06',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -238,12 +239,12 @@ describe('Core artifact routes', () => {
   });
 
   it('reads exact text and JSON inline Artifact content with their recorded formats', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact format thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Create formatted artifacts',
@@ -255,7 +256,7 @@ describe('Core artifact routes', () => {
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const textRequestId = 'artifact-read-text-1';
     const textBody = 'Plain output';
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-70b0-925c-a9f002bae163',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -279,7 +280,7 @@ describe('Core artifact routes', () => {
     });
     const jsonRequestId = 'artifact-read-json-1';
     const jsonBody = '{"ok":true}';
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-73de-845a-af433639db48',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -331,9 +332,9 @@ describe('Core artifact routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Artifact route workspace');
+    const workspace = await store.createWorkspace('Artifact route workspace');
     recordLocalWorkspaceAccess(coreDb, workspace.id);
-    const thread = store.createThread(workspace.id, 'Artifact route thread');
+    const thread = await store.createThread(workspace.id, 'Artifact route thread');
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(workspaceDb);
     workspaceDb.sqlite.close();
@@ -458,7 +459,7 @@ describe('Core artifact routes', () => {
         code: 'idempotency_key_conflict',
       });
 
-      store.createTurn(workspace.id, thread.id, 'Keep the Thread active after introduction', {
+      await store.createTurn(workspace.id, thread.id, 'Keep the Thread active after introduction', {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
       });
@@ -521,13 +522,13 @@ describe('Core artifact routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-routes-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact Review route thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Produce reviewed Artifacts',
@@ -537,7 +538,7 @@ describe('Core artifact routes', () => {
       }
     );
     const completedAt = new Date().toISOString();
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     const reviews = (
@@ -545,15 +546,16 @@ describe('Core artifact routes', () => {
         ['ar_00000000-0000-71cf-a641-bd9c6acde17b', 'Review the first Artifact.'],
         ['ar_00000000-0000-7c49-98d1-47c5d31a3268', 'Review the second Artifact.'],
       ] as const
-    ).map(([artifactId, content]) =>
-      createReviewFixture(store, workspaceDb, artifactId, content, turn.id)
+    ).map(
+      async ([artifactId, content]) =>
+        await createReviewFixture(store, workspaceDb, artifactId, content, turn.id)
     );
     const backing = store.getArtifact(
       'ws_00000000-0000-7000-8000-000000000001',
       'ar_00000000-0000-71cf-a641-bd9c6acde17b'
     );
     store.createArtifact({ ...backing, id: 'ar_00000000-0000-7f70-84f9-64a58b07cc9f' });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt,
     });
@@ -644,7 +646,7 @@ describe('Core artifact routes', () => {
       });
       secondArtifact.content.body = secondContent;
 
-      expect(() => store.updateTurn(turn.id, { agentId: 'agent_other_runtime' })).toThrow(
+      await expect(store.updateTurn(turn.id, { agentId: 'agent_other_runtime' })).rejects.toThrow(
         /is terminal and does not admit this write/
       );
 
@@ -772,7 +774,7 @@ describe('Core artifact routes', () => {
             .map((item: { id: string }) => item.id)
         ).toEqual(['ar_00000000-0000-7f70-84f9-64a58b07cc9f']);
 
-        const receivingThread = store.createThread(
+        const receivingThread = await store.createThread(
           'ws_00000000-0000-7000-8000-000000000001',
           'Reference internal evidence'
         );
@@ -854,13 +856,13 @@ describe('Core artifact routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-rollback-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact Review rollback thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Produce rollback Artifact',
@@ -870,17 +872,17 @@ describe('Core artifact routes', () => {
       }
     );
     const completedAt = new Date().toISOString();
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    createReviewFixture(
+    await createReviewFixture(
       store,
       workspaceDb,
       'ar_00000000-0000-7292-84b1-02fe24f37662',
       'Keep this Review pending after receipt failure.',
       turn.id
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt,
     });
@@ -951,7 +953,7 @@ describe('Core artifact routes', () => {
       predecessorFenced: true,
       ready: true,
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const setup = createTestAgentSetup();
     const runtimeAgent = {
@@ -970,11 +972,11 @@ describe('Core artifact routes', () => {
     store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', runtimeAgent);
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact Review redo thread'
     );
-    const sourceTurn = store.createTurn(
+    const sourceTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Produce redo Artifact',
@@ -984,37 +986,37 @@ describe('Core artifact routes', () => {
       }
     );
     const completedAt = new Date().toISOString();
-    store.updateTurn(sourceTurn.id, { agentId: setup.manifest.id });
-    createReviewFixture(
+    await store.updateTurn(sourceTurn.id, { agentId: setup.manifest.id });
+    await createReviewFixture(
       store,
       workspaceDb,
       'ar_00000000-0000-7431-9ff1-49c2a2686f52',
       'Redo this exact output.',
       sourceTurn.id
     );
-    store.updateTurn(sourceTurn.id, {
+    await store.updateTurn(sourceTurn.id, {
       status: 'completed',
       completedAt,
     });
-    const partialThread = store.createThread(
+    const partialThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact Review partial thread'
     );
-    const partialSourceTurn = store.createTurn(
+    const partialSourceTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       partialThread.id,
       'Produce partial Artifact',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    store.updateTurn(partialSourceTurn.id, { agentId: setup.manifest.id });
-    createReviewFixture(
+    await store.updateTurn(partialSourceTurn.id, { agentId: setup.manifest.id });
+    await createReviewFixture(
       store,
       workspaceDb,
       'ar_00000000-0000-7c8a-afc3-6af1d0f39c53',
       'Do not resume partial proof.',
       partialSourceTurn.id
     );
-    store.updateTurn(partialSourceTurn.id, {
+    await store.updateTurn(partialSourceTurn.id, {
       status: 'completed',
       completedAt,
     });
@@ -1025,7 +1027,7 @@ describe('Core artifact routes', () => {
       1,
       partialRequestId
     );
-    const orphanTurn = store.createTurn(
+    const orphanTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       partialThread.id,
       'Contradictory partial proof',
@@ -1035,7 +1037,7 @@ describe('Core artifact routes', () => {
         turnId: partialFollowUpTurnId,
       }
     );
-    store.updateTurn(orphanTurn.id, {
+    await store.updateTurn(orphanTurn.id, {
       status: 'completed',
       completedAt,
     });
@@ -1245,4 +1247,9 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
     './test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

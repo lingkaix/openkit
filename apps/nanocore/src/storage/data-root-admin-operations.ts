@@ -11,6 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   type VerifiedDataRootBackupManifest,
   verifyDataRootBackupManifest,
@@ -72,14 +73,20 @@ export function createDataRootAdminOperationImplementations(dataRoot: string | n
       const backupId = allocateEntityId('drb');
 
       try {
-        const verified = await writeHotDataRootBackup({
-          dataRoot,
-          backupRoot: dataRootBackupRoot(dataRoot, backupId),
-          backupId,
-          sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-        });
+        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
+        let verified: VerifiedDataRootBackupManifest;
+        try {
+          verified = await writeHotDataRootBackup({
+            dataRoot,
+            backupRoot: dataRootBackupRoot(dataRoot, backupId),
+            backupId,
+            sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+          });
+        } finally {
+          resume();
+        }
 
         return DataRootBackupCreateResponseSchema.parse(dataRootBackupResponse(verified));
       } catch (_error) {

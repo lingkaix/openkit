@@ -21,6 +21,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -31,13 +32,13 @@ const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:
 it.each([
   'openkit.work-observations.v1',
   'openkit.unsupported.v1',
-])('checks the exact required Turn feature %s without changing metadata', (feature) => {
+])('checks the exact required Turn feature %s without changing metadata', async (feature) => {
   const root = mkdtempSync(join(tmpdir(), 'recurring-feature-'));
   try {
-    const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Required features');
-    const thread = store.createThread(workspace.id, 'Target');
-    const turn = store.createTurn(workspace.id, thread.id, 'Inspect metadata', {
+    const store = createTestStore({ dataRoot: root });
+    const workspace = await store.createWorkspace('Required features');
+    const thread = await store.createThread(workspace.id, 'Target');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Inspect metadata', {
       kind: 'user',
       id: FIXTURE_LOCAL_USER_ID,
     });
@@ -72,14 +73,14 @@ it.each([
   'workspace',
   'thread',
   'turn',
-] as const)('refuses a redirected canonical %s parent without reading its Turn', (boundary) => {
+] as const)('refuses a redirected canonical %s parent without reading its Turn', async (boundary) => {
   const root = mkdtempSync(join(tmpdir(), 'recurring-parent-'));
   const outside = mkdtempSync(join(tmpdir(), 'recurring-parent-outside-'));
   try {
-    const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Canonical source');
-    const thread = store.createThread(workspace.id, 'Target');
-    const turn = store.createTurn(workspace.id, thread.id, 'Retain exact bytes', {
+    const store = createTestStore({ dataRoot: root });
+    const workspace = await store.createWorkspace('Canonical source');
+    const thread = await store.createThread(workspace.id, 'Target');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Retain exact bytes', {
       kind: 'user',
       id: FIXTURE_LOCAL_USER_ID,
     });
@@ -117,8 +118,8 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Recurring publication');
-    const thread = store.createThread(workspace.id, 'Existing target');
+    const workspace = await store.createWorkspace('Recurring publication');
+    const thread = await store.createThread(workspace.id, 'Existing target');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
@@ -193,7 +194,7 @@ it.each([
       fixedBeforeRestart.turnId
     );
     // An unrelated successful write in the same Store cannot retry initial Turn publication.
-    store.createThread(workspace.id, 'Independent work after interruption');
+    await store.createThread(workspace.id, 'Independent work after interruption');
     expect(
       readPublishedTurnFileRecords(root, workspace.id, thread.id, fixedBeforeRestart.turnId)
     ).toEqual(publishedBefore);
@@ -227,12 +228,12 @@ it.each([
   }
 });
 
-it('keeps failed initial Turn files and permits later unrelated Workspace writes', () => {
+it('keeps failed initial Turn files and permits later unrelated Workspace writes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'recurring-uncertain-publication-'));
   try {
-    const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Uncertain publication');
-    const thread = store.createThread(workspace.id, 'Existing target');
+    const store = createTestStore({ dataRoot: root });
+    const workspace = await store.createWorkspace('Uncertain publication');
+    const thread = await store.createThread(workspace.id, 'Existing target');
     const turnId = testEntityId('tu', 'tu_uncertain_publication');
     const turnRoot = join(root, 'workspaces', workspace.id, 'threads', thread.id, 'turns', turnId);
     const native = store as unknown as { persist(workspaceId: string): void };
@@ -269,7 +270,7 @@ it('keeps failed initial Turn files and permits later unrelated Workspace writes
     expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
     expect(store.getThread(workspace.id, thread.id)).toEqual(thread);
 
-    const unrelated = store.createThread(workspace.id, 'Unrelated write');
+    const unrelated = await store.createThread(workspace.id, 'Unrelated write');
     expect(store.getThread(workspace.id, unrelated.id)).toEqual(unrelated);
     expect(snapshot()).toEqual(bytes);
     expect(store.listThreadTurns(workspace.id, thread.id)).toEqual([]);

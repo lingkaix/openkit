@@ -45,13 +45,13 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
-  const workspace = store.createWorkspace('Historical output', {
+  const workspace = await store.createWorkspace('Historical output', {
     requestId: randomUUID(),
     producer: actor,
     instructionReference: 'test:artifact-version-portability',
   });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId: workspace.id });
-  const thread = store.createThread(workspace.id, 'Publish revisions');
+  const thread = await store.createThread(workspace.id, 'Publish revisions');
   const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
   const original = Buffer.from([0, 255, 128, 13, 10]);
   const query = new URLSearchParams({
@@ -298,17 +298,17 @@ it('retains historical Artifact event snapshots and Item deltas after a newer ve
   ensureLocalUser(coreDb);
   const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Historical event snapshots', {
+  const workspace = await store.createWorkspace('Historical event snapshots', {
     requestId: randomUUID(),
     producer: actor,
     instructionReference: 'test:historical-artifact-events',
   });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId: workspace.id });
-  const thread = store.createThread(workspace.id, 'Retained output events');
-  const turn = store.createTurn(workspace.id, thread.id, 'Produce original output', actor);
+  const thread = await store.createThread(workspace.id, 'Retained output events');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Produce original output', actor);
   const requestId = randomUUID();
   const recordedAt = new Date().toISOString();
-  const artifact = store.createArtifact({
+  const artifact = await store.createArtifact({
     id: allocateEntityId('ar'),
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -350,7 +350,7 @@ it('retains historical Artifact event snapshots and Item deltas after a newer ve
       artifactId: artifact.id,
     },
   });
-  store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt, durationMs: 0 });
+  await store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt, durationMs: 0 });
   const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
   const committed = await app.request(
     ...operationRequest(
@@ -430,16 +430,23 @@ it('round trips target-owned judgements, exact range results and candidate choic
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user', id: userId } as const;
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Evaluation history', {
+  const workspace = await store.createWorkspace('Evaluation history', {
     producer: actor,
     requestId: randomUUID(),
     instructionReference: 'test:evaluation-portability',
   });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const thread = store.createThread(workspace.id, 'Selected output');
-  const turn = store.createTurn(workspace.id, thread.id, 'Produce selected output', actor, null, {
-    agentId: 'portable-producer',
-  });
+  const thread = await store.createThread(workspace.id, 'Selected output');
+  const turn = await store.createTurn(
+    workspace.id,
+    thread.id,
+    'Produce selected output',
+    actor,
+    null,
+    {
+      agentId: 'portable-producer',
+    }
+  );
   const candidates = ['First original', 'Second original'].map((body, index) => {
     const requestId = `portable-original-${index}`;
     const recordedAt = new Date().toISOString();
@@ -479,7 +486,7 @@ it('round trips target-owned judgements, exact range results and candidate choic
     });
     return { artifactId: artifact.id, artifactVersion: 1, contentDigest };
   });
-  store.updateTurn(turn.id, {
+  await store.updateTurn(turn.id, {
     status: 'completed',
     completedAt: new Date().toISOString(),
     durationMs: 0,

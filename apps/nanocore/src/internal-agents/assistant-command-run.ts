@@ -59,7 +59,7 @@ export interface AssistantCommandRunInput {
   readonly assembly: AssistantCommandAssembly;
   readonly store: FsStore;
   readonly coreDb: CoreDb;
-  readonly turn: ReturnType<FsStore['createTurn']>;
+  readonly turn: Awaited<ReturnType<FsStore['createTurn']>>;
   readonly actor: Actor;
   /** Real entry-admitted command identity, carried separately to audit. */
   readonly requestId: string;

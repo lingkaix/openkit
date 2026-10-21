@@ -10,11 +10,12 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -54,7 +55,7 @@ import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
  * @param options Optional publication fault/retry, execution observation, and App request identity.
  * @returns Retained owner tuple and database cleanup callback.
  */
-function createCheckpointCloseoutFixture(
+async function createCheckpointCloseoutFixture(
   outcome: 'failed' | 'completed' | 'interrupted',
   retained = true,
   options: {
@@ -72,11 +73,11 @@ function createCheckpointCloseoutFixture(
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   const requestId = options.requestId ?? '00000000-0000-4000-8000-000000000501';
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Recover exact worker closeout',
@@ -86,7 +87,7 @@ function createCheckpointCloseoutFixture(
     }
   );
   const agentSessionId = 'as_00000000-0000-73c3-bedd-d6971f391e97';
-  store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId });
+  await store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId });
   const createdAt = new Date().toISOString();
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
@@ -100,7 +101,7 @@ function createCheckpointCloseoutFixture(
     workspaceRoots: [],
   });
   recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage, createdAt });
-  store.createAgentSession({
+  await store.createAgentSession({
     id: agentSessionId,
     agentId: 'agent_codex_host',
     workspaceId: workspaceIdForOwner(turn.owner),
@@ -167,7 +168,8 @@ function createCheckpointCloseoutFixture(
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
   if (options.executionPublication === 'before-closeout') publishExecution();
-  if (outcome === 'completed') store.updateTurn(turn.id, { status: 'completed', completedAt });
+  if (outcome === 'completed')
+    await store.updateTurn(turn.id, { status: 'completed', completedAt });
   // Success uses the same production helper's completed-outcome publication repair path.
   const terminalization = {
     agentSessionId,
@@ -189,7 +191,7 @@ function createCheckpointCloseoutFixture(
         return emit(id, event, admission);
       });
     try {
-      expect(() => terminalizeGovernedWorkerTurn(terminalization)).toThrow(
+      await expect(terminalizeGovernedWorkerTurn(terminalization)).rejects.toThrow(
         expect.objectContaining({ errors: [injectedFailure] })
       );
       const partialEvents = store.getTurnEvents(turn.id);
@@ -200,7 +202,7 @@ function createCheckpointCloseoutFixture(
       );
       const terminalBytes = JSON.stringify(partialEvents.at(-1));
       publication.mockRestore();
-      terminalizeGovernedWorkerTurn(terminalization);
+      await terminalizeGovernedWorkerTurn(terminalization);
       expect(
         JSON.stringify(
           store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
@@ -218,12 +220,12 @@ function createCheckpointCloseoutFixture(
         return emit(id, event, admission);
       });
     try {
-      terminalizeGovernedWorkerTurn(terminalization);
+      await terminalizeGovernedWorkerTurn(terminalization);
     } finally {
       publication.mockRestore();
     }
   } else {
-    terminalizeGovernedWorkerTurn(terminalization);
+    await terminalizeGovernedWorkerTurn(terminalization);
   }
   closeSchedulerExecutionAttemptWithFence(coreDb, {
     correlation,
@@ -360,8 +362,8 @@ function createRecoveryRuntimeStream(
  * @returns Outer turn id plus stable raw evidence paths and original stream bytes.
  */
 async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
-  const store = createDemoStore();
-  const turn = store.createTurn(
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Recover retained runtime provenance',
@@ -507,10 +509,10 @@ describe('worker recovery materialization', () => {
       'completed',
       'Worker environment package contradicts its checkpoint lineage.',
     ],
-  ] as const)('resolves historical attempt lineage with %s after %s', (scenario, outcome, expected) => {
-    const f = createCheckpointCloseoutFixture(outcome);
+  ] as const)('resolves historical attempt lineage with %s after %s', async (scenario, outcome, expected) => {
+    const f = await createCheckpointCloseoutFixture(outcome);
     try {
-      const turn = f.store.createTurn(
+      const turn = await f.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Later package',
@@ -519,7 +521,7 @@ describe('worker recovery materialization', () => {
           id: 'usr_00000000-0000-7000-8000-000000000001',
         }
       );
-      f.store.updateTurn(turn.id, {
+      await f.store.updateTurn(turn.id, {
         agentId: 'agent_codex_host',
         agentSessionId: f.agentSessionId,
       });
@@ -541,7 +543,7 @@ describe('worker recovery materialization', () => {
       const terminal = f.store
         .getTurnEvents(f.checkpoint.turnId)
         .find((event) => event.event === 'turn.completed')!;
-      f.store.updateAgentSession(f.agentSessionId, {
+      await f.store.updateAgentSession(f.agentSessionId, {
         environmentPackageSnapshotId:
           scenario === 'absent current pointer' ? null : environmentPackage.snapshotId,
         status: 'closed',
@@ -567,7 +569,7 @@ describe('worker recovery materialization', () => {
             f.attempt.attemptId
           );
       }
-      const reloaded = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      const reloaded = await createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
       const recover = () =>
         recoverWorkerCheckpointStopReason(f.coreDb, reloaded, f.workspaceDb, f.checkpoint);
       if (expected === 'completed' || expected === 'error') expect(recover()).toBe(expected);
@@ -588,8 +590,8 @@ describe('worker recovery materialization', () => {
     }
   });
 
-  it('recovers Subject A: failed Turn with a live-closeout retained idle AgentSession', () => {
-    const f = createCheckpointCloseoutFixture('failed');
+  it('recovers Subject A: failed Turn with a live-closeout retained idle AgentSession', async () => {
+    const f = await createCheckpointCloseoutFixture('failed');
     try {
       expect(f.store.getTurnById(f.checkpoint.turnId)).toMatchObject({
         status: 'failed',
@@ -604,13 +606,13 @@ describe('worker recovery materialization', () => {
     }
   });
 
-  it('recovers Subject B: completed Turn with an AgentSession closed after its terminal event', () => {
-    const f = createCheckpointCloseoutFixture('completed');
+  it('recovers Subject B: completed Turn with an AgentSession closed after its terminal event', async () => {
+    const f = await createCheckpointCloseoutFixture('completed');
     try {
       const terminal = f.store
         .getTurnEvents(f.checkpoint.turnId)
         .find((event) => event.event === 'turn.completed')!;
-      f.store.updateAgentSession(f.agentSessionId, {
+      await f.store.updateAgentSession(f.agentSessionId, {
         status: 'closed',
         updatedAt: new Date(Date.parse(terminal.timestamp) + 1000).toISOString(),
       });
@@ -626,8 +628,10 @@ describe('worker recovery materialization', () => {
   it.each([
     ['failed', 'error'],
     ['completed', 'completed'],
-  ] as const)('recovers %s publication repair after a real failed write and owner retry', (outcome, stopReason) => {
-    const f = createCheckpointCloseoutFixture(outcome, false, { repairSessionPublication: true });
+  ] as const)('recovers %s publication repair after a real failed write and owner retry', async (outcome, stopReason) => {
+    const f = await createCheckpointCloseoutFixture(outcome, false, {
+      repairSessionPublication: true,
+    });
     try {
       expect(
         f.store
@@ -637,7 +641,7 @@ describe('worker recovery materialization', () => {
       expect(
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toBe(stopReason);
-      const reloaded = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      const reloaded = await createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
       expect(
         recoverWorkerCheckpointStopReason(f.coreDb, reloaded, f.workspaceDb, f.checkpoint)
       ).toBe(stopReason);
@@ -651,7 +655,7 @@ describe('worker recovery materialization', () => {
     ['ordinary closeout before terminal', false, true],
     ['ordinary closeout after terminal', false, false],
   ] as const)('preserves recovery_required for a later nonterminal publication after %s', async (_scenario, repairSessionPublication, beforeTerminal) => {
-    const f = createCheckpointCloseoutFixture('completed', false, {
+    const f = await createCheckpointCloseoutFixture('completed', false, {
       repairSessionPublication,
       executionPublication: beforeTerminal ? 'before-terminal' : undefined,
     });
@@ -680,7 +684,7 @@ describe('worker recovery materialization', () => {
         );
       }
       recordCloseoutConversationReceipt(f);
-      const cold = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      const cold = await createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
       expect(cold.getAgentSession(f.agentSessionId).status).toBe('idle');
       expect(
         cold
@@ -723,13 +727,13 @@ describe('worker recovery materialization', () => {
   it.each([
     false,
     true,
-  ])('accepts an earlier execution publication before closeout with repair=%s', (repairSessionPublication) => {
-    const f = createCheckpointCloseoutFixture('completed', false, {
+  ])('accepts an earlier execution publication before closeout with repair=%s', async (repairSessionPublication) => {
+    const f = await createCheckpointCloseoutFixture('completed', false, {
       repairSessionPublication,
       executionPublication: 'before-closeout',
     });
     try {
-      const cold = createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
+      const cold = await createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
       expect(
         cold
           .getTurnEvents(f.checkpoint.turnId)
@@ -758,8 +762,8 @@ describe('worker recovery materialization', () => {
     'duplicate closeout publication',
     'changed terminal completion',
     'unsupported success reason',
-  ] as const)('rejects an unproved reordered repair with %s', (scenario) => {
-    const f = createCheckpointCloseoutFixture('completed', false, {
+  ] as const)('rejects an unproved reordered repair with %s', async (scenario) => {
+    const f = await createCheckpointCloseoutFixture('completed', false, {
       repairSessionPublication: true,
     });
     try {
@@ -811,7 +815,7 @@ describe('worker recovery materialization', () => {
     'failed',
     'completed',
   ] as const)('requires recovery when both %s publications name the same wrong request', async (outcome) => {
-    const f = createCheckpointCloseoutFixture(outcome);
+    const f = await createCheckpointCloseoutFixture(outcome);
     try {
       const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
       for (const event of events) event.requestId = '00000000-0000-4000-8000-000000000502';
@@ -845,8 +849,8 @@ describe('worker recovery materialization', () => {
   it.each([
     'failed',
     'completed',
-  ] as const)('joins %s publications to a projected non-UUID command request', (outcome) => {
-    const f = createCheckpointCloseoutFixture(outcome, true, {
+  ] as const)('joins %s publications to a projected non-UUID command request', async (outcome) => {
+    const f = await createCheckpointCloseoutFixture(outcome, true, {
       requestId: 'req_checkpoint_closeout',
     });
     try {
@@ -861,8 +865,8 @@ describe('worker recovery materialization', () => {
     }
   });
 
-  it('keeps ordinary completed closeout distinct from an earlier busy AgentSession publication', () => {
-    const f = createCheckpointCloseoutFixture('completed');
+  it('keeps ordinary completed closeout distinct from an earlier busy AgentSession publication', async () => {
+    const f = await createCheckpointCloseoutFixture('completed');
     try {
       const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
       const session = events.find((event) => event.data.type === 'agent-session-updated')!;
@@ -885,8 +889,8 @@ describe('worker recovery materialization', () => {
     ['interrupted', false, 'interrupted', 'aborted'],
     ['interrupted', true, 'idle', 'aborted'],
     ['completed', true, 'idle', 'completed'],
-  ] as const)('recovers %s closeout with retention=%s and published %s', (outcome, retained, status, stopReason) => {
-    const f = createCheckpointCloseoutFixture(outcome, retained);
+  ] as const)('recovers %s closeout with retention=%s and published %s', async (outcome, retained, status, stopReason) => {
+    const f = await createCheckpointCloseoutFixture(outcome, retained);
     try {
       expect(f.store.getAgentSession(f.agentSessionId).status).toBe(status);
       expect(
@@ -903,7 +907,7 @@ describe('worker recovery materialization', () => {
     ['failed', true],
     ['completed', true],
   ] as const)('finishes the conversation checkpoint through its existing owner after %s closeout with publication repair=%s', async (outcome, repairSessionPublication) => {
-    const f = createCheckpointCloseoutFixture(outcome, !repairSessionPublication, {
+    const f = await createCheckpointCloseoutFixture(outcome, !repairSessionPublication, {
       repairSessionPublication,
     });
     try {
@@ -912,7 +916,7 @@ describe('worker recovery materialization', () => {
         .getTurnEvents(checkpoint.turnId)
         .find((event) => event.event === 'turn.completed')!;
       if (outcome === 'completed')
-        store.updateAgentSession(f.agentSessionId, {
+        await store.updateAgentSession(f.agentSessionId, {
           status: 'closed',
           updatedAt: new Date(Date.parse(terminal.timestamp) + 1000).toISOString(),
         });
@@ -986,8 +990,8 @@ describe('worker recovery materialization', () => {
     ],
     ['checkpoint has wrong AgentSession', 'Worker checkpoint has no exact AgentSession owner.'],
     ['checkpoint has wrong request', 'Worker scheduler admission contradicts its command owner.'],
-  ])('fails closed when %s', (scenario, expectedError) => {
-    const f = createCheckpointCloseoutFixture('failed');
+  ])('fails closed when %s', async (scenario, expectedError) => {
+    const f = await createCheckpointCloseoutFixture('failed');
     const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
     const terminal = events.find((event) => event.data.type === 'turn-completed')!;
     const session = events.find((event) => event.data.type === 'agent-session-updated')!;
@@ -1030,7 +1034,7 @@ describe('worker recovery materialization', () => {
           break;
         case 'AgentSession changed before terminal':
         case 'AgentSession changed at terminal':
-          f.store.updateAgentSession(f.agentSessionId, {
+          await f.store.updateAgentSession(f.agentSessionId, {
             status: 'closed',
             updatedAt: new Date(
               Date.parse(terminal.timestamp) -
@@ -1095,9 +1099,9 @@ describe('worker recovery materialization', () => {
   it.each([
     ['granted', 'completed', 'completed'],
     ['denied', 'interrupted', 'aborted'],
-  ] as const)('classifies a %s human worker approval after a policy grant and terminal closeout', (decision, turnStatus, stopReason) => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+  ] as const)('classifies a %s human worker approval after a policy grant and terminal closeout', async (decision, turnStatus, stopReason) => {
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Close a worker approval',
@@ -1119,7 +1123,7 @@ describe('worker recovery materialization', () => {
       turnId: turn.id,
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    store.createItem({
+    await store.createItem({
       approvalRequestId: policyApproval.id,
       completedAt: policyApproval.createdAt,
       createdAt: policyApproval.createdAt,
@@ -1133,7 +1137,7 @@ describe('worker recovery materialization', () => {
       type: 'approval-request',
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     });
-    store.createItem({
+    await store.createItem({
       actor: { id: 'nanocore-repo-push-policy', kind: 'system', responsibleUserId: null },
       approvalRequestId: policyApproval.id,
       causationId: 'it_00000000-0000-7027-9e4c-3a19493a1c80',
@@ -1160,7 +1164,7 @@ describe('worker recovery materialization', () => {
       turnId: turn.id,
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    const request = store.createItem({
+    const request = await store.createItem({
       approvalRequestId: approval.id,
       completedAt: '2026-09-04T00:00:00.000Z',
       createdAt: '2026-09-04T00:00:00.000Z',
@@ -1174,7 +1178,7 @@ describe('worker recovery materialization', () => {
       type: 'approval-request',
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     });
-    const response = store.createItem({
+    const response = await store.createItem({
       actor: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
       approvalRequestId: approval.id,
       causationId: '00000000-0000-4000-8000-000000000401',
@@ -1193,7 +1197,7 @@ describe('worker recovery materialization', () => {
       resolvedAt: '2026-09-04T00:01:00.000Z',
       status: decision,
     });
-    const closedTurn = store.updateTurn(turn.id, {
+    const closedTurn = await store.updateTurn(turn.id, {
       completedAt: '2026-09-04T00:01:00.000Z',
       status: turnStatus,
     });
@@ -1278,8 +1282,8 @@ describe('worker recovery materialization', () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
-      const store = createDemoStore();
-      const turn = store.createTurn(
+      const store = await createDemoStore();
+      const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Missing retained runtime provenance',
@@ -1428,4 +1432,9 @@ describe('worker recovery materialization', () => {
       workspaceDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

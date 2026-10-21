@@ -60,7 +60,7 @@ export async function submitConversationFiles(
         403
       );
     const store = dependencies.requestStore(context);
-    const admitted = admitOperation(
+    const admitted = await admitOperation(
       definition,
       { ...value, requestId },
       {

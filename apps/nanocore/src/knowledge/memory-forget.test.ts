@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -22,6 +22,7 @@ import { createPendingRequestOperationImplementations } from '../pending-request
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import { installPendingRequestAdmission } from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -72,7 +73,7 @@ async function fixture(sourceBacked = false) {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
-  const store = createDemoStore();
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
   const userDb = openUserDb(dataRoot, userId);
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
@@ -126,8 +127,8 @@ async function fixture(sourceBacked = false) {
     content: content('Private exact forgotten text.'),
     summary: 'Save my preference',
   });
-  const thread = openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');
-  const turn = store.createTurn(
+  const thread = await openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');
+  const turn = await store.createTurn(
     DEMO_WORKSPACE_ID,
     thread.id,
     'Forget my preference',
@@ -204,7 +205,7 @@ describe('Item-confirmed self Memory forget', () => {
     });
     const sourceBase = f.notebook.publishedRevision();
     f.request.notebookRevision = sourceBase;
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     const preview = projectApprovalEffect({
       record,
@@ -272,7 +273,7 @@ describe('Item-confirmed self Memory forget', () => {
         summary: 'Do not revive',
       })
     ).rejects.toThrow('Memory page unavailable.');
-    f.writer.store.updateTurn(f.turn.id, {
+    await f.writer.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -305,7 +306,7 @@ describe('Item-confirmed self Memory forget', () => {
     'apply',
   ] as const)('rechecks canonical Source corruption before %s and withholds the captured preview without repair', async (stage) => {
     const f = await fixture(true);
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     if (stage === 'apply') await f.decide(prepared.pendingRequestId);
     const baseRevision = f.notebook.publishedRevision();
     const pointer = f.notebook.readSourcePointers(baseRevision)[f.source!.id]!;
@@ -408,7 +409,7 @@ describe('Item-confirmed self Memory forget', () => {
       candidateRevision: restored,
     }).revision;
     f.request.notebookRevision = restoredRevision;
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     f.writer.userDb.sqlite.close();
     const database = userDbPath(f.writer.coreDb.dataRoot, f.writer.actor.userId);
@@ -427,7 +428,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('keeps Source inspection unjoined for a non-self administrator confirmation', async () => {
     const f = await fixture(true);
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const administrator = administrativeReviewer(f.writer.coreDb);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     expect(
@@ -455,13 +456,13 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('prepares an idle user command on one truthful local Turn and reuses its canonical lineage on replay', async () => {
     const f = await fixture();
-    f.writer.store.updateTurn(f.turn.id, {
+    await f.writer.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
     const { threadId: _threadId, turnId: _turnId, ...input } = f.request;
     const before = f.writer.store.listThreadTurns(input.workspaceId, f.thread.id).length;
-    const result = prepareMemoryForgetCommand(f.writer, input);
+    const result = await prepareMemoryForgetCommand(f.writer, input);
     const turn = f.writer.store.getTurnById(result.turnId);
     expect(turn).toMatchObject({
       owner: { kind: 'workspace', workspaceId: input.workspaceId },
@@ -482,7 +483,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('withholds captured Memory prose from a usable administrator after the owning User is disabled', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     const actor = administrativeReviewer(f.writer.coreDb);
     const preview = () =>
@@ -495,7 +496,7 @@ describe('Item-confirmed self Memory forget', () => {
   });
   it('refuses an absent grant and mismatched private context without changing content', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
       code: 'approval_required',
     });
@@ -531,7 +532,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('captures exact disclosure and actual human decision but executes only the later apply', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     expect(prepareMemoryForget(f.writer, f.request)).toEqual(prepared);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     expect(
@@ -582,7 +583,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('refuses a stale target terminally and cannot use the grant after another edit', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
     const edited = await editMemoryPage(f.writer, {
       requestId: randomUUID(),
@@ -604,11 +605,11 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('replays the exact outcome after decision delivery and a later new save', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
     const removed = await f.apply(prepared.pendingRequestId);
     // Deliver the person decision after apply: the shared pending owner clears its held result.
-    f.writer.store.updateTurn(f.turn.id, {
+    await f.writer.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -641,7 +642,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('withholds confirmation prose after suppression even when Git publication fails and never repeats it', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
     const publish = vi.spyOn(KnowledgeNotebook.prototype, 'publish').mockImplementationOnce(() => {
       throw new Error('Publication outcome could not be established.');
@@ -665,4 +666,9 @@ describe('Item-confirmed self Memory forget', () => {
       })
     ).toMatchObject({ status: 'unavailable' });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

@@ -366,7 +366,7 @@ const bootResult = await runBootPhases({
         // A later read-only Store construction must not remove another live request's bytes.
         discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
-        recoverServerKnowledgeManagerTurns(sharedStore);
+        await recoverServerKnowledgeManagerTurns(sharedStore);
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,
@@ -400,7 +400,7 @@ const bootResult = await runBootPhases({
               subject.attemptId
             );
             const anchored = 'state' in subject;
-            const result = terminalizeGovernedWorkerTurn({
+            const result = await terminalizeGovernedWorkerTurn({
               agentSessionId: subject.agentSessionId,
               completedAt: new Date().toISOString(),
               errorCode: 'worker_governance_restart_recovery',
@@ -459,7 +459,7 @@ const bootResult = await runBootPhases({
             openBootVerifiedWorkspaceDb(dataRoot, workspaceId),
         };
         installPendingRequestAdmission(recoveryStore, pendingWorkspace);
-        recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
+        await recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
         runRecoveryMaintenance = {
           scheduler: () => runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput),
           native: () => runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput),
@@ -556,7 +556,12 @@ const runtimeConfigManager = createRuntimeConfigManager({
 });
 
 if (mode === 'local') {
-  ensureLocalUser(coreDb);
+  // Boot owns durable personal scope; synchronous app composition cannot await native publication.
+  await ensureUserQuickChatWorkspace({
+    coreDb,
+    store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
+    userId: ensureLocalUser(coreDb),
+  });
 }
 if (mode === 'server') {
   const bootstrap = ensureServerBootstrapToken(coreDb);
@@ -583,15 +588,15 @@ const workerPlacement = 'local' as const;
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
 const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-reconcileWorkerMcpItems(coreDb.dataRoot, store);
+await reconcileWorkerMcpItems(coreDb.dataRoot, store);
 
 /**
  * Ensures the personal Quick Chat Workspace before Better Auth records a new active session.
  *
  * @param userId Active canonical user starting the session.
  */
-function onActiveUserSession(userId: string): void {
-  ensureUserQuickChatWorkspace({ coreDb: activeCoreDb, store, userId });
+async function onActiveUserSession(userId: string): Promise<void> {
+  await ensureUserQuickChatWorkspace({ coreDb: activeCoreDb, store, userId });
 }
 
 const auth =
@@ -605,7 +610,7 @@ const auth =
 
 readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
-let prepareKnowledgeMaintenance: ((instant: string) => void) | undefined;
+let prepareKnowledgeMaintenance: ((instant: string) => Promise<void>) | undefined;
 const app = createApp({
   onKnowledgeMaintenanceReady: (prepare) => {
     prepareKnowledgeMaintenance = prepare;
@@ -743,9 +748,7 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   },
 });
 recurringSchedules = startRecurringScheduleService({
-  prepareKnowledgeMaintenance: (instant) => {
-    prepareKnowledgeMaintenance?.(instant);
-  },
+  prepareKnowledgeMaintenance: (instant) => prepareKnowledgeMaintenance?.(instant),
   schedules: automationStore,
   store,
   prepare: (occurrence) =>

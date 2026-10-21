@@ -46,6 +46,14 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Query-owned retrieval traces',
 ]);
 
+/** Mutable metadata compared through native snapshots rather than disposable file projections. */
+export const NATIVE_METADATA_FAMILIES = Object.freeze([
+  'Workspace record',
+  'Thread record',
+  'Turn record',
+  'AgentSession',
+]);
+
 const FIXTURE = Object.freeze({
   at: '2026-10-18T00:00:00.000Z',
   text: 'B01 public synthetic retained text.\r\nUnicode Ω.\n',
@@ -64,10 +72,12 @@ async function owners(appRoot) {
   const load = (path) => import(pathToFileURL(join(resolve(appRoot), 'dist', path)).href);
   const modules = {
     store: 'lib/store.js',
+    controlWorker: 'storage/control-store-worker-client.js',
     db: 'storage/db.js',
     migrate: 'storage/migrate.js',
     layout: 'storage/fs-layout.js',
     records: 'storage/workspace-file-records.js',
+    products: 'storage/control-store-products.js',
     notebook: 'knowledge/notebook.js',
     notebookOwner: 'knowledge/scoped-notebook-owner.js',
     knowledgeBase: 'config/knowledge-base.js',
@@ -233,7 +243,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
   try {
     mkdirSync(r.corpus, { recursive: true, mode: 0o700 });
     const producer = { kind: 'user', id: userId };
-    const workspace = ctx.store.createWorkspace('B01 upgrade continuity', {
+    const workspace = await ctx.store.createWorkspace('B01 upgrade continuity', {
       requestId: randomUUID(),
       producer,
       instructionReference: 'fixture:upgrade-from-previous',
@@ -244,11 +254,11 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       ownerUserId: userId,
       workspaceId: workspace.id,
     });
-    const thread = ctx.store.createThread(workspace.id, 'Retained B01 history');
+    const thread = await ctx.store.createThread(workspace.id, 'Retained B01 history');
     selectors.threadId = thread.id;
     const inputSource = join(r.corpus, 'input-original.bin');
     writeFileSync(inputSource, FIXTURE.original, { flag: 'wx', mode: 0o600 });
-    const turn = ctx.store.createTurn(workspace.id, thread.id, FIXTURE.text, producer, null, {
+    const turn = await ctx.store.createTurn(workspace.id, thread.id, FIXTURE.text, producer, null, {
       captureCoverage: { scope: 'server', value: 'off' },
       startedAt: FIXTURE.at,
       executorKind: 'person',
@@ -277,7 +287,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         durationMs: 1,
       },
     ])
-      ctx.store.createItem({
+      await ctx.store.createItem({
         owner: turn.owner,
         threadId: thread.id,
         turnId: turn.id,
@@ -287,14 +297,15 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         createdAt: FIXTURE.at,
         completedAt: FIXTURE.at,
       });
-    ctx.store.emitTurnEvent(turn.id, {
+    const startedEvent = await ctx.store.persistTurnEvent(turn.id, {
       ...lineage,
       event: 'turn.started',
       requestId: randomUUID(),
       data: { type: 'turn-started', turnId: turn.id, status: 'running' },
     });
+    ctx.store.emitTurnEvent(turn.id, startedEvent);
     selectors.agentSessionId = o.protocol.allocateEntityId('as');
-    ctx.store.createAgentSession({
+    await ctx.store.createAgentSession({
       id: selectors.agentSessionId,
       agentId: 'agent_continuity_fixture',
       workspaceId: workspace.id,
@@ -306,7 +317,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     });
     const inline = artifact(o, selectors, FIXTURE.text);
     selectors.inlineArtifactId = inline.id;
-    ctx.store.createArtifact(inline);
+    await ctx.store.createArtifact(inline);
     const original = artifact(o, selectors, FIXTURE.original, true);
     selectors.fileArtifactId = original.id;
     const workspaceRoot = join(r.data, 'workspaces', workspace.id);
@@ -325,7 +336,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       expectedDigest: original.contentDigest,
     });
     try {
-      ctx.store.createArtifact(original, staged);
+      await ctx.store.createArtifact(original, staged);
     } finally {
       await staged.remove();
       reservation.release();
@@ -545,6 +556,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     });
     await seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot);
   } finally {
+    await o.controlWorker.shutdownControlStoreWorkerClient();
     ctx.userDb.sqlite.close();
     ctx.coreDb.sqlite.close();
   }
@@ -634,7 +646,7 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
     complete: true,
     createdAt: FIXTURE.at,
   });
-  ctx.store.updateTurn(selectors.turnId, {
+  await ctx.store.updateTurn(selectors.turnId, {
     status: 'completed',
     completedAt: FIXTURE.at,
     durationMs: 0,
@@ -718,21 +730,45 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
         ...retainedPaths.flatMap((path) => bytesAt(r.retained, path, 'retained')),
       ].sort((a, b) => a.path.localeCompare(b.path)),
     };
-    if (!result[family].bytes.length) throw new Error(`${family}: retained bytes are missing.`);
+    if (!result[family].bytes.length && !NATIVE_METADATA_FAMILIES.includes(family))
+      throw new Error(`${family}: retained bytes are missing.`);
   };
   try {
     record('Layout marker', [o.layout.readDataRootLayoutMarker(r.data)], ['server/layout.json']);
-    record(
-      'Workspace record',
-      [ctx.store.getWorkspace(selectors.workspaceId)],
-      [`${workspacePath}/workspace-record.json`]
-    );
-    record(
-      'Thread record',
-      [ctx.store.getThread(selectors.workspaceId, selectors.threadId)],
-      [`${workspacePath}/threads/${selectors.threadId}/thread.json`]
-    );
-    record('Turn record', [ctx.store.getTurnById(selectors.turnId)], [`${turnPath}/turn.json`]);
+    const scope = o.records.nativeProductScope(r.data, {
+      kind: 'workspace',
+      workspaceId: selectors.workspaceId,
+    });
+    const nativeRecord = (family, kind, id) => {
+      const snapshot = o.records.readNativeProduct(scope, kind, id);
+      if (!snapshot) throw new Error(`${family}: no native reader result.`);
+      record(family, [{ owner: scope.owner, ...snapshot }], []);
+    };
+    nativeRecord('Workspace record', 'workspace', selectors.workspaceId);
+    nativeRecord('Thread record', 'thread', selectors.threadId);
+    nativeRecord('Turn record', 'turn', selectors.turnId);
+    // Ordered native entries retain their exact immutable payload bytes and revision facts.
+    const nativeEntries = (family, kind) => {
+      const values = o.records.readNativeProductEntries(scope, selectors.turnId, kind);
+      const reader = o.products.openControlStoreProductReadHandle(scope.path, scope.owner);
+      const paths = [];
+      try {
+        let after = 0;
+        for (;;) {
+          const page = reader.entries(selectors.turnId, kind, after);
+          if (!page.length) break;
+          for (const entry of page) {
+            paths.push(
+              relative(r.data, join(scope.contentMount.root, entry.content.reference.locator.path))
+            );
+            after = entry.sequence;
+          }
+        }
+      } finally {
+        reader.close();
+      }
+      record(family, values, paths);
+    };
     const fileTurn = ctx.store.getTurnById(selectors.turnId);
     o.records.verifyTurnFileInputs(workspaceRoot, fileTurn);
     record(
@@ -740,22 +776,14 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       [fileTurn.fileInputs],
       [`${turnPath}/inputs/0/payload`]
     );
-    record('Item revision log', ctx.store.listWorkspaceItemRevisions(selectors.workspaceId), [
-      `${turnPath}/items.jsonl`,
-    ]);
-    record('Stream event log', ctx.store.getTurnEventsForExport(selectors.turnId), [
-      `${turnPath}/runtime/events.jsonl`,
-    ]);
+    nativeEntries('Item revision log', 'item');
+    nativeEntries('Stream event log', 'event');
     record(
       'Turn human feedback',
       [o.feedback.readTurnFeedback(ctx.store, selectors.turnId)],
       [`${turnPath}/feedback.json`]
     );
-    record(
-      'AgentSession',
-      [ctx.store.getAgentSession(selectors.agentSessionId)],
-      [`${workspacePath}/runtime/agent-sessions/${selectors.agentSessionId}/session.json`]
-    );
+    nativeRecord('AgentSession', 'agent-session', selectors.agentSessionId);
     const inline = ctx.store.getArtifact(selectors.workspaceId, selectors.inlineArtifactId);
     const original = ctx.store.getArtifact(selectors.workspaceId, selectors.fileArtifactId);
     const versions = [inline, original].map((artifact) =>
@@ -959,6 +987,7 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       [`${workspacePath}/${o.traces.retrievalTraceRelativePath(selectors.retrievalTraceReference)}`]
     );
   } finally {
+    await o.controlWorker.shutdownControlStoreWorkerClient();
     ctx.userDb.sqlite.close();
     ctx.coreDb.sqlite.close();
   }

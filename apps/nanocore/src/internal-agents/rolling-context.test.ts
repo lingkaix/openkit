@@ -6,6 +6,7 @@ import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   type AgentMessage,
   type AgentTool,
@@ -47,26 +48,26 @@ afterEach(() => {
 });
 
 /** Uses real canonical records with equal timestamps and deliberately reverse-sorted Item ids. */
-function fixture(historyTurns = 8, durable = false, failedSource = false) {
+async function fixture(historyTurns = 8, durable = false, failedSource = false) {
   const dataRoot = durable ? mkdtempSync(join(tmpdir(), 'internal-rolling-context-')) : '';
   if (dataRoot) roots.push(dataRoot);
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
-  const store = new FsStore(dataRoot ? { dataRoot } : {});
-  const workspace = store.createWorkspace('Rolling context');
-  const thread = store.createThread(workspace.id, 'Conversation', undefined, 'conversation', {
+  const store = createTestStore(dataRoot ? { dataRoot } : {});
+  const workspace = await store.createWorkspace('Rolling context');
+  const thread = await store.createThread(workspace.id, 'Conversation', undefined, 'conversation', {
     visibility: 'private',
     privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const history: Item[] = [];
   for (let index = 0; index < historyTurns; index += 1) {
-    const turn = admitTurn(store, workspace.id, thread.id);
+    const turn = await admitTurn(store, workspace.id, thread.id);
     history.push(
-      messageItem(store, turn, 'user-message', `Question ${index}: ${'q'.repeat(1_200)}`)
+      await messageItem(store, turn, 'user-message', `Question ${index}: ${'q'.repeat(1200)}`)
     );
     history.push(
-      messageItem(store, turn, 'assistant-message', `Decision ${index}: ${'a'.repeat(1_200)}`)
+      await messageItem(store, turn, 'assistant-message', `Decision ${index}: ${'a'.repeat(1200)}`)
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       status: failedSource ? 'failed' : 'completed',
       completedAt: timestamp,
       error: failedSource
@@ -74,8 +75,8 @@ function fixture(historyTurns = 8, durable = false, failedSource = false) {
         : null,
     });
   }
-  const turn = admitTurn(store, workspace.id, thread.id);
-  messageItem(
+  const turn = await admitTurn(store, workspace.id, thread.id);
+  await messageItem(
     store,
     turn,
     'user-message',
@@ -85,8 +86,8 @@ function fixture(historyTurns = 8, durable = false, failedSource = false) {
 }
 
 /** Creates an admitted internal Turn through the existing owner. */
-function admitTurn(store: FsStore, workspaceId: string, threadId: string) {
-  return store.createTurn(
+async function admitTurn(store: FsStore, workspaceId: string, threadId: string) {
+  return await store.createTurn(
     workspaceId,
     threadId,
     'Continue.',
@@ -103,7 +104,7 @@ function admitTurn(store: FsStore, workspaceId: string, threadId: string) {
 }
 
 /** Publishes one accepted message without inventing an identifier format. */
-function messageItem(
+async function messageItem(
   store: FsStore,
   turn: Turn,
   type: 'user-message' | 'assistant-message',
@@ -112,7 +113,7 @@ function messageItem(
   const identities =
     itemIdsByTurn.get(turn.id) ?? [allocateEntityId('it'), allocateEntityId('it')].sort();
   itemIdsByTurn.set(turn.id, identities);
-  return store.createItem({
+  return await store.createItem({
     id: identities[type === 'user-message' ? 1 : 0]!,
     owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
@@ -142,7 +143,7 @@ function evidence(items: readonly Item[]): string {
 
 /** Assembles through the public private-module seam with replaceable dependency faults. */
 function input(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   overrides: Partial<Parameters<typeof prepareInternalAgentContext>[0]> = {}
 ) {
   return {
@@ -166,7 +167,7 @@ function input(
 }
 
 /** Reads only canonical summary Items, never a process cache or provider continuation. */
-function summaries(f: ReturnType<typeof fixture>) {
+function summaries(f: Awaited<ReturnType<typeof fixture>>) {
   return f.store
     .listThreadItems(f.workspace.id, f.thread.id)
     .filter((item) => item.type === 'context-summary');
@@ -207,7 +208,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('uses complete canonical history in first-seen order when it fits, including after restart', async () => {
-    const f = fixture(1, true);
+    const f = await fixture(1, true);
     const before = f.store.listThreadItems(f.workspace.id, f.thread.id);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
@@ -234,8 +235,8 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('fills missing retained metadata and preserves the original profile and initial limits on later runs', async () => {
-    const f = fixture(0);
-    f.store.updateTurn(f.turn.id, {
+    const f = await fixture(0);
+    await f.store.updateTurn(f.turn.id, {
       internalExecution: {
         roleId: f.turn.agentId!,
         logicalModelId: model.logicalModelId,
@@ -262,7 +263,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('keeps canonical failure outcomes visible beside retained source Items', async () => {
-    const f = fixture(1, false, true);
+    const f = await fixture(1, false, true);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
     expect(request.callProvider).not.toHaveBeenCalled();
@@ -273,7 +274,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('bootstraps large legacy history in bounded advancing batches and reuses canonical summaries after restart', async () => {
-    const f = fixture(8, true);
+    const f = await fixture(8, true);
     const paths = files(f.dataRoot);
     const requests: InternalAgentProviderRequest[] = [];
     const execute = vi.fn(async () => ({ content: [] }));
@@ -351,18 +352,23 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('continues rolling after a later admission without replaying earlier producer calls', async () => {
-    const f = fixture();
+    const f = await fixture();
     await prepareInternalAgentContext(input(f));
     const previous = summaries(f).at(-1)!;
-    messageItem(f.store, f.turn, 'assistant-message', 'Accepted ordinary answer.');
-    f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    await messageItem(f.store, f.turn, 'assistant-message', 'Accepted ordinary answer.');
+    await f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
     for (let index = 0; index < 6; index += 1) {
-      const turn = admitTurn(f.store, f.workspace.id, f.thread.id);
-      messageItem(f.store, turn, 'user-message', `Later input ${index} ${'x'.repeat(1_600)}`);
-      messageItem(f.store, turn, 'assistant-message', `Later answer ${index} ${'y'.repeat(1_600)}`);
-      f.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+      const turn = await admitTurn(f.store, f.workspace.id, f.thread.id);
+      await messageItem(f.store, turn, 'user-message', `Later input ${index} ${'x'.repeat(1_600)}`);
+      await messageItem(
+        f.store,
+        turn,
+        'assistant-message',
+        `Later answer ${index} ${'y'.repeat(1_600)}`
+      );
+      await f.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
     }
-    f.turn = admitTurn(f.store, f.workspace.id, f.thread.id);
+    f.turn = await admitTurn(f.store, f.workspace.id, f.thread.id);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
     expect(request.callProvider).toHaveBeenCalled();
@@ -378,11 +384,11 @@ describe('source-bound internal rolling context', () => {
     'environment',
     'dependent evidence',
   ] as const)('refuses an invalid %s without using it to truncate history', async (fault) => {
-    const f = fixture();
+    const f = await fixture();
     await prepareInternalAgentContext(input(f));
     const latest = summaries(f).at(-1)!;
     if (fault === 'source digest')
-      f.store.updateItem(latest.id, {
+      await f.store.updateItem(latest.id, {
         sourceRange: { ...latest.sourceRange, sourceDigest: `sha256:${'0'.repeat(64)}` },
       });
     const request = input(f, {
@@ -403,7 +409,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('rechecks current source authority after production and accepts no revoked summary', async () => {
-    const f = fixture();
+    const f = await fixture();
     const denied = new Error('Current source authority was revoked.');
     let revoked = false;
     const request = input(f, {
@@ -423,7 +429,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('propagates the producer failure and leaves its attempted boundary unadvanced', async () => {
-    const f = fixture();
+    const f = await fixture();
     const failure = new InternalAgentProviderError('provider_unavailable', 'Provider unavailable.');
     let attempts = 0;
     const request = input(f, {
@@ -440,7 +446,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('refuses dependent source changes during production before accepting a summary', async () => {
-    const f = fixture();
+    const f = await fixture();
     let changed = false;
     const request = input(f, {
       readEvidence: (items) => (changed ? `sha256:${'0'.repeat(64)}` : evidence(items)),
@@ -457,7 +463,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('withholds dispatch when synchronous source verification crosses the admitted deadline', async () => {
-    const f = fixture(1);
+    const f = await fixture(1);
     let now = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     const request = input(f, {
@@ -475,7 +481,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('ends a stalled summary at the same admitted deadline without accepting output', async () => {
-    const f = fixture();
+    const f = await fixture();
     const request = input(f, {
       limits: { ...limits, deadlineMs: 25 },
       callProvider: async () => new Promise<InternalAgentProviderResponse>(() => {}),
@@ -494,7 +500,7 @@ describe('source-bound internal rolling context', () => {
     'oversized',
     'nonreducing',
   ] as const)('rejects %s summary output before any Tool closure executes', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const execute = vi.fn(async () => ({ content: [] }));
     const tool: AgentTool = {
       name: 'test.effect',
@@ -540,7 +546,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('reserves the ordinary answer model turn and retains completed batches when the shared budget runs out', async () => {
-    const f = fixture();
+    const f = await fixture();
     const noSummaryBudget = input(f, { limits: { ...limits, maxModelTurns: 1 } });
     await expect(prepareInternalAgentContext(noSummaryBudget)).rejects.toMatchObject({
       code: 'internal_agent_context_exceeded',
@@ -556,7 +562,7 @@ describe('source-bound internal rolling context', () => {
 
   it('passes only the remaining absolute deadline to the ordinary answer run', async () => {
     vi.useFakeTimers();
-    const f = fixture(4);
+    const f = await fixture(4);
     const request = input(f, {
       limits: { ...limits, deadlineMs: 100 },
       callProvider: vi.fn(async () => {

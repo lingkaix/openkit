@@ -37,7 +37,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Goal Knowledge');
+  const workspace = await store.createWorkspace('Goal Knowledge');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   initializeScopedNotebook({
     coreDb,
@@ -205,7 +205,7 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Gateway Goal');
+  const workspace = await store.createWorkspace('Gateway Goal');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,
@@ -448,7 +448,7 @@ it('completes the real Coordinator request through stock Codex with unchanged To
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Stock Codex Goal');
+  const workspace = await store.createWorkspace('Stock Codex Goal');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,

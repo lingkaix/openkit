@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import type { KernelCommandContext } from './commands.js';
 import {
@@ -19,7 +20,8 @@ import {
 import { KernelCommandError } from './errors.js';
 
 const temporaryRoots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -72,10 +74,12 @@ const MAPPING_SCHEMA: LightAppSchemaInput = {
  * @param requestId Caller request id.
  * @returns Context and owning Workspace id.
  */
-function createContext(requestId = randomUUID()): KernelCommandContext & { workspaceId: string } {
+async function createContext(
+  requestId = randomUUID()
+): Promise<KernelCommandContext & { workspaceId: string }> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-kernel-'));
   temporaryRoots.push(dataRoot);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   return {
     store,
     inflightCommands: new WeakMap(),
@@ -88,7 +92,7 @@ function createContext(requestId = randomUUID()): KernelCommandContext & { works
 
 describe('Generative Kernel commands', () => {
   it('creates an app and record, then rereads them after reopen', async () => {
-    const context = createContext();
+    const context = await createContext();
     const created = await createLightApp(context, MAPPING_SCHEMA);
     expect(created.lifecycle).toBe('active');
     expect(created.schema?.collections).toHaveLength(1);
@@ -123,7 +127,7 @@ describe('Generative Kernel commands', () => {
 
   it('replays the same create request and rejects changed arguments', async () => {
     const requestId = randomUUID();
-    const context = createContext(requestId);
+    const context = await createContext(requestId);
     const first = await createLightApp(context, MAPPING_SCHEMA);
     const second = await createLightApp(context, MAPPING_SCHEMA);
     expect(second.appId).toBe(first.appId);
@@ -133,7 +137,7 @@ describe('Generative Kernel commands', () => {
   });
 
   it('rejects stale record revisions and unique collisions', async () => {
-    const context = createContext();
+    const context = await createContext();
     const app = await createLightApp(context, MAPPING_SCHEMA);
     const first = await createRecord(
       { ...context, requestId: randomUUID() },
@@ -180,7 +184,7 @@ describe('Generative Kernel commands', () => {
   });
 
   it('adds a nullable field without dropping existing rows', async () => {
-    const context = createContext();
+    const context = await createContext();
     const app = await createLightApp(context, MAPPING_SCHEMA);
     const record = await createRecord(
       { ...context, requestId: randomUUID() },
@@ -232,7 +236,7 @@ describe('Generative Kernel commands', () => {
   });
 
   it('rechecks source-query membership before a lineage-bound record update', async () => {
-    const context = createContext();
+    const context = await createContext();
     const app = await createLightApp(context, MAPPING_SCHEMA);
     const record = await createRecord(
       { ...context, requestId: randomUUID() },

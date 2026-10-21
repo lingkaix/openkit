@@ -11,6 +11,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -25,11 +26,11 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 afterEach(closeRetrievalServices);
 
 /** Keeps native Knowledge retrieval and HTTP authority in the same disposable data root. */
-function createSearchFixture(dataRoot: string) {
+async function createSearchFixture(dataRoot: string) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   for (const workspace of store.listWorkspaces()) {
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -83,12 +84,14 @@ async function createKnowledgeFixture(
 
 describe('search app API', () => {
   it('opens only authorized workspaces and never scans global items', async () => {
-    const store = createDemoStore({ dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')) });
-    const allowedThread = store.createThread(
+    const store = await createDemoStore({
+      dataRoot: mkdtempSync(join(tmpdir(), 'openkit-search-')),
+    });
+    const allowedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Authorized needle thread'
     );
-    const allowedTurn = store.createTurn(
+    const allowedTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       allowedThread.id,
       'Authorized needle turn',
@@ -97,7 +100,7 @@ describe('search app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7c1a-9937-67af1fde2325',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: allowedThread.id,
@@ -108,13 +111,18 @@ describe('search app API', () => {
       createdAt: allowedTurn.startedAt ?? new Date().toISOString(),
       completedAt: allowedTurn.startedAt ?? new Date().toISOString(),
     });
-    const deniedWorkspace = store.createWorkspace('Denied needle workspace');
-    const deniedThread = store.createThread(deniedWorkspace.id, 'Denied needle thread');
-    const deniedTurn = store.createTurn(deniedWorkspace.id, deniedThread.id, 'Denied needle turn', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    store.createItem({
+    const deniedWorkspace = await store.createWorkspace('Denied needle workspace');
+    const deniedThread = await store.createThread(deniedWorkspace.id, 'Denied needle thread');
+    const deniedTurn = await store.createTurn(
+      deniedWorkspace.id,
+      deniedThread.id,
+      'Denied needle turn',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    await store.createItem({
       id: 'it_00000000-0000-7259-a0ef-9cfa5f715f90',
       owner: { kind: 'workspace', workspaceId: deniedWorkspace.id },
       threadId: deniedThread.id,
@@ -171,9 +179,14 @@ describe('search app API', () => {
   });
 
   it('searches workspaces, threads, knowledge, artifacts, and items', async () => {
-    const { store, app } = createSearchFixture(mkdtempSync(join(tmpdir(), 'openkit-search-')));
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Needle thread');
-    const turn = store.createTurn(
+    const { store, app } = await createSearchFixture(
+      mkdtempSync(join(tmpdir(), 'openkit-search-'))
+    );
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Needle thread'
+    );
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Find needle',
@@ -182,7 +195,7 @@ describe('search app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-75ee-bb30-08d9b9c9b051',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -210,7 +223,7 @@ describe('search app API', () => {
 
   it('delegates Knowledge search to the same segmented governed owner', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-search-cjk-'));
-    const { app } = createSearchFixture(dataRoot);
+    const { app } = await createSearchFixture(dataRoot);
     const page = await createKnowledgeFixture(
       app,
       dataRoot,
@@ -239,8 +252,8 @@ describe('search app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const allowedWorkspace = store.createWorkspace('Allowed visibility needle');
-    const deniedWorkspace = store.createWorkspace('Denied visibility needle');
+    const allowedWorkspace = await store.createWorkspace('Allowed visibility needle');
+    const deniedWorkspace = await store.createWorkspace('Denied visibility needle');
 
     for (const workspace of [allowedWorkspace, deniedWorkspace]) {
       recordWorkspaceOwnerMembership({
@@ -255,11 +268,16 @@ describe('search app API', () => {
       [allowedWorkspace, 'allowed'],
       [deniedWorkspace, 'denied'],
     ] as const) {
-      const thread = store.createThread(workspace.id, `${prefix} visibility needle thread`);
-      const turn = store.createTurn(workspace.id, thread.id, `${prefix} visibility needle turn`, {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      });
+      const thread = await store.createThread(workspace.id, `${prefix} visibility needle thread`);
+      const turn = await store.createTurn(
+        workspace.id,
+        thread.id,
+        `${prefix} visibility needle turn`,
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       const timestamp = turn.startedAt ?? new Date().toISOString();
       const artifactBody = `${prefix} visibility needle body`;
       const artifactRequestId = `search-artifact-${prefix}-1`;
@@ -268,7 +286,7 @@ describe('search app API', () => {
         title: `${prefix} visibility needle knowledge`,
         content: `${prefix} visibility needle content`,
       });
-      store.createArtifact({
+      await store.createArtifact({
         id: testEntityId('ar', `ar_search_${prefix}`),
         workspaceId: workspace.id,
         threadId: thread.id,
@@ -290,7 +308,7 @@ describe('search app API', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      store.createItem({
+      await store.createItem({
         id: testEntityId('it', `it_search_${prefix}`),
         owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
@@ -409,4 +427,9 @@ describe('search app API', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

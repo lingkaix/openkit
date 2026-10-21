@@ -47,9 +47,9 @@ export function createThreadOperationImplementations(
         threadCommandFailure(error, 'not_found');
       }
     },
-    'thread.update': async (input) => {
+    'thread.update': async (input, context) => {
       try {
-        return await updateThread(input, commandDependencies);
+        return await updateThread(input, commandDependencies, context);
       } catch (error) {
         threadCommandFailure(error, 'thread_update_failed');
       }
@@ -76,7 +76,8 @@ export function createThreadOperationImplementations(
         return await createThread(
           input,
           { store: dependencies.store!, inflightCommands: dependencies.inflightCommands! },
-          responsibleUserIdForActor(actor)!
+          responsibleUserIdForActor(actor)!,
+          context
         );
       } catch (error) {
         if (error instanceof HTTPException && error.status === 404)

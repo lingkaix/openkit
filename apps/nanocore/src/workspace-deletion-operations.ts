@@ -142,7 +142,7 @@ export function createWorkspaceDeletionOperationImplementations(
         throw recoveryRequired();
       }
     },
-    'workspace.deleted-recover': (value, context) => {
+    'workspace.deleted-recover': async (value, context) => {
       const coreDb = input.coreDb;
       const dataRoot = input.dataRoot;
       const fileAdmission = input.fileAdmission;
@@ -185,17 +185,16 @@ export function createWorkspaceDeletionOperationImplementations(
         requireTerminalWorkspaceStorage(dataRoot, request);
         requireTerminalDeletionTruth({ coreDb, store: input.store!, workspaceId }, request);
         const verified = verifyDeletionArtifacts(dataRoot, request);
-        const imported = withCanonicalFileWriteAdmission(fileAdmission, () =>
-          importVerifiedWorkspace({
-            authorityUserId: actor.userId,
-            recoveryOwnerUserId: registry.ownerUserId,
-            coreDb,
-            dataRoot,
-            requestId: value.requestId,
-            store: input.store!,
-            verified,
-          })
-        );
+        const imported = await importVerifiedWorkspace({
+          authorityUserId: actor.userId,
+          recoveryOwnerUserId: registry.ownerUserId,
+          coreDb,
+          dataRoot,
+          fileAdmission,
+          requestId: value.requestId,
+          store: input.store!,
+          verified,
+        });
         return RecoverDeletedWorkspaceResponseSchema.parse({
           recovery: {
             sourceWorkspaceId: workspaceId,

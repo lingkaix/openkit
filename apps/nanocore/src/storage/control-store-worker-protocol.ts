@@ -1,24 +1,83 @@
 import { isAbsolute } from 'node:path';
+import { GoalViewSchema } from '@openkit/app-api-schemas';
+import {
+  type ControlReviewCommandInput,
+  ControlReviewCommandInputSchema,
+  type ControlReviewCommandResult,
+  ControlReviewCommandResultSchema,
+} from '../artifact-reviews.js';
+import {
+  type ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionInputSchema,
+  type ControlMaintenanceAdmissionResult,
+  ControlMaintenanceAdmissionResultSchema,
+} from '../knowledge/knowledge-agent-maintenance.js';
+import {
+  type ControlExecutionJournalInput,
+  ControlExecutionJournalInputSchema,
+} from '../runtime/execution-journal.js';
+import {
+  type ControlGoalCommandInput,
+  ControlGoalCommandInputSchema,
+  type ControlGoalCommandResult,
+} from '../runtime/goal-owner.js';
+import {
+  type ControlPendingCommandResult,
+  ControlPendingCommandResultSchema,
+} from '../runtime/pending-requests.js';
+import {
+  type ProjectWorkerBackendCleanupInput,
+  ProjectWorkerBackendCleanupInputSchema,
+  type WorkerBackendCleanupProjectionResult,
+  WorkerBackendCleanupProjectionResultSchema,
+} from '../runtime/worker-backend-cleanup-projection.js';
+import {
+  type ControlMaterialCommandResult,
+  ControlMaterialCommandResultSchema,
+  type ControlMaterialWireInput,
+  ControlMaterialWireInputSchema,
+  controlMaterialTextSpans,
+} from '../workspace-materials.js';
 import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
 } from './control-store-admission.js';
 import {
+  type ControlPendingTransition,
+  ControlPendingTransitionSchema,
+} from './control-store-pending.js';
+import {
+  CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   ControlProductContentMountSchema,
   type ControlProductOwner,
+  type ControlProductTransition,
+  ControlProductTransitionSchema,
+  type ControlPublicationInput,
+  ControlPublicationInputSchema,
+  type ControlTerminalResult,
+  type ControlTerminalTransition,
+  ControlTerminalTransitionSchema,
 } from './control-store-products.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
+import {
+  type ControlWorkObservationInput,
+  ControlWorkObservationInputSchema,
+  type ControlWorkObservationResult,
+  parseWorkObservationRecord,
+} from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 3;
+export const CONTROL_WORKER_VERSION = 8;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
   batchTransitions: 32,
   batchWaitMs: 5,
   pendingTransitions: 1024,
+  /** Process-wide binary input plus echoed range-text capacity, admitted before postMessage. */
+  materialPendingBytes: 64 * 1024 * 1024,
 } as const;
 
 /** SQLite bind values that survive structured cloning without executable content. */
@@ -74,11 +133,28 @@ export type ControlWorkerCommand =
           readonly initialize?: ControlInitializationScope;
           /** Explicit admitted product owner; absent on legacy primitive-only fixture scopes. */
           readonly productOwner?: ControlProductOwner;
+          /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
+          readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
           readonly contentMount?: ControlProductContentMount;
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
+      | { readonly operation: 'products'; readonly transition: ControlProductTransition }
+      | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
+      | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
+      | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
+      | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
+      | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
+      | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
+      | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
+      | {
+          readonly operation: 'material';
+          readonly input: ControlMaterialWireInput;
+          readonly content?: ArrayBuffer;
+        }
+      | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
+      | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -106,6 +182,14 @@ export const CONTROL_WORKER_FAILURE_CODES = [
 /** Closed native failure code, with no SQL text or bound values. */
 export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[number];
 
+/** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
+export interface ControlWorkerDomainRefusal {
+  readonly operation: 'goal' | 'maintenance' | 'material' | 'review' | 'pending';
+  readonly code: string;
+  readonly message: string;
+  readonly status: number;
+}
+
 /**
  * Worker reply. Success for writes follows the outer FULL-durability COMMIT.
  *
@@ -115,7 +199,16 @@ export type ControlWorkerReply = {
   readonly version: typeof CONTROL_WORKER_VERSION;
   readonly id: number;
 } & (
-  | { readonly status: 'ok'; readonly operation: 'open' | 'close' | 'shutdown' }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'open' | 'close' | 'shutdown' | 'products' | 'publication';
+    }
+  | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'pending';
+      readonly result: ControlPendingCommandResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'write';
@@ -125,6 +218,41 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'transition';
       readonly result: ControlAdmissionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'project-cleanup';
+      readonly result: WorkerBackendCleanupProjectionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'observation';
+      readonly result: ControlWorkObservationResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'goal';
+      readonly result: ControlGoalCommandResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'maintenance';
+      readonly result: ControlMaintenanceAdmissionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'material';
+      readonly result: ControlMaterialCommandResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'review';
+      readonly result: ControlReviewCommandResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'terminal';
+      readonly result: ControlTerminalResult;
     }
   | {
       readonly status: 'ok';
@@ -142,6 +270,7 @@ export type ControlWorkerReply = {
       readonly status: 'error';
       readonly code: ControlWorkerFailureCode;
       readonly commit: 'not-committed' | 'unknown';
+      readonly domain?: ControlWorkerDomainRefusal;
     }
 );
 
@@ -181,6 +310,41 @@ function isSqlResult(value: unknown): boolean {
   );
 }
 
+/** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
+function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  return (
+    isRecord(value) &&
+    exactFields(value, ['operation', 'code', 'message', 'status']) &&
+    // This reserved owner refusal carries no native exception text or SQL details.
+    (value.code !== 'unsupported_retained_format' ||
+      (value.operation === 'goal' &&
+        value.message === 'Unsupported retained record format.' &&
+        value.status === 409)) &&
+    (value.operation === 'goal' ||
+      value.operation === 'pending' ||
+      ((value.operation === 'material' || value.operation === 'review') &&
+        ((['stale', 'conflict', 'recovery_required', 'idempotency_key_conflict'].includes(
+          String(value.code)
+        ) &&
+          value.status === 409) ||
+          (['source_digest_mismatch', 'invalid_request'].includes(String(value.code)) &&
+            value.status === 400) ||
+          (value.code === 'not_found' && value.status === 404))) ||
+      (value.operation === 'maintenance' &&
+        ((value.code === 'invalid_request' && value.status === 400) ||
+          ((value.code === 'recovery_required' || value.code === 'idempotency_key_conflict') &&
+            value.status === 409)))) &&
+    typeof value.code === 'string' &&
+    value.code.length > 0 &&
+    value.code.length <= 128 &&
+    typeof value.message === 'string' &&
+    Buffer.byteLength(value.message) <= CONTROL_PRODUCT_LIMITS.metadataBytes &&
+    Number.isInteger(value.status) &&
+    (value.status as number) >= 400 &&
+    (value.status as number) <= 599
+  );
+}
+
 /**
  * Checks worker replies before a caller promise can be completed.
  *
@@ -201,12 +365,90 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.status === 'error') {
     return (
       CONTROL_WORKER_FAILURE_CODES.some((code) => code === reply.code) &&
-      (reply.commit === 'not-committed' || reply.commit === 'unknown')
+      (reply.commit === 'not-committed' || reply.commit === 'unknown') &&
+      (reply.domain === undefined ||
+        (reply.code === 'precondition' &&
+          reply.commit === 'not-committed' &&
+          isDomainRefusal(reply.domain)))
     );
   }
   if (reply.status !== 'ok') return false;
-  if (reply.operation === 'open' || reply.operation === 'close' || reply.operation === 'shutdown')
+  if (
+    reply.operation === 'open' ||
+    reply.operation === 'close' ||
+    reply.operation === 'shutdown' ||
+    reply.operation === 'products' ||
+    reply.operation === 'publication'
+  )
     return true;
+  if (reply.operation === 'project-cleanup')
+    return WorkerBackendCleanupProjectionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'observation') {
+    if (
+      !isRecord(reply.result) ||
+      (reply.result.disposition !== 'committed' && reply.result.disposition !== 'duplicate')
+    )
+      return false;
+    try {
+      const observation = parseWorkObservationRecord(reply.result.observation);
+      if (reply.result.publication === null) return true;
+      const publication = parseWorkObservationRecord(reply.result.publication);
+      return publication.type === 'content.published' && publication.parent === observation.id;
+    } catch {
+      return false;
+    }
+  }
+  if (reply.operation === 'terminal') {
+    const result = reply.result;
+    return (
+      isRecord(result) &&
+      typeof result.turnId === 'string' &&
+      result.turnId.length > 0 &&
+      Number.isSafeInteger(result.revision) &&
+      (result.revision as number) > 0 &&
+      typeof result.replayed === 'boolean' &&
+      (result.reap === null ||
+        (isRecord(result.reap) &&
+          typeof result.reap.id === 'string' &&
+          result.reap.id.length > 0 &&
+          Number.isSafeInteger(result.reap.sequence) &&
+          (result.reap.sequence as number) > 0)) &&
+      (result.response === null ||
+        (isRecord(result.response) &&
+          result.response.kind === 'turn' &&
+          result.response.id === result.turnId)) &&
+      (result.execution === null ||
+        (isRecord(result.execution) &&
+          typeof result.execution.executionId === 'string' &&
+          result.execution.executionId.length > 0 &&
+          Number.isSafeInteger(result.execution.revision) &&
+          (result.execution.revision as number) > 0 &&
+          (result.execution.phase === 'closing' || result.execution.phase === 'closed')))
+    );
+  }
+  if (reply.operation === 'pending')
+    return ControlPendingCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'journal')
+    return (
+      typeof reply.resultJson === 'string' &&
+      Buffer.byteLength(reply.resultJson) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (reply.operation === 'review')
+    return ControlReviewCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'material')
+    return ControlMaterialCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'maintenance')
+    return ControlMaintenanceAdmissionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'goal') {
+    return (
+      isRecord(reply.result) &&
+      typeof reply.result.replayed === 'boolean' &&
+      GoalViewSchema.safeParse(reply.result.view).success &&
+      (reply.result.refusal === null ||
+        (isRecord(reply.result.refusal) &&
+          isDomainRefusal({ ...reply.result.refusal, operation: 'goal' })))
+    );
+  }
   if (reply.operation === 'write')
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
   if (reply.operation === 'transition') {
@@ -290,6 +532,42 @@ function isSqlStatement(value: unknown): value is ControlSqlStatement {
   );
 }
 
+/** Reads only an ordinary, fixed, attached ArrayBuffer; native getters reject forged or shared backing. */
+export function controlMaterialArrayBufferByteLength(value: unknown): number | undefined {
+  try {
+    if (!(value instanceof ArrayBuffer)) return undefined;
+    const prototype = ArrayBuffer.prototype;
+    const byteLength = Object.getOwnPropertyDescriptor(prototype, 'byteLength')!.get!.call(
+      value
+    ) as number;
+    if (
+      Object.getOwnPropertyDescriptor(prototype, 'resizable')?.get?.call(value) ||
+      Object.getOwnPropertyDescriptor(prototype, 'detached')?.get?.call(value)
+    )
+      return undefined;
+    return byteLength;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bounds contiguous binary fields and reserves the UTF-8 text echoed by range replies until settlement. */
+export function controlMaterialTransferSize(
+  input: ControlMaterialWireInput
+): { byteLength: number; replyByteLength: number } | undefined {
+  let byteLength = 0;
+  for (const span of controlMaterialTextSpans(input)) {
+    if (span.offset !== byteLength || !Number.isSafeInteger(byteLength + span.byteLength))
+      return undefined;
+    byteLength += span.byteLength;
+  }
+  return {
+    byteLength,
+    replyByteLength:
+      input.mode === 'range-correct' || input.mode === 'range-judgement' ? byteLength : 0,
+  };
+}
+
 /**
  * Validates the complete effect-bearing request before posting and again before native admission.
  *
@@ -313,11 +591,13 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'contentMount']
+        ['initialize', 'productOwner', 'dataRoot', 'contentMount']
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
+      (value.dataRoot === undefined ||
+        (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
       (value.productOwner === undefined ||
         StoredWorkOwnerV1Schema.safeParse(value.productOwner).success) &&
       (value.contentMount === undefined ||
@@ -329,12 +609,70 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         value.initialize === 'workspace')
     );
   }
-  if (value.operation === 'transition') {
+  if (value.operation === 'transition' || value.operation === 'products') {
     try {
+      const schema =
+        value.operation === 'transition' ? ControlAdmissionSchema : ControlProductTransitionSchema;
       return (
         exactFields(value, [...scoped, 'transition']) &&
-        ControlAdmissionSchema.safeParse(value.transition).success &&
+        schema.safeParse(value.transition).success &&
         JSON.stringify(value.transition).length <= 2 * 1024 * 1024
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (value.operation === 'material') {
+    try {
+      const parsed = ControlMaterialWireInputSchema.safeParse(value.input);
+      if (!parsed.success || !exactFields(value, [...scoped, 'input'], ['content'])) return false;
+      const size = controlMaterialTransferSize(parsed.data);
+      if (!size) return false;
+      const hasContent = controlMaterialTextSpans(parsed.data).length > 0;
+      return (
+        (hasContent
+          ? controlMaterialArrayBufferByteLength(value.content) === size.byteLength
+          : value.content === undefined) &&
+        Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (
+    value.operation === 'publication' ||
+    value.operation === 'pending' ||
+    value.operation === 'journal' ||
+    value.operation === 'project-cleanup' ||
+    value.operation === 'observation' ||
+    value.operation === 'goal' ||
+    value.operation === 'maintenance' ||
+    value.operation === 'review' ||
+    value.operation === 'terminal'
+  ) {
+    try {
+      const schema =
+        value.operation === 'publication'
+          ? ControlPublicationInputSchema
+          : value.operation === 'pending'
+            ? ControlPendingTransitionSchema
+            : value.operation === 'journal'
+              ? ControlExecutionJournalInputSchema
+              : value.operation === 'project-cleanup'
+                ? ProjectWorkerBackendCleanupInputSchema
+                : value.operation === 'goal'
+                  ? ControlGoalCommandInputSchema
+                  : value.operation === 'review'
+                    ? ControlReviewCommandInputSchema
+                    : value.operation === 'maintenance'
+                      ? ControlMaintenanceAdmissionInputSchema
+                      : value.operation === 'terminal'
+                        ? ControlTerminalTransitionSchema
+                        : ControlWorkObservationInputSchema;
+      return (
+        exactFields(value, [...scoped, 'input']) &&
+        schema.safeParse(value.input).success &&
+        Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
       );
     } catch {
       return false;

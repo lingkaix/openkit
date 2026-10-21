@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   verifyOpenKitAccessTokenRecord,
@@ -37,6 +37,7 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   assertExternalColdBackupDestination,
   copyColdDataRoot,
@@ -291,9 +292,9 @@ describe('data-root backup manifest', () => {
     });
     const dataRoot = join(root, 'source');
     const backupRoot = join(root, 'backup');
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    store.updateWorkspace(workspaceId, { name: 'Before callback' });
+    await store.updateWorkspace(workspaceId, { name: 'Before callback' });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb);
     closeDatabase = () => workspaceDb.sqlite.close();
@@ -304,9 +305,9 @@ describe('data-root backup manifest', () => {
     let writerResumed = false;
     // One ordinary Core callback publishes both changes synchronously when capture releases it.
     const pendingWriter = new Promise<void>((resolve, reject) => {
-      setImmediate(() => {
+      setImmediate(async () => {
         try {
-          store.updateWorkspace(workspaceId, { name: 'After callback' });
+          await store.updateWorkspace(workspaceId, { name: 'After callback' });
           createWorkspaceMaterial(workspaceDb, {
             acceptedAt: timestamp,
             actor: { kind: 'user', id: LOCAL_USER_ID },
@@ -646,7 +647,7 @@ describe('data-root backup manifest', () => {
       join(dataRoot, 'server', 'layout.json'),
       `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: testEntityId('dep', 'snapshot_backup') })}\n`
     );
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const context = {
       dataRoot,
       store,
@@ -734,7 +735,7 @@ describe('data-root backup manifest', () => {
       join(dataRoot, 'server', 'layout.json'),
       `${JSON.stringify({ schemaVersion: 1, layoutVersion: 2, deploymentId: testEntityId('dep', 'deployment_backup_test') })}\n`
     );
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const schema: LightAppSchemaInput = {
       format: 'openkit.light-app',
       schemaVersion: 1,
@@ -811,4 +812,9 @@ describe('data-root backup manifest', () => {
     );
     expect(() => verifyDataRootBackupManifest({ backupRoot })).toThrow(/definition/i);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

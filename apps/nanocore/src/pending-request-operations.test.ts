@@ -10,6 +10,7 @@ import { recordProductPermissionDecision } from './policy/permission-decisions.j
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
@@ -25,18 +26,18 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  *
  * @returns Open database, app, store, turn, and stable gate ids.
  */
-function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.apply') {
+async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.apply') {
   const actionSlug = action.replace('.', '_');
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-approval-route-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore();
+  const store = await createDemoStore();
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     `Approve ${action}`,
@@ -64,7 +65,7 @@ function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.app
     createdAt: timestamp,
     resolvedAt: null,
   });
-  store.createItem({
+  await store.createItem({
     id: gate.approvalItemId,
     owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: turn.threadId,
@@ -165,7 +166,8 @@ function respondToApproval(
   );
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
 });
 
@@ -175,7 +177,7 @@ describe('Pending Request operations', () => {
     new TurnStartValidationError('recovery_required', 'Turn receipt owner needs recovery.', 409),
     new KnowledgePageValidationError(),
   ])('preserves the command error $code and status $status from a receipt dependency', async (error) => {
-    const f = createApprovalFixture();
+    const f = await createApprovalFixture();
     try {
       vi.spyOn(f.store, 'getCommandRequest').mockImplementation(() => {
         throw error;
@@ -189,7 +191,7 @@ describe('Pending Request operations', () => {
   });
 
   it('rejects tool.use without the exact worker owner tuple', async () => {
-    const fixture = createApprovalFixture('tool.use');
+    const fixture = await createApprovalFixture('tool.use');
 
     try {
       const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000114');
@@ -221,7 +223,7 @@ describe('Pending Request operations', () => {
   });
 
   it('resolves a person approval on a Turn without closing its execution attempt', async () => {
-    const fixture = createApprovalFixture('review.apply');
+    const fixture = await createApprovalFixture('review.apply');
     const now = '2026-09-15T00:00:00.000Z';
 
     try {
@@ -269,7 +271,7 @@ describe('Pending Request operations', () => {
   });
 
   it('keeps tool.use fail-closed when an attempt exists without a worker checkpoint', async () => {
-    const fixture = createApprovalFixture('tool.use');
+    const fixture = await createApprovalFixture('tool.use');
     const now = '2026-09-15T00:00:00.000Z';
 
     try {
@@ -309,7 +311,7 @@ describe('Pending Request operations', () => {
   });
 
   it('keeps a committed person grant when the command receipt write fails', async () => {
-    const fixture = createApprovalFixture();
+    const fixture = await createApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';
     const otherRequestId = '00000000-0000-4000-8000-000000000102';
 
@@ -341,7 +343,7 @@ describe('Pending Request operations', () => {
     ['granted', '00000000-0000-4000-8000-000000000104'],
     ['denied', '00000000-0000-4000-8000-000000000107'],
   ] as const)('replays one receipt-backed %s approval without closing the raising Turn', async (decision, requestId) => {
-    const fixture = createApprovalFixture();
+    const fixture = await createApprovalFixture();
 
     try {
       const resolved = await respondToApproval(fixture, requestId, decision);
@@ -378,7 +380,7 @@ describe('Pending Request operations', () => {
   });
 
   it('joins concurrent duplicate person approval responses before receipt publication', async () => {
-    const fixture = createApprovalFixture();
+    const fixture = await createApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000105';
 
     try {
@@ -403,7 +405,7 @@ describe('Pending Request operations', () => {
   });
 
   it('lets one contrary person approval request win and reports the other as stale', async () => {
-    const fixture = createApprovalFixture();
+    const fixture = await createApprovalFixture();
     const grantedRequestId = '00000000-0000-4000-8000-000000000111';
     const deniedRequestId = '00000000-0000-4000-8000-000000000112';
 
@@ -435,14 +437,14 @@ describe('Pending Request operations', () => {
   });
 
   it('fails closed when the originating approval tuple is contradictory', async () => {
-    const fixture = createApprovalFixture();
+    const fixture = await createApprovalFixture();
     const workspaceDb = openWorkspaceDb(
       fixture.coreDb.dataRoot,
       workspaceIdForOwner(fixture.turn.owner)
     );
 
     try {
-      fixture.store.createItem({
+      await fixture.store.createItem({
         id: 'it_00000000-0000-704e-85f3-3ea74d4aa3a0',
         owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
         threadId: fixture.turn.threadId,
@@ -483,13 +485,13 @@ describe('Pending Request operations', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-scope-')));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore();
+    const store = await createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Approve runtime action',
@@ -556,13 +558,13 @@ describe('Pending Request operations', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-unsupported-')));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore();
+    const store = await createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Reject non-policy runtime approval',

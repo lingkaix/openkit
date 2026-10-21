@@ -1,7 +1,8 @@
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { WorkspaceDeletionClosureSchema } from '../workspace-deletion-evidence.js';
@@ -12,9 +13,9 @@ import { WorkerControlLineageRequestSchema } from './worker-http.js';
 import { WorkerImageSettlementIdentitySchema } from './worker-image-settlements.js';
 
 /** Builds a preparation boundary whose first backend read is observable and deliberately unavailable. */
-function fixture() {
-  const store = createDemoStore();
-  const turn = store.createTurn(
+async function fixture() {
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Prepare one Worker',
@@ -45,7 +46,7 @@ describe('Worker identity admission', () => {
     'th_01890f3e-0000-7000-8000-000000000001',
     'as_01890F3E-0000-7000-8000-000000000001',
   ])('refuses an invalid reserved identity before the first backend contact: %s', async (id) => {
-    const f = fixture();
+    const f = await fixture();
     await expect(
       f.executor.prepareAgentSessionForTurn(f.store, { ...f.input, freshAgentSessionId: id })
     ).rejects.toMatchObject({
@@ -62,7 +63,7 @@ describe('Worker identity admission', () => {
   });
 
   it('admits the canonical kind to the existing backend readiness check', async () => {
-    const f = fixture();
+    const f = await fixture();
     await expect(f.executor.prepareAgentSessionForTurn(f.store, f.input)).rejects.toMatchObject({
       code: 'recovery_required',
     });
@@ -140,4 +141,9 @@ it.each([
     schema.safeParse({ kind, id: `${prefix}_${uuid}`, annotation: 'unsupported instruction' })
       .success
   ).toBe(false);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

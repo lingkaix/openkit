@@ -58,7 +58,7 @@ function workspaceDb(dataRoot: string, workspaceId: string) {
 }
 
 /** Creates an admitted Turn and real storage without a server, runtime or provider process. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observer-names-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -66,10 +66,10 @@ function fixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Observer names');
-  const thread = store.createThread(workspace.id, 'Observer names');
+  const workspace = await store.createWorkspace('Observer names');
+  const thread = await store.createThread(workspace.id, 'Observer names');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: workspace.id });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Retain observations',
@@ -114,7 +114,7 @@ function ledgerBytes(rows: readonly unknown[]): Buffer {
 }
 
 /** Runs the model producer and its actual body-publication path with admitted semantic input. */
-function captureModel(f: ReturnType<typeof fixture>) {
+function captureModel(f: Awaited<ReturnType<typeof fixture>>) {
   const capture = new ModelCapture({ workspaceDb: f.db, ...f.owner, corr: 'call-one' }, [], 'test');
   capture.request({
     model: 'test-model',
@@ -124,7 +124,7 @@ function captureModel(f: ReturnType<typeof fixture>) {
 }
 
 /** Exercises each changed producer, including inherited publication observers. */
-async function captureAllWriters(f: ReturnType<typeof fixture>) {
+async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
   await withTurnModelCapture(
     {
       store: f.store,
@@ -134,7 +134,7 @@ async function captureAllWriters(f: ReturnType<typeof fixture>) {
     },
     async () => captureModel(f)
   );
-  const session = f.store.createAgentSession({
+  const session = await f.store.createAgentSession({
     id: testEntityId('as', 'observer-names'),
     agentId: createTestAgentSetup().manifest.id,
     workspaceId: f.db.workspaceId,
@@ -144,7 +144,7 @@ async function captureAllWriters(f: ReturnType<typeof fixture>) {
     createdAt: f.turn.startedAt!,
     updatedAt: f.turn.startedAt!,
   });
-  f.store.updateTurn(f.turn.id, { agentSessionId: session.id });
+  await f.store.updateTurn(f.turn.id, { agentSessionId: session.id });
   const lineage = {
     workspaceId: f.db.workspaceId,
     ...f.owner,
@@ -198,7 +198,11 @@ async function captureAllWriters(f: ReturnType<typeof fixture>) {
 }
 
 /** Provides a valid generic coverage record for observer-domain admission checks. */
-function gap(f: ReturnType<typeof fixture>, obs: unknown, id: string): WorkObservationDraft {
+function gap(
+  f: Awaited<ReturnType<typeof fixture>>,
+  obs: unknown,
+  id: string
+): WorkObservationDraft {
   return {
     id,
     type: 'capture.unavailable',
@@ -212,7 +216,7 @@ function gap(f: ReturnType<typeof fixture>, obs: unknown, id: string): WorkObser
 // Owner: docs/specs/20260921-work_data_retention_format.md (RET) plus the engineer's retained-v1 rename ruling.
 describe('retained observer names', () => {
   it('RET Collection Responsibility: "Each point writes only in its observer value obs" — real writers and publications use the new names', async () => {
-    const f = fixture();
+    const f = await fixture();
     await captureAllWriters(f);
     const rows = diskRows(f.ledger);
     expect(rows.map((row) => [row.type, row.obs])).toEqual([
@@ -231,9 +235,9 @@ describe('retained observer names', () => {
   });
 
   it('RET Observation Ledger Envelope: "Append only" — historical v1 names reopen mapped without changing ledger or manifest bytes', async () => {
-    const f = fixture();
+    const f = await fixture();
     await captureAllWriters(f);
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       ...f.owner,
       observation: gap(f, 'nanohost', 'host'),
       bodies: [],
@@ -254,8 +258,8 @@ describe('retained observer names', () => {
     expect(readFileSync(join(f.turnRoot, 'turn.json'))).toEqual(manifest);
   });
 
-  it('RET Capture Publication: "Same identity and same content replay is idempotent" — mixed historical/current rows replay without append or rewrite', () => {
-    const f = fixture();
+  it('RET Capture Publication: "Same identity and same content replay is idempotent" — mixed historical/current rows replay without append or rewrite', async () => {
+    const f = await fixture();
     captureModel(f);
     const [metadata, publication] = diskRows(f.ledger);
     const bytes = ledgerBytes([
@@ -287,8 +291,8 @@ describe('retained observer names', () => {
         },
       ],
     };
-    expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
-    expect(appendWorkObservation(reopened, input).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
     expect(readWorkObservations(reopened, f.owner).map((row) => row.obs)).toEqual([
       'llm-gateway',
       'llm-gateway',
@@ -302,8 +306,8 @@ describe('retained observer names', () => {
     expect(readFileSync(f.ledger)).toEqual(bytes);
   });
 
-  it('RET References: "A reference MUST NEVER be wrong" — old exports retain bytes, annotations and lineage with mapped observers', () => {
-    const f = fixture();
+  it('RET References: "A reference MUST NEVER be wrong" — old exports retain bytes, annotations and lineage with mapped observers', async () => {
+    const f = await fixture();
     captureModel(f);
     const sourceLedger = readFileSync(f.ledger);
     const exported = createVerifiedWorkspaceExport({
@@ -348,7 +352,7 @@ describe('retained observer names', () => {
     const manifestBytes = readFileSync(manifestPath);
     const verified = verifyWorkspaceExportTree({ exportRoot });
     expect(Buffer.from(verified.fileContents.get(observationPath)!)).toEqual(bytes);
-    const result = importVerifiedWorkspace({
+    const result = await importVerifiedWorkspace({
       authorityUserId: userId,
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
@@ -420,7 +424,7 @@ describe('retained observer names', () => {
   });
 
   it('RET Observation Ledger Envelope: obs identifies the observer; Contract Evolution: unknown core values fail closed — accepts current names only for writes', async () => {
-    const f = fixture();
+    const f = await fixture();
     const current = ['nanocore', 'llm-gateway', 'worker-shim', 'nanohost'];
     for (const obs of current) {
       const observation = gap(f, obs, `accepted-${obs}`);
@@ -452,7 +456,7 @@ describe('retained observer names', () => {
         .toThrow();
     }
     expect.soft(diskRows(f.ledger).map((row) => row.obs)).toEqual(current);
-    const typed = fixture();
+    const typed = await fixture();
     await captureAllWriters(typed);
     for (const row of diskRows(typed.ledger).filter((row) => row.type !== 'content.published')) {
       const expected =

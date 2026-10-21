@@ -6,26 +6,28 @@ import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { prepareTurnFileSourceInputs } from './turn-source-files.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Publishes real canonical Turn inputs; source names never choose a payload path. */
-function fixture(body: Buffer, mediaType = 'text/plain') {
+async function fixture(body: Buffer, mediaType = 'text/plain') {
   const root = mkdtempSync(join(tmpdir(), 'turn-source-files-'));
   roots.push(root);
-  const store = createDemoStore({ dataRoot: root });
+  const store = await createDemoStore({ dataRoot: root });
   const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code')!;
-  const thread = store.createThread(workspace.id, 'Original source view');
+  const thread = await store.createThread(workspace.id, 'Original source view');
   const source = join(root, 'original');
   writeFileSync(source, body);
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Inspect the selected original',
@@ -65,7 +67,7 @@ function fixture(body: Buffer, mediaType = 'text/plain') {
 }
 
 it('keeps exact original identity and emits only the bounded UTF-8 preview', async () => {
-  const state = fixture(Buffer.from('漢字'.repeat(40_000)));
+  const state = await fixture(Buffer.from('漢字'.repeat(40_000)));
   const [source] = await prepareTurnFileSourceInputs(state.input);
   expect(source!.source).toEqual({
     kind: 'turn-input',
@@ -102,7 +104,7 @@ it.each([
   Buffer.alloc(0),
   Buffer.from('\ufeffexact\r\noriginal\n'),
 ])('preserves exact small UTF-8 bytes including empty and BOM inputs', async (body) => {
-  const state = fixture(body);
+  const state = await fixture(body);
   const [source] = await prepareTurnFileSourceInputs(state.input);
   expect(Buffer.from(source!.deliveredBytes)).toEqual(body);
   expect(source!.projection).toMatchObject({
@@ -116,7 +118,7 @@ it.each([
   'application/octet-stream',
   'text/plain',
 ])('uses a truthful descriptor for binary originals declared as %s', async (mediaType) => {
-  const state = fixture(Buffer.from([0xff, 0x80, 0]), mediaType);
+  const state = await fixture(Buffer.from([0xff, 0x80, 0]), mediaType);
   const [source] = await prepareTurnFileSourceInputs(state.input);
   expect(source!.projection).toMatchObject({
     kind: 'descriptor',
@@ -137,7 +139,7 @@ it.each([
 });
 
 it('rechecks current authority before reopening an admitted source', async () => {
-  const state = fixture(Buffer.from('original'));
+  const state = await fixture(Buffer.from('original'));
   const [source] = await prepareTurnFileSourceInputs(state.input);
   state.revoke();
   await expect(source!.assertUnchanged()).rejects.toThrow(/revoked/);
@@ -156,7 +158,7 @@ it.each([
   'hardlink',
   'corrupt',
 ] as const)('refuses a %s original without a substitute body', async (kind) => {
-  const state = fixture(Buffer.from('original'));
+  const state = await fixture(Buffer.from('original'));
   const [source] = await prepareTurnFileSourceInputs(state.input);
   if (kind === 'hardlink') linkSync(state.path, join(state.root, 'other-owner'));
   else if (kind === 'corrupt') writeFileSync(state.path, 'changed!');
@@ -176,7 +178,7 @@ it.each([
 });
 
 it('closes a large source iterator when cancellation wins between chunks', async () => {
-  const state = fixture(Buffer.alloc(256_000, 120));
+  const state = await fixture(Buffer.alloc(256_000, 120));
   const [source] = await prepareTurnFileSourceInputs(state.input);
   const controller = new AbortController();
   const iterator = source!.open(controller.signal)[Symbol.asyncIterator]();
@@ -192,7 +194,7 @@ function sha256(bytes: Uint8Array): string {
 }
 
 it('retrieves only the selected ordinal when an unrelated original is unavailable', async () => {
-  const state = fixture(Buffer.from('selected original'));
+  const state = await fixture(Buffer.from('selected original'));
   const turn = {
     ...state.input.turn,
     fileInputs: [

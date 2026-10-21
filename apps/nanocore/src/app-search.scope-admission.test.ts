@@ -30,9 +30,9 @@ it('searches healthy authorized siblings without reading quarantined or unauthor
         .run(id, email, Date.now(), Date.now());
     }
     const store = new FsStore({ dataRoot });
-    const bad = store.createWorkspace('Scope match quarantined');
-    const good = store.createWorkspace('Scope match healthy');
-    const hidden = store.createWorkspace('Scope match outside audience');
+    const bad = await store.createWorkspace('Scope match quarantined');
+    const good = await store.createWorkspace('Scope match healthy');
+    const hidden = await store.createWorkspace('Scope match outside audience');
     for (const workspace of [bad, good, hidden]) {
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -42,7 +42,7 @@ it('searches healthy authorized siblings without reading quarantined or unauthor
     }
     refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
     const input = { query: 'scope match' };
-    const admitted = admitOperation(
+    const admitted = await admitOperation(
       OPERATION_DEFINITIONS['app.search'],
       input,
       { kind: 'public', actor: { kind: 'session', userId } },

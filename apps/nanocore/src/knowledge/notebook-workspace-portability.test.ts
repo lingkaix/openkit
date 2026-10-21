@@ -58,9 +58,9 @@ function deployment() {
 }
 
 /** Publish test-owned bytes through Git; no fixture file is a canonical page. */
-function source() {
+async function source() {
   const f = deployment();
-  const workspace = f.store.createWorkspace('Portable Notebook', {
+  const workspace = await f.store.createWorkspace('Portable Notebook', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: LOCAL_USER_ID },
     instructionReference: 'test:workspace-create',
@@ -204,8 +204,8 @@ describe('canonical Notebook Workspace portability', () => {
     expect(pages.get('knowledge/pages/evidence.md')).toBe(evidence);
   });
 
-  it('exports one published Git tree and the actual scope schema, ignoring stale page files', () => {
-    const f = source();
+  it('exports one published Git tree and the actual scope schema, ignoring stale page files', async () => {
+    const f = await source();
     mkdirSync(join(f.root, 'knowledge', 'pages'), { recursive: true });
     writeFileSync(
       join(f.root, 'knowledge', 'pages', 'stale.md'),
@@ -226,8 +226,8 @@ describe('canonical Notebook Workspace portability', () => {
     );
   });
 
-  it('rebuilds a new target Notebook through the existing verified Workspace archive import', () => {
-    const f = source();
+  it('rebuilds a new target Notebook through the existing verified Workspace archive import', async () => {
+    const f = await source();
     const target = deployment();
     const exported = createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
@@ -239,7 +239,7 @@ describe('canonical Notebook Workspace portability', () => {
       store: f.store,
       workspaceId: f.workspace.id,
     });
-    const occupied = importVerifiedWorkspace({
+    const occupied = await importVerifiedWorkspace({
       authorityUserId: LOCAL_USER_ID,
       coreDb: target.coreDb,
       dataRoot: target.dataRoot,
@@ -248,7 +248,7 @@ describe('canonical Notebook Workspace portability', () => {
       verified: exported.verified,
     });
     expect(occupied.workspace.id).toBe(f.workspace.id);
-    const imported = importVerifiedWorkspace({
+    const imported = await importVerifiedWorkspace({
       authorityUserId: LOCAL_USER_ID,
       coreDb: target.coreDb,
       dataRoot: target.dataRoot,
@@ -293,7 +293,7 @@ describe('canonical Notebook Workspace portability', () => {
   });
 
   it('refuses current-tree import when an inert historical subject pin requires omitted target bytes', async () => {
-    const f = source();
+    const f = await source();
     const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
     const knowledgeBaseId = readDefaultKnowledgeBaseId({
       dataRoot: f.dataRoot,
@@ -403,8 +403,8 @@ describe('canonical Notebook Workspace portability', () => {
   }, 60_000);
 
   it('remints a retained current-revision Knowledge selection into the imported Notebook', async () => {
-    const f = source();
-    const thread = f.store.createThread(
+    const f = await source();
+    const thread = await f.store.createThread(
       f.workspace.id,
       'Portable trace',
       undefined,
@@ -456,7 +456,7 @@ describe('canonical Notebook Workspace portability', () => {
       workspaceId: f.workspace.id,
     });
     const target = deployment();
-    const imported = importVerifiedWorkspace({
+    const imported = await importVerifiedWorkspace({
       authorityUserId: LOCAL_USER_ID,
       coreDb: target.coreDb,
       dataRoot: target.dataRoot,
@@ -500,7 +500,7 @@ describe('canonical Notebook Workspace portability', () => {
   });
 
   it('retains published and unpublished Git content and existing Audit in the ordinary same-deployment backup', async () => {
-    const f = source();
+    const f = await source();
     const unpublished = f.notebook.prepare({
       baseRevision: f.revision,
       changes: { 'notes/portable.md': `${f.content}Unpublished candidate bytes.\n` },

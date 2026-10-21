@@ -20,6 +20,7 @@ import {
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { resolveProviderProfileToLLMConfig } from '../providers/llm-config.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -30,7 +31,8 @@ import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -441,7 +443,7 @@ describe('deployment model extension catalog', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const store = createDemoStore();
+    const store = await createDemoStore();
     registerOperationJsonRoutes({
       app,
       coreDb,

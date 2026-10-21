@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  type Item,
+  isSealedTurnTerminal,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -10,7 +15,7 @@ import { createAssistantHistory } from '../internal-agents/assistant-history.js'
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
-import type { FsStore } from '../lib/store.js';
+import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
   commandInputHash,
@@ -19,6 +24,7 @@ import {
 } from '../runtime/idempotent-command.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
+import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
 import { admitMemoryContext, type MemoryContext } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
@@ -70,7 +76,7 @@ export interface UserMemoryMaintenanceDependencies {
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void;
+  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void | Promise<void>;
   readonly run: (
     input: KnowledgeManagerAgentRun
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
@@ -201,7 +207,7 @@ function excerpt(text: string, maximum: number) {
 }
 
 /** Prepares one nonresident private maintenance Turn without starting a Provider. */
-export function prepareUserMemoryMaintenance(
+export async function prepareUserMemoryMaintenance(
   dependencies: UserMemoryMaintenanceDependencies,
   input: UserMemoryMaintenanceInput
 ) {
@@ -236,50 +242,32 @@ export function prepareUserMemoryMaintenance(
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
   let baseRevision = notebook.publishedRevision();
-  ensureUserQuickChatWorkspace({ coreDb, store, userId: userDb.userId });
-  const workspaceId = store.ensureQuickChatWorkspace(userDb.userId).id;
-  const priorRuns = store
-    .listThreads(workspaceId)
-    .flatMap((thread) => store.listThreadTurns(workspaceId, thread.id))
-    .filter((turn) => {
-      const knowledge = turn.internalExecution?.knowledge;
-      return (
-        (knowledge?.purpose === 'maintenance' &&
-          knowledge.ownerScope.kind === 'user' &&
-          knowledge.ownerScope.userId === userDb.userId) ||
-        (turn.agentId === 'knowledge-manager' &&
-          turn.triggerSource?.summary === 'User Memory maintenance.')
-      );
-    });
-  const threadIds = new Set(priorRuns.map((turn) => turn.threadId));
-  if (threadIds.size > 1) throw new NotebookError('recovery_required');
-  const thread = priorRuns[0]
-    ? store.getThread(workspaceId, priorRuns[0].threadId)
-    : store.createThread(workspaceId, 'Memory maintenance', undefined, 'knowledge-manager', {
-        visibility: 'private',
-        privateOwnerUserId: userDb.userId,
-      });
-  if (
-    thread.visibility !== 'private' ||
-    thread.privateOwnerUserId !== userDb.userId ||
-    thread.entryPath !== 'knowledge-manager'
-  )
-    throw new NotebookError('recovery_required');
+  await ensureUserQuickChatWorkspace({ coreDb, store, userId: userDb.userId });
+  const workspaceId = quickChatWorkspaceIdForUser(userDb.userId);
   const actor = { kind: 'user', id: userDb.userId } as const;
+  const admitted = await admitControlMaintenance(coreDb.dataRoot, workspaceId, {
+    purpose: 'maintenance',
+    ownerScope: { kind: 'user', userId: userDb.userId },
+    actor,
+    requestId: input.requestId,
+    threadId: allocateEntityId('th'),
+    turnId: allocateEntityId('tu'),
+    startedAt: input.startedAt ?? new Date().toISOString(),
+    trigger: input.trigger,
+    instructions: input.instructions,
+    captureCoverage: store.getLiveCaptureCoverage(),
+  });
+  if (admitted.replayed) throw new NotebookError('recovery_required');
+  const thread = store.getThread(workspaceId, admitted.threadId);
+  const turn = store.getTurnById(admitted.turnId);
+  const priorRuns = store
+    .listThreadTurns(workspaceId, thread.id)
+    .filter((prior) => prior.id !== turn.id);
   const producer = {
     kind: 'agent',
     id: 'knowledge-manager',
     responsibleUserId: userDb.userId,
   } as const;
-  const turn = store.createTurn(workspaceId, thread.id, input.instructions, actor, null, {
-    ...(input.startedAt ? { startedAt: input.startedAt } : {}),
-    agentId: 'knowledge-manager',
-    executorKind: 'assistant',
-    triggerSource: {
-      kind: input.trigger === 'schedule' ? 'automation' : 'system-input',
-      summary: 'User Memory maintenance.',
-    },
-  });
   const workspaceDb = dependencies.openWorkspace(workspaceId);
   const response = (
     outcome: 'published' | 'review-required' | 'no-change' | 'skipped' | 'failed',
@@ -304,10 +292,10 @@ export function prepareUserMemoryMaintenance(
       closed = true;
     }
   };
-  const record = (result: ReturnType<typeof response>) => {
-    if (recorded) return;
+  /** Prepares the User-owned result before either this domain or the shared role seals the Turn. */
+  const resultItem = (result: ReturnType<typeof response>): Item => {
     const now = new Date().toISOString();
-    store.createItem({
+    return {
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId: thread.id,
@@ -320,27 +308,41 @@ export function prepareUserMemoryMaintenance(
       status: result.outcome === 'failed' ? 'failed' : 'completed',
       createdAt: now,
       completedAt: now,
-    });
+    };
+  };
+  const record = async (
+    result: ReturnType<typeof response>,
+    terminal?: Parameters<FsStore['updateTurn']>[1]
+  ) => {
+    if (recorded) {
+      if (terminal) await store.completeTurn(turn.id, terminal);
+      return;
+    }
+    const item = resultItem(result);
+    if (terminal) await store.completeTurn(turn.id, terminal, { items: [item] });
+    else await store.createItem(item);
     recorded = true;
   };
-  const fail = () => {
-    const current = store.getTurnById(turn.id);
-    const result =
-      outcome ??
-      response(
-        'failed',
-        current.error?.message ?? 'Memory maintenance failed. Inspect its retained Turn.'
-      );
-    if (!isSealedTurnTerminal(current.status)) {
-      record(result);
-      store.updateTurn(turn.id, {
-        status: input.signal.aborted ? 'cancelled' : 'failed',
-        completedAt: new Date().toISOString(),
-        error: { code: 'knowledge_maintenance_failed', message: result.summary },
-      });
+  const fail = async () => {
+    try {
+      const current = store.getTurnById(turn.id);
+      const result =
+        outcome ??
+        response(
+          'failed',
+          current.error?.message ?? 'Memory maintenance failed. Inspect its retained Turn.'
+        );
+      if (!isSealedTurnTerminal(current.status)) {
+        await record(result, {
+          status: input.signal.aborted ? 'cancelled' : 'failed',
+          completedAt: new Date().toISOString(),
+          error: { code: 'knowledge_maintenance_failed', message: result.summary },
+        });
+      }
+      return result;
+    } finally {
+      close();
     }
-    close();
-    return result;
   };
   const settings = () =>
     dependencies.runtimeConfigManager
@@ -350,17 +352,18 @@ export function prepareUserMemoryMaintenance(
       reviewRequiredPageIds: [],
     };
   try {
-    if (priorRuns.some((turn) => !isSealedTurnTerminal(turn.status))) {
+    if (admitted.busy) {
       const result = response('skipped', 'Another User Memory maintenance Turn is still active.');
-      record(result);
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await record(result, {});
       close();
       return { turnId: turn.id, execute: async () => result, fail };
     }
     if (input.trigger === 'schedule' && !settings().enabled) {
       const result = response('skipped', 'Daily User Memory maintenance is disabled.');
-      record(result);
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await record(result, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       close();
       return { turnId: turn.id, execute: async () => result, fail };
     }
@@ -372,7 +375,7 @@ export function prepareUserMemoryMaintenance(
         started = true;
         try {
           // Source capture is a Notebook commit. Fix the editor base only after that capture,
-          // while retaining the maintenance Turn synchronously for the existing daily scanner.
+          // after native admission has retained the maintenance Turn for the existing daily scanner.
           const supplied =
             input.tellContent === undefined
               ? undefined
@@ -637,7 +640,7 @@ export function prepareUserMemoryMaintenance(
                       throw error;
                   }
                 }
-                const proposal = createUserMemoryProposal(
+                const proposal = await createUserMemoryProposal(
                   {
                     ...context,
                     store,
@@ -730,7 +733,7 @@ export function prepareUserMemoryMaintenance(
                 const result = await editor.notebookUpdate({ summary });
                 if (result.outcome === 'no_change')
                   outcome = response('no-change', 'No Memory page changes were published.');
-                if (outcome) record(outcome);
+                if (outcome) await record(outcome);
                 return result;
               }
             ),
@@ -778,6 +781,19 @@ export function prepareUserMemoryMaintenance(
           const makeRun = (): KnowledgeManagerAgentRun => ({
             turn,
             workspaceDb,
+            terminalItems: (patch) =>
+              recorded
+                ? []
+                : [
+                    resultItem(
+                      outcome ??
+                        response(
+                          'failed',
+                          patch.error?.message ??
+                            'Memory maintenance failed. Inspect its retained Turn.'
+                        )
+                    ),
+                  ],
             signal: input.signal,
             inputs: {
               purpose: 'maintenance',
@@ -848,7 +864,6 @@ export function prepareUserMemoryMaintenance(
               if (!outcome)
                 return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
               history.assertCurrent();
-              record(outcome);
             },
           });
 
@@ -858,19 +873,20 @@ export function prepareUserMemoryMaintenance(
           }
           editor = createEditor();
           const run = makeRun();
-          dependencies.pin(run);
+          await dependencies.pin(run);
           await dependencies.run(run);
           if (!outcome) throw new NotebookError('invalid_request');
+          await record(outcome);
           return outcome;
         } catch {
-          return fail();
+          return await fail();
         } finally {
           close();
         }
       },
     };
   } catch {
-    const result = fail();
+    const result = await fail();
     return { turnId: turn.id, fail, execute: async () => result };
   }
 }
@@ -880,7 +896,7 @@ export async function maintainUserMemoryAgent(
   dependencies: UserMemoryMaintenanceDependencies,
   input: UserMemoryMaintenanceInput
 ) {
-  return prepareUserMemoryMaintenance(dependencies, input).execute();
+  return (await prepareUserMemoryMaintenance(dependencies, input)).execute();
 }
 
 /** Retains request admission before inference and replays the native Status result without another model call. */
@@ -906,7 +922,7 @@ export async function runUserMemoryMaintenanceCommand(
     askingTurnId: input.askingTurnId,
     trigger: input.trigger,
   };
-  return runIdempotentCommand({
+  return runIdempotentCommand<ReturnType<typeof KnowledgeMaintenanceResponseSchema.parse>>({
     store: dependencies.store,
     receiptDb: dependencies.userDb,
     inflightCommands: dependencies.inflightCommands,
@@ -916,14 +932,13 @@ export async function runUserMemoryMaintenanceCommand(
     input: canonicalInput,
     responseKind: 'turn',
     responseId: (result) => result.turnId,
-    execute: async () => {
-      const prepared = prepareUserMemoryMaintenance(dependencies, input);
+    execute: async (receipt) => {
+      const prepared = await prepareUserMemoryMaintenance(dependencies, input);
+      // User authority and receipts are a separate effect domain from acknowledged personal-Workspace work.
+      admitMemoryContext(context);
       await dependencies.store.recordCommandRequest(
         {
-          command,
-          requestId: input.requestId,
-          scope,
-          inputHash: commandInputHash(canonicalInput),
+          ...receipt,
           response: { kind: 'turn', id: prepared.turnId },
         },
         dependencies.userDb

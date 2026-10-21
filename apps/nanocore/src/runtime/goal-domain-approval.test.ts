@@ -7,14 +7,15 @@ import { FsStore } from '../lib/store.js';
 import { policyDigest } from '../policy/statements.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import { executeGoalOperation } from './goal-owner.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import { readPendingRequest } from './pending-requests.js';
 
 it('captures the exact typed Goal domain and Plan in one human approval preview', async () => {
   const root = mkdtempSync(join(tmpdir(), 'goal-domain-approval-'));
-  const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Goal domain');
+  const store = createTestStore({ dataRoot: root });
+  const workspace = await store.createWorkspace('Goal domain');
   const db = openWorkspaceDb(root, workspace.id);
   applyScopedMigrations(db);
   const context = {

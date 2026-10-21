@@ -25,13 +25,13 @@ import {
 } from './resource-catalog.js';
 
 /** Creates isolated catalog authority without credential material or upstream contact. */
-function catalogFixture() {
+async function catalogFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-binding-routes-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('MCP binding workspace');
+  const workspace = await store.createWorkspace('MCP binding workspace');
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -58,7 +58,7 @@ function postCatalog(app: ReturnType<typeof createApp>, path: OperationId, input
 
 describe('resource catalog operations', () => {
   it('keeps schema-invalid retained catalog reads on the fixed catalog.read error', async () => {
-    const f = catalogFixture();
+    const f = await catalogFixture();
     try {
       writeFileSync(
         catalogDocumentPath(f.dataRoot, f.workspace.id),
@@ -91,7 +91,7 @@ describe('resource catalog operations', () => {
     'http',
     'cli',
   ] as const)('stores, retains and replaces credential bindings through %s', async (surface) => {
-    const f = catalogFixture();
+    const f = await catalogFixture();
     try {
       createVaultReference(f.coreDb, {
         referenceId: 'vault_00000000-0000-796e-9f65-da34836d04d3',
@@ -242,7 +242,7 @@ describe('resource catalog operations', () => {
     'transport-sink',
     'duplicate-destination',
   ] as const)('refuses %s without publishing a catalog revision', async (invalid) => {
-    const f = catalogFixture();
+    const f = await catalogFixture();
     try {
       const created = await postCatalog(f.app, 'catalog.mcp-create', {
         workspaceId: f.workspace.id,
@@ -296,7 +296,7 @@ describe('resource catalog operations', () => {
   });
 
   it('returns JSON invalid_request for a malformed catalog body', async () => {
-    const f = catalogFixture();
+    const f = await catalogFixture();
     try {
       const response = await postCatalog(f.app, 'catalog.mcp-create', {
         workspaceId: f.workspace.id,
@@ -321,7 +321,7 @@ describe('resource catalog operations', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Catalog workspace');
+    const workspace = await store.createWorkspace('Catalog workspace');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -418,7 +418,7 @@ describe('resource catalog operations', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Catalog workspace');
+    const workspace = await store.createWorkspace('Catalog workspace');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

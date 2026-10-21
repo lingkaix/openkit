@@ -1,13 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 describe('thread item replay app API', () => {
   it('returns ordered durable thread items for reload and right-sidebar replay', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Replay thread');
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Replay thread'
+    );
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Persisted prompt',
@@ -16,7 +20,7 @@ describe('thread item replay app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const first = store.createItem({
+    const first = await store.createItem({
       id: 'it_00000000-0000-763b-b3b8-3669a5928aa2',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -28,7 +32,7 @@ describe('thread item replay app API', () => {
       createdAt: '2026-05-06T00:00:00.000Z',
       completedAt: '2026-05-06T00:00:00.000Z',
     });
-    const second = store.createItem({
+    const second = await store.createItem({
       id: 'it_00000000-0000-7beb-8b84-62c886f469f0',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -56,4 +60,9 @@ describe('thread item replay app API', () => {
       nextCursor: null,
     });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

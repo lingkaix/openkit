@@ -161,7 +161,7 @@ export function createSchedulerAdmissionOperationImplementations(
         throw error;
       }
     },
-    'scheduler.cancel': (input, context) => {
+    'scheduler.cancel': async (input, context) => {
       const actor = context.actorRef;
       try {
         const workspaceId = input.workspaceId;
@@ -192,7 +192,7 @@ export function createSchedulerAdmissionOperationImplementations(
           workspaceId,
         });
         if (!publicationIssue)
-          terminalizeGovernedWorkerTurn({
+          await terminalizeGovernedWorkerTurn({
             store,
             turnId: cancelled.turnId,
             agentSessionId: null,

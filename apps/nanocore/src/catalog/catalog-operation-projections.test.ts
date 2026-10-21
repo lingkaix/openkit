@@ -23,7 +23,7 @@ import * as catalogOwner from './resource-catalog.js';
 import { loadWorkspaceResourceCatalog, skillSnapshotPath } from './resource-catalog.js';
 
 /** Real local identity, Workspace admission and immutable catalog owners. */
-function fixture(
+async function fixture(
   getBootReadiness?: () => BootReadinessSnapshot,
   mode: 'local' | 'server' = 'local'
 ) {
@@ -32,7 +32,7 @@ function fixture(
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('B5 projection');
+  const workspace = await store.createWorkspace('B5 projection');
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: userId,
@@ -58,7 +58,12 @@ function fixture(
 }
 
 /** Posts complete logical input through the real operation admission and native owner. */
-function call(f: ReturnType<typeof fixture>, id: OperationId, input: unknown, secret?: string) {
+function call(
+  f: Awaited<ReturnType<typeof fixture>>,
+  id: OperationId,
+  input: unknown,
+  secret?: string
+) {
   return f.app.request(
     ...operationRequest(
       id,
@@ -87,7 +92,7 @@ const tree = (text: string) => [
 
 describe('B5 catalog operation projections', () => {
   it('reaches all thirteen catalog owned outcomes with exact immutable selection and revisions', async () => {
-    const f = fixture();
+    const f = await fixture();
     const requestId = () => crypto.randomUUID();
     try {
       const empty = await call(f, 'catalog.read', { workspaceId: f.workspace.id });
@@ -238,7 +243,7 @@ describe('B5 catalog operation projections', () => {
   });
 
   it('projects exact Skill inspection, comparison, removal and retained-version refusal', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const invalid = await call(f, 'catalog.skill-import', {
         workspaceId: f.workspace.id,
@@ -379,7 +384,7 @@ describe('B5 catalog operation projections', () => {
   });
 
   it('reaches Agent inventory, detail, health and worker owned outcomes', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const list = await f.app.request(
         ...operationRequest(
@@ -445,7 +450,7 @@ describe('B5 catalog operation projections', () => {
 });
 
 it('retires all seventeen formerly authorized bindings without changing canonical catalog authority', async () => {
-  const f = fixture();
+  const f = await fixture();
   const root = `/api/app/workspaces/${f.workspace.id}`;
   try {
     const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
@@ -487,7 +492,7 @@ it('retires all seventeen formerly authorized bindings without changing canonica
 
 /** Exercises the remote MCP framer with an explicit credential and complete logical input. */
 async function mcp(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   operation: OperationId,
   input: unknown,
   secret: string
@@ -613,7 +618,7 @@ it.each([
   'readonly',
 ] as const)('refuses every B5 mutation on HTTP and remote MCP %s admission without catalog or health effects', async (reason) => {
   let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b5' });
-  const f = fixture(() => readiness, 'server');
+  const f = await fixture(() => readiness, 'server');
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: reason === 'readonly' ? 'workspace-readonly' : 'workspace',
@@ -663,7 +668,7 @@ it.each([
 });
 
 it('preserves missing-record classifications and lets unexpected family failures reach the HTTP handler unchanged', async () => {
-  const f = fixture();
+  const f = await fixture();
   const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
   const observed: Error[] = [];
   f.app.onError((error, context) => {
@@ -715,7 +720,7 @@ it('preserves missing-record classifications and lets unexpected family failures
 });
 
 it('keeps real catalog conflict, missing-version and host-execution refusals exact through HTTP and remote MCP without publication', async () => {
-  const f = fixture(undefined, 'server');
+  const f = await fixture(undefined, 'server');
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'workspace',

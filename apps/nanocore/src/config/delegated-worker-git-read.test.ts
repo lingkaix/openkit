@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
-
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -17,6 +16,7 @@ import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -32,7 +32,8 @@ import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) close();
 });
@@ -80,7 +81,7 @@ const assignment = {
 const policy = (statements: unknown) => ({ schemaVersion: 1, statements });
 
 /** Composes real configuration, terminal failure, AEP ledger, Artifact and receipt owners. */
-function fixture(repositoryCount = 1, distinctIssuer = false) {
+async function fixture(repositoryCount = 1, distinctIssuer = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-delegated-git-read-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -123,7 +124,7 @@ function fixture(repositoryCount = 1, distinctIssuer = false) {
     author: { kind: 'human', id: issuerId },
     authority: { kind: 'human', userId: issuerId },
   };
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: actor.userId,
@@ -180,13 +181,13 @@ function fixture(repositoryCount = 1, distinctIssuer = false) {
     JSON.stringify(createTestGatewayConfig({ logicalModelId: 'reasoning' }))
   );
 
-  const failedThread = store.createThread(
+  const failedThread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Failed materialization',
     allocateEntityId('th')
   );
   const sessionId = allocateEntityId('as');
-  const failedTurn = store.createTurn(
+  const failedTurn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     failedThread.id,
     'Read the project',
@@ -241,7 +242,7 @@ function fixture(repositoryCount = 1, distinctIssuer = false) {
     environmentPackage,
     createdAt: '2026-10-16T00:00:00.000Z',
   });
-  store.createAgentSession({
+  await store.createAgentSession({
     id: sessionId,
     agentId: agentId,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -252,7 +253,7 @@ function fixture(repositoryCount = 1, distinctIssuer = false) {
     createdAt: '2026-10-16T00:00:00.000Z',
     updatedAt: '2026-10-16T00:00:01.000Z',
   });
-  store.updateTurn(failedTurn.id, {
+  await store.updateTurn(failedTurn.id, {
     status: 'failed',
     completedAt: '2026-10-16T00:00:01.000Z',
     error: {
@@ -275,14 +276,14 @@ function fixture(repositoryCount = 1, distinctIssuer = false) {
   });
 
   const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspaceId,
     'Repair the Git-read rule',
     allocateEntityId('th'),
     'administration',
     { visibility: 'private', privateOwnerUserId: actor.userId }
   );
-  const turn = store.createTurn(workspaceId, thread.id, 'Repair the assigned rule', {
+  const turn = await store.createTurn(workspaceId, thread.id, 'Repair the assigned rule', {
     kind: 'user',
     id: actor.userId,
   });
@@ -344,7 +345,7 @@ function fixture(repositoryCount = 1, distinctIssuer = false) {
 
 describe('finite delegated Worker Git-read application', () => {
   it('binds a real failed Turn to an immutable candidate and writes once across receipt replay and reopen', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = readFileSync(f.agentPath, 'utf8');
     const proposal = f.propose();
     expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
@@ -373,11 +374,11 @@ describe('finite delegated Worker Git-read application', () => {
     // Saved revocation is pending; only a successful reload changes effective Policy authority.
     f.saveAssignments([]);
     expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(policy([assignment]));
-    f.store.updateTurn(f.home.turnId, {
+    await f.store.updateTurn(f.home.turnId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
-    const applyingTurn = f.store.createTurn(
+    const applyingTurn = await f.store.createTurn(
       f.workspaceId,
       f.home.threadId,
       'Apply the prepared correction',
@@ -441,7 +442,7 @@ describe('finite delegated Worker Git-read application', () => {
   });
 
   it('reports persistence separately when reload fails and replays without another write', async () => {
-    const f = fixture();
+    const f = await fixture();
     const proposal = f.propose();
     const loaded = f.manager.current();
     f.reload.mockImplementationOnce(() => {
@@ -463,7 +464,7 @@ describe('finite delegated Worker Git-read application', () => {
     'outcome',
     'receipt',
   ] as const)('projects an unknown %s publication through the actual apply Tool without reporting refusal or repeating the write', async (stage) => {
-    const f = fixture();
+    const f = await fixture();
     const request = { requestId: randomUUID(), candidate: f.propose().candidate };
     const tools = createAdministrationConfigurationTools(f.manager.current(), f.files, {
       read: f.service.read,
@@ -505,7 +506,7 @@ describe('finite delegated Worker Git-read application', () => {
     'outcome',
     'receipt',
   ] as const)('fences replay and reopen after an interrupted %s publication following the actual write', async (stage) => {
-    const f = fixture();
+    const f = await fixture();
     const request = { requestId: randomUUID(), candidate: f.propose().candidate };
     const interrupt = () => {
       throw new Error(`Injected ${stage} publication interruption.`);
@@ -544,7 +545,7 @@ describe('finite delegated Worker Git-read application', () => {
   });
 
   it('rejects a changed candidate for an already completed request without another effect', async () => {
-    const f = fixture();
+    const f = await fixture();
     const request = { requestId: randomUUID(), candidate: f.propose().candidate };
     const otherCandidate = f.propose().candidate;
     expect(otherCandidate.artifactId).not.toBe(request.candidate.artifactId);
@@ -588,7 +589,7 @@ describe('finite delegated Worker Git-read application', () => {
   ])('refuses current $reason authority after Tool assembly and before a write', async ({
     entries,
   }) => {
-    const f = fixture();
+    const f = await fixture();
     const candidate = f.propose().candidate;
     const original = readFileSync(f.agentPath, 'utf8');
     f.saveAssignments(entries);
@@ -602,7 +603,7 @@ describe('finite delegated Worker Git-read application', () => {
   });
 
   it('refuses changed source and candidate identity without a configuration write', async () => {
-    const f = fixture();
+    const f = await fixture();
     const candidate = f.propose().candidate;
     await expect(
       f.service.applyDelegated(
@@ -624,7 +625,7 @@ describe('finite delegated Worker Git-read application', () => {
   });
 
   it('refuses cancelled, mismatched and no-longer-running private invocations before a write', async () => {
-    const f = fixture();
+    const f = await fixture();
     const candidate = f.propose().candidate;
     const original = readFileSync(f.agentPath, 'utf8');
     const controller = new AbortController();
@@ -641,7 +642,7 @@ describe('finite delegated Worker Git-read application', () => {
         { ...f.home, threadId: f.request.failure.threadId }
       )
     ).rejects.toMatchObject({ code: 'configuration_candidate_conflict' });
-    f.store.updateTurn(f.home.turnId, {
+    await f.store.updateTurn(f.home.turnId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -657,7 +658,7 @@ describe('finite delegated Worker Git-read application', () => {
     false,
     true,
   ])('rechecks a distinct Policy issuer before mutation: revoked=%s', async (revoked) => {
-    const f = fixture(1, true);
+    const f = await fixture(1, true);
     expect(f.issuerId).not.toBe(f.actor.userId);
     const issuer = { kind: 'session' as const, userId: f.issuerId };
     expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(true);
@@ -685,7 +686,7 @@ describe('finite delegated Worker Git-read application', () => {
   });
 
   it('rechecks current administrator eligibility before mutation', async () => {
-    const f = fixture();
+    const f = await fixture();
     const candidate = f.propose().candidate;
     const original = readFileSync(f.agentPath, 'utf8');
     revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
@@ -716,16 +717,16 @@ describe('finite delegated Worker Git-read application', () => {
         displayName: 'Unauthorized change',
       },
     },
-  ])('refuses a $reason proposal without a write', ({ changes }) => {
-    const f = fixture();
+  ])('refuses a $reason proposal without a write', async ({ changes }) => {
+    const f = await fixture();
     const original = readFileSync(f.agentPath, 'utf8');
     expect(() => f.service.propose({ ...f.request, changes }, f.home)).toThrow();
     expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
     expect(f.write).not.toHaveBeenCalled();
   });
 
-  it('refuses ambiguous failed-Turn repository lineage without selecting an input', () => {
-    const f = fixture(2);
+  it('refuses ambiguous failed-Turn repository lineage without selecting an input', async () => {
+    const f = await fixture(2);
     expect(() => f.propose()).toThrow(
       expect.objectContaining({ code: 'configuration_failure_unproved' })
     );
@@ -733,7 +734,7 @@ describe('finite delegated Worker Git-read application', () => {
   });
 
   it('keeps Gateway candidates outside delegated application', async () => {
-    const f = fixture();
+    const f = await fixture();
     const proposal = f.service.propose(
       {
         targetFamily: 'gateway',

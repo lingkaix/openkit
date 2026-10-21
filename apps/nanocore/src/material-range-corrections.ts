@@ -84,7 +84,7 @@ export function readMaterialJudgement(
   return judgement;
 }
 
-/** Appends immutable range feedback to its existing revision owner in the command transaction. */
+/** Appends immutable range feedback on the supplied native command handle; tests may exercise this synchronous deciding body in their own transaction. */
 export function appendMaterialJudgement(db: WorkspaceDb, record: JudgementRecord): JudgementRecord {
   if (!db.sqlite.inTransaction)
     throw new Error('Material judgement requires the existing Workspace transaction.');
@@ -124,7 +124,7 @@ export function appendMaterialJudgement(db: WorkspaceDb, record: JudgementRecord
   return judgement;
 }
 
-/** Applies or rejects one exact range through the existing Material save owner, without rebasing. */
+/** Applies or rejects one exact range through the existing Material save owner on the same native transaction, without rebasing. */
 export function correctMaterialRange(
   db: WorkspaceDb,
   input: MaterialRangeCorrectionInput

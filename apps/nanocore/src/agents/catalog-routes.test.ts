@@ -7,10 +7,11 @@ import {
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -18,16 +19,17 @@ import { createAppWithWorkspaceAuthority as createApp } from '../test-support/ap
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { projectAgentCatalogEntries } from './catalog-projection.js';
 
 describe('agent.list and agent.read operations', () => {
   it('opens only the authorized Workspace ids', async () => {
-    const store = new FsStore({
+    const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-agent-catalog-authorized-')),
     });
-    const allowedWorkspace = store.createWorkspace('Allowed agents');
-    const deniedWorkspace = store.createWorkspace('Denied agents');
+    const allowedWorkspace = await store.createWorkspace('Allowed agents');
+    const deniedWorkspace = await store.createWorkspace('Denied agents');
     store.setWorkspaceAgentCatalogProjection(() =>
       projectAgentCatalogEntries([
         createTestAgentSetup({
@@ -124,8 +126,8 @@ describe('agent.list and agent.read operations', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const allowedWorkspace = store.createWorkspace('Allowed agents');
-    const deniedWorkspace = store.createWorkspace('Denied agents');
+    const allowedWorkspace = await store.createWorkspace('Allowed agents');
+    const deniedWorkspace = await store.createWorkspace('Denied agents');
 
     for (const workspace of [allowedWorkspace, deniedWorkspace]) {
       recordWorkspaceOwnerMembership({
@@ -405,7 +407,7 @@ describe('agent.list and agent.read operations', () => {
       },
       workspace: { env: { OPENAI_API_KEY: secretEnv } },
     };
-    const store = createDemoStore();
+    const store = await createDemoStore();
     store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
       capabilities: [],
       defaultProfileId: null,
@@ -561,4 +563,9 @@ describe('agent.list and agent.read operations', () => {
     expect(publicJson).not.toContain('"config"');
     expect(publicJson).not.toContain('sk-leak');
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

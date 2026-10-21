@@ -419,6 +419,8 @@ export interface WorkerControlAcceptedRecordRecorderInput {
 
 /** Records accepted worker-control records into durable storage. */
 export interface WorkerControlAcceptedRecordRecorder {
+  /** Finishes native observation publication before the separate synchronous Core acceptance step. */
+  prepareObservation?(record: WorkerCanonicalEventRecord): Promise<void>;
   /**
    * Stores one accepted worker-control record.
    *
@@ -1103,7 +1105,7 @@ export class WorkerControlGateway {
       /** Canonical worker event record to validate and append. */
       record: unknown;
     }
-  ): WorkerControlResponseEnvelope {
+  ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
     const state = this.requireSession(input);
     const parsed = WorkerCanonicalEventRecordReaderSchema.safeParse(input.record);
 
@@ -1133,14 +1135,24 @@ export class WorkerControlGateway {
       );
     }
 
-    this.acceptCanonicalEvent(state, input.lineage, record);
-
-    return WorkerControlResponseEnvelopeSchema.parse({
-      accepted: true,
-      diagnostics: [],
-      nextExpectedSequence: nextExpectedEventSequence(state),
-      schemaVersion: 2,
-    });
+    const accept = (): WorkerControlResponseEnvelope => {
+      this.acceptCanonicalEvent(state, input.lineage, record);
+      return WorkerControlResponseEnvelopeSchema.parse({
+        accepted: true,
+        diagnostics: [],
+        nextExpectedSequence: nextExpectedEventSequence(state),
+        schemaVersion: 2,
+      });
+    };
+    if (
+      (record.event.type === 'observation.recorded' ||
+        record.event.type === 'observation.content.chunk') &&
+      this.acceptedRecordRecorder?.prepareObservation
+    ) {
+      // Native ACK precedes every Core sequence/receipt write. Final status stays synchronous.
+      return this.acceptedRecordRecorder.prepareObservation(record).then(accept);
+    }
+    return accept();
   }
 
   /**

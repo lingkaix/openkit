@@ -11,47 +11,124 @@ import {
   currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import type { FsStore } from '../lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
+import type { ControlAdmission } from '../storage/control-store-admission.js';
+import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
+import { commandInputHash } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
+import type { ControlPendingCommandInput } from './pending-requests.js';
 import {
-  answerPendingRequest,
-  applyPendingCloseout,
-  claimOrRefuseGrant,
-  deletePendingRequest,
-  denyPendingRequest,
+  ControlPendingCommandInputSchema,
+  compareReadiness,
   executorKindForTurn,
-  finishPendingExecution,
-  freezeReadyOutcomes,
-  grantCommandIntentRequest,
-  invalidatePendingRequest,
   isBlockingPendingRequest,
   isCommandIntentApproval,
   isFinalOutcome,
   isReadyOutcome,
   listThreadPendingRequests,
-  markFrozenDeliveryUnknown,
   type PendingExecutorKind,
   type PendingRequestActor,
   PendingRequestCommandError,
   type PendingRequestRecord,
-  pendingRequestItemId,
+  renderPendingInvalidationItem as pendingInvalidationItem,
+  renderPendingOutcomeItems as pendingOutcomeItems,
   pendingRequestSystemActor,
+  preflightPendingRequest,
   projectApprovalRequest,
-  proveFrozenDelivery,
   type RaisePendingRequestInput,
-  raisePendingRequest,
   readPendingRequest,
-  releaseFrozenOutcomes,
-  settleUnfinishedClaims,
   validateCanonicalLoad,
-  withdrawPendingRequest,
 } from './pending-requests.js';
-import { recordTaskTerminalFact } from './task-terminal-fact.js';
+
+/** Prepares the existing closeout communication; native SQL still decides and validates every changed source. */
+function closeoutProjection(
+  records: readonly PendingRequestRecord[],
+  turnId: string,
+  actor: PendingRequestActor,
+  now: string,
+  event: (record: PendingRequestRecord) => string
+): PendingRequestRecord[] {
+  return records
+    .map((record) => {
+      let next = record;
+      if (next.state === 'pending' && next.claim === 'unclaimed')
+        next = {
+          ...next,
+          state: 'ended',
+          ending: 'invalidated',
+          invalidatingEvent: event(record),
+          endingActor: actor,
+          endedAt: now,
+          updatedAt: now,
+        };
+      if (
+        isCommandIntentApproval(next) &&
+        next.resolution === 'granted' &&
+        next.claim === 'unclaimed' &&
+        next.disposition === null
+      )
+        next = {
+          ...next,
+          disposition: 'denied-not-executed',
+          dispositionReason: event(record),
+          invalidationTurnId: next.invalidationTurnId ?? turnId,
+          updatedAt: now,
+        };
+      if (
+        isCommandIntentApproval(next) &&
+        next.resolution === 'granted' &&
+        next.disposition === 'denied-not-executed' &&
+        next.invalidationTurnId === null
+      )
+        next = { ...next, invalidationTurnId: turnId, updatedAt: now };
+      if (next.delivery === 'undelivered' && isFinalOutcome(next))
+        next = {
+          ...next,
+          delivery: 'closed-out',
+          publicationTurnId: next.publicationTurnId ?? turnId,
+          updatedAt: now,
+        };
+      return next;
+    })
+    .filter(
+      (record) => record.publicationTurnId === turnId || record.invalidationTurnId === turnId
+    );
+}
+
+/** Exact readable Pending sources prepared before native SQL; these facts grant no Main authority. */
+function pendingSources(records: readonly PendingRequestRecord[]) {
+  return records.map((record) => ({
+    requestId: record.requestId,
+    sourceHash: commandInputHash(record),
+  }));
+}
+
+/** Posts only the existing closed owner body; caller reads the original row after FULL acknowledgement. */
+async function mutatePending(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  input: ControlPendingCommandInput,
+  publication: { items?: readonly Item[]; receipt?: ControlPendingTransition['receipt'] } = {}
+): Promise<PendingRequestRecord[]> {
+  if (sqlite.inTransaction)
+    throw new PendingRequestCommandError(
+      'invalid_request',
+      'Native Pending work must not suspend inside Main SQL.',
+      400
+    );
+  const result = await store.applyPendingRequestCommand(input.workspaceId, input, publication);
+  return result.requestIds.map((id) => {
+    const record = readPendingRequest(sqlite, id);
+    if (!record) throw associationGap();
+    return record;
+  });
+}
 
 /** Opens the Workspace database that owns pending-request rows. */
 export interface PendingRequestDatabase {
@@ -123,36 +200,58 @@ export function installPendingRequestAdmission(
   dependencies: PendingAdmissionDependencies
 ): void {
   store.setTurnAdmissionHooks({
-    onTerminalFact: (turn) => {
-      const db = dependencies.openWorkspace(workspaceIdForOwner(turn.owner));
-      try {
-        recordTaskTerminalFact(db, turn);
-      } finally {
-        db.sqlite.close();
-      }
-    },
-    onAdmitted(turn) {
-      const executor = store.getTurnExecutor(turn.id) ?? executorKindForTurn(turn);
-      if (!executor) return;
-      const now = new Date().toISOString();
-      withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
-        const frozen = freezeReadyOutcomes(sqlite, {
-          workspaceId: workspaceIdForOwner(turn.owner),
-          threadId: turn.threadId,
-          turnId: turn.id,
-          executor,
-          agentId: turn.agentId ?? null,
-          cause: outcomeCauses.get(turn.id) ?? 'carried',
-          usable: (record) => canonicalRecordIsUsable(store, sqlite, record),
-          now,
-        });
-        publishOutcomeItems(store, frozen, turn.id, now);
+    prepareAdmission(turn, declaredExecutor) {
+      if (turn.owner.kind !== 'workspace') return { items: [], pending: [] };
+      const workspaceId = turn.owner.workspaceId;
+      const executor = declaredExecutor ?? executorKindForTurn(turn);
+      if (!executor) return { items: [], pending: [] };
+      return withWorkspace(dependencies, workspaceId, (sqlite) => {
+        const census = listThreadPendingRequests(sqlite, workspaceId, turn.threadId);
+        const usable = census.filter((record) => canonicalRecordIsUsable(store, sqlite, record));
+        const selected = usable
+          .filter(
+            (record) =>
+              record.requesterKind === executor &&
+              (executor !== 'worker' || record.agentId === (turn.agentId ?? null)) &&
+              isReadyOutcome(record)
+          )
+          .sort(compareReadiness)
+          .slice(0, 16);
+        const now = new Date().toISOString();
+        const cause: 'outcome' | 'carried' = outcomeCauses.get(turn.id) ?? 'carried';
+        const frozen = selected.map((record) => ({
+          ...record,
+          delivery: 'frozen' as const,
+          deliveryTurnId: turn.id,
+          deliveryCause: cause,
+          publicationTurnId: record.publicationTurnId ?? turn.id,
+          updatedAt: now,
+        }));
+        return {
+          items: pendingOutcomeItems(frozen, turn.id, now),
+          pending: [
+            {
+              action: 'freeze' as const,
+              workspaceId,
+              threadId: turn.threadId,
+              turnId: turn.id,
+              executor,
+              agentId: turn.agentId ?? null,
+              cause,
+              now,
+              expected: pendingSources(usable),
+              expectedSelection: selected.map((record) => record.requestId),
+              expectedThreadCensus: census.map((record) => record.requestId),
+            },
+          ],
+        };
       });
     },
-    onTerminal(turn) {
+    prepareTerminal(turn) {
+      if (turn.owner.kind !== 'workspace') return [];
       const attempt = dependencies.coreDb
         ? listSchedulerExecutionAttemptsForTurn(dependencies.coreDb, {
-            workspaceId: workspaceIdForOwner(turn.owner),
+            workspaceId: turn.owner.workspaceId,
             threadId: turn.threadId,
             turnId: turn.id,
           }).at(-1)
@@ -164,14 +263,22 @@ export function installPendingRequestAdmission(
         attempt.terminalCause !== 'backend-busy'
       ) {
         refusedOutcomeTurns.add(turn.id);
-        withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
-          releaseFrozenOutcomes(sqlite, turn.id, new Date().toISOString());
-        });
+        return [
+          {
+            action: 'delivery-release',
+            workspaceId: turn.owner.workspaceId,
+            turnId: turn.id,
+            now: turn.completedAt ?? new Date().toISOString(),
+          },
+        ];
       }
+      return [];
+    },
+    async onTerminal(turn) {
       if (refusedOutcomeTurns.has(turn.id)) return;
       if (store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).status === 'archived')
         return;
-      admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
+      await admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
       dependencies.goalTerminal?.(turn);
     },
   });
@@ -209,69 +316,82 @@ export function installPendingRequestAdmission(
  * @param store Boot store.
  * @param dependencies Workspace opener.
  */
-export function recoverPendingRequestsAtBoot(
+export async function recoverPendingRequestsAtBoot(
   store: FsStore,
   dependencies: PendingAdmissionDependencies
-): void {
+): Promise<void> {
   const now = new Date().toISOString();
   for (const workspace of store.listWorkspaces()) {
-    withWorkspace(dependencies, workspace.id, (sqlite) => {
-      assertPendingAssociations(store, sqlite, workspace.id);
-      settleUnfinishedClaims(sqlite, now, (record) =>
-        canonicalRecordIsUsable(store, sqlite, record)
-      );
-      const records = sqlite
-        .prepare(
-          `SELECT request_id FROM pending_requests WHERE workspace_id = ? AND (publication_turn_id IS NOT NULL OR invalidation_turn_id IS NOT NULL)`
-        )
-        .all(workspace.id) as Array<{ request_id: string }>;
-      const loaded = records
-        .flatMap((row) => {
-          try {
-            const record = readPendingRequest(sqlite, row.request_id);
-            return record && canonicalRecordIsUsable(store, sqlite, record) ? [record] : [];
-          } catch {
-            return [];
-          }
-        })
-        .filter((record): record is PendingRequestRecord => record !== null);
-      // Write every missing Item before completing any shared Core-local publication.
+    const db = dependencies.openWorkspace(workspace.id);
+    try {
+      assertPendingAssociations(store, db.sqlite, workspace.id);
+      const readable = db.sqlite
+        .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
+        .all(workspace.id) as { request_id: string }[];
+      const usable = readable.flatMap((row) => {
+        try {
+          const record = readPendingRequest(db.sqlite, row.request_id);
+          return record && canonicalRecordIsUsable(store, db.sqlite, record) ? [record] : [];
+        } catch {
+          return [];
+        }
+      });
+      await mutatePending(store, db.sqlite, {
+        action: 'settle-unfinished',
+        workspaceId: workspace.id,
+        now,
+        expected: pendingSources(usable),
+      });
+      const loaded = usable.flatMap((source) => {
+        const record = readPendingRequest(db.sqlite, source.requestId);
+        return record ? [record] : [];
+      });
       const localPublications = new Set<string>();
       for (const record of loaded) {
-        if (record.publicationTurnId) {
-          publishOutcomeItems(store, [record], record.publicationTurnId, now, true);
-          const publication = store.getTurnById(record.publicationTurnId);
-          if (!publication.agentId && !publication.agentSessionId)
-            localPublications.add(publication.id);
-        }
         if (
           record.delivery === 'frozen' &&
           record.deliveryTurnId &&
           record.requesterKind !== 'person' &&
           store.getTurnById(record.deliveryTurnId).status !== 'pending'
         )
-          markFrozenDeliveryUnknown(sqlite, record.deliveryTurnId, now);
-        if (record.invalidationTurnId && record.invalidationTurnId !== record.publicationTurnId) {
-          publishInvalidationItem(store, record, record.invalidationTurnId, now, true);
-          localPublications.add(record.invalidationTurnId);
+          await store.applyPendingRequestCommand(workspace.id, {
+            action: 'delivery-unknown',
+            workspaceId: workspace.id,
+            turnId: record.deliveryTurnId,
+            now,
+          });
+        for (const turnId of [record.publicationTurnId, record.invalidationTurnId]) {
+          if (!turnId) continue;
+          const publication = store.getTurnById(turnId);
+          if (!publication.agentId && !publication.agentSessionId) localPublications.add(turnId);
+          else await publishOutcomeItems(store, [record], turnId, now, true);
         }
       }
       for (const turnId of localPublications) {
         const publication = store.getTurnById(turnId);
-        if (!isSealedTurnTerminal(publication.status)) {
-          store.updateTurn(turnId, { status: 'completed', completedAt: now });
-        }
-        // A completed Core-local publication is the person's delivery proof, including a restart after completion but before SQLite proof.
-        if (store.getTurnById(turnId).status === 'completed')
-          proveFrozenDelivery(sqlite, turnId, now);
+        const records = loaded.filter(
+          (record) => record.publicationTurnId === turnId || record.invalidationTurnId === turnId
+        );
+        await store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, {
+          turnId,
+          summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
+          actor: publication.triggerActor,
+          now: publication.completedAt ?? now,
+          items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now),
+          pending: [{ action: 'delivery-prove', workspaceId: workspace.id, turnId, now }],
+        });
       }
-    });
+    } finally {
+      db.sqlite.close();
+    }
     for (const thread of store.listThreads(workspace.id)) {
       if (thread.status === 'archived') continue;
-      const busy = store
-        .listThreadTurns(workspace.id, thread.id)
-        .some((turn) => !isSealedTurnTerminal(turn.status));
-      if (!busy) admitNextOutcome(store, dependencies, workspace.id, thread.id);
+      if (
+        !store
+          .listThreadTurns(workspace.id, thread.id)
+          .some((turn) => !isSealedTurnTerminal(turn.status))
+      )
+        await admitNextOutcome(store, dependencies, workspace.id, thread.id);
     }
   }
 }
@@ -284,36 +404,59 @@ export function recoverPendingRequestsAtBoot(
  * @param input Raise input without the item id when the caller wants the derived id.
  * @returns Raised record.
  */
-export function raiseRecordedPendingRequest(
+export async function raiseRecordedPendingRequest(
   store: FsStore,
   sqlite: import('better-sqlite3').Database,
-  input: RaisePendingRequestInput
-): PendingRequestRecord {
-  const raised = raisePendingRequest(sqlite, input);
-  if (!raised.created) return raised.record;
+  input: RaisePendingRequestInput,
+  requestItem?: Item
+): Promise<PendingRequestRecord> {
+  const existing = preflightPendingRequest(sqlite, input);
+  if (existing)
+    return requireUsableRecord(
+      store,
+      sqlite,
+      existing.requestId,
+      existing.workspaceId,
+      existing.threadId
+    );
+  const item =
+    requestItem ??
+    (input.kind === 'approval' && input.approval
+      ? {
+          id: input.requestItemId,
+          owner: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+          threadId: input.threadId,
+          turnId: input.raisingTurnId,
+          type: 'approval-request' as const,
+          approvalRequestId: input.requestId,
+          kind: input.approval.kind,
+          status: 'completed' as const,
+          title: input.approval.title,
+          description: input.approval.description,
+          createdAt: input.now,
+          completedAt: input.now,
+        }
+      : undefined);
+  if (!item)
+    throw new PendingRequestCommandError(
+      'invalid_request',
+      'The request requires its exact publication Item.',
+      400
+    );
+  const [record] = await mutatePending(
+    store,
+    sqlite,
+    { action: 'raise', workspaceId: input.workspaceId, threadId: input.threadId, input },
+    { items: [item] }
+  );
+  if (!record) throw associationGap();
+  syncApproval(store, record);
   try {
-    const approval = projectApprovalRequest(raised.record);
-    if (approval) {
-      try {
-        store.getApproval(approval.id);
-      } catch {
-        store.createApproval(approval);
-      }
-    }
-  } catch (error) {
-    deletePendingRequest(sqlite, raised.record.requestId);
-    throw error;
+    attentionObservers.get(store)?.(record);
+  } catch {
+    /* Attention is a separate effect. */
   }
-  // The caller completes its request Item in this turn of the event loop. Attention runs afterward.
-  // A failed external projection cannot reverse the canonical request; boot re-enumerates its source.
-  queueMicrotask(() => {
-    try {
-      attentionObservers.get(store)?.(raised.record);
-    } catch {
-      /* Core remains the request authority. */
-    }
-  });
-  return raised.record;
+  return record;
 }
 
 /** Pending tool fields shared by structured and text content. */
@@ -355,7 +498,7 @@ export function pendingToolResult(status: 'pending-approval' | 'pending-input', 
  * @param requestActor Authenticating actor.
  * @returns Updated record.
  */
-export function answerRecordedUserInput(
+export async function answerRecordedUserInput(
   store: FsStore,
   sqlite: import('better-sqlite3').Database,
   input: {
@@ -367,8 +510,9 @@ export function answerRecordedUserInput(
   actorId: string,
   coreDb: CoreDb | undefined,
   requestActor: Actor | undefined,
-  dependencies: PendingAdmissionDependencies
-): PendingRequestRecord {
+  dependencies: PendingAdmissionDependencies,
+  receipt?: ControlPendingTransition['receipt']
+): Promise<PendingRequestRecord> {
   const current = requireUsableRecord(
     store,
     sqlite,
@@ -381,13 +525,23 @@ export function answerRecordedUserInput(
   if (current.state !== 'pending') {
     throw conflictOrNotPending(current, input.answers);
   }
-  const answered = answerPendingRequest(
+  const [answered] = await mutatePending(
+    store,
     sqlite,
-    current.requestId,
-    { kind: 'user', id: actorId },
-    input.answers,
-    new Date().toISOString(),
-    requestActor ?? { kind: 'local', userId: actorId }
+    {
+      action: 'answer',
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      requestId: current.requestId,
+      actor: { kind: 'user', id: actorId },
+      answers: Object.fromEntries(
+        Object.entries(input.answers).map(([key, value]) => [key, [value[0]] as [string]])
+      ),
+      now: new Date().toISOString(),
+      decisionContext: requestActor ?? { kind: 'local', userId: actorId },
+      expected: pendingSources([current]),
+    },
+    { ...(receipt ? { receipt } : {}) }
   );
   if (!answered) {
     const latest = readPendingRequest(sqlite, current.requestId);
@@ -400,12 +554,12 @@ export function answerRecordedUserInput(
     }
     throw conflictOrNotPending(latest, input.answers);
   }
-  admitIfIdle(store, dependencies, input.workspaceId, input.threadId);
+  await admitIfIdle(store, dependencies, input.workspaceId, input.threadId);
   return answered;
 }
 
 /** Resolves a captured command through the shared disclosure and current resolver authority. */
-export function resolveCommandIntentApproval(input: {
+export async function resolveCommandIntentApproval(input: {
   readonly store: FsStore;
   readonly sqlite: import('better-sqlite3').Database;
   readonly record: PendingRequestRecord;
@@ -413,7 +567,8 @@ export function resolveCommandIntentApproval(input: {
   readonly actor: Actor;
   readonly coreDb: CoreDb | undefined;
   readonly checkCommandIntent?: PendingAdmissionDependencies['checkCommandIntent'];
-}): PendingRequestRecord {
+  readonly receipt?: ControlPendingTransition['receipt'];
+}): Promise<PendingRequestRecord> {
   const current = requireUsableRecord(
     input.store,
     input.sqlite,
@@ -447,10 +602,21 @@ export function resolveCommandIntentApproval(input: {
   if (input.decision === 'granted') input.checkCommandIntent?.(input.sqlite, current, input.actor);
   const actor = { kind: 'user' as const, id: input.actor.userId };
   const now = new Date().toISOString();
-  const record =
-    input.decision === 'granted'
-      ? grantCommandIntentRequest(input.sqlite, current.requestId, actor, now, input.actor)
-      : denyPendingRequest(input.sqlite, current.requestId, actor, now, input.actor);
+  const [record] = await mutatePending(
+    input.store,
+    input.sqlite,
+    {
+      action: input.decision === 'granted' ? 'grant-command' : 'deny',
+      workspaceId: current.workspaceId,
+      threadId: current.threadId,
+      requestId: current.requestId,
+      actor,
+      now,
+      decisionContext: input.actor,
+      expected: pendingSources([current]),
+    },
+    { ...(input.receipt ? { receipt: input.receipt } : {}) }
+  );
   if (!record)
     throw new PendingRequestCommandError(
       'request_not_pending',
@@ -479,7 +645,8 @@ export async function respondRecordedApproval(input: {
   readonly requestActor: Actor | undefined;
   readonly dependencies: PendingAdmissionDependencies;
   readonly prepare?: () => Promise<void>;
-  readonly admitExecution?: () => void;
+  readonly admitExecution?: (failure?: string) => void;
+  readonly receipt?: ControlPendingTransition['receipt'];
   readonly execute?: (record: PendingRequestRecord) => Promise<{
     readonly disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown';
     readonly reason: string | null;
@@ -542,41 +709,45 @@ export async function respondRecordedApproval(input: {
   const actor: PendingRequestActor = { kind: 'user', id: input.actorId };
   const now = new Date().toISOString();
   if (isCommandIntentApproval(current)) {
-    const record = input.sqlite.transaction(() => {
-      const resolved = resolveCommandIntentApproval({
-        store: input.store,
-        sqlite: input.sqlite,
-        record: current,
-        decision: input.decision,
-        actor: input.requestActor ?? { kind: 'local', userId: input.actorId },
-        coreDb: input.coreDb,
-        ...(input.dependencies.checkCommandIntent
-          ? { checkCommandIntent: input.dependencies.checkCommandIntent }
-          : {}),
-      });
-      input.dependencies.requestCommitted?.(input.sqlite, resolved);
-      return resolved;
-    })();
-    admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
+    const record = await resolveCommandIntentApproval({
+      store: input.store,
+      sqlite: input.sqlite,
+      record: current,
+      decision: input.decision,
+      actor: input.requestActor ?? { kind: 'local', userId: input.actorId },
+      coreDb: input.coreDb,
+      ...(input.dependencies.checkCommandIntent
+        ? { checkCommandIntent: input.dependencies.checkCommandIntent }
+        : {}),
+      ...(input.receipt ? { receipt: input.receipt } : {}),
+    });
+    await admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
     return record;
   }
   if (input.decision === 'denied') {
-    const denied = denyPendingRequest(
+    const [denied] = await mutatePending(
+      input.store,
       input.sqlite,
-      current.requestId,
-      actor,
-      now,
-      input.requestActor ?? { kind: 'local', userId: input.actorId }
+      {
+        action: 'deny',
+        workspaceId: current.workspaceId,
+        threadId: current.threadId,
+        requestId: current.requestId,
+        actor,
+        now,
+        decisionContext: input.requestActor ?? { kind: 'local', userId: input.actorId },
+        expected: pendingSources([current]),
+      },
+      { ...(input.receipt ? { receipt: input.receipt } : {}) }
     );
-    if (!denied) {
+    if (!denied)
       throw new PendingRequestCommandError(
         'request_not_pending',
         'The request is no longer pending.',
         409
       );
-    }
     syncApproval(input.store, denied);
-    admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
+    await admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
     return denied;
   }
   const assertDisclosure = () => {
@@ -598,76 +769,106 @@ export async function respondRecordedApproval(input: {
   // Refuse unavailable presentation before preparation can resolve credentials or contact an upstream.
   assertDisclosure();
   await input.prepare?.();
-  const step = claimOrRefuseGrant(
-    input.sqlite,
-    current.requestId,
-    actor,
-    new Date().toISOString(),
-    () => {
-      const supplied = input.evaluate?.();
-      const facts = {
-        membership:
-          supplied?.membership ??
-          authorityAllows(input.coreDb, input.store, current, input.requestActor),
-        agentAuthority:
-          supplied?.agentAuthority ??
-          (current.agentId === null || agentStillKnown(input.store, current)),
-        toolInSupply: supplied?.toolInSupply ?? true,
-        schemaCurrent: supplied?.schemaCurrent ?? true,
-        policyAllows: supplied?.policyAllows ?? true,
-        credentialsValid: supplied?.credentialsValid ?? true,
-      };
-      if (!facts.membership) {
-        return { outcome: 'end', event: 'membership-revoked', actor };
-      }
-      if (!facts.agentAuthority) {
-        return { outcome: 'end', event: 'agent-authority-revoked', actor };
-      }
-      if (input.store.getThread(current.workspaceId, current.threadId).status === 'archived') {
-        return { outcome: 'end', event: 'thread-archived', actor };
-      }
-      assertDisclosure();
-      if (!facts.toolInSupply) return { outcome: 'refuse', reason: 'tool-left-supply' };
-      if (!facts.schemaCurrent) return { outcome: 'refuse', reason: 'schema-changed' };
-      if (!facts.policyAllows) return { outcome: 'refuse', reason: 'policy-changed' };
-      if (!facts.credentialsValid) return { outcome: 'refuse', reason: 'credential-changed' };
-      input.admitExecution?.();
-      return { outcome: 'claim' };
+  // Reservation waits for FULL acknowledgement. No Main authority snapshot enters native SQL.
+  const claimSource = readPendingRequest(input.sqlite, current.requestId);
+  if (!claimSource) throw associationGap();
+  const reserved = await input.store.applyPendingRequestCommand(
+    current.workspaceId,
+    {
+      action: 'claim',
+      workspaceId: current.workspaceId,
+      threadId: current.threadId,
+      requestId: current.requestId,
+      actor,
+      now: new Date().toISOString(),
+      decisionContext: input.requestActor ?? { kind: 'local', userId: input.actorId },
+      expected: pendingSources([claimSource]),
     },
-    input.requestActor ?? { kind: 'local', userId: input.actorId }
+    { ...(input.receipt ? { receipt: input.receipt } : {}) }
   );
-  let record = step.record;
-  if (step.applied === 'claimed') {
-    let disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown' =
-      'outcome-unknown';
-    let reason: string | null = 'executor-unavailable';
-    let result: unknown = null;
-    if (input.execute) {
+  let record = readPendingRequest(input.sqlite, current.requestId);
+  if (!record) throw associationGap();
+  if (reserved.applied !== 'claimed') {
+    if (record.claim === 'claimed' && record.disposition === null)
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'The claim outcome requires inspection.',
+        409
+      );
+    return record;
+  }
+  let failure: string | undefined;
+  // This is the existing Main effect-submission step. Its call/decision/Audit rows precede contact.
+  input.sqlite.transaction(() => {
+    const currentMembership = authorityAllows(
+      input.coreDb,
+      input.store,
+      current,
+      input.requestActor
+    );
+    const currentAgent = current.agentId === null || agentStillKnown(input.store, current);
+    // A revoked principal cannot enter the Policy/credential evaluator; record the local refusal first.
+    const supplied = currentMembership && currentAgent ? input.evaluate?.() : undefined;
+    const membership = currentMembership && supplied?.membership !== false;
+    const agent = currentAgent && supplied?.agentAuthority !== false;
+    failure = !membership
+      ? 'membership-revoked'
+      : !agent
+        ? 'agent-authority-revoked'
+        : supplied?.toolInSupply === false
+          ? 'tool-left-supply'
+          : supplied?.schemaCurrent === false
+            ? 'schema-changed'
+            : supplied?.policyAllows === false
+              ? 'policy-changed'
+              : supplied?.credentialsValid === false
+                ? 'credential-changed'
+                : undefined;
+    if (!failure) {
       try {
-        const executed = await input.execute(record);
-        disposition = executed.disposition;
-        reason = executed.reason;
-        result = executed.result;
+        assertDisclosure();
       } catch {
-        disposition = 'outcome-unknown';
-        reason = 'execution-unproven';
+        failure = 'approval_preview_unavailable';
       }
     }
-    record =
-      finishPendingExecution(input.sqlite, record.requestId, disposition, reason, result, now) ??
-      record;
+    input.admitExecution?.(failure);
+  })();
+  let disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown' = failure
+    ? 'execution-error'
+    : 'outcome-unknown';
+  let reason: string | null = failure ?? 'executor-unavailable';
+  let result: unknown = null;
+  if (!failure && input.execute) {
+    try {
+      const executed = await input.execute(record);
+      disposition = executed.disposition;
+      reason = executed.reason;
+      result = executed.result;
+    } catch {
+      disposition = 'outcome-unknown';
+      reason = 'execution-unproven';
+    }
   }
-  if (step.applied === 'lost' && record.claim === 'claimed' && record.disposition === null) {
-    throw new PendingRequestCommandError(
-      'recovery_required',
-      'The grant was claimed and its execution was not recorded.',
-      409
-    );
-  }
+  const [finished] = await mutatePending(
+    input.store,
+    input.sqlite,
+    ControlPendingCommandInputSchema.parse({
+      action: 'finish',
+      workspaceId: record.workspaceId,
+      threadId: record.threadId,
+      requestId: record.requestId,
+      disposition,
+      reason,
+      heldResult: result,
+      now: new Date().toISOString(),
+      expected: pendingSources([record]),
+    }),
+    { ...(input.receipt ? { receipt: input.receipt } : {}) }
+  );
+  if (!finished) throw associationGap();
+  record = finished;
   syncApproval(input.store, record);
-  if (step.applied !== 'lost') {
-    admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
-  }
+  await admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
   return record;
 }
 
@@ -683,7 +884,7 @@ export async function respondRecordedApproval(input: {
  * @param dependencies Admission dependencies.
  * @returns Ended record.
  */
-export function withdrawRecordedPendingRequest(
+export async function withdrawRecordedPendingRequest(
   store: FsStore,
   sqlite: import('better-sqlite3').Database,
   requestId: string,
@@ -691,8 +892,9 @@ export function withdrawRecordedPendingRequest(
   threadId: string,
   actorId: string,
   dependencies: PendingAdmissionDependencies,
-  requestActor?: Actor
-): PendingRequestRecord {
+  requestActor?: Actor,
+  receipt?: ControlPendingTransition['receipt']
+): Promise<PendingRequestRecord> {
   const current = requireUsableRecord(store, sqlite, requestId, workspaceId, threadId);
   assertResponsibleActor(store, current, actorId, dependencies.coreDb, requestActor);
   if (current.state !== 'pending') {
@@ -702,11 +904,19 @@ export function withdrawRecordedPendingRequest(
       409
     );
   }
-  const ended = withdrawPendingRequest(
+  const [ended] = await mutatePending(
+    store,
     sqlite,
-    requestId,
-    { kind: 'user', id: actorId },
-    new Date().toISOString()
+    {
+      action: 'withdraw',
+      workspaceId,
+      threadId,
+      requestId,
+      actor: { kind: 'user', id: actorId },
+      now: new Date().toISOString(),
+      expected: pendingSources([current]),
+    },
+    { ...(receipt ? { receipt } : {}) }
   );
   if (!ended) {
     throw new PendingRequestCommandError(
@@ -716,7 +926,7 @@ export function withdrawRecordedPendingRequest(
     );
   }
   syncApproval(store, ended);
-  admitIfIdle(store, dependencies, workspaceId, threadId);
+  await admitIfIdle(store, dependencies, workspaceId, threadId);
   return ended;
 }
 
@@ -730,77 +940,79 @@ export function withdrawRecordedPendingRequest(
  * @param actor Ending actor.
  * @returns Archived thread id.
  */
-export function archiveThreadWithCloseout(
+export async function archiveThreadWithCloseout(
   store: FsStore,
   dependencies: PendingRequestDatabase,
   workspaceId: string,
   threadId: string,
-  actor: PendingRequestActor
-): string {
+  actor: PendingRequestActor,
+  admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
+): Promise<string> {
   const now = new Date().toISOString();
-  withWorkspace(dependencies, workspaceId, (sqlite) => {
+  const { census, records } = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
-    const records = listThreadPendingRequests(sqlite, workspaceId, threadId).filter((record) =>
-      canonicalRecordIsUsable(store, sqlite, record)
-    );
-    if (records.some((record) => record.claim === 'claimed' && record.disposition === null)) {
-      throw new PendingRequestCommandError(
-        'request_executing',
-        'A pending request execution is still claimed.',
-        409
-      );
-    }
-    const busy = store
-      .listThreadTurns(workspaceId, threadId)
-      .some((turn) => !isSealedTurnTerminal(turn.status));
-    if (busy && records.some(archiveSelects)) {
-      throw new PendingRequestCommandError(
-        'thread_busy',
-        'Archive waits until the active Turn ends.',
-        409
-      );
-    }
-    if (!records.some(archiveSelects)) return;
-    const needsTurn = records.some(
-      (record) =>
-        archiveSelects(record) &&
-        ((record.delivery === 'undelivered' && record.publicationTurnId === null) ||
-          (record.state === 'pending' && record.publicationTurnId === null) ||
-          needsInvalidationPublication(record))
-    );
-    const closeoutTurnId = needsTurn
-      ? allocateEntityId('tu')
-      : records.find((record) => archiveSelects(record) && record.publicationTurnId)
-          ?.publicationTurnId;
-    if (!closeoutTurnId) throw associationGap();
-    if (needsTurn && !storeHasTurn(store, closeoutTurnId)) {
-      store.createTurn(
-        workspaceId,
-        threadId,
-        'Pending request closeout',
-        pendingRequestSystemActor(actor.id),
-        null,
-        {
-          turnId: closeoutTurnId,
-          triggerSource: { kind: 'system-input', summary: 'Archive closeout' },
-          status: 'running',
-        }
-      );
-    }
-    const published = applyPendingCloseout(sqlite, {
-      workspaceId,
-      threadId,
-      closeoutTurnId,
-      actor,
-      now,
-      usable: (record) => canonicalRecordIsUsable(store, sqlite, record),
-    });
-    if (needsTurn) {
-      publishOutcomeItems(store, published, closeoutTurnId, now);
-      store.updateTurn(closeoutTurnId, { status: 'completed', completedAt: now });
-    }
+    const census = listThreadPendingRequests(sqlite, workspaceId, threadId);
+    return {
+      census,
+      records: census.filter((record) => canonicalRecordIsUsable(store, sqlite, record)),
+    };
   });
-  store.archiveThread(workspaceId, threadId);
+  if (records.some((record) => record.claim === 'claimed' && record.disposition === null))
+    throw new PendingRequestCommandError(
+      'request_executing',
+      'A pending request execution is still claimed.',
+      409
+    );
+  if (
+    store
+      .listThreadTurns(workspaceId, threadId)
+      .some((turn) => !isSealedTurnTerminal(turn.status)) &&
+    records.some(archiveSelects)
+  )
+    throw new PendingRequestCommandError(
+      'thread_busy',
+      'Archive waits until the active Turn ends.',
+      409
+    );
+  if (!records.some(archiveSelects)) {
+    await store.updateThread(workspaceId, threadId, { status: 'archived' }, admission);
+    return threadId;
+  }
+  const needsTurn = records.some(
+    (record) =>
+      archiveSelects(record) &&
+      ((record.delivery === 'undelivered' && record.publicationTurnId === null) ||
+        (record.state === 'pending' && record.publicationTurnId === null) ||
+        needsInvalidationPublication(record))
+  );
+  const turnId = needsTurn
+    ? allocateEntityId('tu')
+    : records.find((record) => archiveSelects(record) && record.publicationTurnId)
+        ?.publicationTurnId;
+  if (!turnId) throw associationGap();
+  const projected = closeoutProjection(records, turnId, actor, now, () => 'thread-archived');
+  const command: ControlPendingCommandInput = {
+    action: 'closeout',
+    workspaceId,
+    threadId,
+    closeoutTurnId: turnId,
+    actor,
+    now,
+    expected: pendingSources(records),
+    expectedThreadCensus: census.map((record) => record.requestId),
+  };
+  await store.publishPendingRequestServiceTurn(workspaceId, threadId, {
+    turnId,
+    summary: 'Archive closeout',
+    actor: pendingRequestSystemActor(actor.id),
+    now,
+    items: pendingOutcomeItems(projected, turnId, now),
+    pending: [command],
+    archive: true,
+    ...(admission
+      ? { admission: store.preparePendingArchiveAdmission(workspaceId, threadId, admission) }
+      : {}),
+  });
   return threadId;
 }
 
@@ -812,28 +1024,28 @@ export function archiveThreadWithCloseout(
  * @param workspaceId Workspace.
  * @param threadId Thread.
  */
-export function admitIfIdle(
+export async function admitIfIdle(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
   threadId: string
-): void {
+): Promise<void> {
   const busy = store
     .listThreadTurns(workspaceId, threadId)
     .some((turn) => !isSealedTurnTerminal(turn.status));
-  if (!busy) admitNextOutcome(store, dependencies, workspaceId, threadId);
+  if (!busy) await admitNextOutcome(store, dependencies, workspaceId, threadId);
 }
 
 /** Closes only canonical, unclaimed requests whose requester lost current authority. */
-function closeoutUnavailableRequests(
+async function closeoutUnavailableRequests(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
   threadId: string
-): boolean {
-  let closed = false;
-  withWorkspace(dependencies, workspaceId, (sqlite) => {
+): Promise<boolean> {
+  const selection = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
+    const census = listThreadPendingRequests(sqlite, workspaceId, threadId);
     const loss = (record: PendingRequestRecord): string | null =>
       !(
         dependencies.requesterAuthority?.(record) ??
@@ -845,56 +1057,64 @@ function closeoutUnavailableRequests(
             !dependencies.agentAuthority(record)
           ? 'agent-authority-revoked'
           : null;
-    const usable = (record: PendingRequestRecord) =>
-      canonicalRecordIsUsable(store, sqlite, record) &&
-      Boolean(loss(record)) &&
-      record.claim !== 'claimed' &&
-      (record.state === 'pending' ||
-        record.delivery === 'undelivered' ||
-        needsInvalidationPublication(record));
-    if (!listThreadPendingRequests(sqlite, workspaceId, threadId).some(usable)) return;
-    const now = new Date().toISOString();
-    const turnId = allocateEntityId('tu');
-    const records = applyPendingCloseout(sqlite, {
-      workspaceId,
-      threadId,
-      closeoutTurnId: turnId,
-      actor: pendingRequestSystemActor(null),
-      now,
-      usable,
-      invalidatingEvent: (record) => loss(record)!,
-    });
-    if (records.length) {
-      store.createTurn(
+    const records = census.filter(
+      (record) =>
+        canonicalRecordIsUsable(store, sqlite, record) &&
+        loss(record) &&
+        record.claim !== 'claimed' &&
+        (record.state === 'pending' ||
+          record.delivery === 'undelivered' ||
+          needsInvalidationPublication(record))
+    );
+    return {
+      census,
+      records,
+      events: records.map((record) => ({ requestId: record.requestId, event: loss(record)! })),
+    };
+  });
+  if (!selection.records.length) return false;
+  const now = new Date().toISOString();
+  const turnId = allocateEntityId('tu');
+  const actor = pendingRequestSystemActor(null);
+  const events = new Map(selection.events.map((event) => [event.requestId, event.event]));
+  const projected = closeoutProjection(
+    selection.records,
+    turnId,
+    actor,
+    now,
+    (record) => events.get(record.requestId)!
+  );
+  await store.publishPendingRequestServiceTurn(workspaceId, threadId, {
+    turnId,
+    summary: 'Requester authority was lost.',
+    actor,
+    now,
+    items: pendingOutcomeItems(projected, turnId, now),
+    pending: [
+      {
+        action: 'closeout',
         workspaceId,
         threadId,
-        'Unavailable requester closeout',
-        pendingRequestSystemActor(null),
-        null,
-        {
-          turnId,
-          executorKind: 'person',
-          status: 'running',
-          agentId: null,
-          triggerSource: { kind: 'system-input', summary: 'Requester authority was lost.' },
-        }
-      );
-      publishOutcomeItems(store, records, turnId, now);
-      store.updateTurn(turnId, { status: 'completed', completedAt: now });
-      closed = true;
-    }
+        closeoutTurnId: turnId,
+        actor: { kind: actor.kind, id: actor.id },
+        now,
+        expected: pendingSources(selection.records),
+        expectedThreadCensus: selection.census.map((record) => record.requestId),
+        invalidatingEvents: selection.events,
+      },
+    ],
   });
-  return closed;
+  return true;
 }
 
-function admitNextOutcome(
+async function admitNextOutcome(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
   threadId: string
-): void {
-  if (closeoutUnavailableRequests(store, dependencies, workspaceId, threadId)) return;
-  if (admitInvalidations(store, dependencies, workspaceId, threadId)) return;
+): Promise<void> {
+  if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId)) return;
+  if (await admitInvalidations(store, dependencies, workspaceId, threadId)) return;
   let selected: {
     readonly executor: PendingExecutorKind;
     readonly approval: boolean;
@@ -931,7 +1151,7 @@ function admitNextOutcome(
   if (storeHasTurn(store, turnId)) throw associationGap();
   outcomeCauses.set(turnId, 'outcome');
   const triggerKind = choice.approval ? 'approval-resolution' : 'user-input';
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspaceId,
     threadId,
     choice.approval ? 'Approval outcomes' : 'User-input outcomes',
@@ -968,10 +1188,11 @@ function admitNextOutcome(
     return;
   }
   const provedAt = new Date().toISOString();
-  store.updateTurn(turn.id, { status: 'completed', completedAt: provedAt });
-  withWorkspace(dependencies, workspaceId, (sqlite) => {
-    proveFrozenDelivery(sqlite, turn.id, provedAt);
-  });
+  await store.completeTurn(
+    turn.id,
+    { status: 'completed', completedAt: provedAt },
+    { pending: [{ action: 'delivery-prove', workspaceId, turnId: turn.id, now: provedAt }] }
+  );
 }
 
 /**
@@ -1007,16 +1228,19 @@ async function deliverWorkerOutcome(
       if (error instanceof TurnStartValidationError) {
         refusal = error;
         refusedOutcomeTurns.add(turnId);
-        withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
-          releaseFrozenOutcomes(sqlite, turnId, now);
+        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+          action: 'delivery-release',
+          workspaceId: workspaceIdForOwner(turn.owner),
+          turnId,
+          now,
         });
         if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-          await store.updateTurn(turnId, {
+          await store.completeTurn(turnId, {
             status: 'failed',
             completedAt: now,
             error: { code: error.code, message: error.message },
           });
-        closeoutUnavailableRequests(
+        await closeoutUnavailableRequests(
           store,
           dependencies,
           workspaceIdForOwner(turn.owner),
@@ -1024,11 +1248,14 @@ async function deliverWorkerOutcome(
         );
         return;
       }
-      withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
-        markFrozenDeliveryUnknown(sqlite, turnId, now);
+      await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+        action: 'delivery-unknown',
+        workspaceId: workspaceIdForOwner(turn.owner),
+        turnId,
+        now,
       });
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        await store.updateTurn(turnId, {
+        await store.completeTurn(turnId, {
           status: 'failed',
           completedAt: now,
           error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
@@ -1047,9 +1274,11 @@ async function deliverWorkerOutcome(
     const now = new Date().toISOString();
     try {
       const turn = store.getTurnById(turnId);
-      withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
-        if (refusal) releaseFrozenOutcomes(sqlite, turnId, now);
-        else markFrozenDeliveryUnknown(sqlite, turnId, now);
+      await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+        action: refusal ? 'delivery-release' : 'delivery-unknown',
+        workspaceId: workspaceIdForOwner(turn.owner),
+        turnId,
+        now,
       });
     } catch (storageError) {
       console.error(
@@ -1061,7 +1290,7 @@ async function deliverWorkerOutcome(
     }
     try {
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        await store.updateTurn(turnId, {
+        await store.completeTurn(turnId, {
           status: 'failed',
           completedAt: now,
           error: refusal
@@ -1074,159 +1303,25 @@ async function deliverWorkerOutcome(
   }
 }
 
-function publishOutcomeItems(
+/** Publishes only existing outcome projections; native admission uses the pure renderer in its own tuple. */
+async function publishOutcomeItems(
   store: FsStore,
   records: readonly PendingRequestRecord[],
   turnId: string,
   now: string,
   restart = false
-): void {
-  const admission = restart ? ALREADY_DECIDED_PUBLICATION_ADMISSION : undefined;
-  for (const record of records) {
-    if (record.publicationTurnId && record.publicationTurnId !== turnId) {
-      if (record.invalidationTurnId === turnId)
-        publishInvalidationItem(store, record, turnId, now, restart);
-      continue;
-    }
-    const base = {
-      owner: { kind: 'workspace' as const, workspaceId: record.workspaceId },
-      threadId: record.threadId,
-      turnId,
-      status: 'completed' as const,
-      createdAt: now,
-      completedAt: now,
-    };
-    if (record.kind === 'approval' && record.resolution && record.decidingActor?.kind === 'user') {
-      writeItem(
-        store,
-        {
-          ...base,
-          id: pendingRequestItemId(record.requestId, 'decision'),
-          type: 'approval-decision',
-          actor: { kind: 'user', id: record.decidingActor.id },
-          causationId: record.requestItemId,
-          approvalRequestId: record.requestId,
-          decision: record.resolution === 'denied' ? 'denied' : 'granted',
-          decidedAt: record.decidedAt ?? now,
-        },
-        admission
-      );
-    }
-    if (
-      record.resolution === 'answered' &&
-      record.answerMap &&
-      record.decidingActor?.kind === 'user'
-    ) {
-      writeItem(
-        store,
-        {
-          ...base,
-          id: pendingRequestItemId(record.requestId, 'answer'),
-          type: 'user-input-response',
-          actor: { kind: 'user', id: record.decidingActor.id },
-          causationId: record.requestItemId,
-          userInputRequestId: record.requestId,
-          answers: Object.fromEntries(
-            Object.entries(record.answerMap).map(([key, value]) => [key, [value[0]] as [string]])
-          ),
-          answeredAt: record.decidedAt ?? now,
-        },
-        admission
-      );
-    }
-    if (!isCommandIntentApproval(record) && record.disposition === 'denied-not-executed') {
-      writeItem(
-        store,
-        {
-          ...base,
-          id: pendingRequestItemId(record.requestId, 'disposition-status'),
-          type: 'status',
-          level: 'warning',
-          title: 'Call not executed',
-          summary: `denied-not-executed: ${record.dispositionReason ?? 'refused'}`,
-          causationId: record.requestItemId,
-        },
-        admission
-      );
-    } else if (
-      !isCommandIntentApproval(record) &&
-      record.disposition &&
-      record.serverId &&
-      record.toolName
-    ) {
-      writeItem(
-        store,
-        {
-          ...base,
-          id: pendingRequestItemId(record.requestId, 'disposition'),
-          type: 'tool-call',
-          tool: record.toolName,
-          server: record.serverId,
-          arguments: null,
-          result: record.disposition,
-          error: record.disposition === 'approved-executed' ? null : record.dispositionReason,
-          durationMs: 0,
-          causationId: record.requestItemId,
-        },
-        admission
-      );
-    }
-    if (record.ending) {
-      writeItem(
-        store,
-        {
-          ...base,
-          id: pendingRequestItemId(record.requestId, 'ending'),
-          type: 'status',
-          level: 'info',
-          title: record.ending === 'withdrawn' ? 'Request withdrawn' : 'Request ended',
-          summary: record.invalidatingEvent ?? record.ending,
-          causationId: record.requestItemId,
-        },
-        admission
-      );
-    }
-    if (record.invalidationTurnId === turnId) {
-      publishInvalidationItem(store, record, turnId, now, restart);
-    }
-  }
+): Promise<void> {
+  for (const item of pendingOutcomeItems(records, turnId, now))
+    await writeItem(store, item, restart ? ALREADY_DECIDED_PUBLICATION_ADMISSION : undefined);
 }
 
-function publishInvalidationItem(
-  store: FsStore,
-  record: PendingRequestRecord,
-  turnId: string,
-  now: string,
-  restart: boolean
-): void {
-  writeItem(
-    store,
-    {
-      id: pendingRequestItemId(record.requestId, 'invalidation'),
-      owner: { kind: 'workspace', workspaceId: record.workspaceId },
-      threadId: record.threadId,
-      turnId,
-      status: 'completed',
-      createdAt: now,
-      completedAt: now,
-      type: 'status',
-      level: 'warning',
-      title: 'Grant invalidated',
-      summary: `denied-not-executed: ${record.dispositionReason ?? record.invalidatingEvent ?? 'invalidated'}`,
-      causationId: record.requestItemId,
-    },
-    restart ? ALREADY_DECIDED_PUBLICATION_ADMISSION : undefined
-  );
-}
-
-function writeItem(
+async function writeItem(
   store: FsStore,
   item: Item,
   admission?: typeof ALREADY_DECIDED_PUBLICATION_ADMISSION
-): void {
-  const existing = store.listAllItems().find((candidate) => candidate.id === item.id);
-  if (existing) return;
-  store.createItem(item, admission);
+): Promise<void> {
+  if (store.listAllItems().some((candidate) => candidate.id === item.id)) return;
+  await store.createItem(item, admission);
 }
 
 function syncApproval(store: FsStore, record: PendingRequestRecord): void {
@@ -1317,6 +1412,11 @@ function authorityAllows(
   requestActor: Actor | undefined
 ): boolean {
   if (!coreDb) return true;
+  if (
+    !isCanonicalUserActive(coreDb, record.responsibleUserId) ||
+    (requestActor && !isCanonicalUserActive(coreDb, requestActor.userId))
+  )
+    return false;
   if (requestActor)
     return (
       authorizeWorkspace(coreDb, requestActor, record.workspaceId, {
@@ -1431,50 +1531,48 @@ function needsInvalidationPublication(record: PendingRequestRecord): boolean {
 }
 
 /** Publishes durable late invalidations independently of the original decision's delivery. */
-function admitInvalidations(
+async function admitInvalidations(
   store: FsStore,
   dependencies: PendingRequestDatabase,
   workspaceId: string,
   threadId: string
-): boolean {
-  let admitted = false;
-  withWorkspace(dependencies, workspaceId, (sqlite) => {
+): Promise<boolean> {
+  const waiting = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
-    const waiting = listThreadPendingRequests(sqlite, workspaceId, threadId).filter(
+    return listThreadPendingRequests(sqlite, workspaceId, threadId).filter(
       (record) =>
         canonicalRecordIsUsable(store, sqlite, record) &&
         needsInvalidationPublication(record) &&
         record.disposition === 'denied-not-executed'
     );
-    if (!waiting.length) return;
-    const now = new Date().toISOString();
-    const turnId = deriveEntityId('tu', ['invalidation', waiting[0]!.requestId]);
-    sqlite.transaction(() => {
-      for (const record of waiting)
-        sqlite
-          .prepare(
-            'UPDATE pending_requests SET invalidation_turn_id = ?, updated_at = ? WHERE request_id = ? AND invalidation_turn_id IS NULL'
-          )
-          .run(turnId, now, record.requestId);
-      if (!storeHasTurn(store, turnId))
-        store.createTurn(
-          workspaceId,
-          threadId,
-          'Person grant invalidations',
-          pendingRequestSystemActor(null),
-          null,
-          {
-            turnId,
-            status: 'running',
-            triggerSource: { kind: 'system-input', summary: 'Person grant invalidations' },
-          }
-        );
-      for (const record of waiting) publishInvalidationItem(store, record, turnId, now, false);
-    })();
-    admitted = true;
-    store.updateTurn(turnId, { status: 'completed', completedAt: now });
   });
-  return admitted;
+  if (!waiting.length) return false;
+  const now = new Date().toISOString();
+  const turnId = deriveEntityId('tu', ['invalidation', waiting[0]!.requestId]);
+  const projected = waiting.map((record) => ({
+    ...record,
+    invalidationTurnId: turnId,
+    updatedAt: now,
+  }));
+  await store.publishPendingRequestServiceTurn(workspaceId, threadId, {
+    turnId,
+    summary: 'Person grant invalidations',
+    actor: pendingRequestSystemActor(null),
+    now,
+    items: projected.map((record) => pendingInvalidationItem(record, turnId, now)),
+    pending: [
+      {
+        action: 'associate-invalidation',
+        workspaceId,
+        threadId,
+        requestIds: waiting.map((record) => record.requestId),
+        turnId,
+        now,
+        expected: pendingSources(waiting),
+      },
+    ],
+  });
+  return true;
 }
 
 function canonicalRecordIsUsable(
@@ -1488,14 +1586,14 @@ function canonicalRecordIsUsable(
   return validateCanonicalLoad(record, turns, readCommandRequestRecordsFromSqlite(sqlite)) === null;
 }
 
-function withWorkspace(
+function withWorkspace<T>(
   dependencies: PendingRequestDatabase,
   workspaceId: string,
-  use: (sqlite: import('better-sqlite3').Database) => void
-): void {
+  use: (sqlite: import('better-sqlite3').Database) => T
+): T {
   const db = dependencies.openWorkspace(workspaceId);
   try {
-    use(db.sqlite);
+    return use(db.sqlite);
   } finally {
     db.sqlite.close();
   }
@@ -1523,17 +1621,6 @@ export function pendingRequestPresentation(
     turnsSince: raisingIndex < 0 ? 0 : Math.max(0, turns.length - raisingIndex - 1),
     blocking: isBlockingPendingRequest(record, turns),
   };
-}
-
-/** Ends one request when membership or agent authority is gone at the next command. */
-export function invalidateForAuthorityLoss(
-  sqlite: import('better-sqlite3').Database,
-  record: PendingRequestRecord,
-  event: string,
-  actor: PendingRequestActor,
-  now: string
-): PendingRequestRecord | null {
-  return invalidatePendingRequest(sqlite, record.requestId, event, actor, now);
 }
 
 /** Uses existing canonical owners to refuse partial publication; it never reconstructs an association. */

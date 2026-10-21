@@ -22,6 +22,7 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -68,7 +69,7 @@ vi.mock('./operation-access.js', async (importOriginal) => {
 });
 
 /** Creates one real Core membership fixture behind a tiny guarded Hono app. */
-function createFixture() {
+async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-operation-authorizer-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -88,7 +89,7 @@ function createFixture() {
     )
     .run(now, now, now, now, now, now, now, now);
 
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const quickChatWorkspace = store
     .listWorkspaces()
     .find((workspace) => workspace.kind === 'personal');
@@ -97,8 +98,8 @@ function createFixture() {
     throw new Error('Expected Quick Chat and Demo Workspace fixtures.');
   }
 
-  const foreignWorkspace = store.createWorkspace('Foreign Workspace');
-  const filesystemOnlyWorkspace = store.createWorkspace('Filesystem Only Workspace');
+  const foreignWorkspace = await store.createWorkspace('Foreign Workspace');
+  const filesystemOnlyWorkspace = await store.createWorkspace('Filesystem Only Workspace');
   for (const ownedWorkspace of [quickChatWorkspace, workspace, foreignWorkspace]) {
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -136,11 +137,11 @@ function createFixture() {
   if (!demoThread) {
     throw new Error('Expected the Demo Workspace thread fixture.');
   }
-  const turn = store.createTurn(workspace.id, demoThread.id, 'Feedback target', {
+  const turn = await store.createTurn(workspace.id, demoThread.id, 'Feedback target', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign thread');
+  const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign thread');
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
@@ -266,11 +267,12 @@ function createFixture() {
 let fixture: ReturnType<typeof createFixture>;
 
 // Real database and Workspace initialization can exceed the default hook bound on shared CI hosts.
-beforeEach(() => {
-  fixture = createFixture();
+beforeEach(async () => {
+  fixture = await createFixture();
 }, 30_000);
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   fixture.coreDb.sqlite.close();
 });
 

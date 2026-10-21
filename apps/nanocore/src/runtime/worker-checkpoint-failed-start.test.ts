@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { deriveEntityId } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -59,7 +60,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  let store: FsStore = createDemoStore({ dataRoot });
+  let store: FsStore = await createDemoStore({ dataRoot });
   const target = recordTestNativeRuntimeTarget(coreDb);
   const execution = new SimulatedTurnExecutor({ coreDb });
   const materialized = Promise.withResolvers<void>();
@@ -152,15 +153,20 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   const updateTurn = store.updateTurn.bind(store);
   const updateSession = store.updateAgentSession.bind(store);
   const emit = store.emitTurnEvent.bind(store);
-  const turnFailure = vi.spyOn(store, 'updateTurn').mockImplementation((id, patch, authority) => {
-    if (id === turnId && patch.status === 'failed')
-      throw new Error('Controlled product publication interruption.');
-    return updateTurn(id, patch, authority);
-  });
-  const sessionFailure = vi.spyOn(store, 'updateAgentSession').mockImplementation((id, patch) => {
-    if (patch.status === 'failed') throw new Error('Controlled product publication interruption.');
-    return updateSession(id, patch);
-  });
+  const turnFailure = vi
+    .spyOn(store, 'updateTurn')
+    .mockImplementation(async (id, patch, authority) => {
+      if (id === turnId && patch.status === 'failed')
+        throw new Error('Controlled product publication interruption.');
+      return await updateTurn(id, patch, authority);
+    });
+  const sessionFailure = vi
+    .spyOn(store, 'updateAgentSession')
+    .mockImplementation(async (id, patch) => {
+      if (patch.status === 'failed')
+        throw new Error('Controlled product publication interruption.');
+      return await updateSession(id, patch);
+    });
   const eventFailure = vi
     .spyOn(store, 'emitTurnEvent')
     .mockImplementation((id, event, authority) => {
@@ -500,8 +506,8 @@ describe('checkpoint-owned never-submitted failed start', () => {
     const f = await failedStart(entry, true);
     const beforeEvents = f.store.getTurnEvents(f.turnId);
     try {
-      const terminalize = () =>
-        terminalizeGovernedWorkerTurn({
+      const terminalize = async () =>
+        await terminalizeGovernedWorkerTurn({
           store: f.store,
           turnId: f.turnId,
           agentSessionId: f.attempt.agentSessionId,
@@ -559,10 +565,10 @@ describe('checkpoint-owned never-submitted failed start', () => {
         const update = f.store.updateItem.bind(f.store);
         const failure = vi
           .spyOn(f.store, 'updateItem')
-          .mockImplementation((id, patch, authority) => {
+          .mockImplementation(async (id, patch, authority) => {
             if (id === deriveEntityId('it', ['worker-result', f.turnId]))
               throw new Error('Partial Item write.');
-            return update(id, patch, authority);
+            return await update(id, patch, authority);
           });
         await expect(f.classify()).rejects.toThrow('Partial Item write.');
         failure.mockRestore();
@@ -728,7 +734,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
           );
       }
       if (gap === 'native-handle')
-        f.store.updateAgentSession(f.attempt.agentSessionId!, {
+        await f.store.updateAgentSession(f.attempt.agentSessionId!, {
           nativeHandleDigest: 'a'.repeat(64),
         });
       if (gap === 'gate' || gap === 'delivery')
@@ -804,7 +810,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         gap === 'terminal-item-identity' ||
         gap === 'terminal-item-order'
       ) {
-        terminalizeGovernedWorkerTurn({
+        await terminalizeGovernedWorkerTurn({
           store: f.store,
           turnId: f.turnId,
           agentSessionId: f.attempt.agentSessionId,
@@ -923,4 +929,9 @@ describe('checkpoint-owned never-submitted failed start', () => {
       f.cleanup();
     }
   }, 60_000);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

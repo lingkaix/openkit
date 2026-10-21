@@ -20,13 +20,15 @@ import {
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { stageArtifactPayload } from './storage/artifacts/file-payload.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) close();
 });
@@ -43,14 +45,14 @@ const tree = [
   },
 ];
 
-function fixture(body = JSON.stringify(tree), importedActor?: ActorRef) {
+async function fixture(body = JSON.stringify(tree), importedActor?: ActorRef) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-artifact-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot }, userId);
+  const store = await createDemoStore({ dataRoot }, userId);
   const workspaceId = store.listWorkspaces().find((workspace) => workspace.kind !== 'personal')!.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
   const actor: Actor = { kind: 'session', userId };
@@ -89,8 +91,8 @@ function fixture(body = JSON.stringify(tree), importedActor?: ActorRef) {
 }
 
 describe('retained Artifact Skill candidate input', () => {
-  it('decodes exact retained JSON after reopen with real SQLite authority', () => {
-    const state = fixture();
+  it('decodes exact retained JSON after reopen with real SQLite authority', async () => {
+    const state = await fixture();
     const store = new FsStore({ dataRoot: state.dataRoot });
     const before = readdirSync(state.dataRoot, { recursive: true }).map(String).sort();
     expect(readSkillCandidateArtifact({ ...state, store })).toMatchObject({
@@ -158,8 +160,8 @@ function refuses(
 }
 
 describe('Skill Artifact source admission', () => {
-  it('retains producing Worker lineage separately from the submitting user', () => {
-    const state = workSource(fixture(), undefined, 'ag_producing_worker');
+  it('retains producing Worker lineage separately from the submitting user', async () => {
+    const state = workSource(await fixture(), undefined, 'ag_producing_worker');
     const reopened = new FsStore({ dataRoot: state.dataRoot });
     const result = readSkillCandidateArtifact({ ...state, store: reopened });
     expect(result).toMatchObject({
@@ -175,8 +177,8 @@ describe('Skill Artifact source admission', () => {
     });
   });
 
-  it('retains exact v1 and v2 trees and their distinct producers after a head advance', () => {
-    const state = workSource(fixture(), undefined, 'ag_original_worker');
+  it('retains exact v1 and v2 trees and their distinct producers after a head advance', async () => {
+    const state = workSource(await fixture(), undefined, 'ag_original_worker');
     state.store.updateTurn(state.turn.id, {
       status: 'completed',
       completedAt: '2026-10-16T00:01:00Z',
@@ -266,7 +268,7 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('reads exact file-backed Worker JSON as a native Skill candidate without changing the original', async () => {
-    const state = workSource(fixture(), undefined, 'ag_producing_worker');
+    const state = workSource(await fixture(), undefined, 'ag_producing_worker');
     const original = state.store.getArtifact(
       state.selection.workspaceId,
       state.selection.artifactId
@@ -329,8 +331,8 @@ describe('Skill Artifact source admission', () => {
     );
   });
 
-  it('reports unproven Worker identity as unavailable instead of using the submitter', () => {
-    const state = workSource(fixture());
+  it('reports unproven Worker identity as unavailable instead of using the submitter', async () => {
+    const state = workSource(await fixture());
     expect(readSkillCandidateArtifact(state)).toMatchObject({
       producer: null,
       producingTurn: { agentId: null },
@@ -338,13 +340,13 @@ describe('Skill Artifact source admission', () => {
     });
   });
 
-  it('preserves imported attribution without inventing a Worker or Thread', () => {
+  it('preserves imported attribution without inventing a Worker or Thread', async () => {
     const actor = {
       kind: 'integration' as const,
       id: 'integration_source',
       responsibleUserId: null,
     };
-    const state = fixture(undefined, actor);
+    const state = await fixture(undefined, actor);
     expect(readSkillCandidateArtifact(state)).toMatchObject({
       producer: actor,
       producingTurn: null,
@@ -353,21 +355,21 @@ describe('Skill Artifact source admission', () => {
     });
   });
 
-  it('does not disclose another private Thread even to a Workspace owner', () => {
-    const state = workSource(fixture(), allocateEntityId('usr'), 'ag_private');
+  it('does not disclose another private Thread even to a Workspace owner', async () => {
+    const state = workSource(await fixture(), allocateEntityId('usr'), 'ag_private');
     refuses(state, 'source_unavailable');
   });
 
-  it('admits the current private Thread owner', () => {
-    const state = fixture();
+  it('admits the current private Thread owner', async () => {
+    const state = await fixture();
     expect(
       readSkillCandidateArtifact(workSource(state, state.actor.userId, 'ag_private')).tree
     ).toEqual(tree);
   });
 
-  it('does not find an Artifact by scanning another Workspace', () => {
-    const state = fixture();
-    const other = state.store.createWorkspace('Other');
+  it('does not find an Artifact by scanning another Workspace', async () => {
+    const state = await fixture();
+    const other = await state.store.createWorkspace('Other');
     recordWorkspaceOwnerMembership({
       coreDb: state.coreDb,
       workspaceId: other.id,
@@ -379,8 +381,8 @@ describe('Skill Artifact source admission', () => {
     );
   });
 
-  it('rejects a missing Artifact without revealing an identifier or bytes', () => {
-    const state = fixture();
+  it('rejects a missing Artifact without revealing an identifier or bytes', async () => {
+    const state = await fixture();
     const missingArtifactId = allocateEntityId('ar');
     refuses(
       { ...state, selection: { ...state.selection, artifactId: missingArtifactId } },
@@ -396,8 +398,8 @@ describe('Skill Artifact source admission', () => {
     }
   });
 
-  it('requires current actor authority, including readonly credentials', () => {
-    const state = fixture();
+  it('requires current actor authority, including readonly credentials', async () => {
+    const state = await fixture();
     const { tokenId } = createOpenKitAccessTokenRecord(state.coreDb, {
       ownerUserId: state.actor.userId,
       scope: 'workspace-readonly',
@@ -434,8 +436,8 @@ describe('Skill Artifact source admission', () => {
     refuses(state, 'source_unavailable');
   });
 
-  it('rechecks current actor authority before returning decoded bytes', () => {
-    const state = fixture();
+  it('rechecks current actor authority before returning decoded bytes', async () => {
+    const state = await fixture();
     const artifact = state.store.getArtifact(
       state.selection.workspaceId,
       state.selection.artifactId
@@ -449,8 +451,8 @@ describe('Skill Artifact source admission', () => {
     refuses(state, 'source_unavailable');
   });
 
-  it.each(['version', 'contentDigest'] as const)('rejects a stale selected %s', (field) => {
-    const state = fixture();
+  it.each(['version', 'contentDigest'] as const)('rejects a stale selected %s', async (field) => {
+    const state = await fixture();
     refuses(
       {
         ...state,
@@ -463,8 +465,8 @@ describe('Skill Artifact source admission', () => {
     );
   });
 
-  it('rechecks the exact selected source after decoding', () => {
-    const state = fixture();
+  it('rechecks the exact selected source after decoding', async () => {
+    const state = await fixture();
     const readVersion = state.store.getArtifactVersion.bind(state.store);
     let reads = 0;
     vi.spyOn(state.store, 'getArtifactVersion').mockImplementation((...args) => {
@@ -475,8 +477,8 @@ describe('Skill Artifact source admission', () => {
     refuses(state, 'stale');
   });
 
-  it('verifies actual retained bytes rather than trusting the stored digest field', () => {
-    const state = fixture();
+  it('verifies actual retained bytes rather than trusting the stored digest field', async () => {
+    const state = await fixture();
     writeFileSync(
       artifactFilePayloadPath(
         join(state.dataRoot, 'workspaces', state.selection.workspaceId),
@@ -491,8 +493,8 @@ describe('Skill Artifact source admission', () => {
   it.each([
     'draft',
     'archived',
-  ] as const)('admits an explicitly selected readable %s source without activation', (status) => {
-    const state = workSource(fixture());
+  ] as const)('admits an explicitly selected readable %s source without activation', async (status) => {
+    const state = workSource(await fixture());
     state.store.getArtifact(state.selection.workspaceId, state.selection.artifactId).status =
       status;
     expect(readSkillCandidateArtifact(state).tree).toEqual(tree);
@@ -516,8 +518,8 @@ describe('bounded Skill Artifact JSON and tree', () => {
     JSON.stringify([tree[0], tree[0]]),
     JSON.stringify([{ ...tree[0], contentBase64: '???' }]),
     JSON.stringify([{ kind: 'directory', path: 'references', contentBase64: 'YQ==' }, ...tree]),
-  ])('rejects malformed or unsafe trees without exposing their content (%#)', (body) => {
-    const state = fixture(body);
+  ])('rejects malformed or unsafe trees without exposing their content (%#)', async (body) => {
+    const state = await fixture(body);
     const before = readdirSync(state.dataRoot, { recursive: true }).map(String).sort();
     refuses(state, 'invalid_request');
     expect(readdirSync(state.dataRoot, { recursive: true }).map(String).sort()).toEqual(before);
@@ -528,8 +530,8 @@ describe('bounded Skill Artifact JSON and tree', () => {
     ).toBe(false);
   });
 
-  it('rejects more than the Skill file-byte bound through the shared tree validator', () => {
-    const state = fixture(
+  it('rejects more than the Skill file-byte bound through the shared tree validator', async () => {
+    const state = await fixture(
       JSON.stringify([
         ...tree,
         {
@@ -542,18 +544,20 @@ describe('bounded Skill Artifact JSON and tree', () => {
     refuses(state, 'invalid_request');
   });
 
-  it('bounds valid JSON framing before parsing a complete small tree', () => {
-    const state = fixture(' '.repeat(MAX_SKILL_CANDIDATE_ARTIFACT_BYTES) + JSON.stringify(tree));
+  it('bounds valid JSON framing before parsing a complete small tree', async () => {
+    const state = await fixture(
+      ' '.repeat(MAX_SKILL_CANDIDATE_ARTIFACT_BYTES) + JSON.stringify(tree)
+    );
     refuses(state, 'invalid_request');
   });
 
-  it('includes directories, supporting bytes and executability in the same tree digest', () => {
+  it('includes directories, supporting bytes and executability in the same tree digest', async () => {
     const fullTree = [
       ...tree,
       { kind: 'directory' as const, path: 'empty' },
       { kind: 'file' as const, path: 'scripts/run', executable: true, contentBase64: 'AAEC/w==' },
     ];
-    const result = readSkillCandidateArtifact(fixture(JSON.stringify(fullTree)));
+    const result = readSkillCandidateArtifact(await fixture(JSON.stringify(fullTree)));
     expect(result.tree).toEqual(fullTree);
     expect(result.digest).toBe(validateCatalogTree(fullTree).digest);
     expect(result.digest).not.toBe(validateCatalogTree(tree).digest);

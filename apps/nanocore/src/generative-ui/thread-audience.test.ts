@@ -117,7 +117,7 @@ describe('Generative UI Thread audience', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Audience team');
+    const workspace = await store.createWorkspace('Audience team');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -136,44 +136,49 @@ describe('Generative UI Thread audience', () => {
       )
       .run(workspace.id, stamp, stamp, stamp);
 
-    const ownPrivateThread = store.createThread(
+    const ownPrivateThread = await store.createThread(
       workspace.id,
       'Own private audience thread',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const otherPrivateThread = store.createThread(
+    const otherPrivateThread = await store.createThread(
       workspace.id,
       'Other private audience thread',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
-    const sharedThread = store.createThread(
+    const sharedThread = await store.createThread(
       workspace.id,
       'Shared audience thread',
       undefined,
       'conversation',
       { visibility: 'workspace' }
     );
-    const ownPrivateTurn = store.createTurn(
+    const ownPrivateTurn = await store.createTurn(
       workspace.id,
       ownPrivateThread.id,
       'Publish own private view',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const otherPrivateTurn = store.createTurn(
+    const otherPrivateTurn = await store.createTurn(
       workspace.id,
       otherPrivateThread.id,
       'Publish other private view',
       { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
-    const sharedTurn = store.createTurn(workspace.id, sharedThread.id, 'Publish shared view', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    const ownPrivateSource = store.createItem({
+    const sharedTurn = await store.createTurn(
+      workspace.id,
+      sharedThread.id,
+      'Publish shared view',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const ownPrivateSource = await store.createItem({
       id: testEntityId('it', `it_${ownPrivateTurn.id}_source`),
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: ownPrivateThread.id,
@@ -184,7 +189,7 @@ describe('Generative UI Thread audience', () => {
       createdAt: ownPrivateTurn.startedAt ?? stamp,
       completedAt: ownPrivateTurn.startedAt ?? stamp,
     });
-    const otherPrivateSource = store.createItem({
+    const otherPrivateSource = await store.createItem({
       id: testEntityId('it', `it_${otherPrivateTurn.id}_source`),
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: otherPrivateThread.id,
@@ -195,7 +200,7 @@ describe('Generative UI Thread audience', () => {
       createdAt: otherPrivateTurn.startedAt ?? stamp,
       completedAt: otherPrivateTurn.startedAt ?? stamp,
     });
-    const sharedSource = store.createItem({
+    const sharedSource = await store.createItem({
       id: testEntityId('it', `it_${sharedTurn.id}_source`),
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: sharedThread.id,

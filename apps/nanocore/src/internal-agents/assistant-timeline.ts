@@ -1,4 +1,5 @@
 import type { FsStore } from '../lib/store.js';
+import type { ControlAdmission } from '../storage/control-store-admission.js';
 
 /**
  * Resolves the user's single ordinary Assistant Timeline from canonical Threads.
@@ -28,25 +29,30 @@ export function findAssistantTimeline(store: FsStore, workspaceId: string, userI
 /**
  * Opens the Timeline without renaming, reopening, or replacing existing history.
  *
- * The synchronous store boundary prevents two fresh commands from allocating two Timelines. The enclosing command owner retains request replay and conflicts.
+ * Native command admission selects existing history and commits its original receipt in the same SQL transaction. The enclosing command owner retains request replay and conflicts.
  *
  * @param store Canonical Thread owner after current Workspace admission.
  * @param workspaceId Exact authorized Workspace.
  * @param userId Authenticated Timeline owner.
  * @param initialName Name used only when creating the first Timeline.
- * @returns The existing or newly created private Assistant Thread.
+ * @param admission Original command receipt and admitted Audit when opening the Timeline is a native command.
+ * @returns Existing or newly committed private Assistant Thread after acknowledgement.
  */
-export function openAssistantTimeline(
+export async function openAssistantTimeline(
   store: FsStore,
   workspaceId: string,
   userId: string,
-  initialName: string
+  initialName: string,
+  admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
 ) {
-  return (
-    findAssistantTimeline(store, workspaceId, userId) ??
-    store.createThread(workspaceId, initialName, undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: userId,
-    })
+  const existing = findAssistantTimeline(store, workspaceId, userId);
+  if (existing && (!admission || !store.getDataRoot())) return existing;
+  return store.createThread(
+    workspaceId,
+    initialName,
+    admission?.receipt.response.id,
+    'conversation',
+    { visibility: 'private', privateOwnerUserId: userId },
+    admission
   );
 }

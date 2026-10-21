@@ -27,6 +27,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVerifiedWorkspaceExport } from '../storage/workspace-transfer-routes.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
@@ -40,15 +41,15 @@ afterEach(() => {
 });
 
 /** Every check crosses the real canonical file boundary in an isolated data root. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-owner-boundary-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Workspace-owned history');
-  const thread = store.createThread(workspace.id, 'Workspace work');
-  const turn = store.createTurn(workspace.id, thread.id, 'Workspace input', actor);
-  const serverThread = store.createServerThread('Server-owned history');
-  const serverTurn = store.createServerTurn(serverThread.id, 'Server input', actor);
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Workspace-owned history');
+  const thread = await store.createThread(workspace.id, 'Workspace work');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Workspace input', actor);
+  const serverThread = await store.createServerThread('Server-owned history');
+  const serverTurn = await store.createServerTurn(serverThread.id, 'Server input', actor);
   const owner = { kind: 'workspace', workspaceId: workspace.id } as const;
   return { dataRoot, store, workspace, thread, turn, serverThread, serverTurn, owner };
 }
@@ -73,9 +74,9 @@ function message(
 }
 
 describe('canonical work owner and retained storage boundaries', () => {
-  it('rejects a Server owner supplied through Workspace Thread audience fields without polluting the Workspace cache', () => {
+  it('rejects a Server owner supplied through Workspace Thread audience fields without polluting the Workspace cache', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Workspace');
+    const workspace = await store.createWorkspace('Workspace');
     expect(() =>
       store.createThread(workspace.id, 'Wrong owner', undefined, 'conversation', {
         owner: { kind: 'server' },
@@ -86,8 +87,8 @@ describe('canonical work owner and retained storage boundaries', () => {
     expect(store.listServerThreads()).toEqual([]);
   });
 
-  it('publishes explicit owners and reloads both families through the same schema', () => {
-    const f = fixture();
+  it('publishes explicit owners and reloads both families through the same schema', async () => {
+    const f = await fixture();
     for (const [schema, record, owner] of [
       [ThreadSchema, f.thread, f.owner],
       [TurnSchema, f.turn, f.owner],
@@ -97,7 +98,7 @@ describe('canonical work owner and retained storage boundaries', () => {
       expect(schema.parse(record)).toMatchObject({ owner });
       expect(record).not.toHaveProperty('workspaceId');
     }
-    const item = f.store.createItem(message(f.owner, f.thread.id, f.turn.id));
+    const item = await f.store.createItem(message(f.owner, f.thread.id, f.turn.id));
     const serverItem = f.store.createServerItem(
       message({ kind: 'server' }, f.serverThread.id, f.serverTurn.id)
     );
@@ -127,9 +128,9 @@ describe('canonical work owner and retained storage boundaries', () => {
     expect(existsSync(join(f.dataRoot, 'server', 'threads', f.thread.id))).toBe(false);
   });
 
-  it('refuses foreign owner Items before appending and preserves the accepted owner after reopen', () => {
-    const f = fixture();
-    const item = f.store.createItem(message(f.owner, f.thread.id, f.turn.id));
+  it('refuses foreign owner Items before appending and preserves the accepted owner after reopen', async () => {
+    const f = await fixture();
+    const item = await f.store.createItem(message(f.owner, f.thread.id, f.turn.id));
     for (const owner of [
       { kind: 'server' },
       { kind: 'workspace', workspaceId: allocateEntityId('ws') },
@@ -170,11 +171,11 @@ describe('canonical work owner and retained storage boundaries', () => {
         : invalidOwner.kind === 'workspace'
           ? 'of another Workspace'
           : invalidOwner.kind;
-    it(`refuses retained Workspace Turn owner ${label} without rewriting its bytes`, () => {
-      const f = fixture();
+    it(`refuses retained Workspace Turn owner ${label} without rewriting its bytes`, async () => {
+      const f = await fixture();
       const healthy =
         invalidOwner === undefined || invalidOwner.kind === 'user'
-          ? f.store.createWorkspace('Healthy unsupported-owner sibling')
+          ? await f.store.createWorkspace('Healthy unsupported-owner sibling')
           : undefined;
       const path = join(
         f.dataRoot,
@@ -204,7 +205,7 @@ describe('canonical work owner and retained storage boundaries', () => {
           f.store.getServerTurnById(f.serverTurn.id)
         );
         expect(reopened.getWorkspace(healthy.id)).toEqual(f.store.getWorkspace(healthy.id));
-        const added = reopened.createThread(healthy.id, 'New sibling history');
+        const added = await reopened.createThread(healthy.id, 'New sibling history');
         expect(new FsStore({ dataRoot: f.dataRoot }).getThread(healthy.id, added.id)).toEqual(
           added
         );
@@ -217,8 +218,8 @@ describe('canonical work owner and retained storage boundaries', () => {
     });
   }
 
-  it('refuses malformed Server Turn authority globally without rewriting its bytes', () => {
-    const f = fixture();
+  it('refuses malformed Server Turn authority globally without rewriting its bytes', async () => {
+    const f = await fixture();
     const path = join(
       f.dataRoot,
       'server',
@@ -236,9 +237,9 @@ describe('canonical work owner and retained storage boundaries', () => {
     expect(readFileSync(path, 'utf8')).toBe(corrupted);
   });
 
-  it('refuses an intact Workspace Thread moved to a different owner directory', () => {
-    const f = fixture();
-    const otherWorkspace = f.store.createWorkspace('Other owner');
+  it('refuses an intact Workspace Thread moved to a different owner directory', async () => {
+    const f = await fixture();
+    const otherWorkspace = await f.store.createWorkspace('Other owner');
     const source = join(f.dataRoot, 'workspaces', f.workspace.id, 'threads', f.thread.id);
     const target = join(f.dataRoot, 'workspaces', otherWorkspace.id, 'threads', f.thread.id);
     const original = readFileSync(join(source, 'thread.json'), 'utf8');
@@ -247,8 +248,8 @@ describe('canonical work owner and retained storage boundaries', () => {
     expect(readFileSync(join(target, 'thread.json'), 'utf8')).toBe(original);
   });
 
-  it('reopens calls in their owning database and excludes Server history from Workspace export', () => {
-    const f = fixture();
+  it('reopens calls in their owning database and excludes Server history from Workspace export', async () => {
+    const f = await fixture();
     let coreDb = openCoreDb(f.dataRoot);
     databases.push(coreDb);
     applyMigrations(coreDb);

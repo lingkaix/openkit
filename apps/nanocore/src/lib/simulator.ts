@@ -12,10 +12,10 @@ import {
   ItemDeltaEventSchema,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
+  TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
-import { createArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -46,7 +46,6 @@ import {
   frozenPendingOutcomeInput,
   listThreadPendingRequests,
   pendingRequestSystemActor,
-  proveFrozenDelivery,
 } from '../runtime/pending-requests.js';
 import type {
   AgentSessionReadModel,
@@ -78,10 +77,16 @@ import { recordWorkerControlAcceptedRecord } from '../runtime/worker-control-rec
 import { createLocalSimulatorCredentialCheckValues } from '../runtime/worker-credential-guard.js';
 import {
   acceptPreparedWorkerTurnContextPackage,
+  beginWorkerTurnJournalStep,
+  endWorkerTurnJournalRelease,
+  endWorkerTurnJournalStep,
+  endWorkerTurnMaterialization,
   prepareWorkerTurnContextPackage,
+  prepareWorkerTurnJournalIntents,
   workerVisibleWorkspaceCwd,
 } from '../runtime/worker-governance-turn-executor.js';
 import { preflightArtifactTuple, prepareWorkerArtifact } from '../runtime/worker-transcript.js';
+import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
 import { bindWorkerCheckpointToPreparedSession } from '../runtime/worker-turn-loop.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -97,13 +102,18 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
-import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  commandRequestExpiresAt,
+  commandRequestKey,
+  type FsStore,
+  type TerminalTurnPublication,
+} from './store.js';
 
 type RuntimeItem = z.infer<typeof ItemSchema>;
 
@@ -634,6 +644,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       ? openWorkspaceDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner))
       : null;
 
+    let journalAdmitted = false;
+    let materializationEnded = false;
     try {
       if (workspaceDb) {
         applyScopedMigrations(workspaceDb);
@@ -844,10 +856,32 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         manifest.profiles?.[0]?.id ??
         null;
 
-      await store.updateTurn(turnId, {
-        agentProfileId: selectedProfileId,
-        agentSessionId: agentSession.id,
-      });
+      const journalIntents =
+        workspaceDb && this.coreDb
+          ? (() => {
+              if (!environmentPackage || !context.attemptId)
+                throw new Error('Simulator journal requires its original package and attempt.');
+              const target = this.coreDb.sqlite
+                .prepare('SELECT target_id AS targetId FROM nanohost_runtime_targets LIMIT 1')
+                .get() as { targetId: string } | undefined;
+              if (!target) throw new Error('Simulator journal RuntimeTarget is unavailable.');
+              const attempt = requireSchedulerExecutionAttempt(this.coreDb, context.attemptId);
+              return prepareWorkerTurnJournalIntents(workspaceDb, environmentPackage, attempt, {
+                backendKind: 'openshell',
+                targetId: target.targetId,
+                allocationRef: attempt.bindingRef,
+              });
+            })()
+          : [];
+      await store.updateTurn(
+        turnId,
+        {
+          agentProfileId: selectedProfileId,
+          agentSessionId: agentSession.id,
+        },
+        { journalIntents }
+      );
+      journalAdmitted = journalIntents.length > 0;
       const state: SimulatedTurnState = {
         workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
@@ -857,7 +891,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         userInputRequestId: randomUUID(),
       };
 
-      this.emitStartedEnvelope(
+      await this.emitStartedEnvelope(
         store,
         state,
         agentSession,
@@ -935,8 +969,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           attemptId: backendSession.attemptId,
           now: () => timestamp,
         });
+        materializationEnded = true;
+        await endWorkerTurnMaterialization(store, workspaceDb, turnId, 'completed', [
+          backendSessionId,
+        ]);
         if (preparedContext) {
-          const acceptedTrace = acceptPreparedWorkerTurnContextPackage({
+          const acceptedTrace = await acceptPreparedWorkerTurnContextPackage({
             coreDb: this.coreDb,
             environmentPackage,
             preparedContext,
@@ -966,16 +1004,42 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           }),
           submission: true,
         });
-        acceptSchedulerExecutionObservation(
-          this.coreDb,
-          await this.submit({
-            ...schedulerExecutionCorrelation(submission),
-            deadline: submission.deadline!,
-          })
+        const deliveryJournal = await beginWorkerTurnJournalStep(
+          store,
+          workspaceDb,
+          turnId,
+          'deliver-start',
+          {
+            operation: 'submit',
+            requestId: submission.operationId!,
+            sequence: null,
+            bindingRef: submission.bindingRef,
+          },
+          submission
         );
+        try {
+          acceptSchedulerExecutionObservation(
+            this.coreDb,
+            await this.submit({
+              ...schedulerExecutionCorrelation(submission),
+              deadline: submission.deadline!,
+            })
+          );
+        } catch (error) {
+          await endWorkerTurnJournalStep(store, workspaceDb, deliveryJournal, 'unknown');
+          throw error;
+        }
+        await endWorkerTurnJournalStep(store, workspaceDb, deliveryJournal, 'completed', [
+          submission.operationId!,
+        ]);
         context.onSubmissionSettled?.();
         // This deterministic executor accepts the same frozen input at its modeled native start.
-        proveFrozenDelivery(workspaceDb.sqlite, turn.id, timestamp);
+        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+          action: 'delivery-prove',
+          workspaceId: workspaceIdForOwner(turn.owner),
+          turnId: turn.id,
+          now: timestamp,
+        });
         if (workerInput === input) {
           await this.emitUserInputRequest(store, state, environmentPackage, workspaceDb);
         }
@@ -1000,58 +1064,83 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           now: () => finalTimestamp,
           cause: 'worker-final-status',
         });
-        transitionWorkerBackendSessionState(this.coreDb, {
-          fromState: 'materialized',
-          attemptId: backendSession.attemptId,
-          now: () => finalTimestamp,
-          toState: 'cleanup-pending',
-        });
-        transitionWorkerBackendSessionState(this.coreDb, {
-          fromState: 'cleanup-pending',
-          attemptId: backendSession.attemptId,
-          now: () => finalTimestamp,
-          toState: 'physical-cleaned',
-        });
-        projectWorkerBackendCleanup(workspaceDb, {
-          agentSessionId,
+        const cleanupJournal = await beginWorkerTurnJournalStep(
+          store,
+          workspaceDb,
+          turnId,
+          'inspect-cleanup'
+        );
+        try {
+          transitionWorkerBackendSessionState(this.coreDb, {
+            fromState: 'materialized',
+            attemptId: backendSession.attemptId,
+            now: () => finalTimestamp,
+            toState: 'cleanup-pending',
+          });
+          transitionWorkerBackendSessionState(this.coreDb, {
+            fromState: 'cleanup-pending',
+            attemptId: backendSession.attemptId,
+            now: () => finalTimestamp,
+            toState: 'physical-cleaned',
+          });
+          await projectWorkerBackendCleanup(workspaceDb, {
+            agentSessionId,
+            backendSessionId,
+            backendType: 'openshell',
+            backendVersion: null,
+            completedAt: finalTimestamp,
+            environmentPackage,
+            outcome: 'succeeded',
+            packageSnapshotId: environmentPackage.snapshotId,
+            placement: 'local',
+            threadId: turn.threadId,
+            turnId: turn.id,
+            workerImage: workerBackendImageIdentity(backendLineage),
+            workspaceHandoffState: 'complete',
+            workspaceId: workspaceIdForOwner(turn.owner),
+          });
+          transitionWorkerBackendSessionState(this.coreDb, {
+            fromState: 'physical-cleaned',
+            attemptId: backendSession.attemptId,
+            now: () => finalTimestamp,
+            toState: 'cleaned',
+          });
+        } catch (error) {
+          await endWorkerTurnJournalStep(store, workspaceDb, cleanupJournal, 'failed');
+          throw error;
+        }
+        await endWorkerTurnJournalStep(store, workspaceDb, cleanupJournal, 'completed', [
           backendSessionId,
-          backendType: 'openshell',
-          backendVersion: null,
-          completedAt: finalTimestamp,
-          environmentPackage,
-          outcome: 'succeeded',
-          packageSnapshotId: environmentPackage.snapshotId,
-          placement: 'local',
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workerImage: workerBackendImageIdentity(backendLineage),
-          workspaceHandoffState: 'complete',
-          workspaceId: workspaceIdForOwner(turn.owner),
-        });
-        transitionWorkerBackendSessionState(this.coreDb, {
-          fromState: 'physical-cleaned',
-          attemptId: backendSession.attemptId,
-          now: () => finalTimestamp,
-          toState: 'cleaned',
-        });
+        ]);
       }
 
-      this.emitAssistant(store, state);
-      this.emitReasoning(store, state);
-      this.emitCommand(store, state);
+      const collectionJournal = workspaceDb
+        ? await beginWorkerTurnJournalStep(store, workspaceDb, turnId, 'collect')
+        : null;
+      try {
+        await this.emitAssistant(store, state);
+        await this.emitReasoning(store, state);
+        await this.emitCommand(store, state);
+      } catch (error) {
+        if (collectionJournal)
+          await endWorkerTurnJournalStep(store, workspaceDb!, collectionJournal, 'failed');
+        throw error;
+      }
+      if (collectionJournal)
+        await endWorkerTurnJournalStep(store, workspaceDb!, collectionJournal, 'completed');
       if (workerInput !== input) {
         const outcomes = JSON.parse(workerInput).pendingOutcomes as Array<{
           answers: Record<string, string[]> | null;
         }>;
         const tone = outcomes.find((outcome) => outcome.answers?.tone)?.answers?.tone?.[0];
         if (!state.requestId) throw new Error('Simulator outcome request identity is unavailable.');
-        this.emitArtifactAndComplete(store, state, tone ?? 'Concise', state.requestId);
+        await this.emitArtifactAndComplete(store, state, tone ?? 'Concise', state.requestId);
       } else {
         if (!this.coreDb) {
           await this.emitUserInputRequest(store, state, null, null);
         }
         if (state.requestId) {
-          this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
+          await this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
           return;
         }
         const completedAt = new Date().toISOString();
@@ -1060,25 +1149,69 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           message: null,
           updatedAt: completedAt,
         });
-        const completedTurn = await store.updateTurn(state.turnId, {
+        const currentTurn = store.getTurnById(state.turnId);
+        const completedTurn = TurnSchema.parse({
+          ...currentTurn,
           status: 'completed',
           completedAt,
+          durationMs: currentTurn.startedAt
+            ? Math.max(
+                0,
+                new Date(completedAt).getTime() - new Date(currentTurn.startedAt).getTime()
+              )
+            : currentTurn.durationMs,
         });
-        this.emitTurnUpdated(store, state, completedTurn);
-        this.emitAgentSessionUpdated(store, state, idleSession);
-        await store.emitTurnEvent(
+        const precedingEvents: Parameters<FsStore['persistTurnEvent']>[1][] = [
+          {
+            event: 'turn.updated',
+            requestId: state.requestId,
+            workspaceId: state.workspaceId,
+            threadId: state.threadId,
+            turnId: state.turnId,
+            data: { type: 'turn-updated', turn: completedTurn },
+          },
+          {
+            event: 'agent.session.updated',
+            requestId: state.requestId,
+            workspaceId: state.workspaceId,
+            threadId: state.threadId,
+            turnId: state.turnId,
+            data: { type: 'agent-session-updated', agentSession: idleSession },
+          },
+        ];
+        const turn = await store.completeTurn(
           state.turnId,
+          { status: 'completed', completedAt },
+          {
+            ...(await this.readTerminalPublication(store, state.turnId)),
+            requestId: state.requestId,
+            stopReason: 'completed',
+            precedingEvents,
+          }
+        );
+        const notifications = [];
+        for (const event of [
+          ...precedingEvents,
           {
             event: 'turn.completed',
             requestId: state.requestId,
             workspaceId: state.workspaceId,
             threadId: state.threadId,
             turnId: state.turnId,
-            data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        );
+            data: { type: 'turn-completed', stopReason: 'completed', turn },
+          } satisfies Parameters<FsStore['persistTurnEvent']>[1],
+        ]) {
+          notifications.push(
+            await store.persistTurnEvent(state.turnId, event, ALREADY_DECIDED_PUBLICATION_ADMISSION)
+          );
+        }
+        // Native completion acknowledges the whole ordered tuple before its notification tail.
+        for (const event of notifications) store.emitTurnEvent(state.turnId, event);
       }
+    } catch (error) {
+      if (journalAdmitted && !materializationEnded)
+        await endWorkerTurnMaterialization(store, workspaceDb!, turnId, 'unknown');
+      throw error;
     } finally {
       workspaceDb?.sqlite.close();
       context.onSubmissionSettled?.();
@@ -1102,12 +1235,22 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             routesRevoked: true,
           } as const;
           const release = await this.release({ ...correlation, proof });
-          if (release.state === 'released' && release.fenceRef)
+          if (release.state === 'released' && release.fenceRef) {
             closeSchedulerExecutionAttemptWithFence(this.coreDb, {
               correlation,
               proof,
               fenceRef: release.fenceRef,
             });
+            const releaseDb = openWorkspaceDb(
+              this.coreDb.dataRoot,
+              workspaceIdForOwner(turn.owner)
+            );
+            try {
+              await endWorkerTurnJournalRelease(store, releaseDb, turnId, release.fenceRef);
+            } finally {
+              releaseDb.sqlite.close();
+            }
+          }
         }
       }
     }
@@ -1139,31 +1282,57 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     };
     state.requestId = context.requestId;
     const completedAt = new Date().toISOString();
-    const agentSession = await store.updateAgentSession(state.agentSessionId, {
-      status: 'failed',
+    const sessionProjection = {
+      id: state.agentSessionId,
+      status: 'failed' as const,
       message: 'The simulator turn was interrupted.',
       updatedAt: completedAt,
-    });
-    const turn = await store.updateTurn(turnId, {
-      status: 'interrupted',
-      completedAt,
-    });
-
-    await store.emitTurnEvent(
+    };
+    // Native assigned Session failure belongs to the same complete terminal tuple.
+    const composeSession = Boolean(store.getDataRoot());
+    const { id: _sessionId, ...sessionPatch } = sessionProjection;
+    const agentSession = composeSession
+      ? { ...store.getAgentSession(state.agentSessionId), ...sessionProjection }
+      : await store.updateAgentSession(state.agentSessionId, sessionPatch);
+    const sessionEvent = {
+      event: 'agent.session.updated' as const,
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId,
+      data: { type: 'agent-session-updated' as const, agentSession },
+    };
+    const turn = await store.completeTurn(
       turnId,
       {
-        event: 'agent.session.updated',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId,
-        data: { type: 'agent-session-updated', agentSession },
+        status: 'interrupted',
+        completedAt,
       },
+      {
+        ...(await this.readTerminalPublication(store, state.turnId, 'interrupted')),
+        ...(composeSession ? { agentSession: sessionProjection } : {}),
+        precedingEvents: [sessionEvent],
+        requestId: state.requestId,
+        stopReason: 'aborted',
+        ...(context.command ? { command: context.command } : {}),
+      }
+    );
+    const retainedSessionEvent = store
+      .getTurnEvents(turnId)
+      .findLast(
+        (event) =>
+          event.data.type === 'agent-session-updated' &&
+          event.data.agentSession.id === state.agentSessionId &&
+          event.data.agentSession.updatedAt === completedAt
+      );
+    if (!retainedSessionEvent)
+      throw new Error('Simulator terminal Session event was not acknowledged.');
+    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+      turnId,
+      retainedSessionEvent,
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    // Preserve Main's synchronous terminal-notification tail; awaiting this event changes which closeout producer runs first.
-    // Revisit this boundary only with C2-B2 S's complete native terminal handoff, not neutral preparation.
-    store.emitTurnEvent(
+    const turnCompletedEvent = await store.persistTurnEvent(
       turnId,
       {
         event: 'turn.completed',
@@ -1175,6 +1344,9 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    // All durable writes finish before observers can start interrupted closeout.
+    store.emitTurnEvent(turnId, agentSessionUpdatedEvent);
+    store.emitTurnEvent(turnId, turnCompletedEvent);
   }
 
   /**
@@ -1247,16 +1419,16 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits turn-start, retained request input with its author, and AgentSession events.
    */
-  private emitStartedEnvelope(
+  private async emitStartedEnvelope(
     store: FsStore,
     state: SimulatedTurnState,
     agentSession: Awaited<ReturnType<FsStore['createAgentSession']>>,
     input: string,
     actor: ActorRef
-  ): void {
+  ): Promise<void> {
     const turn = store.getTurnById(state.turnId);
     const timestamp = turn.startedAt ?? new Date().toISOString();
-    const userItem = store.createItem({
+    const userItem = await store.createItem({
       id: deriveEntityId('it', ['task-user', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1269,7 +1441,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: timestamp,
     });
 
-    store.emitTurnEvent(state.turnId, {
+    const turnStartedEvent = await store.persistTurnEvent(state.turnId, {
       event: 'turn.started',
       requestId: state.requestId,
       workspaceId: state.workspaceId,
@@ -1277,17 +1449,18 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       turnId: state.turnId,
       data: { type: 'turn-started', turnId: state.turnId, status: 'running' },
     });
-    this.emitItemCreated(store, state, userItem);
-    this.emitItemCompleted(store, state, userItem);
-    this.emitAgentSessionUpdated(store, state, agentSession);
+    store.emitTurnEvent(state.turnId, turnStartedEvent);
+    await this.emitItemCreated(store, state, userItem);
+    await this.emitItemCompleted(store, state, userItem);
+    await this.emitAgentSessionUpdated(store, state, agentSession);
   }
 
   /**
    * Emits an assistant message with text deltas.
    */
-  private emitAssistant(store: FsStore, state: SimulatedTurnState): void {
+  private async emitAssistant(store: FsStore, state: SimulatedTurnState): Promise<void> {
     const timestamp = new Date().toISOString();
-    const assistantItem = store.createItem({
+    const assistantItem = await store.createItem({
       id: deriveEntityId('it', ['assistant', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1299,8 +1472,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: null,
     });
 
-    this.emitItemCreated(store, state, assistantItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, assistantItem);
+    await this.emitItemDelta(
       store,
       state,
       assistantItem.id,
@@ -1308,7 +1481,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'Reviewing workspace context. ',
       'assistant-message'
     );
-    this.emitItemDelta(
+    await this.emitItemDelta(
       store,
       state,
       assistantItem.id,
@@ -1316,20 +1489,20 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'Preparing a deterministic plan.',
       'assistant-message'
     );
-    const completedAssistantItem = store.updateItem(assistantItem.id, {
+    const completedAssistantItem = await store.updateItem(assistantItem.id, {
       status: 'completed',
       text: 'Reviewing workspace context. Preparing a deterministic plan.',
       completedAt: timestamp,
     });
-    this.emitItemCompleted(store, state, completedAssistantItem);
+    await this.emitItemCompleted(store, state, completedAssistantItem);
   }
 
   /**
    * Emits a reasoning item with indexed text deltas.
    */
-  private emitReasoning(store: FsStore, state: SimulatedTurnState): void {
+  private async emitReasoning(store: FsStore, state: SimulatedTurnState): Promise<void> {
     const timestamp = new Date().toISOString();
-    const reasoningItem = store.createItem({
+    const reasoningItem = await store.createItem({
       id: deriveEntityId('it', ['reasoning', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1342,8 +1515,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: null,
     });
 
-    this.emitItemCreated(store, state, reasoningItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, reasoningItem);
+    await this.emitItemDelta(
       store,
       state,
       reasoningItem.id,
@@ -1351,21 +1524,21 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'Check simulator branch coverage.',
       'reasoning'
     );
-    const completedReasoningItem = store.updateItem(reasoningItem.id, {
+    const completedReasoningItem = await store.updateItem(reasoningItem.id, {
       status: 'completed',
       summary: ['Simulator path covered.'],
       content: ['Check simulator branch coverage.'],
       completedAt: timestamp,
     });
-    this.emitItemCompleted(store, state, completedReasoningItem);
+    await this.emitItemCompleted(store, state, completedReasoningItem);
   }
 
   /**
    * Emits a command-execution item with output deltas.
    */
-  private emitCommand(store: FsStore, state: SimulatedTurnState): void {
+  private async emitCommand(store: FsStore, state: SimulatedTurnState): Promise<void> {
     const timestamp = new Date().toISOString();
-    const commandItem = store.createItem({
+    const commandItem = await store.createItem({
       id: deriveEntityId('it', ['command', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1381,8 +1554,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: null,
     });
 
-    this.emitItemCreated(store, state, commandItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, commandItem);
+    await this.emitItemDelta(
       store,
       state,
       commandItem.id,
@@ -1390,14 +1563,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'simulator: ok',
       'command-execution'
     );
-    store.updateItem(commandItem.id, { output: 'simulator: ok' });
-    const completedCommandItem = store.updateItem(commandItem.id, {
+    await store.updateItem(commandItem.id, { output: 'simulator: ok' });
+    const completedCommandItem = await store.updateItem(commandItem.id, {
       status: 'completed',
       exitCode: 0,
       durationMs: 12,
       completedAt: timestamp,
     });
-    this.emitItemCompleted(store, state, completedCommandItem);
+    await this.emitItemCompleted(store, state, completedCommandItem);
   }
 
   /**
@@ -1486,14 +1659,25 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         throw error;
       });
       try {
-        withCanonicalFileWriteAdmission(admission, () => {
-          try {
-            store.createArtifact(prepared.artifact, staged);
-            createArtifactReview(workspaceDb, prepared.reviewInput);
-          } catch (error) {
-            store.rollbackArtifactCreation(artifactId);
-            throw error;
-          }
+        const scope = {
+          workspaceId: environmentPackage.scope.workspaceId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          packageSnapshotId: environmentPackage.snapshotId,
+        };
+        await store.createArtifact(prepared.artifact, staged, undefined, {
+          review: prepared.reviewInput,
+          fileAdmission: admission,
+          receipt: {
+            key: commandRequestKey('artifact.submit', requestId, scope),
+            command: 'artifact.submit',
+            requestId,
+            scope,
+            inputHash: commandInputHash({ artifactId, materialProposal: proposal }),
+            responseKind: 'artifact',
+            createdAt: recordedAt,
+            expiresAt: commandRequestExpiresAt(recordedAt),
+          },
         });
       } finally {
         await staged.remove();
@@ -1578,8 +1762,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     }
     // A repeated question returns its existing Item without publishing it on another Turn.
     if (requestItem.turnId === state.turnId) {
-      this.emitItemCreated(store, state, requestItem);
-      this.emitItemCompleted(store, state, requestItem);
+      await this.emitItemCreated(store, state, requestItem);
+      await this.emitItemCompleted(store, state, requestItem);
     }
   }
 
@@ -1591,15 +1775,15 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
    * @param input Accepted user answer.
    * @param requestId Request proof validated before any response mutation.
    */
-  private emitArtifactAndComplete(
+  private async emitArtifactAndComplete(
     store: FsStore,
     state: SimulatedTurnState,
     input: string,
     requestId: string
-  ): void {
+  ): Promise<void> {
     const timestamp = new Date().toISOString();
     const body = `Simulator answer: ${input}`;
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: deriveEntityId('ar', state.turnId),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
@@ -1635,18 +1819,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     if (!artifactItem) {
       throw new Error(`Artifact reference was not persisted: ${artifact.id}`);
     }
-    const completedAt = new Date().toISOString();
-    const agentSession = store.updateAgentSession(state.agentSessionId, {
-      status: 'idle',
-      message: null,
-      updatedAt: completedAt,
-    });
-    const turn = store.updateTurn(state.turnId, {
-      status: 'completed',
-      completedAt,
-    });
-
-    store.emitTurnEvent(
+    const artifactCreatedEvent = await store.persistTurnEvent(
       state.turnId,
       {
         event: 'artifact.created',
@@ -1658,8 +1831,9 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    this.emitItemCreated(store, state, artifactItem);
-    this.emitItemDelta(
+    store.emitTurnEvent(state.turnId, artifactCreatedEvent);
+    await this.emitItemCreated(store, state, artifactItem);
+    await this.emitItemDelta(
       store,
       state,
       artifactItem.id,
@@ -1667,9 +1841,59 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       artifact.id,
       'artifact-reference'
     );
-    this.emitItemCompleted(store, state, artifactItem);
-    this.emitAgentSessionUpdated(store, state, agentSession);
-    store.emitTurnEvent(
+    await this.emitItemCompleted(store, state, artifactItem);
+    const completedAt = new Date().toISOString();
+    const sessionProjection = {
+      id: state.agentSessionId,
+      status: 'idle' as const,
+      message: null,
+      updatedAt: completedAt,
+    };
+    const composeSession = Boolean(store.getDataRoot());
+    const { id: _sessionId, ...sessionPatch } = sessionProjection;
+    const agentSession = composeSession
+      ? { ...store.getAgentSession(state.agentSessionId), ...sessionProjection }
+      : await store.updateAgentSession(state.agentSessionId, sessionPatch);
+    // The Session closeout and completion share their decided timestamp and native commit.
+    // Awaited Artifact events must not place a later Session event before an older completion.
+    const sessionEvent = {
+      event: 'agent.session.updated' as const,
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'agent-session-updated' as const, agentSession },
+    };
+    const turn = await store.completeTurn(
+      state.turnId,
+      {
+        status: 'completed',
+        completedAt,
+      },
+      {
+        ...(await this.readTerminalPublication(store, state.turnId)),
+        ...(composeSession ? { agentSession: sessionProjection } : {}),
+        precedingEvents: [sessionEvent],
+        requestId: state.requestId,
+      }
+    );
+    const retainedSessionEvent = store
+      .getTurnEvents(state.turnId)
+      .findLast(
+        (event) =>
+          event.data.type === 'agent-session-updated' &&
+          event.data.agentSession.id === state.agentSessionId &&
+          event.data.agentSession.updatedAt === completedAt
+      );
+    if (!retainedSessionEvent)
+      throw new Error('Simulator terminal Session event was not acknowledged.');
+    const sessionNotification = await store.persistTurnEvent(
+      state.turnId,
+      retainedSessionEvent,
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    store.emitTurnEvent(state.turnId, sessionNotification);
+    const turnCompletedEvent = await store.persistTurnEvent(
       state.turnId,
       {
         event: 'turn.completed',
@@ -1681,17 +1905,34 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(state.turnId, turnCompletedEvent);
+  }
+
+  /** Reads original native facts for the actual outcome; completed publication keeps its evidence requirement. */
+  private async readTerminalPublication(
+    store: FsStore,
+    turnId: string,
+    outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed'
+  ): Promise<TerminalTurnPublication> {
+    if (!this.coreDb) return {};
+    const turn = store.getTurnById(turnId);
+    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner));
+    try {
+      return await workerTurnTerminalPublication(workspaceDb, turnId, outcome);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   }
 
   /**
    * Emits one item creation event.
    */
-  private emitItemCreated(
+  private async emitItemCreated(
     store: FsStore,
     state: SimulatedTurnState,
     item: Awaited<ReturnType<FsStore['createItem']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    const itemCreatedEvent = await store.persistTurnEvent(
       state.turnId,
       {
         event: 'item.created',
@@ -1703,12 +1944,13 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(state.turnId, itemCreatedEvent);
   }
 
   /**
    * Emits one item delta event.
    */
-  private emitItemDelta(
+  private async emitItemDelta(
     store: FsStore,
     state: SimulatedTurnState,
     itemId: string,
@@ -1720,7 +1962,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       | 'artifact-updated',
     delta: string,
     itemType: ItemType
-  ): void {
+  ): Promise<void> {
     const base = {
       type: 'item-delta' as const,
       itemId,
@@ -1734,7 +1976,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           : { ...base, deltaKind, delta }
     );
 
-    store.emitTurnEvent(
+    const itemDeltaEvent = await store.persistTurnEvent(
       state.turnId,
       {
         event: 'item.delta',
@@ -1746,13 +1988,18 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(state.turnId, itemDeltaEvent);
   }
 
   /**
    * Emits one item completion event.
    */
-  private emitItemCompleted(store: FsStore, state: SimulatedTurnState, item: RuntimeItem): void {
-    store.emitTurnEvent(
+  private async emitItemCompleted(
+    store: FsStore,
+    state: SimulatedTurnState,
+    item: RuntimeItem
+  ): Promise<void> {
+    const itemCompletedEvent = await store.persistTurnEvent(
       state.turnId,
       {
         event: 'item.completed',
@@ -1764,39 +2011,18 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-  }
-
-  /**
-   * Emits one turn update event.
-   */
-  private emitTurnUpdated(
-    store: FsStore,
-    state: SimulatedTurnState,
-    turn: Awaited<ReturnType<FsStore['updateTurn']>>
-  ): void {
-    store.emitTurnEvent(
-      state.turnId,
-      {
-        event: 'turn.updated',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data: { type: 'turn-updated', turn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    store.emitTurnEvent(state.turnId, itemCompletedEvent);
   }
 
   /**
    * Emits one AgentSession update event.
    */
-  private emitAgentSessionUpdated(
+  private async emitAgentSessionUpdated(
     store: FsStore,
     state: SimulatedTurnState,
     agentSession: Awaited<ReturnType<FsStore['updateAgentSession']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    const agentSessionUpdatedEvent = await store.persistTurnEvent(
       state.turnId,
       {
         event: 'agent.session.updated',
@@ -1808,5 +2034,6 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(state.turnId, agentSessionUpdatedEvent);
   }
 }

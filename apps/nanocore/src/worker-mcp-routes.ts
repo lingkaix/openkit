@@ -1248,7 +1248,7 @@ export function isAlreadyDecidedWorkerMcpItem(
 }
 
 /** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
-export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): number {
+export async function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): Promise<number> {
   let recovered = 0;
   for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
     const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
@@ -1306,7 +1306,10 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
           // the one the grid admits filling. Leave the row for a later boot instead.
           continue;
         }
-        storedItems.set(parsed.id, store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION));
+        storedItems.set(
+          parsed.id,
+          await store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION)
+        );
         recovered += 1;
       }
     } finally {
@@ -1612,7 +1615,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       const raised =
         duplicate ??
-        raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, capture);
+        (await raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, capture));
       if (!input.input.store.listAllItems().some((item) => item.id === raised.requestItemId))
         await input.input.store.createItem({
           id: raised.requestItemId,
@@ -1868,7 +1871,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   } finally {
     if (terminalCommitted && publishTerminalItem) {
       try {
-        publishWorkerMcpItem({
+        await publishWorkerMcpItem({
           call,
           durationMs: Date.now() - startedAt,
           environmentPackage: input.environmentPackage,
@@ -3062,7 +3065,7 @@ function startMcpCapabilityCall(input: {
  * Publishes one terminal product-safe tool-call Item after the ledger winner.
  * Timestamps and duration are copied from the capability_calls row so boot reconstruction can compare them.
  */
-function publishWorkerMcpItem(input: {
+async function publishWorkerMcpItem(input: {
   readonly call: StartedCapabilityCall;
   readonly durationMs: number;
   readonly environmentPackage: AgentEnvironmentPackage;
@@ -3073,7 +3076,7 @@ function publishWorkerMcpItem(input: {
   readonly store: FsStore;
   readonly toolName: string;
   readonly workspaceDb: WorkspaceDb;
-}): void {
+}): Promise<void> {
   const ledger = input.workspaceDb.sqlite
     .prepare(
       `SELECT schema_version, started_at, completed_at FROM capability_calls WHERE call_id = ?`
@@ -3086,7 +3089,7 @@ function publishWorkerMcpItem(input: {
   const durationMs = ledger?.started_at
     ? Math.max(0, Date.parse(completedAt) - Date.parse(ledger.started_at))
     : input.durationMs;
-  input.store.createItem(
+  await input.store.createItem(
     {
       arguments: null,
       causationId: input.call.id,

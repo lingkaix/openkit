@@ -13,7 +13,6 @@ import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openk
 import { AgentSessionIdSchema, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as artifactReviews from '../artifact-reviews.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -29,14 +28,23 @@ import {
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
+import * as productTurnStart from '../runtime/product-turn-start.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import {
+  isCurrentAgentSessionStatus,
+  nativeProductScope,
+} from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -140,13 +148,13 @@ const REMOTE_GIT_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const REMOTE_GIT_URL = 'https://git.example.test/openkit/repository.git';
 
 /** Creates a product-start fixture whose only authored Workspace input is remote Git. */
-function createRemoteGitProductFixture(
+async function createRemoteGitProductFixture(
   locator: Readonly<Record<string, unknown>>,
   vaultGrantRef?: string,
   configuredCanary = false
 ) {
   const coreDb = createCoreDb();
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const executor = new SimulatedTurnExecutor({ coreDb });
   const providerRegistry = new ProviderRegistry([
     {
@@ -249,14 +257,16 @@ function createRemoteGitProductFixture(
 }
 
 describe('SimulatedTurnExecutor', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   });
 
   it('records simulator input and completes the bounded Turn', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new SimulatedTurnExecutor({ coreDb });
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -296,6 +306,9 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
 
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      // Admission is not completion. The unchanged test deadline also bounds this real owner.
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       const storedTurn = store.getTurnById(turn.id);
       expect(storedTurn).toMatchObject({
@@ -348,16 +361,17 @@ describe('SimulatedTurnExecutor', () => {
           )
       ).toEqual([]);
     } finally {
+      closeouts.mockRestore();
       coreDb.sqlite.close();
     }
   });
 
   it('rejects a mismatched scheduler lease key before any simulator backend effect', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const agentSetup = createTestAgentSetup();
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Reject a mismatched lease key',
@@ -366,7 +380,7 @@ describe('SimulatedTurnExecutor', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
+    await store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
 
     try {
       await expect(
@@ -402,7 +416,7 @@ describe('SimulatedTurnExecutor', () => {
   // Two real S39 publication and native execution lifecycles use this local runner budget; product deadlines stay unchanged.
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
@@ -539,7 +553,7 @@ describe('SimulatedTurnExecutor', () => {
     const imageRefA = 'openkit/worker-codex:image-a';
     const imageRefB = 'openkit/worker-codex:image-b';
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
@@ -762,12 +776,13 @@ describe('SimulatedTurnExecutor', () => {
       executions.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+    // F-PRED-LAT: restore 30 s after the owned predecessor latency follow-up proves margin.
+  }, 60_000);
 
   it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const capacity = 16_000_000n;
     let configuredReserve = 2_000_000n;
     const admission = new FileStorageAdmission(
@@ -919,7 +934,7 @@ describe('SimulatedTurnExecutor', () => {
             const createArtifact = store.createArtifact.bind(store);
             const publicationPressure = vi
               .spyOn(store, 'createArtifact')
-              .mockImplementationOnce((artifact, payload) => {
+              .mockImplementationOnce(async (artifact, payload, materialized, submission) => {
                 const forecast = reserve.mock.calls.at(-1)![0];
                 const pending =
                   forecast.stagingBytes +
@@ -932,7 +947,7 @@ describe('SimulatedTurnExecutor', () => {
                   stagingBytes: capacity - configuredReserve - pending,
                 });
                 try {
-                  return createArtifact(artifact, payload);
+                  return await createArtifact(artifact, payload, materialized, submission);
                 } finally {
                   contender.release();
                 }
@@ -947,19 +962,28 @@ describe('SimulatedTurnExecutor', () => {
               publicationPressure.mockRestore();
             }
 
-            // A Review failure must compensate through this same canonical-write admission owner.
+            // Compensation removes its owned directory; only actual byte writes require a reservation.
             const rollbackArtifact = store.rollbackArtifactCreation.bind(store);
             const compensation = vi
               .spyOn(store, 'rollbackArtifactCreation')
               .mockImplementation((id) => {
-                const previousReservations = reserve.mock.calls.length;
+                const artifactRoot = join(
+                  coreDb.dataRoot,
+                  'workspaces',
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'artifacts',
+                  id
+                );
+                expect(existsSync(artifactRoot)).toBe(true);
                 rollbackArtifact(id);
-                expect(reserve.mock.calls.length).toBeGreaterThan(previousReservations);
+                expect(existsSync(artifactRoot)).toBe(false);
               });
             const reviewFailure = vi
-              .spyOn(artifactReviews, 'createArtifactReview')
-              .mockImplementationOnce(() => {
-                throw new Error('Fixture Review publication failed.');
+              .spyOn(getControlStoreWorkerClient(), 'review')
+              .mockImplementationOnce(async () => {
+                const error = new ControlStoreWorkerError('precondition', 'not-committed');
+                error.message = 'Fixture Review publication failed.';
+                throw error;
               });
             try {
               await expect(publish.apply(this, args)).rejects.toThrow(
@@ -1236,17 +1260,35 @@ describe('SimulatedTurnExecutor', () => {
         const retained = proposals.filter((artifact) =>
           artifact.origin.requestId?.startsWith('simulator-material-')
         );
-        const historyPath = join(
-          coreDb.dataRoot,
-          'workspaces',
-          'ws_00000000-0000-7000-8000-000000000001',
-          'threads',
-          'th_00000000-0000-7000-8000-000000000001',
-          'turns',
-          workerTurn.id,
-          'items.jsonl'
-        );
-        const history = readFileSync(historyPath);
+        const historyScope = nativeProductScope(coreDb.dataRoot, {
+          kind: 'workspace',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        // Snapshot the complete ordered native history and its exact immutable bytes.
+        const readHistory = () => {
+          const rows = replayDb.sqlite
+            .prepare(
+              `SELECT sequence, id, revision, content_json FROM control_product_entries
+               WHERE kind = 'item' AND turn_id = ? ORDER BY sequence`
+            )
+            .all(workerTurn.id) as Array<{
+            sequence: number;
+            id: string;
+            revision: number;
+            content_json: string;
+          }>;
+          return rows.map((row) => ({
+            ...row,
+            bytes: readFileSync(
+              join(
+                historyScope.contentMount.root,
+                JSON.parse(row.content_json).reference.locator.path
+              )
+            ),
+          }));
+        };
+        const history = readHistory();
+        expect(history.length).toBeGreaterThan(0);
         const references = store.listThreadItems(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
@@ -1284,7 +1326,7 @@ describe('SimulatedTurnExecutor', () => {
             'th_00000000-0000-7000-8000-000000000001'
           )
         ).toEqual(references);
-        expect(readFileSync(historyPath)).toEqual(history);
+        expect(readHistory()).toEqual(history);
         expect(
           retained.map((artifact) => getArtifactReview(replayDb, artifact.id, artifact.version))
         ).toEqual(reviews);
@@ -1434,19 +1476,20 @@ describe('SimulatedTurnExecutor', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       executions.mockRestore();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
 
   it('uses the resolved manifest agent and default profile', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const executor = new SimulatedTurnExecutor();
     const firstAgentSetup = createTestAgentSetup({
       agentId: 'agent_codex_host',
       provider: null,
       requiredCapabilities: [],
     });
-    const firstTurn = store.createTurn(
+    const firstTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Use the default agent',
@@ -1456,7 +1499,7 @@ describe('SimulatedTurnExecutor', () => {
       }
     );
 
-    store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
     await executor.startTurn(store, firstTurn.id, 'Use the default agent', {
       agentSetup: firstAgentSetup,
       triggerActor: firstTurn.triggerActor,
@@ -1475,11 +1518,11 @@ describe('SimulatedTurnExecutor', () => {
       { id: 'draft', instructionsRef: 'draft', skills: [] },
       { id: 'review', instructionsRef: 'review', skills: [] },
     ];
-    const selectedThread = store.createThread(
+    const selectedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Selected agent thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       selectedThread.id,
       'Use the selected agent',
@@ -1489,7 +1532,7 @@ describe('SimulatedTurnExecutor', () => {
       }
     );
 
-    store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
+    await store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
     await executor.startTurn(store, turn.id, 'Use the selected agent', {
       agentSetup: selectedAgentSetup,
       triggerActor: turn.triggerActor,
@@ -1520,9 +1563,9 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('fails closed when the resolved agent setup is missing', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const executor = new SimulatedTurnExecutor();
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Missing setup',
@@ -1532,7 +1575,7 @@ describe('SimulatedTurnExecutor', () => {
       }
     );
 
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
 
     await expect(executor.startTurn(store, turn.id, 'Missing setup')).rejects.toThrow(
       'Simulator execution requires one resolved agent setup.'
@@ -1547,11 +1590,11 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('commits one ready version-one Artifact with exact turn-output proof', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const executor = new SimulatedTurnExecutor();
     const agentSetup = createTestAgentSetup({ provider: null, requiredCapabilities: [] });
     const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Create one simulator Artifact',
@@ -1560,7 +1603,7 @@ describe('SimulatedTurnExecutor', () => {
     const artifactRequestId = '0190f4c8-0000-7000-8000-000000000230';
     const body = 'Simulator answer: Concise';
 
-    store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
+    await store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
     await executor.startTurn(store, turn.id, 'Create one simulator Artifact', {
       agentSetup,
       requestId: artifactRequestId,
@@ -1633,7 +1676,9 @@ describe('SimulatedTurnExecutor', () => {
 
   it('emits command output delta before the command item completes', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -1649,7 +1694,7 @@ describe('SimulatedTurnExecutor', () => {
         },
       ]),
       store,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+      turnExecutor: executor,
     });
 
     try {
@@ -1673,6 +1718,8 @@ describe('SimulatedTurnExecutor', () => {
       );
       const turn = (await turnResponse.json()) as { id: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       const commandItemId = deriveEntityId('it', ['command', turn.id]);
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
@@ -1713,17 +1760,19 @@ describe('SimulatedTurnExecutor', () => {
       });
       expect(commandItem?.output).toBe('simulator: ok');
     } finally {
+      closeouts.mockRestore();
       coreDb.sqlite.close();
     }
   });
 
   it('admits one manifest-selected remote Git source without a WorkspaceRepository or host path', async () => {
-    const { app, coreDb, executor, store } = createRemoteGitProductFixture({
+    const { app, coreDb, executor, store } = await createRemoteGitProductFixture({
       commit: REMOTE_GIT_COMMIT,
       url: REMOTE_GIT_URL,
     });
     const prepareSpy = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const startSpy = vi.spyOn(executor, 'startTurn');
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
 
     try {
       const turnResponse = await app.request(
@@ -1744,6 +1793,8 @@ describe('SimulatedTurnExecutor', () => {
       );
       const turn = (await turnResponse.json()) as { agentSessionId?: string; id?: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
       await vi.waitFor(() => expect(store.getTurnById(turn.id!).status).toBe('completed'));
       const admissions = coreDb.sqlite
         .prepare(
@@ -1824,7 +1875,7 @@ describe('SimulatedTurnExecutor', () => {
     requestId,
     vaultGrantRef,
   }) => {
-    const { app, canaryPath, coreDb, executor, store } = createRemoteGitProductFixture(
+    const { app, canaryPath, coreDb, executor, store } = await createRemoteGitProductFixture(
       locator,
       vaultGrantRef,
       true

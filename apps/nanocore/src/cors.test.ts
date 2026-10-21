@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { initializeTestCore } from './test-support/store.js';
 
 /**
  * Creates the smallest signed-out Better Auth surface needed by CORS tests.
@@ -88,6 +89,7 @@ describe('browser CORS', () => {
 
   it('rejects a disallowed browser origin before a mutating handler runs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-mutation-'));
+    initializeTestCore(dataRoot);
     const app = createApp({ dataRoot });
     const before = await app.request('/api/app/operations/workspace.list', {
       method: 'POST',

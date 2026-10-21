@@ -7,11 +7,18 @@ import {
   type CommandRequestResponseKind,
   type CommandRequestScope,
   type ConversationCommandReceiptMetadata,
+  commandRequestExpiresAt,
   commandRequestKey,
   type FsStore,
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
+import { CONTROL_NATIVE_RECEIPT_COMMANDS } from '../storage/control-store-admission.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
+
+/** Original command facts passed to the existing producer before its single native tuple; the product owner supplies the final response pointer. */
+export type IdempotentCommandReceipt = Readonly<
+  Omit<CommandRequestRecord, 'response'> & { responseKind: CommandRequestResponseKind }
+>;
 
 /** Error raised when one idempotency key is reused for different command input. */
 export class IdempotencyKeyConflictError extends Error {
@@ -161,8 +168,8 @@ type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
         readonly coreDb?: undefined;
       }
     | {
-        /** Executes an ordinary command that may be asynchronous. */
-        readonly execute: () => Promise<T> | T;
+        /** Executes the producer with original receipt facts; native products and that receipt must commit together before it returns. */
+        readonly execute: (receipt: IdempotentCommandReceipt) => Promise<T> | T;
         /** Explicit existing User or Core receipt owner for a non-transactional effect such as Git publication. */
         readonly receiptDb?: UserDb | CoreDb;
         /** Optional open Workspace database for receipt-first reads and writes. */
@@ -245,6 +252,29 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   }
 
   const key = commandRequestKey(options.command, options.requestId, options.scope);
+  const workerOwned =
+    options.store.getDataRoot() !== null &&
+    (CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === options.command) ||
+      (options.command === 'evaluation.judgement-add' &&
+        options.input !== null &&
+        typeof options.input === 'object' &&
+        'judgement' in options.input &&
+        options.input.judgement !== null &&
+        typeof options.input.judgement === 'object' &&
+        'target' in options.input.judgement &&
+        options.input.judgement.target !== null &&
+        typeof options.input.judgement.target === 'object' &&
+        'kind' in options.input.judgement.target &&
+        (options.input.judgement.target.kind === 'artifact-version' ||
+          options.input.judgement.target.kind === 'material-range'))) &&
+    (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
+    options.scope.userId === undefined &&
+    options.scope.appId === undefined;
+  if (workerOwned && transaction) {
+    throw new Error(
+      'Native product commands must commit their whole tuple in the database worker.'
+    );
+  }
   let storeInflightCommands = options.inflightCommands.get(options.store);
 
   if (!storeInflightCommands) {
@@ -269,12 +299,40 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
    * @returns The same result after its receipt is durable.
    */
   const recordResult = (result: T): T => {
+    // User work acknowledges its personal-Workspace effect before its separate User receipt; keep that original receipt rather than rewriting it after model work.
+    if (workerOwned || ('receiptDb' in options && options.receiptDb?.scope === 'user')) {
+      const committed = options.store.getCommandRequest(
+        options.command,
+        options.requestId,
+        options.scope,
+        commandDb
+      );
+      if (!committed && workerOwned) {
+        throw new Error('Native product command returned without its original committed receipt.');
+      }
+      if (committed) {
+        if (committed.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
+        if (
+          committed.response.kind !== options.responseKind ||
+          committed.response.id !== options.responseId(result)
+        ) {
+          throw new Error(
+            workerOwned
+              ? 'Native product result differs from its original committed receipt.'
+              : 'User command result differs from its original committed receipt.'
+          );
+        }
+        return result;
+      }
+    }
     options.store.recordCommandRequest(
       {
         command: options.command,
         requestId: options.requestId,
         scope: options.scope,
         inputHash,
+        createdAt: receipt.createdAt,
+        expiresAt: receipt.expiresAt,
         response: {
           kind: options.responseKind,
           id: options.responseId(result),
@@ -287,6 +345,17 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     );
 
     return result;
+  };
+  const createdAt = new Date().toISOString();
+  const receipt: IdempotentCommandReceipt = {
+    key,
+    command: options.command,
+    requestId: options.requestId,
+    scope: { ...options.scope },
+    inputHash,
+    responseKind: options.responseKind,
+    createdAt,
+    expiresAt: commandRequestExpiresAt(createdAt),
   };
   const promise = (async () => {
     if (transaction) {
@@ -305,7 +374,7 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
       })();
     }
 
-    return recordResult(await options.execute());
+    return recordResult(await options.execute(receipt));
   })();
 
   storeInflightCommands.set(key, { inputHash, promise });

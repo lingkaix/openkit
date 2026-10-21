@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -17,7 +18,8 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareRecurringOccurrence } from './recurring-schedule-preparation.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const { root, db } of fixtures.splice(0)) {
     if (db.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
@@ -25,13 +27,13 @@ afterEach(() => {
 });
 
 /** Uses the real current setup resolver and durable occurrence without a Worker backend. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'recurrence-preparation-'));
   const db = openCoreDb(root);
   fixtures.push({ root, db });
   applyMigrations(db);
-  const store = createDemoStore({ dataRoot: root });
-  const thread = store.createThread(DEMO_WORKSPACE_ID, 'Recurring preparation');
+  const store = await createDemoStore({ dataRoot: root });
+  const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring preparation');
   const schedules = new AutomationStore(
     db,
     new WorkspaceMutationAdmission(),
@@ -72,7 +74,7 @@ function fixture() {
 }
 
 it('resolves an exact current selection without queue, Turn or runtime effects', async () => {
-  const { store, occurrence, snapshot, db } = fixture();
+  const { store, occurrence, snapshot, db } = await fixture();
   const before = store.listThreadTurns(occurrence.workspaceId, occurrence.snapshot.threadId);
   const result = await prepareRecurringOccurrence({
     occurrence,
@@ -100,7 +102,7 @@ it('resolves an exact current selection without queue, Turn or runtime effects',
 });
 
 it('refuses unavailable supply and never substitutes after a selection is frozen', async () => {
-  const { store, occurrence, snapshot } = fixture();
+  const { store, occurrence, snapshot } = await fixture();
   const result = await prepareRecurringOccurrence({
     occurrence,
     snapshot,

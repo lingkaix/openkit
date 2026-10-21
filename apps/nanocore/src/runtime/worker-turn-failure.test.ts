@@ -1,17 +1,26 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProductTurnSchema, SseEventEnvelopeSchema, workspaceIdForOwner } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import {
+  ProductTurnSchema,
+  SseEventEnvelopeSchema,
+  workspaceIdForOwner,
+  writeRetainedV1,
+} from '@openkit/protocol';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openWorkspaceDb } from '../storage/db.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 /** Creates one persisted running turn and busy AgentSession. */
-function createFixture() {
+async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-turn-failure-'));
-  const store = createDemoStore({ dataRoot });
-  const turn = store.createTurn(
+  const store = await createDemoStore({ dataRoot });
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Run governed worker',
@@ -21,7 +30,7 @@ function createFixture() {
       turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
     }
   );
-  store.createAgentSession({
+  await store.createAgentSession({
     agentId: 'agent_codex_host',
     createdAt: turn.startedAt ?? '2026-07-15T00:00:00.000Z',
     id: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
@@ -34,9 +43,81 @@ function createFixture() {
   return { dataRoot, store, turn };
 }
 
+/** Seeds an actual partial retained row before the native host resumes; no production write path is used. */
+async function seedHistoricalTurn(
+  store: FsStore,
+  turnId: string,
+  patch: Parameters<FsStore['updateTurn']>[1]
+) {
+  const turn = store.getTurnById(turnId);
+  await shutdownControlStoreWorkerClient();
+  const db = openWorkspaceDb(store.getDataRoot()!, workspaceIdForOwner(turn.owner));
+  try {
+    const row = db.sqlite
+      .prepare('SELECT record_json FROM control_turns WHERE id=?')
+      .get(turnId) as { record_json: string };
+    db.sqlite
+      .prepare('UPDATE control_turns SET status=?, record_json=?, revision=revision+1 WHERE id=?')
+      .run(
+        patch.status ?? turn.status,
+        JSON.stringify({ ...JSON.parse(row.record_json), ...patch }),
+        turnId
+      );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Publishes the exact historical immutable event to stopped native history, including partial old terminal states. */
+async function seedHistoricalEvent(
+  store: FsStore,
+  turnId: string,
+  draft: Parameters<FsStore['persistTurnEvent']>[1]
+) {
+  const turn = store.getTurnById(turnId);
+  await shutdownControlStoreWorkerClient();
+  const scope = nativeProductScope(store.getDataRoot()!, turn.owner);
+  const db = openWorkspaceDb(store.getDataRoot()!, workspaceIdForOwner(turn.owner));
+  try {
+    const sequence =
+      (
+        db.sqlite
+          .prepare(
+            "SELECT max(sequence) AS n FROM control_product_entries WHERE kind='event' AND turn_id=?"
+          )
+          .get(turnId) as { n: number | null }
+      ).n ?? 0;
+    const event = SseEventEnvelopeSchema.parse({
+      protocolVersion: '0.6.0',
+      timestamp: '2026-07-15T00:00:30.000Z',
+      ...draft,
+      sequence: sequence + 1,
+    });
+    const content = await publishImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      join(store.getDataRoot()!, 'fixture-staging'),
+      writeRetainedV1(event)
+    );
+    db.sqlite
+      .prepare(
+        "INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES ('event',?,?,?,1,1,?,?)"
+      )
+      .run(
+        turnId,
+        event.sequence,
+        `${turnId}:${event.sequence}`,
+        JSON.stringify(content),
+        JSON.stringify({ threadId: turn.threadId, turnId })
+      );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
 /** Runs the shared governed-worker failure projection. */
-function projectFailure(store: FsStore) {
-  return terminalizeGovernedWorkerTurn({
+async function projectFailure(store: FsStore) {
+  return await terminalizeGovernedWorkerTurn({
     agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
     completedAt: '2026-07-15T00:01:00.000Z',
     errorCode: 'worker_governance_restart_recovery',
@@ -49,8 +130,8 @@ function projectFailure(store: FsStore) {
 }
 
 /** Runs the shared governed-worker interruption projection. */
-function projectInterruption(store: FsStore) {
-  return terminalizeGovernedWorkerTurn({
+async function projectInterruption(store: FsStore) {
+  return await terminalizeGovernedWorkerTurn({
     agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
     completedAt: '2026-07-15T00:01:00.000Z',
     errorCode: 'worker_governance_restart_recovery',
@@ -63,17 +144,17 @@ function projectInterruption(store: FsStore) {
 }
 
 describe('governed worker turn failure projection', () => {
-  it('repairs a decided delivery_unknown failure after a cold restart without changing its outcome', () => {
-    const { dataRoot, store, turn } = createFixture();
-    store.updateTurn(turn.id, {
+  it('repairs a decided delivery_unknown failure after a cold restart without changing its outcome', async () => {
+    const { dataRoot, store, turn } = await createFixture();
+    await store.updateTurn(turn.id, {
       status: 'failed',
       completedAt: '2026-07-15T00:00:30.000Z',
       error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
     });
     const decided = store.getTurnById(turn.id);
     const restarted = new FsStore({ dataRoot });
-    projectFailure(restarted);
-    projectFailure(restarted);
+    await projectFailure(restarted);
+    await projectFailure(restarted);
     expect(restarted.getTurnById(turn.id)).toEqual(decided);
     expect(restarted.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
       status: 'failed',
@@ -87,8 +168,8 @@ describe('governed worker turn failure projection', () => {
     ).toHaveLength(1);
   });
 
-  it('retains the first normalized explanation in cold reads, lists and terminal events', () => {
-    const { dataRoot, store, turn } = createFixture();
+  it('retains the first normalized explanation in cold reads, lists and terminal events', async () => {
+    const { dataRoot, store, turn } = await createFixture();
     const explanation = {
       code: 'git_fetch_http_refused',
       stage: 'workspace_materialization',
@@ -102,7 +183,7 @@ describe('governed worker turn failure projection', () => {
       enforcement: 'unavailable',
       evidence: { availability: 'partial', outputTruncated: false },
     } as const;
-    terminalizeGovernedWorkerTurn({
+    await terminalizeGovernedWorkerTurn({
       agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
       completedAt: '2026-09-22T00:00:01.000Z',
       errorCode: 'worker_governance_turn_failed',
@@ -115,7 +196,7 @@ describe('governed worker turn failure projection', () => {
     });
     const cold = new FsStore({ dataRoot });
     // Restart repair cannot replace the original diagnostic with a generic cleanup error.
-    projectFailure(cold);
+    await projectFailure(cold);
     expect(cold.getTurnById(turn.id).error?.explanation).toEqual(explanation);
     expect(
       ProductTurnSchema.parse(
@@ -132,15 +213,15 @@ describe('governed worker turn failure projection', () => {
     );
   });
 
-  it('treats a missing pre-anchor turn as an idempotent no-op', () => {
-    const store = createDemoStore();
+  it('treats a missing pre-anchor turn as an idempotent no-op', async () => {
+    const store = await createDemoStore();
 
-    expect(projectFailure(store)).toEqual({ status: 'missing' });
+    expect(await projectFailure(store)).toEqual({ status: 'missing' });
   });
 
-  it('fails an existing turn when its AgentSession was not durably created', () => {
-    const store = createDemoStore();
-    store.createTurn(
+  it('fails an existing turn when its AgentSession was not durably created', async () => {
+    const store = await createDemoStore();
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Crash before session write',
@@ -151,7 +232,7 @@ describe('governed worker turn failure projection', () => {
       }
     );
 
-    expect(projectFailure(store)).toMatchObject({ status: 'failed' });
+    expect(await projectFailure(store)).toMatchObject({ status: 'failed' });
     expect(store.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       status: 'failed',
     });
@@ -167,11 +248,11 @@ describe('governed worker turn failure projection', () => {
     ).toHaveLength(1);
   });
 
-  it('interrupts an anchored turn and session exactly once after restart cleanup', () => {
-    const { dataRoot, store } = createFixture();
+  it('interrupts an anchored turn and session exactly once after restart cleanup', async () => {
+    const { dataRoot, store } = await createFixture();
 
-    expect(projectInterruption(store)).toMatchObject({ status: 'interrupted' });
-    expect(projectInterruption(new FsStore({ dataRoot }))).toMatchObject({
+    expect(await projectInterruption(store)).toMatchObject({ status: 'interrupted' });
+    expect(await projectInterruption(new FsStore({ dataRoot }))).toMatchObject({
       status: 'interrupted',
     });
 
@@ -199,31 +280,31 @@ describe('governed worker turn failure projection', () => {
     ).toHaveLength(1);
   });
 
-  it('fails closed when product-store reads fail for reasons other than not-found', () => {
-    const { store } = createFixture();
+  it('fails closed when product-store reads fail for reasons other than not-found', async () => {
+    const { store } = await createFixture();
     const turnRead = vi.spyOn(store, 'getTurnById').mockImplementation(() => {
       throw new Error('turn store is corrupt');
     });
 
-    expect(() => projectFailure(store)).toThrow('turn store is corrupt');
+    await expect(projectFailure(store)).rejects.toThrow('turn store is corrupt');
     turnRead.mockRestore();
 
     const sessionRead = vi.spyOn(store, 'getAgentSession').mockImplementation(() => {
       throw new Error('AgentSession store is corrupt');
     });
-    expect(() => projectFailure(store)).toThrow('AgentSession store is corrupt');
+    await expect(projectFailure(store)).rejects.toThrow('AgentSession store is corrupt');
     sessionRead.mockRestore();
   });
 
-  it('preserves a durable successful terminal event when the turn row is still running', () => {
-    const { dataRoot, store, turn } = createFixture();
+  it('preserves a durable successful terminal event when the turn row is still running', async () => {
+    const { dataRoot, store, turn } = await createFixture();
     const completed = {
       ...turn,
       completedAt: '2026-07-15T00:00:30.000Z',
       error: null,
       status: 'completed' as const,
     };
-    store.emitTurnEvent(turn.id, {
+    await seedHistoricalEvent(store, turn.id, {
       data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
       event: 'turn.completed',
       requestId: null,
@@ -232,7 +313,7 @@ describe('governed worker turn failure projection', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
     });
 
-    expect(projectFailure(store)).toMatchObject({ status: 'completed' });
+    expect(await projectFailure(store)).toMatchObject({ status: 'completed' });
 
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getTurnById(turn.id)).toMatchObject({
@@ -252,11 +333,11 @@ describe('governed worker turn failure projection', () => {
     ).toEqual([]);
   });
 
-  it('fails a running turn and session exactly once across store reloads', () => {
-    const { dataRoot, store } = createFixture();
+  it('fails a running turn and session exactly once across store reloads', async () => {
+    const { dataRoot, store } = await createFixture();
 
-    expect(projectFailure(store)).toMatchObject({ status: 'failed' });
-    expect(projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'failed' });
+    expect(await projectFailure(store)).toMatchObject({ status: 'failed' });
+    expect(await projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'failed' });
 
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
@@ -282,19 +363,19 @@ describe('governed worker turn failure projection', () => {
     ).toHaveLength(1);
   });
 
-  it('preserves a completed turn and does not fail its session', () => {
-    const { dataRoot, store } = createFixture();
-    const completed = store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
+  it('preserves a completed turn and does not fail its session', async () => {
+    const { dataRoot, store } = await createFixture();
+    const completed = await store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: null,
       status: 'completed',
     });
-    store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
+    await store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
       message: null,
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
     });
-    store.emitTurnEvent(completed.id, {
+    await seedHistoricalEvent(store, completed.id, {
       data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
       event: 'turn.completed',
       requestId: null,
@@ -303,7 +384,7 @@ describe('governed worker turn failure projection', () => {
       workspaceId: workspaceIdForOwner(completed.owner),
     });
 
-    expect(projectFailure(store)).toMatchObject({ status: 'completed' });
+    expect(await projectFailure(store)).toMatchObject({ status: 'completed' });
 
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
@@ -326,21 +407,21 @@ describe('governed worker turn failure projection', () => {
     ).toEqual([]);
   });
 
-  it('repairs missing success events for an already completed turn exactly once', () => {
-    const { dataRoot, store } = createFixture();
-    store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
+  it('repairs missing success events for an already completed turn exactly once', async () => {
+    const { dataRoot, store } = await createFixture();
+    await store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
       message: null,
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
     });
-    store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
+    await store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: null,
       status: 'completed',
     });
 
-    expect(projectFailure(store)).toMatchObject({ status: 'completed' });
-    expect(projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'completed' });
+    expect(await projectFailure(store)).toMatchObject({ status: 'completed' });
+    expect(await projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'completed' });
 
     const events = new FsStore({ dataRoot }).getTurnEvents(
       'tu_00000000-0000-7cfa-813c-d5549b2b9ef9'
@@ -376,25 +457,25 @@ describe('governed worker turn failure projection', () => {
     'interrupted',
     'cancelled',
     'failed',
-  ] as const)('preserves an authoritative %s turn instead of replacing its outcome', (status) => {
-    const { dataRoot, store } = createFixture();
+  ] as const)('preserves an authoritative %s turn instead of replacing its outcome', async (status) => {
+    const { dataRoot, store } = await createFixture();
     const originalError =
       status === 'failed'
         ? { code: 'original_product_failure', message: 'Preserve the original failure.' }
         : null;
 
-    store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
+    await seedHistoricalTurn(store, 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: originalError,
       status,
     });
-    store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
+    await store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
       message: 'Authoritative terminal session state.',
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
     });
 
-    expect(projectFailure(store)).toMatchObject({ status });
+    expect(await projectFailure(store)).toMatchObject({ status });
 
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
@@ -417,13 +498,13 @@ describe('governed worker turn failure projection', () => {
     ).toEqual([]);
   });
 
-  it('repairs session and terminal-event projections after the failed turn write persisted', () => {
-    const { dataRoot, store } = createFixture();
+  it('repairs session and terminal-event projections after the failed turn write persisted', async () => {
+    const { dataRoot, store } = await createFixture();
     const sessionWrite = vi.spyOn(store, 'updateAgentSession').mockImplementation(() => {
       throw new Error('AgentSession store unavailable');
     });
 
-    expect(() => projectFailure(store)).toThrow(AggregateError);
+    await expect(projectFailure(store)).rejects.toThrow(AggregateError);
     sessionWrite.mockRestore();
     expect(
       new FsStore({ dataRoot }).getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
@@ -432,7 +513,7 @@ describe('governed worker turn failure projection', () => {
       status: 'failed',
     });
 
-    expect(projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'failed' });
+    expect(await projectFailure(new FsStore({ dataRoot }))).toMatchObject({ status: 'failed' });
 
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
@@ -454,8 +535,8 @@ describe('governed worker turn failure projection', () => {
   it.each([
     'worker_governance_restart_recovery',
     'unsupported_gateway_feature',
-  ])('repairs a missing terminal event after a cold retry of %s without replacing its diagnostic', (errorCode) => {
-    const { dataRoot, store } = createFixture();
+  ])('repairs a missing terminal event after a cold retry of %s without replacing its diagnostic', async (errorCode) => {
+    const { dataRoot, store } = await createFixture();
     const originalError = {
       code: errorCode,
       message:
@@ -464,17 +545,15 @@ describe('governed worker turn failure projection', () => {
           : 'Worker execution stopped during NanoCore restart recovery.',
     };
     const completedAt = '2026-07-15T00:00:45.000Z';
-    const emitTurnEvent = store.emitTurnEvent.bind(store);
     const terminalEventWrite = vi
-      .spyOn(store, 'emitTurnEvent')
-      .mockImplementation((turnId, event) => {
-        if (event.event === 'turn.completed') {
-          throw new Error('terminal event store unavailable');
-        }
-        return emitTurnEvent(turnId, event);
+      .spyOn(store, 'completeTurn')
+      .mockImplementation(async (turnId, patch) => {
+        // The fixture models a retained pre-transfer partial decision, before the native atomic terminal owner existed.
+        await seedHistoricalTurn(store, turnId, patch);
+        throw new Error('terminal event store unavailable');
       });
 
-    expect(() =>
+    await expect(
       terminalizeGovernedWorkerTurn({
         agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
         completedAt,
@@ -485,7 +564,7 @@ describe('governed worker turn failure projection', () => {
         store,
         turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
       })
-    ).toThrow(AggregateError);
+    ).rejects.toThrow(AggregateError);
     terminalEventWrite.mockRestore();
 
     const partial = new FsStore({ dataRoot });
@@ -503,7 +582,7 @@ describe('governed worker turn failure projection', () => {
         .filter((event) => event.event === 'turn.completed')
     ).toEqual([]);
 
-    expect(projectFailure(partial)).toMatchObject({ status: 'failed' });
+    expect(await projectFailure(partial)).toMatchObject({ status: 'failed' });
     const repaired = new FsStore({ dataRoot });
     expect(repaired.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
       completedAt,
@@ -525,7 +604,7 @@ describe('governed worker turn failure projection', () => {
         turn: { completedAt, error: originalError, status: 'failed' },
       },
     });
-    projectFailure(repaired);
+    await projectFailure(repaired);
     expect(
       new FsStore({ dataRoot })
         .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
@@ -533,9 +612,9 @@ describe('governed worker turn failure projection', () => {
     ).toEqual(terminalEvents);
   });
 
-  it('repairs a partial normal worker failure during restart without replacing its error', () => {
-    const { dataRoot, store } = createFixture();
-    store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
+  it('repairs a partial normal worker failure during restart without replacing its error', async () => {
+    const { dataRoot, store } = await createFixture();
+    await store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:45.000Z',
       error: {
         code: 'worker_governance_turn_failed',
@@ -544,7 +623,7 @@ describe('governed worker turn failure projection', () => {
       status: 'failed',
     });
 
-    expect(projectFailure(store)).toMatchObject({
+    expect(await projectFailure(store)).toMatchObject({
       error: {
         code: 'worker_governance_turn_failed',
         message: 'The original worker execution failed.',
@@ -568,4 +647,9 @@ describe('governed worker turn failure projection', () => {
         )
     ).toHaveLength(1);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

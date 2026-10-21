@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { waitForWorkerTurnTerminalState } from './task-turn-wait.js';
 
@@ -31,9 +32,9 @@ async function settleOrSentinel(
  * @param turnId Deterministic turn id.
  * @returns Store and the created turn id.
  */
-function createWorkerTurn(turnId: string): { store: FsStore; turnId: string } {
-  const store = createDemoStore();
-  const thread = store.createThread(
+async function createWorkerTurn(turnId: string): Promise<{ store: FsStore; turnId: string }> {
+  const store = await createDemoStore();
+  const thread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Worker turn wait',
     undefined,
@@ -42,7 +43,7 @@ function createWorkerTurn(turnId: string): { store: FsStore; turnId: string } {
       visibility: 'workspace',
     }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Run delegated work',
@@ -55,8 +56,8 @@ function createWorkerTurn(turnId: string): { store: FsStore; turnId: string } {
 
 describe('waitForWorkerTurnTerminalState', () => {
   it('settles on a Turn that is already cancelled', async () => {
-    const { store, turnId } = createWorkerTurn('tu_00000000-0000-7802-96a2-d58cd74af20e');
-    store.updateTurn(turnId, { status: 'cancelled' });
+    const { store, turnId } = await createWorkerTurn('tu_00000000-0000-7802-96a2-d58cd74af20e');
+    await store.updateTurn(turnId, { status: 'cancelled' });
 
     const settled = await settleOrSentinel(store, turnId);
 
@@ -65,10 +66,10 @@ describe('waitForWorkerTurnTerminalState', () => {
   });
 
   it('settles when a waited Turn becomes cancelled', async () => {
-    const { store, turnId } = createWorkerTurn('tu_00000000-0000-7016-930d-e39a543eda32');
+    const { store, turnId } = await createWorkerTurn('tu_00000000-0000-7016-930d-e39a543eda32');
     const threadId = store.getTurnById(turnId).threadId;
     const settled = settleOrSentinel(store, turnId);
-    const cancelled = store.updateTurn(turnId, { status: 'cancelled' });
+    const cancelled = await store.updateTurn(turnId, { status: 'cancelled' });
 
     store.emitTurnEvent(turnId, {
       data: { type: 'turn-updated', turn: cancelled },
@@ -85,8 +86,13 @@ describe('waitForWorkerTurnTerminalState', () => {
   });
 
   it('keeps waiting on a Turn that is still running', async () => {
-    const { store, turnId } = createWorkerTurn('tu_00000000-0000-7929-a551-13e159ad5fda');
+    const { store, turnId } = await createWorkerTurn('tu_00000000-0000-7929-a551-13e159ad5fda');
 
     await expect(settleOrSentinel(store, turnId)).resolves.toBe(SENTINEL);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

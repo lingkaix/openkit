@@ -40,8 +40,8 @@ afterEach(async () => {
 });
 
 describe('canonical local retrieval identity', () => {
-  it('requires the exact canonical local actor pair before generation access', () => {
-    const f = createFixture('local-identity');
+  it('requires the exact canonical local actor pair before generation access', async () => {
+    const f = await createFixture('local-identity');
     const access = { ...f.access, coreDb: undefined };
     expect(() => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access })).not.toThrow();
     for (const actorId of [
@@ -67,7 +67,7 @@ describe('canonical local retrieval identity', () => {
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   it('excludes an unpublished proposal despite its delegated label and exact candidate bytes', async () => {
-    const fixture = createFixture('unpublished-proposal');
+    const fixture = await createFixture('unpublished-proposal');
     const id = 'pending-rule';
     const content = updateOkfFrontmatter({
       path: `${id}.md`,
@@ -127,7 +127,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     'Claim',
     'Observation',
   ] as const)('excludes unresolved %s pages from active query and pinned selection until resolved', async (type) => {
-    const fixture = createFixture(`conflict-${type.toLowerCase()}`);
+    const fixture = await createFixture(`conflict-${type.toLowerCase()}`);
     const page = await createEntry(fixture, 'Conflict evidence', 'conflict-selection-marker');
     const reference = pageReference(fixture, page.id);
     await publishPages(fixture, [
@@ -206,7 +206,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   });
 
   it('enumerates lexical matches before sensitivity, conflict, freshness, and budget dispositions', async () => {
-    const fixture = createFixture('enumeration');
+    const fixture = await createFixture('enumeration');
     const selected = await createEntry(
       fixture,
       'Selected evidence',
@@ -286,7 +286,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   });
 
   it('moves a pin first without changing either kernel score', async () => {
-    const fixture = createFixture('pin-score');
+    const fixture = await createFixture('pin-score');
     const higher = await createEntry(
       fixture,
       'Release cadence release cadence',
@@ -318,7 +318,7 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   });
 
   it('uses active-only defaults and one generation for explicit app state inspection', async () => {
-    const fixture = createFixture('states');
+    const fixture = await createFixture('states');
     const pages = {
       active: await createEntry(fixture, 'Active state', 'state-marker'),
       draft: await createEntry(fixture, 'Draft state', 'state-marker'),
@@ -365,15 +365,15 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   });
 
   it('removes a source after audience revocation without exposing its identity', async () => {
-    const fixture = createFixture('source-revocation');
-    const destination = fixture.store.createThread(
+    const fixture = await createFixture('source-revocation');
+    const destination = await fixture.store.createThread(
       fixture.workspaceId,
       'Private destination',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: fixture.userId }
     );
-    const sourceThread = fixture.store.createThread(
+    const sourceThread = await fixture.store.createThread(
       fixture.workspaceId,
       'Private source',
       undefined,
@@ -445,8 +445,11 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
         { kind: 'workspace', workspaceId: testEntityId('ws', 'enumeration-incomplete') }
       )
     );
-    const fixture = createFixture('enumeration-incomplete', initialKnowledge);
-    const traceThread = fixture.store.createThread(fixture.workspaceId, 'Enumeration trace owner');
+    const fixture = await createFixture('enumeration-incomplete', initialKnowledge);
+    const traceThread = await fixture.store.createThread(
+      fixture.workspaceId,
+      'Enumeration trace owner'
+    );
     fixture.access.outputThreadId = traceThread.id;
     const failedTraceId = traceId(10);
 
@@ -464,12 +467,15 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
   }, 180_000);
 
   it('keeps selection and its trace at the pinned commit across a later content publication', async () => {
-    const fixture = createFixture('concurrent-change');
+    const fixture = await createFixture('concurrent-change');
     const page = await createEntry(fixture, 'Concurrent page', 'before-change-marker');
     const pinnedRevision = fixture.notebook.publishedRevision();
     const pinnedBytes = readPage(fixture, page.id);
     const retrievalTraceId = traceId(11);
-    const traceThread = fixture.store.createThread(fixture.workspaceId, 'Concurrent trace owner');
+    const traceThread = await fixture.store.createThread(
+      fixture.workspaceId,
+      'Concurrent trace owner'
+    );
     fixture.access.outputThreadId = traceThread.id;
     const service = getRetrievalService(fixture.dataRoot, fixture.workspaceRoot);
     const publish = service.publish.bind(service);
@@ -544,10 +550,10 @@ interface Fixture {
   app: ReturnType<typeof createApp>;
 }
 
-function createFixture(
+async function createFixture(
   label: string,
   initialKnowledge: Parameters<typeof notebookImportFixture>[0]['knowledge'] = []
-): Fixture {
+): Promise<Fixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-retrieval-governance-${label}-`));
   testRoots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -556,7 +562,7 @@ function createFixture(
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspaceId = testEntityId('ws', label);
-  const workspace = initialKnowledge.length
+  const workspace = await (initialKnowledge.length
     ? store.importWorkspaceSnapshot({
         ...notebookImportFixture({ workspaceId, knowledge: initialKnowledge, userId }),
         workspace: {
@@ -584,7 +590,7 @@ function createFixture(
         requestId: randomUUID(),
         producer: { kind: 'user', id: userId },
         instructionReference: 'test-fixture:retrieval-governance',
-      });
+      }));
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   return {

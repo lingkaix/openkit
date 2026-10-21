@@ -7,6 +7,7 @@ import { afterEach, expect, it } from 'vitest';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   turnFilePayloadPath,
   verifyTurnFileInput,
@@ -14,24 +15,25 @@ import {
 } from './workspace-file-records.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Uses the real Turn writer and exact original payloads, with names kept outside path identity. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'turn-input-proof-'));
   roots.push(root);
-  const store = createDemoStore({ dataRoot: root });
+  const store = await createDemoStore({ dataRoot: root });
   const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code')!;
-  const thread = store.createThread(workspace.id, 'Selected input proof');
+  const thread = await store.createThread(workspace.id, 'Selected input proof');
   const bodies = [Buffer.from([0, 0xff, 0x80]), Buffer.from('another original')];
   const sources = bodies.map((body, ordinal) => {
     const path = join(root, `source-${ordinal}`);
     writeFileSync(path, body);
     return path;
   });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Read exact inputs',
@@ -57,8 +59,8 @@ function fixture() {
   };
 }
 
-it('verifies the addressed original without rescanning an unrelated corrupt input', () => {
-  const state = fixture();
+it('verifies the addressed original without rescanning an unrelated corrupt input', async () => {
+  const state = await fixture();
   expect(() => verifyTurnFileInputs(state.workspaceRoot, state.turn)).not.toThrow();
   writeFileSync(state.path(1), 'corrupt unrelated input');
   expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, 0)).not.toThrow();
@@ -69,8 +71,12 @@ it('verifies the addressed original without rescanning an unrelated corrupt inpu
   );
 });
 
-it.each(['missing', 'symlink', 'hardlink'] as const)('refuses a selected %s original', (kind) => {
-  const state = fixture();
+it.each([
+  'missing',
+  'symlink',
+  'hardlink',
+] as const)('refuses a selected %s original', async (kind) => {
+  const state = await fixture();
   if (kind === 'hardlink') linkSync(state.path(0), join(state.root, 'linked-owner'));
   else {
     rmSync(state.path(0));
@@ -79,8 +85,13 @@ it.each(['missing', 'symlink', 'hardlink'] as const)('refuses a selected %s orig
   expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, 0)).toThrow();
 });
 
-it.each([-1, 0.5, 2, Number.MAX_SAFE_INTEGER])('refuses an unavailable ordinal %s', (ordinal) => {
-  const state = fixture();
+it.each([
+  -1,
+  0.5,
+  2,
+  Number.MAX_SAFE_INTEGER,
+])('refuses an unavailable ordinal %s', async (ordinal) => {
+  const state = await fixture();
   expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, ordinal)).toThrow(
     /unavailable/
   );

@@ -2,13 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -24,24 +25,24 @@ describe('scheduler admission thread audience', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const shared = store.createThread(
+    const shared = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Shared admission'
     );
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'SECRET_PRIVATE_ADMISSION',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80' }
     );
-    const ownPrivate = store.createThread(
+    const ownPrivate = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Owner private admission',
       undefined,
@@ -179,4 +180,9 @@ describe('scheduler admission thread audience', () => {
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

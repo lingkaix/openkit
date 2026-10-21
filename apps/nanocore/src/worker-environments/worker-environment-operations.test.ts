@@ -17,6 +17,7 @@ import {
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -48,18 +49,21 @@ interface Fixture {
 
 const openDbs: CoreDb[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const coreDb of openDbs.splice(0)) coreDb.sqlite.close();
 });
 
 /** Creates one idle environment whose bytes were contributed by the local user. */
-function createFixture(effectOverride: Partial<WorkerEnvironmentRuntimeEffects> = {}): Fixture {
+async function createFixture(
+  effectOverride: Partial<WorkerEnvironmentRuntimeEffects> = {}
+): Promise<Fixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-operations-'));
   const coreDb = openCoreDb(dataRoot);
   openDbs.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code');
   const thread = workspace ? store.listThreads(workspace.id)[0] : undefined;
   if (!workspace || !thread) throw new Error('Expected Demo Workspace fixture.');
@@ -173,7 +177,7 @@ function addOtherMember(fixture: Fixture): void {
 }
 
 /** Prepares a live shared attachment so another authorized caller can contribute during inspection. */
-function prepareConcurrentContributor(fixture: Fixture): () => void {
+async function prepareConcurrentContributor(fixture: Fixture): Promise<() => void> {
   addOtherMember(fixture);
   const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
     agentSessionId: testEntityId('as', 'session_status'),
@@ -194,7 +198,7 @@ function prepareConcurrentContributor(fixture: Fixture): () => void {
     storageRef: reserved.storageRef,
     targets: reserved.targets,
   });
-  const thread = fixture.store.createThread(fixture.workspaceId, 'Other shared work');
+  const thread = await fixture.store.createThread(fixture.workspaceId, 'Other shared work');
   return () => {
     // This models another authorized caller's admission, not the status caller's authority.
     admitWorkerStorageContributor(fixture.coreDb, {
@@ -212,7 +216,7 @@ function prepareConcurrentContributor(fixture: Fixture): () => void {
 
 describe('Worker environment operations', () => {
   it('refuses purge while a queued Turn still selects the idle storage', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     createSchedulerAdmissionEntry(fixture.coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queued-storage-work',
@@ -245,19 +249,19 @@ describe('Worker environment operations', () => {
   });
   it('refuses purge while an admitted pending Turn still selects the idle storage', async () => {
     let purgeCalls = 0;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       purgeStorage: async ({ binding }) => {
         purgeCalls += 1;
         return { state: 'purged', storageRef: binding.storageRef };
       },
     });
-    const turn = fixture.store.createTurn(
+    const turn = await fixture.store.createTurn(
       fixture.workspaceId,
       fixture.threadId,
       'Continue existing work.',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    fixture.store.updateTurn(turn.id, { status: 'pending' });
+    await fixture.store.updateTurn(turn.id, { status: 'pending' });
     createSchedulerAdmissionEntry(fixture.coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queued-storage-work',
@@ -294,8 +298,8 @@ describe('Worker environment operations', () => {
     ).rejects.toMatchObject({ code: 'purge_blocked' });
     expect(purgeCalls).toBe(0);
   });
-  it('lists and selects an exact idle environment without reserving it', () => {
-    const fixture = createFixture();
+  it('lists and selects an exact idle environment without reserving it', async () => {
+    const fixture = await createFixture();
     fixture.coreDb.sqlite.close();
     const coreDb = openCoreDb(fixture.coreDb.dataRoot);
     openDbs[openDbs.indexOf(fixture.coreDb)] = coreDb;
@@ -340,18 +344,18 @@ describe('Worker environment operations', () => {
     });
   });
 
-  it('hides missing, foreign, and private-inaccessible selection targets as the same not_found', () => {
-    const fixture = createFixture();
+  it('hides missing, foreign, and private-inaccessible selection targets as the same not_found', async () => {
+    const fixture = await createFixture();
     const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
-    const inaccessible = fixture.store.createThread(
+    const inaccessible = await fixture.store.createThread(
       fixture.workspaceId,
       'Other private conversation',
       testEntityId('th', 'thread_private_other'),
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
-    const foreign = fixture.store.createThread(
-      fixture.store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001').id,
+    const foreign = await fixture.store.createThread(
+      (await fixture.store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001')).id,
       'Private assistant',
       undefined,
       'conversation',
@@ -378,10 +382,10 @@ describe('Worker environment operations', () => {
     }
   });
 
-  it('selects onto the caller visible private and shared Threads', () => {
-    const fixture = createFixture();
+  it('selects onto the caller visible private and shared Threads', async () => {
+    const fixture = await createFixture();
     const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
-    const ownPrivate = fixture.store.createThread(
+    const ownPrivate = await fixture.store.createThread(
       fixture.workspaceId,
       'Own private conversation',
       testEntityId('th', 'thread_private_own'),
@@ -419,7 +423,7 @@ describe('Worker environment operations', () => {
     // Thread visibility is immutable. This SQL retarget is not valid audience narrowing.
     let inspectCalls = 0;
     let purgeCalls = 0;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       inspectStorage: async () => {
         inspectCalls += 1;
         throw new Error('Host status must not run.');
@@ -430,7 +434,7 @@ describe('Worker environment operations', () => {
       },
     });
     const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
-    fixture.store.createThread(
+    await fixture.store.createThread(
       fixture.workspaceId,
       'Other private conversation',
       testEntityId('th', 'thread_private_source'),
@@ -483,8 +487,8 @@ describe('Worker environment operations', () => {
     expect(purgeCalls).toBe(0);
   });
 
-  it('rejects a stale selection revision through the Core compare-and-set owner', () => {
-    const fixture = createFixture();
+  it('rejects a stale selection revision through the Core compare-and-set owner', async () => {
+    const fixture = await createFixture();
 
     expect(() =>
       fixture.operations.select(
@@ -503,8 +507,8 @@ describe('Worker environment operations', () => {
     ).toThrow(/revision/i);
   });
 
-  it("does not disclose one member's contributor lineage to another Workspace member", () => {
-    const fixture = createFixture();
+  it("does not disclose one member's contributor lineage to another Workspace member", async () => {
+    const fixture = await createFixture();
     const now = Date.now();
     fixture.coreDb.sqlite
       .prepare(
@@ -542,7 +546,7 @@ describe('Worker environment operations', () => {
 
   it('reports owner-observed unknown storage state and rechecks authority inside the host seam', async () => {
     let authorizeAtEffect: (() => boolean) | undefined;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       inspectStorage: async ({ authorize, binding }) => {
         authorizeAtEffect = authorize;
         fixture.coreDb.sqlite
@@ -581,7 +585,7 @@ describe('Worker environment operations', () => {
     let changesAfterAdmission: unknown;
     const hostInspection = vi.fn();
     const purgeStorage = vi.fn();
-    const fixture = createFixture({
+    const fixture = await createFixture({
       inspectStorage: async ({ authorize, binding }) => {
         expect(authorize()).toBe(true);
         if (boundary === 'dispatch') addContributor();
@@ -607,7 +611,7 @@ describe('Worker environment operations', () => {
       },
       purgeStorage,
     });
-    addContributor = prepareConcurrentContributor(fixture);
+    addContributor = await prepareConcurrentContributor(fixture);
 
     const result = await fixture.operations
       .status(
@@ -647,7 +651,7 @@ describe('Worker environment operations', () => {
   ] as const)('refuses status publication after the %s administrator credential is revoked during inspection', async (kind) => {
     const purgeStorage = vi.fn();
     let changesAfterRevocation: unknown;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       inspectStorage: async ({ authorize, binding }) => {
         expect(authorize()).toBe(true);
         await Promise.resolve();
@@ -706,7 +710,7 @@ describe('Worker environment operations', () => {
 
   it('keeps administrator status eligibility and unknown-state redaction after membership loss', async () => {
     const rawSandboxId = 'unknown-native-sandbox-sentinel';
-    const fixture = createFixture({
+    const fixture = await createFixture({
       inspectStorage: async ({ authorize, binding }) => {
         fixture.coreDb.sqlite
           .prepare(
@@ -749,7 +753,7 @@ describe('Worker environment operations', () => {
 
   it('projects storage status without exposing the native Sandbox identity', async () => {
     const rawSandboxId = 'raw-native-sandbox-sentinel';
-    const fixture = createFixture({
+    const fixture = await createFixture({
       inspectStorage: async ({ authorize, binding }) => {
         if (!authorize()) throw new Error('Current administrator authority is required.');
         return {
@@ -776,7 +780,7 @@ describe('Worker environment operations', () => {
 
   it('purges one exact idle association and replays its command receipt', async () => {
     let purgeCalls = 0;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       purgeStorage: async ({ authorize, binding }) => {
         purgeCalls += 1;
         if (!authorize()) throw new Error('Current administrator authority is required.');
@@ -806,7 +810,7 @@ describe('Worker environment operations', () => {
 
   it('settles an uncertain purge as unknown and does not redispatch it', async () => {
     let purgeCalls = 0;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       purgeStorage: async () => {
         purgeCalls += 1;
         throw new Error('Transport result is unknown.');
@@ -830,7 +834,7 @@ describe('Worker environment operations', () => {
 
   it('rechecks every source audience before replaying an uncertain purge result', async () => {
     let purgeCalls = 0;
-    const fixture = createFixture({
+    const fixture = await createFixture({
       purgeStorage: async () => {
         purgeCalls += 1;
         throw new Error('Transport result is unknown.');

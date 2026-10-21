@@ -110,9 +110,9 @@ async function createWorkspace(
       scope: { userId: actor.userId },
       input: input,
       responseKind: 'workspace',
-      execute: () => {
+      execute: async () => {
         const workspace = WorkspaceRecordSchema.parse(
-          store.createWorkspace(input.name, {
+          await store.createWorkspace(input.name, {
             requestId: input.requestId,
             producer: { kind: 'user', id: actor.userId },
             instructionReference: `workspace.create:${input.requestId}`,
@@ -163,7 +163,7 @@ async function updateWorkspace(
       scope: { workspaceId },
       input: { ...body, workspaceId },
       responseKind: 'workspace',
-      execute: () => WorkspaceRecordSchema.parse(store.updateWorkspace(workspaceId, body)),
+      execute: async () => WorkspaceRecordSchema.parse(await store.updateWorkspace(workspaceId, body)),
       replay: (record) => WorkspaceRecordSchema.parse(store.getWorkspace(record.response.id)),
       responseId: (result) => result.id,
     });

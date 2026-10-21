@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -98,10 +99,10 @@ describe('openkit-generative MCP', () => {
   });
   it('lists and creates a Light App in process without a catalog entry', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Proof',
@@ -110,7 +111,7 @@ describe('openkit-generative MCP', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'session_demo'),
     });
@@ -227,10 +228,10 @@ describe('openkit-generative MCP', () => {
 
   it('binds publication Thread and Turn from immutable Worker lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-publish-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Publish a generated view',
@@ -239,12 +240,12 @@ describe('openkit-generative MCP', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'session_demo'),
     });
     const coreDb = workerAuthority(dataRoot, turn.id);
-    const sourceItem = store.createItem({
+    const sourceItem = await store.createItem({
       id: testEntityId('it', `it_${turn.id}_source`),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -335,4 +336,9 @@ describe('openkit-generative MCP', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

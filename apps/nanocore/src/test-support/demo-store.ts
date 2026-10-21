@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import type { z } from 'zod';
 import { knowledgePageFixture } from './knowledge-page.js';
 
@@ -13,6 +14,9 @@ import {
   type WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
+import { openCoreDb } from '../storage/db.js';
+import { coreDbPath } from '../storage/fs-layout.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { FIXTURE_LOCAL_USER_ID } from './local-user.js';
 
 const userFixtures = new Map<string, { workspaceId: string; threadId: string }>();
@@ -94,15 +98,19 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
  *
  * @param store Store that should receive the demo fixture.
  * @param userId User id namespace for the fixture ids.
+ * @returns After the native fixture import is durably acknowledged.
  */
-export function seedDemoWorkspace(store: FsStore, userId = FIXTURE_LOCAL_USER_ID): void {
+export async function seedDemoWorkspace(
+  store: FsStore,
+  userId = FIXTURE_LOCAL_USER_ID
+): Promise<void> {
   const demo = createDemoWorkspaceForUser(userId);
 
   try {
     store.getWorkspace(demo.workspace.id);
     return;
   } catch {
-    store.importWorkspaceSnapshot({
+    await store.importWorkspaceSnapshot({
       workspace: demo.workspace,
       threads: [demo.thread],
       knowledge: demo.knowledge,
@@ -128,14 +136,23 @@ export function seedDemoWorkspace(store: FsStore, userId = FIXTURE_LOCAL_USER_ID
  *
  * @param options Store options.
  * @param fixtureUserId User namespace used only to derive deterministic fixture ids.
- * @returns Store with project workspace fixtures.
+ * @returns Promise for the Store after its native Workspace fixtures are durably acknowledged.
  */
-export function createDemoStore(
+export async function createDemoStore(
   options: FsStoreOptions = {},
   fixtureUserId = FIXTURE_LOCAL_USER_ID
-): FsStore {
+): Promise<FsStore> {
+  // File-backed native product readers require their actual Core schema before Store construction.
+  if (options.dataRoot && !existsSync(coreDbPath(options.dataRoot))) {
+    const coreDb = openCoreDb(options.dataRoot);
+    try {
+      applyMigrations(coreDb);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  }
   const store = new FsStore(options);
-  store.ensureQuickChatWorkspace(fixtureUserId);
-  seedDemoWorkspace(store, fixtureUserId);
+  await store.ensureQuickChatWorkspace(fixtureUserId);
+  await seedDemoWorkspace(store, fixtureUserId);
   return store;
 }

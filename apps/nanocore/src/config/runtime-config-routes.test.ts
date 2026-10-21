@@ -1,12 +1,11 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -18,10 +17,10 @@ import {
 describe('canonical runtime configuration registration', () => {
   it('does not mutate a foreign AgentSession when the retired restart route is absent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-config-session-lineage-'));
-    const store = createDemoStore({ dataRoot });
-    const foreignWorkspace = store.createWorkspace('Foreign session workspace');
-    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign session thread');
-    const foreignSession = store.createAgentSession({
+    const store = await createDemoStore({ dataRoot });
+    const foreignWorkspace = await store.createWorkspace('Foreign session workspace');
+    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign session thread');
+    const foreignSession = await store.createAgentSession({
       agentId: 'agent_codex_host',
       configVersion: 1,
       createdAt: '2026-07-19T00:00:00.000Z',
@@ -80,4 +79,9 @@ describe('canonical runtime configuration registration', () => {
     });
     coreDb.sqlite.close();
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

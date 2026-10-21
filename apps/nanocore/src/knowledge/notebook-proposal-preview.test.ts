@@ -19,7 +19,7 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Exact Proposal preview');
+  const workspace = await store.createWorkspace('Exact Proposal preview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const app = createApp({ coreDb, dataRoot, store });
   onTestFinished(() => {
@@ -39,7 +39,7 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
     const text = await response.text();
     return { status: response.status, body: text.startsWith('{') ? JSON.parse(text) : text };
   };
-  const origin = store.createThread(workspace.id, 'Shared Source audience');
+  const origin = await store.createThread(workspace.id, 'Shared Source audience');
   const registered = await call('knowledge.source.register', {
     requestId: randomUUID(),
     kind: 'document',

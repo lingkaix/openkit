@@ -9,6 +9,7 @@ import {
 import type { ActorRef } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -44,7 +45,7 @@ interface RestorableWorkerControlFixture {
  * @param options Optional lineage mismatch and snapshot omission controls.
  * @returns Restorable gateway fixture.
  */
-function createRestorableWorkerControlFixture(
+async function createRestorableWorkerControlFixture(
   options: {
     /** Request id stored on the originating admission. */
     readonly admissionRequestId?: string | null;
@@ -55,7 +56,7 @@ function createRestorableWorkerControlFixture(
     /** Whether to persist the owning AEP snapshot. */
     readonly recordSnapshot?: boolean;
   } = {}
-): RestorableWorkerControlFixture {
+): Promise<RestorableWorkerControlFixture> {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
@@ -68,8 +69,8 @@ function createRestorableWorkerControlFixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const store = createDemoStore();
-  const turn = store.createTurn(
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Restore worker inference identity',
@@ -171,8 +172,8 @@ describe('worker control gateway restart hydration', () => {
     }
   });
 
-  it('restores the owning AEP for token-only package authentication', () => {
-    const fixture = createRestorableWorkerControlFixture();
+  it('restores the owning AEP for token-only package authentication', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
     });
@@ -198,7 +199,7 @@ describe('worker control gateway restart hydration', () => {
     }
   });
 
-  it('fails closed when the durable AEP snapshot is missing or mismatched', () => {
+  it('fails closed when the durable AEP snapshot is missing or mismatched', async () => {
     for (const options of [
       { recordSnapshot: false },
       { attemptAgentSessionId: 'as_00000000-0000-7862-ab63-7b3f305baefa' },
@@ -211,7 +212,7 @@ describe('worker control gateway restart hydration', () => {
         },
       },
     ]) {
-      const fixture = createRestorableWorkerControlFixture(options);
+      const fixture = await createRestorableWorkerControlFixture(options);
       const gateway = new WorkerControlGateway();
 
       try {
@@ -224,4 +225,9 @@ describe('worker control gateway restart hydration', () => {
       }
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

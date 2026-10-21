@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
 import { formatReferenceUri, RetrievalTraceReferenceSchema } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -14,6 +14,7 @@ import * as sourcePublication from './knowledge/source-publication.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -27,12 +28,12 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** One real isolated Knowledge authority, with explicit membership rather than changed fixture defaults. */
-function fixture(member = true, citedAnswer = false) {
+async function fixture(member = true, citedAnswer = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-operations-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot,
     scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
@@ -284,7 +285,7 @@ const oldRoutes = [
 
 describe('Knowledge operation definition cutover', () => {
   it('retires standalone fact writers and reads from every public projection', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const before = notebook(f).publishedRevision();
       for (const id of [
@@ -343,7 +344,7 @@ describe('Knowledge operation definition cutover', () => {
   });
 
   it.each(oldRoutes)('removes %s %s with HTTP 404', async (method, path) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       expect(
         (
@@ -363,7 +364,7 @@ describe('Knowledge operation definition cutover', () => {
     'Workspace member',
     'eligible administrator',
   ])('preserves authorized Knowledge parity across HTTP client and CLI for %s, with exact command replay and normalized observations for retrieval, preparation and answer', async (authority) => {
-    const f = fixture(authority === 'Workspace member', true);
+    const f = await fixture(authority === 'Workspace member', true);
     try {
       const token =
         authority === 'eligible administrator'
@@ -496,7 +497,7 @@ describe('Knowledge operation definition cutover', () => {
   }, 180_000);
 
   it('keeps unauthorized Workspace refusal on every retained definition, scoped source denial and readonly refusal on every retained mutation before effects', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -622,7 +623,7 @@ describe('Knowledge operation definition cutover', () => {
   });
 
   it('rejects a Workspace-qualified pin before opening the administrator-selected Server source', async () => {
-    const f = fixture();
+    const f = await fixture();
     const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: 'server-admin',
@@ -662,10 +663,10 @@ describe('Knowledge operation definition cutover', () => {
   });
 
   it('preserves foreign Source refusal, pinned restricted-content exclusion and bounded preparation and answer for a member and an eligible administrator', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const member = await projections(f);
-      const foreign = f.store.createWorkspace('Foreign source authority', {
+      const foreign = await f.store.createWorkspace('Foreign source authority', {
         requestId: randomUUID(),
         producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         instructionReference: 'test-owned-fresh-workspace',
@@ -832,7 +833,7 @@ describe('Knowledge operation definition cutover', () => {
   }, 120_000);
 
   it('returns distinct public and trusted Task preparation views from exactly one governed retrieval each', async () => {
-    const f = fixture();
+    const f = await fixture();
     const retrieve = vi.spyOn(retrieval, 'retrieveWorkspaceKnowledge');
     try {
       const invoke = createOperationInvocation(f.dependencies);
@@ -922,7 +923,7 @@ describe('Knowledge operation definition cutover', () => {
     'knowledge.indexes',
     'knowledge.retrieval',
   ] as const)('preserves the owner data_root_required refusal for %s', async (id) => {
-    const f = fixture();
+    const f = await fixture();
     const root = vi.spyOn(f.store, 'getDataRoot').mockReturnValue(undefined);
     try {
       await expect(
@@ -949,7 +950,7 @@ it.each([
   'HTTP',
   'MCP',
 ] as const)('preserves invalid source lineage refusal through %s without changes', async (projection) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1030,4 +1031,9 @@ it.each([
     vi.restoreAllMocks();
     await f.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

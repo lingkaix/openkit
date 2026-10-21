@@ -7,6 +7,7 @@ import { ASSISTANT_RUN_DEADLINE_MS, type OpenKitNanoHostConfig } from '@openkit/
 import type { ActorRef } from '@openkit/protocol';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { z } from 'zod';
+import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
@@ -32,6 +33,7 @@ import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   type FsStore,
   StoreRecordNotFoundError,
+  type TerminalTurnPublication,
 } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
@@ -46,6 +48,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import type { TurnCommandRuntimeContext } from '../runtime/types.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   type AdministrationEnvironmentTools,
@@ -71,11 +74,21 @@ const activeAdministrationRuns = new WeakMap<
 /** Interrupts an admitted Administration run and verifies its durable terminal outcome before accepting Stop. */
 export async function interruptAdministrationTurn(
   store: FsStore,
-  turnId: string
+  turnId: string,
+  context?: TurnCommandRuntimeContext
 ): Promise<boolean> {
   const run = activeAdministrationRuns.get(store)?.get(turnId);
   if (!run) return false;
-  run.controller.abort();
+  if (context?.command && context.command.receipt.command !== 'turn.interrupt')
+    throw new Error('Internal interruption requires its original interrupt command.');
+  if (
+    run.controller.signal.aborted &&
+    context?.command?.receipt.key !==
+      (run.controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command?.receipt.key
+  )
+    throw new Error('Another interruption already owns this run.');
+  // The existing cancellation reason carries the original command to the first terminal publisher.
+  run.controller.abort(context);
   await run.finished;
   if (store.getTurnById(turnId).status !== 'interrupted')
     throw new OperationError(
@@ -207,7 +220,7 @@ export function createAdministrationOperationImplementations(input: Administrati
 
         const result = await runIdempotentCommand({
           command: 'conversation.submit',
-          execute: async () => {
+          execute: async (commandReceipt) => {
             requireCurrentDeploymentAdmin(input.coreDb!, actor);
             const thread =
               currentThread ??
@@ -264,6 +277,69 @@ export function createAdministrationOperationImplementations(input: Administrati
               throw error;
             }
 
+            /** Prepares the original Administration conversation receipt for its terminal tuple. */
+            const terminalCommand = (
+              resultKind: 'provider-answer' | 'refused',
+              logicalModelId: string | null
+            ): NonNullable<TerminalTurnPublication['command']> => {
+              const { responseKind, command, ...receipt } = commandReceipt;
+              if (command !== 'conversation.submit')
+                throw new Error('Administration requires its original conversation command.');
+              return {
+                receipt: {
+                  ...receipt,
+                  command,
+                  response: {
+                    kind: responseKind,
+                    id: turn.id,
+                    conversationMetadata: {
+                      downstream: null,
+                      targetRef: ADMINISTRATION_TARGET_REF,
+                      logicalModelId,
+                      receivingWorkspaceId: workspaceId,
+                      receivingThreadId: thread.id,
+                      resultKind,
+                      status: 200,
+                    },
+                  },
+                },
+                audit: {
+                  ...prepareAuditEvent({
+                    workspaceId,
+                    threadId: thread.id,
+                    turnId: turn.id,
+                    requestId: receipt.requestId,
+                    actor: context.actorRef,
+                    category: 'command',
+                    action: command,
+                    resource: `turn:${turn.id}`,
+                    outcome: 'succeeded',
+                    summary: 'Administration conversation result published.',
+                    now: new Date(receipt.createdAt),
+                  }),
+                  createdAt: receipt.createdAt,
+                  occurredAt: receipt.createdAt,
+                },
+              };
+            };
+            const fail = (
+              code: string,
+              explanation: string,
+              status: 'failed' | 'interrupted' = 'failed'
+            ) =>
+              failedAdministrationTurn(
+                store,
+                turn.id,
+                code,
+                explanation,
+                status,
+                terminalCommand('refused', null),
+                status === 'interrupted'
+                  ? ((controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command ??
+                      undefined)
+                  : undefined
+              );
+
             // Admission, not the submitting connection, owns this run's cancellation lifetime.
             const controller = new AbortController();
             let finishRun!: () => void;
@@ -302,9 +378,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 !selection.logicalModel.capabilities.includes('responses') ||
                 !selection.logicalModel.capabilities.includes('tool-calling')
               ) {
-                return failedAdministrationTurn(
-                  store,
-                  turn.id,
+                return await fail(
                   'administration_execution_failed',
                   !selection
                     ? 'Administration has no admitted logical model for this request.'
@@ -459,9 +533,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                     : loopResult.kind === 'limit_reached'
                       ? `internal_agent_${loopResult.limit}_limit`
                       : 'internal_agent_aborted';
-                return failedAdministrationTurn(
-                  store,
-                  turn.id,
+                return await fail(
                   code,
                   loopResult.kind === 'limit_reached' && loopResult.limit === 'deadline'
                     ? 'The admitted deadline expired during Administration answer production.'
@@ -470,9 +542,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               }
               const answer = finalAssistantText(loopResult.messages);
               if (!answer) {
-                return failedAdministrationTurn(
-                  store,
-                  turn.id,
+                return await fail(
                   'internal_agent_empty_answer',
                   'Administration returned no publishable answer.'
                 );
@@ -493,7 +563,15 @@ export function createAdministrationOperationImplementations(input: Administrati
                 });
                 return {
                   body: administrationResponse(
-                    await store.updateTurn(turn.id, { status: 'completed', completedAt }),
+                    await store.completeTurn(
+                      turn.id,
+                      { status: 'completed', completedAt },
+                      {
+                        items: [item],
+                        command: terminalCommand('provider-answer', selection.logicalModel.id),
+                        requestId: request.requestId,
+                      }
+                    ),
                     item,
                     selection.logicalModel.id,
                     'answered',
@@ -508,9 +586,7 @@ export function createAdministrationOperationImplementations(input: Administrati
             } catch (error) {
               if (error instanceof AdministrationRecoveryRequiredError) throw error;
               if (controller.signal.aborted)
-                return failedAdministrationTurn(
-                  store,
-                  turn.id,
+                return await fail(
                   'internal_agent_aborted',
                   'Administration was explicitly interrupted.',
                   'interrupted'
@@ -518,9 +594,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               const contextFailure = internalContextFailure(error);
               const answerDeadline =
                 answerStarted && contextFailure?.code === 'internal_agent_context_deadline';
-              return failedAdministrationTurn(
-                store,
-                turn.id,
+              return await fail(
                 error instanceof DeploymentAdminRequiredError
                   ? 'deployment_admin_required'
                   : answerDeadline
@@ -622,18 +696,20 @@ function finalAssistantText(messages: readonly AgentMessage[]): string {
     .trim();
 }
 
-/** Records a failed or explicitly interrupted run through the existing refusal and command-replay shape. */
-function failedAdministrationTurn(
+/** Awaits failed or interrupted publication so its live interruption handle remains owned until acknowledgement. */
+async function failedAdministrationTurn(
   store: FsStore,
   turnId: string,
   code: string,
   explanation: string,
-  status: 'failed' | 'interrupted' = 'failed'
-): AdministrationCommandResult {
+  status: 'failed' | 'interrupted',
+  command: NonNullable<TerminalTurnPublication['command']>,
+  interruptCommand?: TerminalTurnPublication['interruptCommand']
+): Promise<AdministrationCommandResult> {
   const turn = store.getTurnById(turnId);
   const completedAt = new Date().toISOString();
   try {
-    const item = store.createItem(
+    const item = await store.createItem(
       {
         id: deriveEntityId('it', ['administration_refused', turn.id]),
         owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
@@ -649,14 +725,14 @@ function failedAdministrationTurn(
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    const completedTurn = store.updateTurn(
+    const completedTurn = await store.completeTurn(
       turn.id,
       {
         status,
         completedAt,
         error: { code, message: explanation },
       },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+      { items: [item], command, interruptCommand, requestId: command.receipt.requestId }
     );
     return {
       body: administrationResponse(completedTurn, item, null, 'refused', explanation),

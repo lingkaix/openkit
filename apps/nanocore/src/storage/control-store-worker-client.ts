@@ -1,27 +1,75 @@
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import {
+  ArtifactReviewError,
+  type ControlReviewCommandInput,
+  type ControlReviewCommandResult,
+} from '../artifact-reviews.js';
+import type {
+  ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionResult,
+} from '../knowledge/knowledge-agent-maintenance.js';
+import { NotebookError } from '../knowledge/notebook.js';
+import { OperationError } from '../operation-error.js';
+import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
+import {
+  type ControlGoalCommandInput,
+  type ControlGoalCommandResult,
+  GoalCommandError,
+} from '../runtime/goal-owner.js';
+import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import {
+  type ControlPendingCommandResult,
+  PendingRequestCommandError,
+} from '../runtime/pending-requests.js';
+import type {
+  ProjectWorkerBackendCleanupInput,
+  WorkerBackendCleanupProjectionResult,
+} from '../runtime/worker-backend-cleanup-projection.js';
+import {
+  type ControlMaterialCommandInput,
+  type ControlMaterialCommandResult,
+  prepareControlMaterialTransfer,
+} from '../workspace-materials.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
+import type { ControlPendingTransition } from './control-store-pending.js';
+import type {
+  ControlProductTransition,
+  ControlPublicationInput,
+  ControlTerminalResult,
+  ControlTerminalTransition,
+} from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
   type ControlSqlResult,
   type ControlSqlStatement,
   type ControlWorkerCommand,
+  type ControlWorkerDomainRefusal,
   type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
+  controlMaterialTransferSize,
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import type {
+  ControlWorkObservationInput,
+  ControlWorkObservationResult,
+} from './work-observations.js';
 
 /** A refusal or uncertain result, never a substitute for the original SQL command receipt. */
 export class ControlStoreWorkerError extends Error {
   /** Creates a redacted failure; unknown results require original-request inspection. */
   constructor(
     readonly code: ControlWorkerFailureCode,
-    readonly commit: 'not-committed' | 'unknown'
+    readonly commit: 'not-committed' | 'unknown',
+    readonly domain?: ControlWorkerDomainRefusal
   ) {
     super('Control database writer operation failed.');
     this.name = 'ControlStoreWorkerError';
@@ -34,6 +82,11 @@ type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly command: ControlWorkerCommand;
+  readonly request: ControlWorkerRequest;
+  /** Unposted capture waiters share this same finite admission map and byte budget. */
+  posted: boolean;
+  /** Binary input and echoed range content remain admitted until reply or known disposal. */
+  readonly materialBytes: number;
   readonly resolve: (reply: Success) => void;
   readonly reject: (error: ControlStoreWorkerError) => void;
 }
@@ -43,7 +96,7 @@ let singleton: ControlStoreWorkerClient | undefined;
 /**
  * Returns the one process-local writer host, without opening a database.
  *
- * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. This component remains unused by ordinary product callers until the scope's factory/write closure is switched. Do not activate a product writer until every producer and shared receipt path observes the accepted family boundary; a legacy main writable handle is not a table-level access-control boundary.
+ * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. A released product scope must transfer its complete producer and shared receipt closure before using this host. A legacy main writable handle is not a table-level access-control boundary.
  *
  * @returns Shared host for admitted database scopes, never a synchronous SQL facade.
  */
@@ -53,25 +106,45 @@ export function getControlStoreWorkerClient(): ControlStoreWorkerClient {
   return singleton;
 }
 
+/** Stops the existing process-local host without creating one; callers must finish shutdown before removing its database roots. */
+export async function shutdownControlStoreWorkerClient(): Promise<void> {
+  await singleton?.shutdown();
+}
+
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
 class ControlStoreWorkerClient {
   private readonly worker: Worker;
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
+  private readonly openings = new Map<
+    string,
+    { readonly command: Omit<OpenCommand, 'operation'>; readonly promise: Promise<void> }
+  >();
   private nextId = 0;
+  private materialBytes = 0;
   private failed = false;
   private stopping = false;
   private closed = false;
   private shutdownPromise: Promise<void> | undefined;
+  private backupPaused = false;
+  private backupDrain: (() => void) | undefined;
 
-  /** Starts the real compiled entry, or the existing TypeScript loader in development. */
+  /** Starts the real compiled entry, the invocation-compiled test entry, or the source loader in development. */
   constructor() {
-    if (import.meta.url.endsWith('.ts')) {
+    if (import.meta.url.endsWith('.ts') && process.env.VITEST === 'true') {
+      // Vitest global setup compiles this same entry once in its owned private directory; missing setup fails closed.
+      this.worker = new Worker(
+        pathToFileURL(
+          join(tmpdir(), 'nanocore-worker', 'dist', 'storage', 'control-store-worker.mjs')
+        )
+      );
+    } else if (import.meta.url.endsWith('.ts')) {
       const require = createRequire(import.meta.url);
       const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
       const entry = new URL('./control-store-worker.ts', import.meta.url).href;
       this.worker = new Worker(
-        `import(${JSON.stringify(loader)}).then(({tsImport}) => tsImport(${JSON.stringify(entry)}, ${JSON.stringify(import.meta.url)}));`,
+        // This thread is already isolated. A second tsImport namespace adds synchronous CommonJS loader round trips for the complete owner graph.
+        `import(${JSON.stringify(loader)}).then(({register}) => { register(); return import(${JSON.stringify(entry)}); });`,
         { eval: true }
       );
     } else {
@@ -82,6 +155,8 @@ class ControlStoreWorkerClient {
     this.worker.on('error', () => this.fail());
     this.worker.on('exit', () => {
       if (!this.stopping || this.pending.size > 0) this.fail();
+      // A failed channel alone cannot prove the worker released its queued bytes. Exit can.
+      this.materialBytes = 0;
     });
     this.worker.unref();
   }
@@ -95,10 +170,39 @@ class ControlStoreWorkerClient {
    * Opens an admitted physical scope and optionally applies its existing native journal.
    *
    * @param command Trusted path/fresh-scope admission; app recovery is not bypassed.
+   * Repeated access to the exact admitted binding shares its existing opening acknowledgement; it never reopens a scope or retries a failed command. Changed bindings and physical aliases still fail closed in the existing owner.
+   *
    * @returns After connection policy and requested initialization have completed in the worker.
    */
   async open(command: Omit<OpenCommand, 'operation'>): Promise<void> {
-    await this.request({ ...command, operation: 'open' });
+    if (this.failed || this.stopping || this.closed)
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    if (
+      !isControlWorkerRequest({
+        ...command,
+        operation: 'open',
+        version: CONTROL_WORKER_VERSION,
+        id: 0,
+      })
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const existing = this.openings.get(command.database);
+    if (existing) {
+      if (!isDeepStrictEqual(existing.command, command))
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      await existing.promise;
+      return;
+    }
+    const binding = structuredClone(command);
+    const promise = this.request({ ...binding, operation: 'open' }).then(() => {});
+    const opening = { command: binding, promise };
+    this.openings.set(command.database, opening);
+    try {
+      await promise;
+    } catch (error) {
+      if (this.openings.get(command.database) === opening) this.openings.delete(command.database);
+      throw error;
+    }
   }
 
   /**
@@ -129,6 +233,150 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'transition' }>).result;
   }
 
+  /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
+  async products(database: string, transition: ControlProductTransition): Promise<void> {
+    await this.request({ operation: 'products', database, transition });
+  }
+
+  /** Publishes only the named sealed-Turn entry category after native preparation and FULL acknowledgement. */
+  async publication(database: string, input: ControlPublicationInput): Promise<void> {
+    await this.request({ operation: 'publication', database, input });
+  }
+
+  /** Commits the complete Workspace cleanup projection on its admitted scoped handle; physical release authority remains with its existing producer. */
+  async projectCleanup(
+    database: string,
+    input: ProjectWorkerBackendCleanupInput
+  ): Promise<WorkerBackendCleanupProjectionResult> {
+    const reply = await this.request({ operation: 'project-cleanup', database, input });
+    return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
+  }
+
+  /** Appends native observation order and publication metadata; independently published body bytes are not carried through SQL. */
+  async observation(
+    database: string,
+    input: ControlWorkObservationInput
+  ): Promise<ControlWorkObservationResult> {
+    const reply = await this.request({ operation: 'observation', database, input });
+    return (reply as Extract<Success, { operation: 'observation' }>).result;
+  }
+
+  /** Commits the Pending owner and its complete local publication before returning IDs. */
+  async pendingCommand(
+    database: string,
+    input: ControlPendingTransition
+  ): Promise<ControlPendingCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'pending', database, input });
+      return (reply as Extract<Success, { operation: 'pending' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'pending') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new PendingRequestCommandError(
+          error.domain.code,
+          error.domain.message,
+          error.domain.status
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Mutates the existing Workspace journal and returns only after the outer FULL commit. */
+  async journal(database: string, input: ControlExecutionJournalInput): Promise<string> {
+    const reply = await this.request({ operation: 'journal', database, input });
+    return (reply as Extract<Success, { operation: 'journal' }>).resultJson;
+  }
+
+  /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */
+  async goal(database: string, input: ControlGoalCommandInput): Promise<ControlGoalCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'goal', database, input });
+      return (reply as Extract<Success, { operation: 'goal' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'goal') {
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError('Unsupported retained record format.');
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
+  /** Admits one scoped Knowledge unit; model work starts only after its native acknowledgement. */
+  async maintenance(
+    database: string,
+    input: ControlMaintenanceAdmissionInput
+  ): Promise<ControlMaintenanceAdmissionResult> {
+    try {
+      const reply = await this.request({ operation: 'maintenance', database, input });
+      return (reply as Extract<Success, { operation: 'maintenance' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'maintenance') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        if (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
+          throw new NotebookError(error.domain.code);
+      }
+      throw error;
+    }
+  }
+
+  /** Executes one complete Material-family body; only its outer FULL commit acknowledges the result. */
+  async material(
+    database: string,
+    input: ControlMaterialCommandInput
+  ): Promise<ControlMaterialCommandResult> {
+    try {
+      const transfer = prepareControlMaterialTransfer(input);
+      const reply = await this.request(
+        { operation: 'material', database, input: transfer.input },
+        transfer.parts
+      );
+      return (reply as Extract<Success, { operation: 'material' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'material') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
+  /** Commits the complete scoped Review or Artifact submission tuple and its original receipt. */
+  async review(
+    database: string,
+    input: ControlReviewCommandInput
+  ): Promise<ControlReviewCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'review', database, input });
+      return (reply as Extract<Success, { operation: 'review' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'review') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new ArtifactReviewError(
+          error.domain.code as ConstructorParameters<typeof ArtifactReviewError>[0],
+          error.domain.message
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Commits the complete local terminal tuple; only outer FULL COMMIT produces this acknowledgement, never physical release. */
+  async terminal(
+    database: string,
+    input: ControlTerminalTransition
+  ): Promise<ControlTerminalResult> {
+    const reply = await this.request({ operation: 'terminal', database, input });
+    return (reply as Extract<Success, { operation: 'terminal' }>).result;
+  }
+
   /** Attempts native checkpoint progress after prior submitted work. */
   async checkpoint(database: string): Promise<ControlCheckpoint> {
     const reply = await this.request({ operation: 'checkpoint', database });
@@ -143,7 +391,43 @@ class ControlStoreWorkerClient {
 
   /** Closes a scope only after its previously accepted writes have finished. */
   async close(database: string): Promise<void> {
+    const opening = this.openings.get(database);
     await this.request({ operation: 'close', database });
+    if (this.openings.get(database) === opening) this.openings.delete(database);
+  }
+
+  /**
+   * Holds native posting for the existing synchronous data-root capture after every posted acknowledgement settles.
+   *
+   * New requests keep the same finite admission slots and byte budget while waiting. The caller must resume in finally; this hold neither closes scopes nor replays commands. A failed channel refuses capture because its outstanding commits are unknown.
+   *
+   * @returns An idempotent release for this one backup hold.
+   */
+  async pauseForDataRootBackup(): Promise<() => void> {
+    if (this.failed || this.stopping || this.closed)
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    if (this.backupPaused) throw new ControlStoreWorkerError('busy', 'not-committed');
+    this.backupPaused = true;
+    const resume = () => {
+      if (!this.backupPaused) return;
+      this.backupPaused = false;
+      this.backupDrain = undefined;
+      for (const [id, entry] of this.pending) if (!entry.posted) this.post(id, entry);
+    };
+    await new Promise<void>((resolve) => {
+      this.backupDrain = resolve;
+      this.completeBackupDrain();
+    });
+    if (this.failed || this.stopping || this.closed) {
+      resume();
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      resume();
+    };
   }
 
   /**
@@ -161,6 +445,7 @@ class ControlStoreWorkerClient {
         if (!this.failed) await this.request({ operation: 'shutdown' });
       } finally {
         await this.worker.terminate();
+        this.materialBytes = 0;
         this.fail();
         this.closed = true;
       }
@@ -169,7 +454,10 @@ class ControlStoreWorkerClient {
   }
 
   /** Bounds all scoped messages BEFORE cloning/posting, including native-thread stalls. */
-  private request(command: ControlWorkerCommand): Promise<Success> {
+  private request(
+    command: ControlWorkerCommand,
+    materialParts?: readonly string[]
+  ): Promise<Success> {
     if (this.failed || this.closed || (this.stopping && command.operation !== 'shutdown')) {
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
@@ -183,38 +471,106 @@ class ControlStoreWorkerClient {
     if (!Number.isSafeInteger(this.nextId)) {
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
+    let materialBytes = 0;
+    let posted = command;
+    if (command.operation === 'material') {
+      const size = controlMaterialTransferSize(command.input);
+      if (!size)
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      materialBytes = size.byteLength + size.replyByteLength;
+      if (
+        !Number.isSafeInteger(materialBytes) ||
+        materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
+      )
+        return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+      if (materialParts?.length) {
+        // Admission precedes allocation and transfer. No escaped JSON or second payload buffer is made.
+        const content = new ArrayBuffer(size.byteLength);
+        let offset = 0;
+        for (const text of materialParts) {
+          const encoded = new TextEncoder().encodeInto(text, new Uint8Array(content, offset));
+          if (encoded.read !== text.length)
+            return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+          offset += encoded.written;
+        }
+        if (offset !== size.byteLength)
+          return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+        posted = { ...command, content };
+      }
+    } else if (materialParts !== undefined)
+      return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
     const request: ControlWorkerRequest = {
-      ...command,
+      ...posted,
       version: CONTROL_WORKER_VERSION,
       id: this.nextId,
     };
     if (!isControlWorkerRequest(request)) {
       return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
     }
+    // Posting normally transfers ownership immediately. A capture hold must take the same
+    // immutable input now, so its caller cannot change a bounded envelope before resume.
+    let admittedRequest = request;
+    if (this.backupPaused) {
+      try {
+        admittedRequest = structuredClone(request, {
+          transfer: request.operation === 'material' && request.content ? [request.content] : [],
+        });
+      } catch {
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      }
+    }
     const id = this.nextId++;
     return new Promise<Success>((resolve, reject) => {
-      this.pending.set(id, { command, resolve, reject });
+      this.materialBytes += materialBytes;
+      const entry: Pending = {
+        command: admittedRequest,
+        request: admittedRequest,
+        posted: false,
+        materialBytes,
+        resolve,
+        reject,
+      };
+      this.pending.set(id, entry);
       if (database !== undefined)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
       this.worker.ref();
-      try {
-        this.worker.postMessage(request);
-      } catch {
-        // Structured cloning fails before a message is enqueued; nothing was submitted.
-        this.complete(
-          id,
-          undefined,
-          new ControlStoreWorkerError('invalid-request', 'not-committed')
-        );
-      }
+      if (!this.backupPaused) this.post(id, entry);
     });
   }
 
+  /** Posts an admitted message once, including a message held by data-root capture. */
+  private post(id: number, entry: Pending): void {
+    entry.posted = true;
+    try {
+      const request = entry.request;
+      const transferList =
+        request.operation === 'material' && request.content !== undefined ? [request.content] : [];
+      this.worker.postMessage(request, transferList);
+    } catch {
+      // Structured cloning fails before a message is enqueued; nothing was submitted.
+      this.complete(id, undefined, new ControlStoreWorkerError('invalid-request', 'not-committed'));
+    }
+  }
+
+  /** A held capture can start only after every previously posted message has settled. */
+  private completeBackupDrain(): void {
+    if (!this.backupDrain || [...this.pending.values()].some((entry) => entry.posted)) return;
+    const complete = this.backupDrain;
+    this.backupDrain = undefined;
+    complete();
+  }
+
   /** Completes correlation once and releases the pre-post admission slot. */
-  private complete(id: number, reply?: Success, error?: ControlStoreWorkerError): void {
+  private complete(
+    id: number,
+    reply?: Success,
+    error?: ControlStoreWorkerError,
+    releaseMaterialBytes = true
+  ): void {
     const entry = this.pending.get(id);
     if (entry === undefined) return;
     this.pending.delete(id);
+    if (releaseMaterialBytes) this.materialBytes -= entry.materialBytes;
     if ('database' in entry.command) {
       const database = entry.command.database;
       const remaining = (this.outstanding.get(database) ?? 1) - 1;
@@ -224,6 +580,7 @@ class ControlStoreWorkerClient {
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
     if (this.pending.size === 0) this.worker.unref();
+    this.completeBackupDrain();
   }
 
   /** Rejects unknown/miscorrelated wire meanings without falsely reporting rollback. */
@@ -235,13 +592,21 @@ class ControlStoreWorkerClient {
     const entry = this.pending.get(value.id);
     if (
       entry === undefined ||
-      (value.status === 'ok' && value.operation !== entry.command.operation)
+      !entry.posted ||
+      (value.status === 'ok' && value.operation !== entry.command.operation) ||
+      (value.status === 'error' &&
+        value.domain !== undefined &&
+        value.domain.operation !== entry.command.operation)
     ) {
       this.fail();
       return;
     }
     if (value.status === 'error')
-      this.complete(value.id, undefined, new ControlStoreWorkerError(value.code, value.commit));
+      this.complete(
+        value.id,
+        undefined,
+        new ControlStoreWorkerError(value.code, value.commit, value.domain)
+      );
     else this.complete(value.id, value);
   }
 
@@ -250,7 +615,13 @@ class ControlStoreWorkerClient {
     if (this.failed) return;
     this.failed = true;
     for (const id of this.pending.keys()) {
-      this.complete(id, undefined, new ControlStoreWorkerError('unavailable', 'unknown'));
+      const posted = this.pending.get(id)!.posted;
+      this.complete(
+        id,
+        undefined,
+        new ControlStoreWorkerError('unavailable', posted ? 'unknown' : 'not-committed'),
+        !posted
+      );
     }
     // A failed channel must not retain a writable connection or continue queued work.
     void this.worker.terminate();

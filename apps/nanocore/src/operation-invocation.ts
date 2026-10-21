@@ -34,7 +34,7 @@ export function createOperationEngine(
     const definition = OPERATION_DEFINITIONS[id];
     if (definition.binding !== 'json')
       throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
-    const admitted = admitOperation(definition, value, entry, dependencies);
+    const admitted = await admitOperation(definition, value, entry, dependencies);
     try {
       return (await invokeDefinedOperation(definition, () =>
         implementations[id](

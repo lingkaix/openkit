@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -16,7 +17,7 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('workspace dashboard app API', () => {
   it('returns aggregate workspace status and default execution context', async () => {
-    const app = createApp({ store: createDemoStore() });
+    const app = createApp({ store: await createDemoStore() });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -59,7 +60,7 @@ describe('workspace dashboard app API', () => {
           secretRef: 'env:EXAMPLE_API_KEY',
         },
       ]),
-      store: createDemoStore(),
+      store: await createDemoStore(),
     });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
@@ -73,12 +74,12 @@ describe('workspace dashboard app API', () => {
   });
 
   it('summarizes active work, completions, and attention-needed items', async () => {
-    const store = createDemoStore();
-    const activeThread = store.createThread(
+    const store = await createDemoStore();
+    const activeThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Active worker turn'
     );
-    const activeTurn = store.createTurn(
+    const activeTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       activeThread.id,
       'Run active worker turn',
@@ -87,11 +88,11 @@ describe('workspace dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const attentionThread = store.createThread(
+    const attentionThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Approval handoff'
     );
-    const attentionTurn = store.createTurn(
+    const attentionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       attentionThread.id,
       'Ask before writing',
@@ -100,11 +101,11 @@ describe('workspace dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const completedThread = store.createThread(
+    const completedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Completed review'
     );
-    const completedTurn = store.createTurn(
+    const completedTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       completedThread.id,
       'Finish review',
@@ -117,7 +118,7 @@ describe('workspace dashboard app API', () => {
     const artifactRequestId = 'artifact-create-workspace-completion';
     const artifactBody = 'Review is complete.';
 
-    store.updateTurn(activeTurn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(activeTurn.id, { agentId: 'agent_codex_host' });
 
     const approval = store.createApproval({
       id: 'ap_workspace_attention',
@@ -131,7 +132,7 @@ describe('workspace dashboard app API', () => {
       createdAt: attentionTurn.startedAt ?? completedAt,
       resolvedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7820-915a-25ba0ed16670',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: attentionThread.id,
@@ -145,7 +146,7 @@ describe('workspace dashboard app API', () => {
       createdAt: attentionTurn.startedAt ?? completedAt,
       completedAt: attentionTurn.startedAt ?? completedAt,
     });
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-7857-9177-e94eebaad31f',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: completedThread.id,
@@ -167,8 +168,8 @@ describe('workspace dashboard app API', () => {
       createdAt: completedAt,
       updatedAt: completedAt,
     });
-    store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
-    store.createAgentSession({
+    await store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
+    await store.createAgentSession({
       id: testEntityId('as', `session_${activeThread.id}`),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -281,12 +282,12 @@ describe('workspace dashboard app API', () => {
       count: 0,
     },
   ] as const)('preserves completion selection: $name', async ({ artifacts, summary, count }) => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Completion selection'
     );
-    const completedTurn = store.createTurn(
+    const completedTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Thread preview',
@@ -295,7 +296,7 @@ describe('workspace dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const otherTurn = store.createTurn(
+    const otherTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Thread preview',
@@ -306,7 +307,7 @@ describe('workspace dashboard app API', () => {
     );
     for (const [id, scope, minute, artifactSummary] of artifacts) {
       const turnId = scope === 'exact' ? completedTurn.id : otherTurn.id;
-      store.createArtifact({
+      await store.createArtifact({
         id,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
@@ -325,7 +326,7 @@ describe('workspace dashboard app API', () => {
       });
     }
     const completedAt = '2026-07-19T00:04:00.000Z';
-    store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
+    await store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     const app = createApp({ store });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
@@ -348,13 +349,13 @@ describe('workspace dashboard app API', () => {
   });
 
   it('does not surface secret pending decision items as actionable', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Invalid dashboard attention'
     );
     const timestamp = '2026-07-19T00:00:00.000Z';
-    const secretTurn = store.createTurn(
+    const secretTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Secret question',
@@ -363,7 +364,7 @@ describe('workspace dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7aa3-b54b-e32a25a56598',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -408,12 +409,12 @@ describe('workspace dashboard app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Readonly attention'
     );
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Request approval',
@@ -435,7 +436,7 @@ describe('workspace dashboard app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-73b2-97a8-ad8ddcd0adb2',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -449,7 +450,7 @@ describe('workspace dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const failedTurn = store.createTurn(
+    const failedTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Shared failure',
@@ -458,7 +459,7 @@ describe('workspace dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(failedTurn.id, {
+    await store.updateTurn(failedTurn.id, {
       completedAt: timestamp,
       error: { code: 'worker_failed', message: 'Shared worker failure.' },
       status: 'failed',
@@ -507,4 +508,9 @@ describe('workspace dashboard app API', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

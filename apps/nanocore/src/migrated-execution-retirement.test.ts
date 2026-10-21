@@ -2,13 +2,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationHttpPath } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { AutomationStore } from './lib/automation-store.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -34,7 +35,7 @@ describe('migrated execution route retirement', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -49,12 +50,15 @@ describe('migrated execution route retirement', () => {
       threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
-    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Retirement');
-    const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Original', {
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retirement');
+    const turn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Original', {
       kind: 'user',
       id: FIXTURE_LOCAL_USER_ID,
     });
-    store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
+    await store.updateTurn(turn.id, {
+      status: 'interrupted',
+      completedAt: new Date().toISOString(),
+    });
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_retirement',
@@ -207,4 +211,9 @@ describe('migrated execution route retirement', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

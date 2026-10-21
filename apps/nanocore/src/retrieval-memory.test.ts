@@ -60,7 +60,7 @@ const marker = 'meridianMemoryMarker';
 const foreignDeploymentId = 'dep_00000000-0000-7000-8000-000000000001';
 
 /** Real canonical Users, private Timelines, Git notebooks and the ordinary Kernel service own all effects. */
-function fixture(imported = false) {
+async function fixture(imported = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-retrieval-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -72,7 +72,7 @@ function fixture(imported = false) {
       .run(userId, [userId, 'example.invalid'].join('@'), Date.now(), Date.now());
   const store = new FsStore({ dataRoot });
   const importedWorkspaceId = allocateEntityId('ws');
-  const workspace = imported
+  const workspace = await (imported
     ? store.importWorkspaceSnapshot({
         workspace: {
           id: importedWorkspaceId,
@@ -106,13 +106,13 @@ function fixture(imported = false) {
         requestId: randomUUID(),
         producer: { kind: 'user', id: aliceId },
         instructionReference: 'test:memory-search',
-      });
+      }));
   const workspaceId = workspace.id;
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
   const inflightCommands = new WeakMap();
-  const users = [aliceId, bobId].map((userId) => {
+  const users = [aliceId, bobId].map(async (userId) => {
     if (userId === aliceId)
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     else
@@ -138,7 +138,7 @@ function fixture(imported = false) {
       target: { kind: 'user' },
       initialization: { requestId: randomUUID(), instructionReference: 'test:memory-search' },
     });
-    const timeline = openAssistantTimeline(store, workspaceId, userId, 'Private Assistant');
+    const timeline = await openAssistantTimeline(store, workspaceId, userId, 'Private Assistant');
     const access = {
       coreDb,
       userDb,
@@ -194,7 +194,7 @@ function fixture(imported = false) {
 }
 
 it('delivers only the pinned self Memory root and withholds it after suppression', async () => {
-  const f = fixture();
+  const f = await fixture();
   const target = { ...f.alice.query(), pageIds: ['index'] };
   const overview = readAuthorizedUserMemoryPages(target);
   expect(overview.notebookRevision).toBe(f.alice.baseRevision);
@@ -219,8 +219,8 @@ it('delivers only the pinned self Memory root and withholds it after suppression
 
 describe('governed current-self Memory search', () => {
   it('selects only self pages with exact User references and a private trace in an imported Workspace, independent of another User corpus', async () => {
-    const f = fixture(true);
-    f.store.archiveThread(f.workspaceId, f.alice.timeline.id);
+    const f = await fixture(true);
+    await f.store.archiveThread(f.workspaceId, f.alice.timeline.id);
     const saved = await f.alice.save(
       f.alice.baseRevision,
       'preferences',
@@ -345,7 +345,7 @@ describe('governed current-self Memory search', () => {
   });
 
   it('uses source-local pins and budgets, explicit state inspection and freshness without inventing User conflict authority', async () => {
-    const f = fixture();
+    const f = await fixture();
     const alpha = await f.alice.save(
       f.alice.baseRevision,
       'alpha',
@@ -420,7 +420,7 @@ describe('governed current-self Memory search', () => {
   });
 
   it('removes forgotten pages from existing postings and permits a new explicit page from a raw Source still suppressed for models', async () => {
-    const f = fixture();
+    const f = await fixture();
     const source = await registerUserKnowledgeSource(f.alice.writer, {
       requestId: randomUUID(),
       kind: 'document',
@@ -443,7 +443,7 @@ describe('governed current-self Memory search', () => {
     installPendingRequestAdmission(f.store, { coreDb: f.coreDb, openWorkspace });
     const page = readMemoryPage(f.alice.writer, 'preferences')!;
     const requestId = randomUUID();
-    const prepared = prepareMemoryForgetCommand(f.alice.writer, {
+    const prepared = await prepareMemoryForgetCommand(f.alice.writer, {
       requestId,
       workspaceId: f.workspaceId,
       pageId: 'preferences',
@@ -561,16 +561,14 @@ describe('governed current-self Memory search', () => {
     'Worker',
     'disabled',
   ] as const)('refuses %s context before private generation or trace publication', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     await f.alice.save(f.alice.baseRevision, 'preferences', marker);
     const access = { ...f.alice.access };
     if (kind === 'shared')
-      access.outputThreadId = f.store.createThread(
-        f.workspaceId,
-        'Shared',
-        undefined,
-        'conversation',
-        { visibility: 'workspace' }
+      access.outputThreadId = (
+        await f.store.createThread(f.workspaceId, 'Shared', undefined, 'conversation', {
+          visibility: 'workspace',
+        })
       ).id;
     if (kind === 'missing Timeline') access.outputThreadId = undefined as unknown as string;
     if (kind === 'Worker')
@@ -592,6 +590,6 @@ describe('governed current-self Memory search', () => {
 });
 
 /** Reads a fixture User's established base without changing its configuration. */
-function memoryPageScope(f: ReturnType<typeof fixture>, userId: string): string {
+function memoryPageScope(f: Awaited<ReturnType<typeof fixture>>, userId: string): string {
   return `page/user/${userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId } })}`;
 }

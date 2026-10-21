@@ -24,10 +24,10 @@ import {
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -109,8 +109,8 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
-  it('refuses missing or unknown normalized row versions before interpreting payload fields', () => {
-    const fixture = createImportFixture('openkit-provenance-format-');
+  it('refuses missing or unknown normalized row versions before interpreting payload fields', async () => {
+    const fixture = await createImportFixture('openkit-provenance-format-');
     try {
       for (const marker of [{}, { schemaVersion: 2 }]) {
         const invalid = JSON.stringify({ ...marker, parseStatus: 'future' });
@@ -123,8 +123,8 @@ describe('worker runtime provenance import', () => {
       rmSync(fixture.workspaceDb.dataRoot, { recursive: true, force: true });
     }
   });
-  it('remints only parsed normalized fields with a recomputed digest and exact producer assertions', () => {
-    const fixture = createImportFixture('openkit-provenance-remint-extension-');
+  it('remints only parsed normalized fields with a recomputed digest and exact producer assertions', async () => {
+    const fixture = await createImportFixture('openkit-provenance-remint-extension-');
     const row = {
       lineage: fixture.lineage,
       streamRef: 'stream-0000.jsonl',
@@ -174,7 +174,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('preserves original extension-bearing raw bytes and digests while publishing only normalized known fields', async () => {
-    const fixture = createImportFixture('openkit-provenance-extensions-');
+    const fixture = await createImportFixture('openkit-provenance-extensions-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-provenance-extension-capture-')),
       fixture.lineage
@@ -240,7 +240,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('imports a complete forest with inherited parent history exactly and idempotently', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-import-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-import-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-capture-')),
       fixture.lineage,
@@ -517,7 +517,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('quarantines a capture with a tampered frame digest without promoting an index', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-tamper-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-tamper-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-tampered-capture-')),
       fixture.lineage,
@@ -599,7 +599,7 @@ describe('worker runtime provenance import', () => {
     { label: 'parse status', options: { tamperParseStatus: true } },
     { label: 'runtime role', options: { tamperRoleClaim: true } },
   ])('quarantines an adapter index with a mismatched $label claim', async ({ options }) => {
-    const fixture = createImportFixture('openkit-runtime-provenance-claim-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-claim-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-claim-capture-')),
       fixture.lineage,
@@ -618,7 +618,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('normalizes a valid custom native role without exposing its raw label', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-role-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-role-');
     const customRole = 'private-custom-role-canary';
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-role-capture-')),
@@ -647,7 +647,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('imports a valid runtime forest with more than one root', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-multi-root-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-multi-root-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-multi-root-capture-')),
       fixture.lineage,
@@ -691,7 +691,7 @@ describe('worker runtime provenance import', () => {
     { label: 'a truncated manifest', options: { truncated: true } },
     { label: 'an unstable child stream', options: { unstableChild: true } },
   ])('quarantines a capture containing $label', async ({ options }) => {
-    const fixture = createImportFixture('openkit-runtime-provenance-invalid-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-invalid-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-invalid-capture-')),
       fixture.lineage,
@@ -713,7 +713,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('quarantines a manifest-listed child stream that is missing at import time', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-missing-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-missing-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-missing-capture-')),
       fixture.lineage
@@ -732,7 +732,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('does not retain a raw stream whose actual bytes exceed the AEP total limit', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-actual-limit-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-actual-limit-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-actual-limit-capture-')),
       fixture.lineage
@@ -781,7 +781,7 @@ describe('worker runtime provenance import', () => {
       path: (capture: RuntimeCaptureFixture) => capture.nativeOriginIndexPath,
     },
   ])('quarantines a capture whose required $label is missing', async ({ path }) => {
-    const fixture = createImportFixture('openkit-runtime-provenance-missing-root-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-missing-root-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-missing-root-capture-')),
       fixture.lineage
@@ -803,7 +803,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('reconciles multiple package-scoped gateway calls against duplicate origin refs', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-gateway-reconciled-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-gateway-reconciled-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-gateway-reconciled-capture-')),
       fixture.lineage
@@ -849,7 +849,7 @@ describe('worker runtime provenance import', () => {
   });
 
   it('refuses complete promotion while a package-scoped gateway call has no origin ref', async () => {
-    const fixture = createImportFixture('openkit-runtime-provenance-gateway-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-gateway-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-gateway-capture-')),
       fixture.lineage
@@ -889,7 +889,7 @@ describe('worker runtime provenance import', () => {
       threadId: 'th_00000000-0000-78ce-b458-8347d12d1da2',
     },
   ])('quarantines an unreconciled package-scoped gateway call', async (gatewayCall) => {
-    const fixture = createImportFixture('openkit-runtime-provenance-gateway-invalid-');
+    const fixture = await createImportFixture('openkit-runtime-provenance-gateway-invalid-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-gateway-invalid-capture-')),
       fixture.lineage
@@ -966,11 +966,11 @@ function startGatewayCall(
 }
 
 /** Creates one migrated workspace and a provenance-required AEP. */
-function createImportFixture(prefix: string): ImportFixture {
+async function createImportFixture(prefix: string): Promise<ImportFixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  const store = createDemoStore();
-  const turn = store.createTurn(
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Import runtime provenance',
@@ -1420,7 +1420,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 describe('runtime provenance publication durability', () => {
   it('syncs complete retained evidence before each rename and reads the real published bundles', async () => {
-    const fixture = createImportFixture('openkit-provenance-durability-');
+    const fixture = await createImportFixture('openkit-provenance-durability-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-provenance-durable-capture-')),
       fixture.lineage
@@ -1496,7 +1496,7 @@ describe('runtime provenance publication durability', () => {
   });
 
   it('does not register evidence after a staged-byte sync failure', async () => {
-    const fixture = createImportFixture('openkit-provenance-pre-sync-');
+    const fixture = await createImportFixture('openkit-provenance-pre-sync-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-provenance-pre-capture-')),
       fixture.lineage
@@ -1525,7 +1525,7 @@ describe('runtime provenance publication durability', () => {
   });
 
   it('rejects a post-rename sync failure and exact replay until the visible tree is synchronized', async () => {
-    const fixture = createImportFixture('openkit-provenance-replay-sync-');
+    const fixture = await createImportFixture('openkit-provenance-replay-sync-');
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-provenance-replay-capture-')),
       fixture.lineage
@@ -1596,7 +1596,7 @@ describe('runtime provenance publication durability', () => {
 
 describe('uncommitted ancestor evidence recovery', () => {
   it('retries failed newly created evidence ancestry before acknowledging retained provenance', async () => {
-    const fixture = createImportFixture('openkit-provenance-ancestor-retry-');
+    const fixture = await createImportFixture('openkit-provenance-ancestor-retry-');
     const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-ancestor-capture-'));
     const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
     const evidenceRoot = join(fixture.workspaceRoot, 'evidence');
@@ -1653,4 +1653,9 @@ describe('uncommitted ancestor evidence recovery', () => {
       rmSync(captureRoot, { recursive: true, force: true });
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

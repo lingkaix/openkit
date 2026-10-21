@@ -36,6 +36,7 @@ const CORE_TABLES = [
   'agent_session_runtime_bindings',
   'audit_events',
   'boot_audit_events',
+  'control_work_observations',
   'harness_instance_records',
   'idempotency_requests',
   'nanohost_integration_identities',
@@ -82,6 +83,7 @@ const WORKSPACE_TABLES = [
   'control_product_entries',
   'control_threads',
   'control_turns',
+  'control_work_observations',
   'control_workspaces',
   'evaluation_candidate_sets',
   'evidence_bundles',
@@ -217,9 +219,10 @@ describe('database setup', () => {
       )
         skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
-      expect(listMigrationIds(db, 'workspace').slice(-2)).toEqual([
+      expect(listMigrationIds(db, 'workspace').slice(-3)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
+        'workspace_0013_work_observations',
       ]);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
@@ -348,6 +351,7 @@ describe('database setup', () => {
         '0012_quarantined_workspace_retirement.sql',
         '0013_control_store.sql',
         '0014_execution_journal.sql',
+        '0015_work_observations.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -371,6 +375,7 @@ describe('database setup', () => {
         'core_0012_quarantined_workspace_retirement',
         'core_0013_control_store',
         'core_0014_execution_journal',
+        'core_0015_work_observations',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -788,6 +793,7 @@ describe('database setup', () => {
         'workspace_0010_product_control',
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
+        'workspace_0013_work_observations',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1074,6 +1080,8 @@ describe('database setup', () => {
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.test.ts`))
       // These exact tests inject SQL faults into private databases; they own no production schema.
       .filter((path) => path !== join(sourceRoot, 'workspace-retirement.test.ts'))
+      .filter((path) => path !== join(sourceRoot, 'operation-error.test.ts'))
+      .filter((path) => path !== join(sourceRoot, 'server-thread-operation-projections.test.ts'))
       .filter((path) => !path.endsWith(`bootstrap${sep}scope-admission.test.ts`))
       .filter((path) => !path.endsWith(`runtime${sep}pending-requests.scope-admission.test.ts`))
       .filter((path) => !path.endsWith(`storage${sep}workspace-file-admission.test.ts`))
@@ -1180,6 +1188,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0010_product_control',
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
+        'workspace_0013_work_observations',
       ]);
     } finally {
       db.sqlite.close();

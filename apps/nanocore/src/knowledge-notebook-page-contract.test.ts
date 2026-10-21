@@ -15,16 +15,16 @@ import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const fixtures: Array<ReturnType<typeof fixture>> = [];
+const fixtures: Array<Awaited<ReturnType<typeof fixture>>> = [];
 
 /** Compose the real native publisher and authorized reader with fresh canonical configuration. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-page-contract-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('One Notebook page contract', {
+  const workspace = await store.createWorkspace('One Notebook page contract', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: userId },
     instructionReference: 'Create a fresh test-owned Workspace',
@@ -52,7 +52,7 @@ function fixture() {
 }
 
 /** Reopen retained owners without reseeding or replaying a publication. */
-function reopen(f: ReturnType<typeof fixture>) {
+function reopen(f: Awaited<ReturnType<typeof fixture>>) {
   f.workspaceDb.sqlite.close();
   f.coreDb.sqlite.close();
   f.coreDb = openCoreDb(f.dataRoot);
@@ -69,7 +69,7 @@ function reopen(f: ReturnType<typeof fixture>) {
 }
 
 /** Read immutable bytes independently of the Notebook content reader. */
-function git(f: ReturnType<typeof fixture>, ...args: string[]): string {
+function git(f: Awaited<ReturnType<typeof fixture>>, ...args: string[]): string {
   return execFileSync('git', ['--git-dir', f.repositoryPath, ...args], { encoding: 'utf8' });
 }
 
@@ -79,7 +79,7 @@ function digest(content: string): string {
 }
 
 /** A valid human page has one existing OKF type and descriptive extension metadata. */
-function page(f: ReturnType<typeof fixture>, body = 'Original human body.'): string {
+function page(f: Awaited<ReturnType<typeof fixture>>, body = 'Original human body.'): string {
   return [
     '---',
     'type: KnowledgePage',
@@ -104,7 +104,7 @@ function page(f: ReturnType<typeof fixture>, body = 'Original human body.'): str
 
 /** Exercise the existing HTTP-to-native binding with actual current user authority. */
 async function call(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   operation: string,
   input: Record<string, unknown> = {}
 ) {
@@ -127,7 +127,7 @@ async function call(
 }
 
 /** Public listing must expose the actual pinned reader facts and complete page bytes. */
-async function listing(f: ReturnType<typeof fixture>) {
+async function listing(f: Awaited<ReturnType<typeof fixture>>) {
   const result = await call(f, 'knowledge.notebook.list');
   expect(result.status, JSON.stringify(result.body)).toBe(200);
   const authorized = readAuthorizedWorkspaceNotebookPages({
@@ -150,7 +150,7 @@ async function listing(f: ReturnType<typeof fixture>) {
 
 /** One completed command points to the existing immutable revision and the actual admitted command. */
 function publication(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   result: Awaited<ReturnType<typeof call>>,
   operation: string,
   input: { requestId: string; baseRevision: string }
@@ -185,7 +185,7 @@ afterEach(() => {
 
 describe('canonical page commands compose the native Notebook publisher and reader', () => {
   it('keeps the existing full-page update and authorized reader as the fixture control', async () => {
-    const f = fixture();
+    const f = await fixture();
     const input = {
       requestId: randomUUID(),
       baseRevision: git(f, 'rev-parse', 'refs/heads/published').trim(),
@@ -215,7 +215,7 @@ describe('canonical page commands compose the native Notebook publisher and read
   });
 
   it('creates, lists, edits and removes one canonical page with exact conflicts, retained history and truthful replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const create = {
       requestId: randomUUID(),

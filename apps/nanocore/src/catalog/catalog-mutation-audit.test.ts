@@ -20,7 +20,7 @@ describe('Catalog mutation Audit', () => {
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Audit');
+    const workspace = await store.createWorkspace('Audit');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(workspaceDb);

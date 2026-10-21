@@ -30,6 +30,7 @@ import {
   preparePolicyDocument,
 } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -93,13 +94,14 @@ function tools(): Tool[] {
 }
 
 const cleanups: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
   vi.restoreAllMocks();
 });
 
 /** Composes retained snapshots, current grant evaluation, and the real synchronous claim owner. */
-function fixture(
+async function fixture(
   schemaPolicy: 'tracking' | 'pinned' = 'tracking',
   credentialRequired = false,
   mediated?: boolean,
@@ -112,7 +114,7 @@ function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -151,7 +153,7 @@ function fixture(
       },
     ],
   };
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Capture an exact effect',
@@ -185,7 +187,7 @@ function fixture(
     });
   const capturedId = retain(tools(), 'schema_captured');
   const resolved = resolveWorkspaceMcpServer({ catalog, serverId: 'echo-server' });
-  store.createItem({
+  await store.createItem({
     id: 'it_00000000-0000-74e7-bec8-70d5a20db395',
     owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -435,7 +437,7 @@ function expectNoExecution(f: ReturnType<typeof fixture>) {
 
 describe('captured pending MCP schema identity at grant', () => {
   it('blocks a captured human grant when current Policy prohibits an otherwise supplied Tool', async () => {
-    const f = fixture('tracking', false, true);
+    const f = await fixture('tracking', false, true);
     const scope = f.environmentPackage.scope;
     const userId = f.record.responsibleUserId;
     const principal = { kind: 'human' as const, id: userId };
@@ -528,7 +530,7 @@ describe('captured pending MCP schema identity at grant', () => {
       expect(readAdmittedPolicyDocument(f.coreDb, document)).toEqual(document);
     };
     admit();
-    f.store.createAgentSession({
+    await f.store.createAgentSession({
       id: scope.agentSessionId,
       agentId: f.environmentPackage.agent.agentId,
       workspaceId: scope.workspaceId,
@@ -538,7 +540,7 @@ describe('captured pending MCP schema identity at grant', () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    f.store.updateTurn(scope.turnId, {
+    await f.store.updateTurn(scope.turnId, {
       agentSessionId: scope.agentSessionId,
       agentId: f.environmentPackage.agent.agentId,
       status: 'running',
@@ -756,7 +758,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('blocks a mediated source without a reviewer before credential resolution', async () => {
-    const f = fixture('tracking', true, true);
+    const f = await fixture('tracking', true, true);
     const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
     expect(await f.grant()).toMatchObject({
       disposition: 'denied-not-executed',
@@ -767,7 +769,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('requires exact mediated review for a catalog approval and keeps its once-only claim', async () => {
-    const refused = fixture('tracking', true, true, 'require_approval');
+    const refused = await fixture('tracking', true, true, 'require_approval');
     const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
     expect(await refused.grant()).toMatchObject({
       disposition: 'denied-not-executed',
@@ -776,7 +778,7 @@ describe('captured pending MCP schema identity at grant', () => {
     expect(credentials).not.toHaveBeenCalled();
     expectNoExecution(refused);
 
-    const admitted = fixture('tracking', false, true, 'require_approval');
+    const admitted = await fixture('tracking', false, true, 'require_approval');
     const source = listExportableWorkspacePermissionDecisions(
       admitted.db,
       admitted.record.workspaceId
@@ -815,7 +817,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('rejects changed mediation pins before credentials or execution', async () => {
-    const f = fixture('tracking', false, true);
+    const f = await fixture('tracking', false, true);
     const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
     expect(
       await f.grant(
@@ -828,7 +830,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('checks the source marker before decoded mediation and reviewer contact', async () => {
-    const f = fixture('tracking', false, true);
+    const f = await fixture('tracking', false, true);
     const review = vi.fn(f.reviewPolicy());
     f.db.sqlite
       .prepare(
@@ -841,7 +843,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('rechecks current mediation inside the claim before starting a CapabilityCall', async () => {
-    const f = fixture('tracking', false, true);
+    const f = await fixture('tracking', false, true);
     const current = vi
       .fn()
       .mockReturnValueOnce(true)
@@ -855,7 +857,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('preserves a settled Tool success when completed Policy observation fails', async () => {
-    const f = fixture('tracking', false, true);
+    const f = await fixture('tracking', false, true);
     const review = f.reviewPolicy();
     let observedCall: unknown;
     const observe = vi.fn(async () => {
@@ -880,7 +882,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('keeps the derived execution decision and consumes finite uses only on preparation', async () => {
-    const f = fixture('tracking', false, true);
+    const f = await fixture('tracking', false, true);
     const statement = { id: 'once-review', digest: `sha256:${'c'.repeat(64)}` };
     expect(
       await f.grant(
@@ -916,7 +918,7 @@ describe('captured pending MCP schema identity at grant', () => {
     'top-level-description',
     'key-order',
   ])('tracking executes the captured call once after %s changes', async (change) => {
-    const f = fixture();
+    const f = await fixture();
     const current = tools();
     if (change === 'allowed-other' || change === 'excluded-other') {
       current.find((tool) => tool.name === change)!.inputSchema = {
@@ -971,7 +973,7 @@ describe('captured pending MCP schema identity at grant', () => {
     'renamed',
     'removed',
   ])('tracking refuses a requested-tool %s change before claim', async (change) => {
-    const f = fixture();
+    const f = await fixture();
     const current = tools();
     const property = (current[0]!.inputSchema.properties as Record<string, Record<string, unknown>>)
       .message!;
@@ -987,7 +989,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('refuses missing captured evidence even when the current requested schema is unchanged', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.db.sqlite
       .prepare('DELETE FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?')
       .run(f.record.schemaSnapshotId);
@@ -997,7 +999,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('uses imported retained captured evidence without making it current live authority', async () => {
-    const f = fixture();
+    const f = await fixture();
     const captured = listExportableMcpToolSchemaSnapshots(
       f.db,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -1012,7 +1014,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('refuses imported-only history when no current live schema exists', async () => {
-    const f = fixture();
+    const f = await fixture();
     const captured = listExportableMcpToolSchemaSnapshots(
       f.db,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -1024,7 +1026,7 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('pinned executes an unchanged captured call exactly once', async () => {
-    const f = fixture('pinned');
+    const f = await fixture('pinned');
     expect(await f.grant()).toMatchObject({
       resolution: 'granted',
       claim: 'finished',
@@ -1051,7 +1053,7 @@ describe('captured pending MCP schema identity at grant', () => {
     'allowed-other',
     'excluded-other',
   ])('pinned refuses whole-snapshot drift in %s before claim', async (name) => {
-    const f = fixture('pinned');
+    const f = await fixture('pinned');
     const current = tools();
     current.find((tool) => tool.name === name)!.inputSchema.description = 'Unrelated drift.';
     f.retain(current);
@@ -1068,7 +1070,7 @@ describe('captured pending MCP schema identity at grant', () => {
     'agent',
     'user-authority',
   ])('an unchanged requested schema does not bypass current %s checks', async (guard) => {
-    const f = fixture('tracking', guard === 'credentials');
+    const f = await fixture('tracking', guard === 'credentials');
     const result = await f.grant(() => {
       if (guard === 'selection') f.removeSelection();
       if (guard === 'agent') f.removeAgent();

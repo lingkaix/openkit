@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { expect, it } from 'vitest';
 import { FsStore } from '../../lib/store.js';
+import { createTestStore } from '../../test-support/store.js';
 import {
   discardAbandonedWorkspaceStaging,
   loadWorkspaceFileRecords,
@@ -15,8 +16,8 @@ import { stageArtifactPayload } from './file-payload.js';
 it('inspects canonical records without deleting a live upload; explicit boot cleanup owns abandoned stages', async () => {
   const dataRoot = await mkdtemp(join(tmpdir(), 'live-file-staging-'));
   try {
-    const store = new FsStore({ dataRoot }),
-      workspace = store.createWorkspace('Private staging');
+    const store = createTestStore({ dataRoot }),
+      workspace = await store.createWorkspace('Private staging');
     const bytes = Buffer.from([0, 255, 128]);
     const reservation = new FileStorageAdmission(dataRoot, () => 0n).reserve({
       stagingBytes: 3n,

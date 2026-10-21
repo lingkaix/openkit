@@ -5,10 +5,14 @@ import {
   AssistantHandoffSchema,
   deriveEntityId,
   type Item,
+  ItemIdSchema,
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
+  ThreadIdSchema,
+  TurnIdSchema,
   type TurnSchema,
+  UserInputQuestionSchema,
   WorkspaceIdSchema,
   workspaceIdForOwner,
   writeRetainedV1,
@@ -26,7 +30,18 @@ type Turn = import('zod').infer<typeof TurnSchema>;
 
 import type Database from 'better-sqlite3';
 
-import { listExistingWorkspaceDatabaseScopes, openBootVerifiedWorkspaceDb } from '../storage/db.js';
+import {
+  assertControlProductWriter,
+  type PreparedControlEntry,
+  readPreparedControlEntry,
+  readProduct,
+} from '../storage/control-store-products.js';
+import {
+  listExistingWorkspaceDatabaseScopes,
+  openBootVerifiedWorkspaceDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
+import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
 
 /** Fixed retained handoff meaning; current publisher and Approval admission remain separate. */
 const StoredPendingAssistantHandoffV1Schema = z.discriminatedUnion('kind', [
@@ -1933,10 +1948,12 @@ export function validateCanonicalLoad(
  * Infers the executor of a Turn from its agent binding. Core-local and Assistant Turns are distinguished by the caller.
  *
  * @param turn Turn.
- * @returns Worker when the Turn names an AgentSession, otherwise null.
+ * @returns The existing Pending requester executor, or null for work that receives no Pending outcomes.
  */
 export function executorKindForTurn(turn: Turn): PendingExecutorKind | null {
   if (turn.agentId === 'goal-coordinator' && !turn.agentSessionId) return 'coordinator';
+  // KM query work owns a separate bounded role run; it is neither a Worker nor the Chat requester.
+  if (turn.agentId === 'knowledge-manager' && !turn.agentSessionId) return null;
   return turn.agentSessionId || (turn.agentId && turn.agentId !== 'quick-chat')
     ? 'worker'
     : turn.agentId === 'quick-chat'
@@ -2120,7 +2137,8 @@ function approvalStatusForRecord(record: PendingRequestRecord): ApprovalRequest[
   return 'pending';
 }
 
-function compareReadiness(left: PendingRequestRecord, right: PendingRequestRecord): number {
+/** Orders current Pending outcomes by their existing readiness time and exact request identity. */
+export function compareReadiness(left: PendingRequestRecord, right: PendingRequestRecord): number {
   const leftTime = left.decidedAt ?? left.endedAt ?? left.createdAt;
   const rightTime = right.decidedAt ?? right.endedAt ?? right.createdAt;
   if (leftTime < rightTime) return -1;
@@ -2353,4 +2371,895 @@ export function readPendingRequestLineage(
   return row
     ? readRetainedV1(row, () => ({ workspaceId: row.workspace_id, threadId: row.thread_id }))
     : null;
+}
+
+/** Exact non-secret deciding identity; current authority stays with the Main effect owner. */
+const PendingDecisionContextSchema = z
+  .object({
+    kind: z.enum(['local', 'session', 'token']),
+    userId: z.string().min(1),
+    sessionId: z.string().min(1).optional(),
+    tokenId: z.string().min(1).optional(),
+    tokenScope: z.enum(['server-admin', 'workspace', 'workspace-readonly']).optional(),
+    tokenWorkspaceIds: z.array(WorkspaceIdSchema).optional(),
+    adminTokenId: z.string().min(1).optional(),
+  })
+  .strict()
+  .transform(
+    (value): Actor => ({
+      kind: value.kind,
+      userId: value.userId,
+      ...(value.sessionId !== undefined ? { sessionId: value.sessionId } : {}),
+      ...(value.tokenId !== undefined ? { tokenId: value.tokenId } : {}),
+      ...(value.tokenScope !== undefined ? { tokenScope: value.tokenScope } : {}),
+      ...(value.tokenWorkspaceIds !== undefined
+        ? { tokenWorkspaceIds: value.tokenWorkspaceIds }
+        : {}),
+      ...(value.adminTokenId !== undefined ? { adminTokenId: value.adminTokenId } : {}),
+    })
+  );
+/** Original Pending deciding/ending actor, not a delegated authorization callback. */
+const PendingNativeActorSchema = z
+  .object({ kind: z.enum(['user', 'system']), id: z.string().min(1) })
+  .strict();
+/** Captured call attribution retains the existing exact owner fields. */
+const PendingAuthorizationContextSchema = z
+  .object({
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    agentSessionId: z.string().min(1).nullable(),
+    agentId: z.string().min(1).nullable(),
+    responsibleUserId: z.string().min(1),
+    packageDigest: z.string().nullable(),
+    policyDecisionId: z.string().nullable(),
+  })
+  .strict();
+/** Closed creation fields; governed intent remains the existing effect owner's exact JSON object. */
+const NativeRaisePendingRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    raisingTurnId: TurnIdSchema,
+    requestItemId: ItemIdSchema,
+    kind: z.enum(['approval', 'user-input']),
+    requesterKind: z.enum(['worker', 'assistant', 'coordinator', 'person']),
+    agentId: z.string().min(1).nullable().optional(),
+    agentSessionId: z.string().min(1).nullable().optional(),
+    responsibleUserId: z.string().min(1),
+    call: z
+      .object({
+        serverId: z.string().min(1),
+        catalogRevision: z.string().min(1),
+        schemaSnapshotId: z.string().min(1),
+        toolName: z.string().min(1),
+        canonicalArgumentsJson: z.string(),
+        argumentsDigest: z.string().min(1),
+        packageDigest: z.string().nullable(),
+        policyDecisionId: z.string().nullable(),
+        authorizationContext: PendingAuthorizationContextSchema,
+      })
+      .strict()
+      .optional(),
+    governedIntent: z.record(z.string(), z.json()).nullable().optional(),
+    assistantHandoff: AssistantHandoffSchema.nullable().optional(),
+    questions: z.array(UserInputQuestionSchema.strict()).nullable().optional(),
+    questionDigest: z.string().nullable().optional(),
+    approval: z
+      .object({
+        kind: z.enum(['permission', 'destructive-action']),
+        title: z.string(),
+        description: z.string(),
+      })
+      .strict()
+      .optional(),
+    now: z.string().datetime(),
+  })
+  .strict()
+  .transform((value): RaisePendingRequestInput => {
+    const {
+      agentId,
+      agentSessionId,
+      call,
+      governedIntent,
+      assistantHandoff,
+      questions,
+      questionDigest,
+      approval,
+      ...required
+    } = value;
+    return {
+      ...required,
+      ...(agentId !== undefined ? { agentId } : {}),
+      ...(agentSessionId !== undefined ? { agentSessionId } : {}),
+      ...(call !== undefined ? { call } : {}),
+      ...(governedIntent !== undefined ? { governedIntent } : {}),
+      ...(assistantHandoff !== undefined ? { assistantHandoff } : {}),
+      ...(questions !== undefined ? { questions } : {}),
+      ...(questionDigest !== undefined ? { questionDigest } : {}),
+      ...(approval !== undefined ? { approval } : {}),
+    };
+  });
+/** A Main-selected usable record is admitted only while its complete current source still matches. */
+const PendingExpectedSourceSchema = z
+  .object({ requestId: z.string().min(1), sourceHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) })
+  .strict();
+const nativePendingScope = {
+  workspaceId: WorkspaceIdSchema,
+  expected: z.array(PendingExpectedSourceSchema).optional(),
+};
+const nativePendingThread = { ...nativePendingScope, threadId: ThreadIdSchema };
+const nativePendingRequest = {
+  ...nativePendingThread,
+  requestId: z.string().min(1),
+  now: z.string().datetime(),
+};
+const nativePendingDecision = {
+  ...nativePendingRequest,
+  actor: PendingNativeActorSchema,
+  decisionContext: PendingDecisionContextSchema.optional(),
+};
+/** Closed transient Pending commands; no callback, arbitrary SQL, sibling handle, or raw result response crosses this boundary. */
+export const ControlPendingCommandInputSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('raise'),
+      ...nativePendingThread,
+      input: NativeRaisePendingRequestSchema,
+    })
+    .strict(),
+  z.object({ action: z.literal('deny'), ...nativePendingDecision }).strict(),
+  z
+    .object({
+      action: z.literal('answer'),
+      ...nativePendingDecision,
+      answers: z.record(z.string(), z.tuple([z.string()])),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('withdraw'),
+      ...nativePendingRequest,
+      actor: PendingNativeActorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('invalidate'),
+      ...nativePendingRequest,
+      actor: PendingNativeActorSchema,
+      event: z.string().min(1),
+    })
+    .strict(),
+  z.object({ action: z.literal('grant-command'), ...nativePendingDecision }).strict(),
+  z.object({ action: z.literal('claim'), ...nativePendingDecision }).strict(),
+  z.object({ action: z.literal('claim-command'), ...nativePendingRequest }).strict(),
+  z
+    .object({
+      action: z.literal('refuse-command'),
+      ...nativePendingRequest,
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('finish'),
+      ...nativePendingRequest,
+      disposition: z.enum(['approved-executed', 'execution-error', 'outcome-unknown']),
+      reason: z.string().nullable(),
+      heldResult: z.json().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('settle-unfinished'),
+      ...nativePendingScope,
+      now: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('delivery-prove'),
+      ...nativePendingScope,
+      turnId: TurnIdSchema,
+      now: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('delivery-release'),
+      ...nativePendingScope,
+      turnId: TurnIdSchema,
+      now: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('delivery-unknown'),
+      ...nativePendingScope,
+      turnId: TurnIdSchema,
+      now: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('freeze'),
+      ...nativePendingThread,
+      turnId: TurnIdSchema,
+      executor: z.enum(['worker', 'assistant', 'coordinator', 'person']),
+      agentId: z.string().min(1).nullable().optional(),
+      cause: z.enum(['outcome', 'carried']),
+      now: z.string().datetime(),
+      expectedSelection: z.array(z.string().min(1)).max(OUTCOME_DELIVERY_BOUND),
+      expectedThreadCensus: z.array(z.string().min(1)),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('closeout'),
+      ...nativePendingThread,
+      closeoutTurnId: TurnIdSchema,
+      expectedThreadCensus: z.array(z.string().min(1)),
+      actor: PendingNativeActorSchema,
+      now: z.string().datetime(),
+      invalidatingEvents: z
+        .array(z.object({ requestId: z.string().min(1), event: z.string().min(1) }).strict())
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('associate-invalidation'),
+      ...nativePendingThread,
+      requestIds: z.array(z.string().min(1)).min(1),
+      turnId: TurnIdSchema,
+      now: z.string().datetime(),
+    })
+    .strict(),
+]);
+/** One bounded native Pending family command, not a generic work-resource operation. */
+export type ControlPendingCommandInput = z.infer<typeof ControlPendingCommandInputSchema>;
+/** Responses carry only affected identities and the existing CAS outcome; captured input/results stay in their owner. */
+export const ControlPendingCommandResultSchema = z
+  .object({
+    requestIds: z.array(z.string().min(1)),
+    applied: z.enum(['claimed', 'refused', 'ended', 'lost']).nullable(),
+    created: z.boolean().nullable(),
+  })
+  .strict();
+/** Small Pending acknowledgement after its enclosing native transaction commits. */
+export type ControlPendingCommandResult = z.infer<typeof ControlPendingCommandResultSchema>;
+
+/** Native-local immutable Item proof retained separately from new product writes. */
+export interface PreparedControlPendingCommand {
+  readonly entries: readonly PreparedControlEntry[];
+  readonly dependencies: readonly {
+    readonly entry: PreparedControlEntry;
+    readonly revision: number;
+    readonly contentJson: string;
+  }[];
+}
+
+/** Checks the latest actual SQL descriptor without reading immutable files inside the transaction. */
+function pendingPreparedItem(db: WorkspaceDb, entry: PreparedControlEntry): Item {
+  const row = db.sqlite
+    .prepare(
+      "SELECT schema_version,turn_id,sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+    )
+    .get(entry.id) as
+    | {
+        schema_version: number;
+        turn_id: string;
+        sequence: number;
+        revision: number;
+        content_json: string;
+      }
+    | undefined;
+  if (
+    !row ||
+    row.schema_version !== 1 ||
+    row.turn_id !== entry.input.turnId ||
+    row.sequence !== entry.input.sequence ||
+    row.revision !== entry.input.expectedRevision + 1 ||
+    !isDeepStrictEqual(JSON.parse(row.content_json), entry.input.content)
+  )
+    pendingNativeConflict('The Pending Item descriptor changed after immutable preparation.');
+  return readRetainedV1(readPreparedControlEntry(entry), StoredItemPayloadV1Schema.parse);
+}
+
+/** Compares decided rows with their actual request, original publication and invalidation Items. */
+function assertPendingPreparedProjection(
+  db: WorkspaceDb,
+  record: PendingRequestRecord,
+  prepared: PreparedControlPendingCommand,
+  now: string
+): void {
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  const relevant = new Set([
+    record.requestItemId,
+    ...(
+      ['decision', 'answer', 'disposition', 'disposition-status', 'ending', 'invalidation'] as const
+    ).map((role) => pendingRequestItemId(record.requestId, role)),
+  ]);
+  const items = new Map<string, Item>();
+  const newIds = new Set(
+    prepared.entries.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
+  );
+  for (const entry of [
+    ...prepared.entries,
+    ...prepared.dependencies.map((dependency) => dependency.entry),
+  ]) {
+    if (entry.input.kind !== 'item') continue;
+    const payload = readRetainedV1(
+      readPreparedControlEntry(entry),
+      StoredItemPayloadV1Schema.parse
+    );
+    if (
+      !relevant.has(entry.id) &&
+      payload.causationId !== record.requestItemId &&
+      !('approvalRequestId' in payload && payload.approvalRequestId === record.requestId) &&
+      !('userInputRequestId' in payload && payload.userInputRequestId === record.requestId)
+    )
+      continue;
+    if (items.has(entry.id))
+      pendingNativeConflict('The Pending Item proof contains duplicate identities.');
+    items.set(entry.id, pendingPreparedItem(db, entry));
+  }
+  const turnIds = new Set(
+    [
+      record.raisingTurnId,
+      record.publicationTurnId,
+      record.invalidationTurnId,
+      record.deliveryTurnId,
+    ].filter((id): id is string => id !== null)
+  );
+  const turns = [...turnIds].map((id) => {
+    const metadata = readProduct(db.sqlite, owner, 'turn', id)?.record;
+    if (!metadata || metadata.threadId !== record.threadId)
+      pendingNativeConflict('The Pending publication Turn has different native lineage.');
+    return {
+      ...metadata,
+      items: [...items.values()].filter((item) => item.turnId === id),
+    } as unknown as Turn;
+  });
+  const failure = validateCanonicalLoad(record, turns);
+  if (failure)
+    pendingNativeConflict(
+      `The decided Pending tuple has invalid canonical Items: ${failure.reason}.`
+    );
+  const expected: Item[] = [];
+  if (record.publicationTurnId)
+    expected.push(...renderPendingOutcomeItems([record], record.publicationTurnId, now));
+  if (record.invalidationTurnId && record.invalidationTurnId !== record.publicationTurnId)
+    expected.push(renderPendingInvalidationItem(record, record.invalidationTurnId, now));
+  const expectedIds = new Set([record.requestItemId, ...expected.map((item) => item.id)]);
+  for (const item of expected) {
+    const actual = items.get(item.id);
+    if (!actual)
+      pendingNativeConflict('The decided Pending tuple is missing its exact projected Item.');
+    const clock = newIds.has(item.id) ? now : actual.createdAt;
+    const expectedAtClock =
+      item.id === pendingRequestItemId(record.requestId, 'invalidation')
+        ? renderPendingInvalidationItem(record, item.turnId, clock)
+        : renderPendingOutcomeItems([record], item.turnId, clock).find(
+            (candidate) => candidate.id === item.id
+          );
+    if (
+      !expectedAtClock ||
+      !isDeepStrictEqual(
+        StoredItemPayloadV1Schema.parse(actual),
+        StoredItemPayloadV1Schema.parse(expectedAtClock)
+      )
+    )
+      pendingNativeConflict('The decided Pending tuple does not match its exact projected Item.');
+  }
+  for (const item of items.values())
+    if (!expectedIds.has(item.id))
+      pendingNativeConflict('The Pending tuple contains an unexpected projected Item.');
+}
+
+/** Fails a native source/selection race before any Pending mutation. */
+function pendingNativeConflict(message: string): never {
+  throw new PendingRequestCommandError('conflict', message, 409);
+}
+
+/** Runs the existing synchronous deciding body on the supplied native handle and savepoint, after prepared products/Items have been applied. No file I/O, Main authority callback, await, COMMIT, or sibling database is used. */
+export function applyControlPendingCommand(
+  db: WorkspaceDb,
+  value: ControlPendingCommandInput,
+  prepared: PreparedControlPendingCommand = { entries: [], dependencies: [] }
+): ControlPendingCommandResult {
+  assertControlProductWriter(db.sqlite);
+  const command = ControlPendingCommandInputSchema.parse(value);
+  if (db.scope !== 'workspace' || command.workspaceId !== db.workspaceId)
+    pendingNativeConflict('The Pending command names a different Workspace owner.');
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  for (const dependency of prepared.dependencies) {
+    const row = db.sqlite
+      .prepare(
+        "SELECT revision,content_json FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(dependency.entry.input.turnId, dependency.entry.id) as
+      | { revision: number; content_json: string }
+      | undefined;
+    if (!row || row.revision !== dependency.revision || row.content_json !== dependency.contentJson)
+      pendingNativeConflict('A retained Pending Item changed after preparation.');
+  }
+  if (!readProduct(db.sqlite, owner, 'workspace', db.workspaceId))
+    pendingNativeConflict('The Pending Workspace owner is missing.');
+  const thread = (threadId: string) => {
+    const current = readProduct(db.sqlite, owner, 'thread', threadId);
+    if (!current) pendingNativeConflict('The Pending Thread owner is missing.');
+    return current.record;
+  };
+  const turn = (turnId: string, threadId?: string) => {
+    const current = readProduct(db.sqlite, owner, 'turn', turnId);
+    if (!current || (threadId !== undefined && current.record.threadId !== threadId))
+      pendingNativeConflict('The Pending Turn does not belong to its Thread.');
+    thread(current.record.threadId as string);
+    return current.record;
+  };
+  if ('threadId' in command) thread(command.threadId);
+  const scoped = (record: PendingRequestRecord): PendingRequestRecord => {
+    if (
+      record.workspaceId !== command.workspaceId ||
+      ('threadId' in command && record.threadId !== command.threadId)
+    )
+      pendingNativeConflict('The Pending request does not belong to the command scope.');
+    turn(record.raisingTurnId, record.threadId);
+    return record;
+  };
+  const expectedIds = new Set<string>();
+  for (const expected of command.expected ?? []) {
+    if (expectedIds.has(expected.requestId))
+      pendingNativeConflict('The Pending source list has duplicate identities.');
+    expectedIds.add(expected.requestId);
+    const current = readPendingRequest(db.sqlite, expected.requestId);
+    if (!current || commandInputHash(scoped(current)) !== expected.sourceHash)
+      pendingNativeConflict('The Pending request changed after preparation.');
+  }
+  const selection = () => {
+    if (command.expected === undefined)
+      pendingNativeConflict('The Pending selection requires its exact usable sources.');
+    return (record: PendingRequestRecord) => expectedIds.has(record.requestId);
+  };
+  const requireRequest = (requestId: string) => {
+    const current = readPendingRequest(db.sqlite, requestId);
+    if (!current) pendingNativeConflict('The Pending request is missing.');
+    return scoped(current);
+  };
+  const result = (
+    records: readonly PendingRequestRecord[],
+    applied: ControlPendingCommandResult['applied'] = null,
+    created: boolean | null = null
+  ): ControlPendingCommandResult => {
+    const affected = new Set([...records.map((record) => record.requestId), ...expectedIds]);
+    for (const requestId of affected) {
+      const current = readPendingRequest(db.sqlite, requestId);
+      if (!current) pendingNativeConflict('The decided Pending request is missing.');
+      assertPendingPreparedProjection(
+        db,
+        current,
+        prepared,
+        command.action === 'raise' ? command.input.now : command.now
+      );
+    }
+    return { requestIds: records.map((record) => record.requestId), applied, created };
+  };
+  if (command.action === 'freeze' || command.action === 'closeout') {
+    const census = listThreadPendingRequests(db.sqlite, command.workspaceId, command.threadId)
+      .map((record) => record.requestId)
+      .sort();
+    if (
+      new Set(command.expectedThreadCensus).size !== command.expectedThreadCensus.length ||
+      !isDeepStrictEqual(census, [...command.expectedThreadCensus].sort())
+    )
+      pendingNativeConflict('The current native Thread request census differs from preparation.');
+  }
+  if (
+    'decisionContext' in command &&
+    command.decisionContext &&
+    command.decisionContext.userId !== command.actor.id
+  )
+    pendingNativeConflict('The Pending deciding identity does not match its actor.');
+
+  switch (command.action) {
+    case 'raise': {
+      const input = command.input;
+      if (input.workspaceId !== command.workspaceId || input.threadId !== command.threadId)
+        pendingNativeConflict('The raised request does not match its command scope.');
+      if (thread(input.threadId).status !== 'active')
+        pendingNativeConflict('The request Thread no longer admits new requests.');
+      const raising = turn(input.raisingTurnId, input.threadId);
+      const candidate = [
+        ...prepared.entries,
+        ...prepared.dependencies.map((dependency) => dependency.entry),
+      ].find(
+        (entry) =>
+          entry.input.kind === 'item' &&
+          entry.id === input.requestItemId &&
+          entry.input.turnId === input.raisingTurnId
+      );
+      const row = db.sqlite
+        .prepare(
+          "SELECT content_json FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1"
+        )
+        .get(input.raisingTurnId, input.requestItemId) as { content_json: string } | undefined;
+      if (
+        !candidate ||
+        !row ||
+        !isDeepStrictEqual(JSON.parse(row.content_json), candidate.input.content)
+      )
+        pendingNativeConflict('The raised request requires its exact native request Item.');
+      const item = readRetainedV1(
+        readPreparedControlEntry(candidate),
+        StoredItemPayloadV1Schema.parse
+      );
+      if (
+        item.id !== input.requestItemId ||
+        item.turnId !== input.raisingTurnId ||
+        item.threadId !== input.threadId ||
+        !isDeepStrictEqual(item.owner, owner)
+      )
+        pendingNativeConflict('The request Item has different native lineage.');
+      const raised = raisePendingRequest(db.sqlite, input);
+      if (raised.record.requestId !== input.requestId)
+        pendingNativeConflict(
+          'A different pending request already owns this qualified request binding.'
+        );
+      if (raised.created) {
+        const failure = validateCanonicalLoad(raised.record, [
+          { ...raising, items: [item] } as unknown as Turn,
+        ]);
+        if (failure)
+          pendingNativeConflict(
+            `The raised request has invalid canonical lineage: ${failure.reason}.`
+          );
+      }
+      return result([raised.record], null, raised.created);
+    }
+    case 'deny': {
+      if (requireRequest(command.requestId).kind !== 'approval')
+        pendingNativeConflict('Only an approval can receive a denial.');
+      const changed = denyPendingRequest(
+        db.sqlite,
+        command.requestId,
+        command.actor,
+        command.now,
+        command.decisionContext
+      );
+      return result(changed ? [changed] : [], changed ? null : 'lost');
+    }
+    case 'answer': {
+      const current = requireRequest(command.requestId);
+      const ids = (current.questions ?? []).map((question) => question.id);
+      if (
+        current.kind !== 'user-input' ||
+        !ids.length ||
+        new Set(ids).size !== ids.length ||
+        Object.keys(command.answers).length !== ids.length ||
+        ids.some((id) => typeof id !== 'string' || !command.answers[id]?.[0]?.trim()) ||
+        current.questions?.some((question) => question.isSecret)
+      )
+        pendingNativeConflict('The answer does not match the exact non-secret Pending questions.');
+      const changed = answerPendingRequest(
+        db.sqlite,
+        command.requestId,
+        command.actor,
+        command.answers,
+        command.now,
+        command.decisionContext
+      );
+      return result(changed ? [changed] : [], changed ? null : 'lost');
+    }
+    case 'withdraw':
+    case 'invalidate': {
+      requireRequest(command.requestId);
+      const changed =
+        command.action === 'withdraw'
+          ? withdrawPendingRequest(db.sqlite, command.requestId, command.actor, command.now)
+          : invalidatePendingRequest(
+              db.sqlite,
+              command.requestId,
+              command.event,
+              command.actor,
+              command.now
+            );
+      return result(changed ? [changed] : [], changed ? 'ended' : 'lost');
+    }
+    case 'grant-command': {
+      const current = requireRequest(command.requestId);
+      if (!isCommandIntentApproval(current))
+        pendingNativeConflict('The request is not a governed command intent.');
+      const changed = grantCommandIntentRequest(
+        db.sqlite,
+        command.requestId,
+        command.actor,
+        command.now,
+        command.decisionContext
+      );
+      return result(changed ? [changed] : [], changed ? null : 'lost');
+    }
+    case 'claim': {
+      const current = requireRequest(command.requestId);
+      if (
+        current.kind !== 'approval' ||
+        current.serverId === null ||
+        isCommandIntentApproval(current)
+      )
+        pendingNativeConflict('Only a captured call uses the external execution reservation.');
+      const step = claimOrRefuseGrant(
+        db.sqlite,
+        command.requestId,
+        command.actor,
+        command.now,
+        () =>
+          thread(current.threadId).status === 'active'
+            ? { outcome: 'claim' }
+            : { outcome: 'end', event: 'thread-archived', actor: command.actor },
+        command.decisionContext
+      );
+      return result([step.record], step.applied);
+    }
+    case 'claim-command': {
+      const current = requireRequest(command.requestId);
+      if (thread(current.threadId).status !== 'active')
+        pendingNativeConflict('The request Thread no longer admits command consumption.');
+      const changed = claimCommandIntentGrant(db.sqlite, command.requestId, command.now);
+      return result(changed ? [changed] : [], changed ? 'claimed' : 'lost');
+    }
+    case 'refuse-command': {
+      requireRequest(command.requestId);
+      const changed = refuseCommandIntentGrant(
+        db.sqlite,
+        command.requestId,
+        command.reason,
+        command.now
+      );
+      return result(changed ? [changed] : [], changed ? 'refused' : 'lost');
+    }
+    case 'finish': {
+      requireRequest(command.requestId);
+      const changed = finishPendingExecution(
+        db.sqlite,
+        command.requestId,
+        command.disposition,
+        command.reason,
+        command.heldResult,
+        command.now
+      );
+      return result(changed ? [changed] : [], changed ? null : 'lost');
+    }
+    case 'settle-unfinished': {
+      const usable = selection();
+      const selected = [...expectedIds]
+        .map(requireRequest)
+        .filter((record) => record.claim === 'claimed' && record.disposition === null);
+      settleUnfinishedClaims(db.sqlite, command.now, usable);
+      return result(selected);
+    }
+    case 'delivery-prove':
+    case 'delivery-release':
+    case 'delivery-unknown': {
+      const deliveryTurn = turn(command.turnId);
+      const rows = db.sqlite
+        .prepare(
+          "SELECT request_id FROM pending_requests WHERE delivery='frozen' AND delivery_turn_id=?"
+        )
+        .all(command.turnId) as { request_id: string }[];
+      for (const row of rows) {
+        const record = requireRequest(row.request_id);
+        if (record.threadId !== deliveryTurn.threadId)
+          pendingNativeConflict('The frozen request belongs to a different delivery Thread.');
+      }
+      return result(
+        command.action === 'delivery-prove'
+          ? proveFrozenDelivery(db.sqlite, command.turnId, command.now)
+          : command.action === 'delivery-release'
+            ? releaseFrozenOutcomes(db.sqlite, command.turnId, command.now)
+            : markFrozenDeliveryUnknown(db.sqlite, command.turnId, command.now)
+      );
+    }
+    case 'freeze': {
+      const usable = selection();
+      const delivering = turn(command.turnId, command.threadId);
+      const executor = executorKindForTurn(delivering as unknown as Turn) ?? 'person';
+      if (
+        thread(command.threadId).status !== 'active' ||
+        executor !== command.executor ||
+        (command.executor === 'worker' && delivering.agentId !== (command.agentId ?? null))
+      )
+        pendingNativeConflict('The delivering Turn does not match its current native executor.');
+      const selected = listThreadPendingRequests(db.sqlite, command.workspaceId, command.threadId)
+        .filter(
+          (record) =>
+            usable(record) &&
+            record.requesterKind === command.executor &&
+            (command.executor !== 'worker' || record.agentId === command.agentId) &&
+            isReadyOutcome(record)
+        )
+        .sort(compareReadiness)
+        .slice(0, OUTCOME_DELIVERY_BOUND);
+      if (
+        !isDeepStrictEqual(
+          selected.map((record) => record.requestId),
+          command.expectedSelection
+        ) ||
+        selected.some((record) => record.raisingTurnId === command.turnId)
+      )
+        pendingNativeConflict('The current native outcome selection differs from preparation.');
+      return result(
+        freezeReadyOutcomes(db.sqlite, {
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          executor: command.executor,
+          agentId: command.agentId ?? null,
+          cause: command.cause,
+          now: command.now,
+          usable,
+        })
+      );
+    }
+    case 'closeout': {
+      const usable = selection();
+      turn(command.closeoutTurnId, command.threadId);
+      const reasons = new Map<string, string>();
+      for (const item of command.invalidatingEvents ?? []) {
+        if (!expectedIds.has(item.requestId) || reasons.has(item.requestId))
+          pendingNativeConflict('The closeout event does not match its selected source.');
+        reasons.set(item.requestId, item.event);
+      }
+      return result(
+        applyPendingCloseout(db.sqlite, {
+          ...command,
+          usable,
+          invalidatingEvent: (record) => reasons.get(record.requestId) ?? 'thread-archived',
+        })
+      );
+    }
+    case 'associate-invalidation': {
+      turn(command.turnId, command.threadId);
+      if (new Set(command.requestIds).size !== command.requestIds.length)
+        pendingNativeConflict('The invalidation association has duplicate requests.');
+      const selected = command.requestIds.map(requireRequest);
+      for (const record of selected) {
+        if (
+          !isCommandIntentApproval(record) ||
+          record.resolution !== 'granted' ||
+          record.claim !== 'unclaimed' ||
+          record.disposition !== 'denied-not-executed' ||
+          (record.invalidationTurnId !== null && record.invalidationTurnId !== command.turnId)
+        )
+          pendingNativeConflict('The request no longer admits this invalidation association.');
+      }
+      for (const record of selected)
+        db.sqlite
+          .prepare(
+            'UPDATE pending_requests SET invalidation_turn_id = ?, updated_at = ? WHERE request_id = ? AND invalidation_turn_id IS NULL'
+          )
+          .run(command.turnId, command.now, record.requestId);
+      return result(selected);
+    }
+  }
+}
+
+/** Renders only the existing Pending outcome Items from decided canonical rows; it performs no Store or SQL effect. */
+export function renderPendingOutcomeItems(
+  records: readonly PendingRequestRecord[],
+  turnId: string,
+  now: string
+): Item[] {
+  const items: Item[] = [];
+  for (const record of records) {
+    if (record.publicationTurnId && record.publicationTurnId !== turnId) {
+      if (record.invalidationTurnId === turnId)
+        items.push(renderPendingInvalidationItem(record, turnId, now));
+      continue;
+    }
+    const base = {
+      owner: { kind: 'workspace' as const, workspaceId: record.workspaceId },
+      threadId: record.threadId,
+      turnId,
+      status: 'completed' as const,
+      createdAt: now,
+      completedAt: now,
+    };
+    if (record.kind === 'approval' && record.resolution && record.decidingActor?.kind === 'user') {
+      items.push({
+        ...base,
+        id: pendingRequestItemId(record.requestId, 'decision'),
+        type: 'approval-decision',
+        actor: { kind: 'user', id: record.decidingActor.id },
+        causationId: record.requestItemId,
+        approvalRequestId: record.requestId,
+        decision: record.resolution === 'denied' ? 'denied' : 'granted',
+        decidedAt: record.decidedAt ?? now,
+      });
+    }
+    if (
+      record.resolution === 'answered' &&
+      record.answerMap &&
+      record.decidingActor?.kind === 'user'
+    ) {
+      items.push({
+        ...base,
+        id: pendingRequestItemId(record.requestId, 'answer'),
+        type: 'user-input-response',
+        actor: { kind: 'user', id: record.decidingActor.id },
+        causationId: record.requestItemId,
+        userInputRequestId: record.requestId,
+        answers: Object.fromEntries(
+          Object.entries(record.answerMap).map(([key, value]) => [key, [value[0]] as [string]])
+        ),
+        answeredAt: record.decidedAt ?? now,
+      });
+    }
+    if (!isCommandIntentApproval(record) && record.disposition === 'denied-not-executed') {
+      items.push({
+        ...base,
+        id: pendingRequestItemId(record.requestId, 'disposition-status'),
+        type: 'status',
+        level: 'warning',
+        title: 'Call not executed',
+        summary: `denied-not-executed: ${record.dispositionReason ?? 'refused'}`,
+        causationId: record.requestItemId,
+      });
+    } else if (
+      !isCommandIntentApproval(record) &&
+      record.disposition &&
+      record.serverId &&
+      record.toolName
+    ) {
+      items.push({
+        ...base,
+        id: pendingRequestItemId(record.requestId, 'disposition'),
+        type: 'tool-call',
+        tool: record.toolName,
+        server: record.serverId,
+        arguments: null,
+        result: record.disposition,
+        error: record.disposition === 'approved-executed' ? null : record.dispositionReason,
+        durationMs: 0,
+        causationId: record.requestItemId,
+      });
+    }
+    if (record.ending) {
+      items.push({
+        ...base,
+        id: pendingRequestItemId(record.requestId, 'ending'),
+        type: 'status',
+        level: 'info',
+        title: record.ending === 'withdrawn' ? 'Request withdrawn' : 'Request ended',
+        summary: record.invalidatingEvent ?? record.ending,
+        causationId: record.requestItemId,
+      });
+    }
+    if (record.invalidationTurnId === turnId) {
+      items.push(renderPendingInvalidationItem(record, turnId, now));
+    }
+  }
+  return items;
+}
+
+/** Renders the separate, once-associated command-grant invalidation fact. */
+export function renderPendingInvalidationItem(
+  record: PendingRequestRecord,
+  turnId: string,
+  now: string
+): Item {
+  return {
+    id: pendingRequestItemId(record.requestId, 'invalidation'),
+    owner: { kind: 'workspace', workspaceId: record.workspaceId },
+    threadId: record.threadId,
+    turnId,
+    status: 'completed',
+    createdAt: now,
+    completedAt: now,
+    type: 'status',
+    level: 'warning',
+    title: 'Grant invalidated',
+    summary: `denied-not-executed: ${record.dispositionReason ?? record.invalidatingEvent ?? 'invalidated'}`,
+    causationId: record.requestItemId,
+  };
 }

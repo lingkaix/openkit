@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 /** Real exact-version files and Workspace SQLite with native human membership. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-judgements-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -33,7 +33,7 @@ function fixture() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Human output assessment');
+  const workspace = await store.createWorkspace('Human output assessment');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);
@@ -83,12 +83,12 @@ function fixture() {
 }
 
 describe('Exact Artifact judgement in the existing Review', () => {
-  it('retains attributed older-version annotations and explicit imported Reviews without deciding content', () => {
-    const state = fixture();
+  it('retains attributed older-version annotations and explicit imported Reviews without deciding content', async () => {
+    const state = await fixture();
     const artifact = state.imported('human-assessment');
     expect(listArtifactReviews(state.workspaceDb)).toEqual([]);
-    const thread = state.store.createThread(state.workspace.id, 'Manual revision');
-    const next = state.store.commitArtifactVersion({
+    const thread = await state.store.createThread(state.workspace.id, 'Manual revision');
+    const next = await state.store.commitArtifactVersion({
       workspaceId: state.workspace.id,
       artifactId: artifact.id,
       threadId: thread.id,
@@ -114,7 +114,7 @@ describe('Exact Artifact judgement in the existing Review', () => {
       extensions: { assessmentLabel: 'human' },
     };
     expect(readArtifactJudgement(state.access, input)).toBeNull();
-    const first = state.workspaceDb.sqlite.transaction(() =>
+    const first = await state.workspaceDb.sqlite.transaction(() =>
       appendArtifactJudgement(state.access, input)
     )();
     expect(first).toMatchObject({
@@ -254,9 +254,9 @@ describe('Exact Artifact judgement in the existing Review', () => {
     );
   });
 
-  it('refuses private sources before creating or disclosing their Review annotations', () => {
-    const state = fixture();
-    const privateThread = state.store.createThread(
+  it('refuses private sources before creating or disclosing their Review annotations', async () => {
+    const state = await fixture();
+    const privateThread = await state.store.createThread(
       state.workspace.id,
       'Private original',
       undefined,
@@ -266,14 +266,19 @@ describe('Exact Artifact judgement in the existing Review', () => {
         privateOwnerUserId: state.userId,
       }
     );
-    const turn = state.store.createTurn(state.workspace.id, privateThread.id, 'Produce original', {
-      kind: 'user',
-      id: state.userId,
-    });
+    const turn = await state.store.createTurn(
+      state.workspace.id,
+      privateThread.id,
+      'Produce original',
+      {
+        kind: 'user',
+        id: state.userId,
+      }
+    );
     const artifact = state.imported('private-original');
     const body = 'Private original';
     const now = new Date().toISOString();
-    const privateArtifact = state.store.createArtifact({
+    const privateArtifact = await state.store.createArtifact({
       ...artifact,
       id: allocateEntityId('ar'),
       threadId: privateThread.id,
@@ -290,7 +295,10 @@ describe('Exact Artifact judgement in the existing Review', () => {
       createdAt: now,
       updatedAt: now,
     });
-    state.store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await state.store.updateTurn(turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     const bob = allocateEntityId('usr');
     state.coreDb.sqlite
       .prepare(`INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,last_seen_at)

@@ -100,6 +100,12 @@ export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
 
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
 export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
+  'control_workspaces',
+  'control_threads',
+  'control_agent_sessions',
+  'control_turns',
+  'control_product_entries',
+  'control_work_observations',
   'goals',
   'goal_cards',
   'goal_plan_versions',
@@ -172,31 +178,6 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
     table: 'control_execution_steps',
     reason:
       'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
-  },
-  {
-    table: 'control_workspaces',
-    reason:
-      'unactivated Workspace product table; portable Workspace metadata still comes from canonical files',
-  },
-  {
-    table: 'control_threads',
-    reason:
-      'unactivated Thread product table; portable Thread history still comes from canonical files',
-  },
-  {
-    table: 'control_agent_sessions',
-    reason:
-      'unactivated AgentSession product table; portable session history still comes from canonical files',
-  },
-  {
-    table: 'control_turns',
-    reason:
-      'unactivated Turn product table; portable Turn history still comes from canonical files',
-  },
-  {
-    table: 'control_product_entries',
-    reason:
-      'unactivated Item and Turn-event locator table; portable append history still comes from canonical files',
   },
 ] as const;
 

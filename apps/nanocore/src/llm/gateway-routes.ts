@@ -213,56 +213,7 @@ function startPublicLlmGatewayCall(input: {
   try {
     if (workspaceDb.scope === 'workspace') applyScopedMigrations(workspaceDb);
 
-    if (
-      lineage?.requestId &&
-      workspaceDb.scope === 'workspace' &&
-      hasCapabilityCallRequestId(workspaceDb, lineage.workspaceId, lineage.requestId)
-    ) {
-      throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
-    }
-    const callInput = {
-      agentId: lineage?.agentId ?? null,
-      agentSessionId: lineage?.agentSessionId ?? null,
-      authorityActor: input.authorityActor,
-      authentication: input.authentication,
-      capabilityId: `llm.${input.endpoint}`,
-      family: 'llm',
-      itemId: lineage?.itemId ?? null,
-      operation: input.endpoint,
-      providerRef: null,
-      redactionClass: 'metadata-only',
-      requestId: lineage?.requestId ?? randomUUID(),
-      serviceRef: 'llm-gateway',
-      sourceIds: lineage?.sourceIds ?? [],
-      summary:
-        lineage?.threadId && lineage?.turnId
-          ? `Public ${input.endpoint} LLM gateway call.`
-          : `Public ${input.endpoint} LLM gateway call. Model capture unavailable: no Turn admission.`,
-      threadId: lineage?.threadId ?? null,
-      turnId: lineage?.turnId ?? null,
-    };
-    const call =
-      workspaceDb.scope === 'core'
-        ? startCapabilityCall({
-            ...callInput,
-            family: 'llm',
-            workspaceDb,
-            owner: { kind: 'server' },
-          })
-        : startCapabilityCall({
-            ...callInput,
-            family: 'llm',
-            workspaceDb,
-            workspaceId: workspaceDb.workspaceId,
-          });
-    persistLlmCapabilityCallSystemPromptDigest({
-      callId: call.id,
-      systemPromptDigest: digestLlmSystemPrompt({
-        endpoint: input.endpoint,
-        request: input.request,
-      }),
-      workspaceDb,
-    });
+    const call = startPublicLlmGatewayCallInDb(workspaceDb, { ...input, lineage });
 
     return {
       call,
@@ -273,6 +224,70 @@ function startPublicLlmGatewayCall(input: {
     if (workspaceDb.scope === 'workspace') workspaceDb.sqlite.close();
     throw error;
   }
+}
+
+/** Complete public gateway SQL admission on the selected owner; open/migration/close and live coverage callbacks stay outside SQL. */
+export function startPublicLlmGatewayCallInDb(
+  workspaceDb: CoreDb | WorkspaceDb,
+  input: Pick<
+    Parameters<typeof startPublicLlmGatewayCall>[0],
+    'authorityActor' | 'authentication' | 'endpoint' | 'request'
+  > & {
+    readonly lineage: ReturnType<typeof readPublicLlmGatewayLineage>;
+  }
+): DurableLlmGatewayCall['call'] {
+  const { lineage } = input;
+  if (
+    lineage?.requestId &&
+    workspaceDb.scope === 'workspace' &&
+    hasCapabilityCallRequestId(workspaceDb, lineage.workspaceId, lineage.requestId)
+  ) {
+    throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
+  }
+  const callInput = {
+    agentId: lineage?.agentId ?? null,
+    agentSessionId: lineage?.agentSessionId ?? null,
+    authorityActor: input.authorityActor,
+    authentication: input.authentication,
+    capabilityId: `llm.${input.endpoint}`,
+    family: 'llm',
+    itemId: lineage?.itemId ?? null,
+    operation: input.endpoint,
+    providerRef: null,
+    redactionClass: 'metadata-only',
+    requestId: lineage?.requestId ?? randomUUID(),
+    serviceRef: 'llm-gateway',
+    sourceIds: lineage?.sourceIds ?? [],
+    summary:
+      lineage?.threadId && lineage?.turnId
+        ? `Public ${input.endpoint} LLM gateway call.`
+        : `Public ${input.endpoint} LLM gateway call. Model capture unavailable: no Turn admission.`,
+    threadId: lineage?.threadId ?? null,
+    turnId: lineage?.turnId ?? null,
+  };
+  const call =
+    workspaceDb.scope === 'core'
+      ? startCapabilityCall({
+          ...callInput,
+          family: 'llm',
+          workspaceDb,
+          owner: { kind: 'server' },
+        })
+      : startCapabilityCall({
+          ...callInput,
+          family: 'llm',
+          workspaceDb,
+          workspaceId: workspaceDb.workspaceId,
+        });
+  persistLlmCapabilityCallSystemPromptDigest({
+    callId: call.id,
+    systemPromptDigest: digestLlmSystemPrompt({
+      endpoint: input.endpoint,
+      request: input.request,
+    }),
+    workspaceDb,
+  });
+  return call;
 }
 
 /** Selects capture lineage only after the route has authenticated and authorized the exact owner. */

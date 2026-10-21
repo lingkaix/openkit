@@ -133,8 +133,11 @@ export function createWorkerControlAcceptedRecordRecorder(
   coreDb: CoreDb
 ): WorkerControlAcceptedRecordRecorder {
   return {
+    prepareObservation(record) {
+      return prepareWorkerControlObservation(coreDb, record);
+    },
     record(input) {
-      recordWorkerControlAcceptedRecord(coreDb, input);
+      writeWorkerControlAcceptedRecord(coreDb, input);
     },
   };
 }
@@ -146,6 +149,24 @@ export function createWorkerControlAcceptedRecordRecorder(
  * @param input Accepted worker-control record.
  */
 export function recordWorkerControlAcceptedRecord(
+  coreDb: CoreDb,
+  input: WorkerControlAcceptedRecordRecorderInput
+): void | Promise<void> {
+  if (input.operation === 'event_append') {
+    const event = WorkerCanonicalEventRecordSchema.parse(input.record);
+    if (
+      event.event.type === 'observation.recorded' ||
+      event.event.type === 'observation.content.chunk'
+    )
+      return prepareWorkerControlObservation(coreDb, event).then(() => {
+        writeWorkerControlAcceptedRecord(coreDb, input);
+      });
+  }
+  writeWorkerControlAcceptedRecord(coreDb, input);
+}
+
+/** Writes only the original Core receipt; native observation work finishes before this synchronous step. */
+function writeWorkerControlAcceptedRecord(
   coreDb: CoreDb,
   input: WorkerControlAcceptedRecordRecorderInput
 ): void {
@@ -168,7 +189,6 @@ export function recordWorkerControlAcceptedRecord(
     !readRetainedV1(existing, () => isDeepStrictEqual(JSON.parse(existing.recordJson), receipt))
   )
     throw new Error('recovery_required: worker receipt identity conflict');
-  if (event) recordWorkerObservation(coreDb, event, existing !== undefined);
   coreDb.sqlite
     .prepare(
       `
@@ -205,12 +225,35 @@ export function recordWorkerControlAcceptedRecord(
     );
 }
 
+/** Verifies original Core identity, then awaits native observation publication before any Core receipt. */
+function prepareWorkerControlObservation(
+  coreDb: CoreDb,
+  event: WorkerCanonicalEventRecord
+): Promise<void> {
+  if (coreDb.sqlite.inTransaction)
+    throw new Error('Observation preparation must precede the Core transaction');
+  const existing = coreDb.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
+    FROM worker_control_records WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND record_key=?`)
+    .get(event.lineage.agentSessionId, event.lineage.packageSnapshotId, String(event.sequence)) as
+    | { schemaVersion: unknown; recordJson: string }
+    | undefined;
+  if (
+    existing &&
+    !readRetainedV1(existing, () =>
+      isDeepStrictEqual(JSON.parse(existing.recordJson), workerControlEventReceipt(event))
+    )
+  )
+    throw new Error('recovery_required: worker receipt identity conflict');
+  return recordWorkerObservation(coreDb, event, existing !== undefined);
+}
+
 /** Retains one observation under verified outer lineage before a sanitized control receipt can be acknowledged. */
-function recordWorkerObservation(
+async function recordWorkerObservation(
   coreDb: CoreDb,
   event: WorkerCanonicalEventRecord,
   replay: boolean
-): void {
+): Promise<void> {
   if (
     event.event.type !== 'observation.recorded' &&
     event.event.type !== 'observation.content.chunk'
@@ -404,7 +447,7 @@ function recordWorkerObservation(
         ],
         payload: data,
       };
-      appendWorkObservation(workspaceDb, {
+      await appendWorkObservation(workspaceDb, {
         ...owner,
         observation,
         bodies:
@@ -455,7 +498,7 @@ function recordWorkerObservation(
       throw new Error('Expired observation evidence cannot accept new content');
     if (staged.state === 'complete') {
       const { v: _v, seq: _seq, turnId: _turnId, ...observation } = initial;
-      appendWorkObservation(workspaceDb, {
+      await appendWorkObservation(workspaceDb, {
         ...owner,
         observation,
         bodies: [

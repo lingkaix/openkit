@@ -84,7 +84,7 @@ function knowledgeFiles(root: string): Record<string, string> {
 }
 
 /** Supplies real local User, Workspace membership, fixed Knowledge bases and native HTTP dispatch. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-package-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -94,8 +94,8 @@ function fixture() {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const workspace = (name: string) => {
-    const record = store.createWorkspace(name);
+  const workspace = async (name: string) => {
+    const record = await store.createWorkspace(name);
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: record.id, ownerUserId: userId });
     const root = join(dataRoot, 'workspaces', record.id, 'knowledge');
     return {
@@ -108,9 +108,9 @@ function fixture() {
       }),
     };
   };
-  const source = workspace('Knowledge package source');
-  const target = workspace('Fresh Knowledge package target');
-  const tamperTarget = workspace('Unchanged tamper target');
+  const source = await workspace('Knowledge package source');
+  const target = await workspace('Fresh Knowledge package target');
+  const tamperTarget = await workspace('Unchanged tamper target');
   const app = createApp({ coreDb, dataRoot, store });
   const call = async (
     operation: string,
@@ -155,7 +155,7 @@ function fixture() {
 
 describe('Knowledge package public operation round trip', () => {
   it('preserves pinned Knowledge and binary originals, remints owned references, and refuses tampered bytes before publication', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = Buffer.from([0x00, 0xff, 0x80, 0x0d, 0x0a, 0x41, 0xc3, 0x28, 0x00]);
     const ownerScope = { kind: 'workspace' as const, workspaceId: f.source.id };
     const owner = { dataRoot: f.dataRoot, ownerScope };
@@ -551,7 +551,7 @@ describe('Knowledge package public operation round trip', () => {
 
 describe('Independent package boundary probes', () => {
   it('replays a completed import and preserves authored code literals', async () => {
-    const f = fixture();
+    const f = await fixture();
     const registered = await f.call('knowledge.source.register', f.source.id, {
       kind: 'document',
       title: 'Original',
@@ -625,8 +625,8 @@ describe('Independent package boundary probes', () => {
 });
 
 it('stops export disclosure when its Source origin becomes private', async () => {
-  const f = fixture();
-  const origin = f.store.createThread(f.source.id, 'Initially shared Source');
+  const f = await fixture();
+  const origin = await f.store.createThread(f.source.id, 'Initially shared Source');
   const secret = 'SOURCE-REVOKED-TAIL-MARKER';
   const registered = await f.call('knowledge.source.register', f.source.id, {
     kind: 'document',

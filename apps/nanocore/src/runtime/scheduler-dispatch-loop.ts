@@ -559,7 +559,7 @@ async function dispatchSchedulerAdmission(
       });
     const turn = input.store.getTurnById(entry.turnId);
     if (turn.status === 'pending' || turn.status === 'running')
-      terminalizeGovernedWorkerTurn({
+      await terminalizeGovernedWorkerTurn({
         store: input.store,
         turnId: turn.id,
         agentSessionId: current.agentSessionId,

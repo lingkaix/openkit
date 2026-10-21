@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
@@ -34,7 +35,7 @@ import {
 import { deriveEntityId, PolicyDocumentV1Schema, workspaceIdForOwner } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import { listWorkspaceAuditEvents } from './audit-events.js';
@@ -185,18 +186,18 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const userId = 'usr_00000000-0000-7000-8000-000000000001';
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       workspaceId,
       'th_00000000-0000-7000-8000-000000000001',
       'Call mediated echo',
       { kind: 'user', id: userId }
     );
     const agentSessionId = testEntityId('as', 'i16_route');
-    store.createAgentSession({
+    await store.createAgentSession({
       id: agentSessionId,
       agentId: 'agent_codex_host',
       workspaceId,
@@ -206,7 +207,11 @@ describe('worker MCP routes', () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    store.updateTurn(turn.id, { agentSessionId, agentId: 'agent_codex_host', status: 'running' });
+    await store.updateTurn(turn.id, {
+      agentSessionId,
+      agentId: 'agent_codex_host',
+      status: 'running',
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: userId,
       scope: 'server-admin',
@@ -814,13 +819,13 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Submit one file',
@@ -829,7 +834,7 @@ describe('worker MCP routes', () => {
         kind: 'user',
       }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-10-05T00:00:00.000Z',
       id: testEntityId('as', 'as_capture_wait'),
@@ -839,7 +844,7 @@ describe('worker MCP routes', () => {
       updatedAt: '2026-10-05T00:00:00.000Z',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentSessionId: testEntityId('as', 'as_capture_wait'),
       agentId: 'agent_codex_host',
       status: 'running',
@@ -1089,13 +1094,13 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'List generative MCP tools',
@@ -1104,7 +1109,7 @@ describe('worker MCP routes', () => {
         kind: 'user',
       }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-09-03T00:00:00.000Z',
       id: testEntityId('as', 'as_mcp_era'),
@@ -1114,7 +1119,7 @@ describe('worker MCP routes', () => {
       updatedAt: '2026-09-03T00:00:00.000Z',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'as_mcp_era'),
     });
@@ -1727,7 +1732,7 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    let store = createDemoStore();
+    let store = await createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1758,21 +1763,24 @@ describe('worker MCP routes', () => {
         timestamp,
       });
     }
-    const threads = ['caller', 'peer', 'private', 'foreign'].map((name) =>
-      store.createThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        name,
-        testEntityId('th', `th_peers_${name}`),
-        'conversation',
-        name === 'private'
-          ? {
-              visibility: 'private',
-              privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-            }
-          : { visibility: 'workspace' }
+    const threads = await Promise.all(
+      ['caller', 'peer', 'private', 'foreign'].map(
+        async (name) =>
+          await store.createThread(
+            'ws_00000000-0000-7000-8000-000000000001',
+            name,
+            testEntityId('th', `th_peers_${name}`),
+            'conversation',
+            name === 'private'
+              ? {
+                  visibility: 'private',
+                  privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+                }
+              : { visibility: 'workspace' }
+          )
       )
     );
-    const otherWorkspace = store.createWorkspace('Unreadable peer Workspace');
+    const otherWorkspace = await store.createWorkspace('Unreadable peer Workspace');
     coreDb.sqlite
       .prepare(`INSERT INTO users
       (id, display_name, email, email_verified, created_at, updated_at, kind, status)
@@ -1784,10 +1792,14 @@ describe('worker MCP routes', () => {
       workspaceId: otherWorkspace.id,
     });
     threads.push(
-      store.createThread(otherWorkspace.id, 'external', testEntityId('th', 'th_peers_external'))
+      await store.createThread(
+        otherWorkspace.id,
+        'external',
+        testEntityId('th', 'th_peers_external')
+      )
     );
     for (let index = 0; index < 3; index += 1) {
-      const history = store.createTurn(
+      const history = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         threads[1]!.id,
         'Earlier work',
@@ -1796,22 +1808,27 @@ describe('worker MCP routes', () => {
           id: 'usr_00000000-0000-7000-8000-000000000001',
         }
       );
-      store.updateTurn(history.id, {
+      await store.updateTurn(history.id, {
         status: 'completed',
         completedAt: timestamp,
         triggerSource: { kind: 'user-input', summary: 'Earlier work' },
       });
     }
-    const turns = threads.map((thread) => {
-      const turn = store.createTurn(workspaceIdForOwner(thread.owner), thread.id, 'Read peers', {
-        kind: 'user',
-        id:
-          workspaceIdForOwner(thread.owner) === otherWorkspace.id
-            ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
-            : 'usr_00000000-0000-7000-8000-000000000001',
-      });
+    const turns = threads.map(async (thread) => {
+      const turn = await store.createTurn(
+        workspaceIdForOwner(thread.owner),
+        thread.id,
+        'Read peers',
+        {
+          kind: 'user',
+          id:
+            workspaceIdForOwner(thread.owner) === otherWorkspace.id
+              ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+              : 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
       const sessionId = testEntityId('as', `as_native_${thread.name}`);
-      store.createAgentSession({
+      await store.createAgentSession({
         id: sessionId,
         agentId: 'agent_codex_host',
         workspaceId: workspaceIdForOwner(thread.owner),
@@ -1821,7 +1838,7 @@ describe('worker MCP routes', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      store.updateTurn(turn.id, {
+      await store.updateTurn(turn.id, {
         agentSessionId: sessionId,
         agentId: 'agent_codex_host',
         triggerSource: { kind: 'user-input', summary: 'Read peers' },
@@ -1838,7 +1855,7 @@ describe('worker MCP routes', () => {
       });
       return store.getTurnById(turn.id);
     });
-    const peer = turns[1]!;
+    const peer = await turns[1]!;
     const itemFields = {
       owner: peer.owner,
       threadId: peer.threadId,
@@ -1848,7 +1865,7 @@ describe('worker MCP routes', () => {
       completedAt: timestamp,
     };
     for (let index = 0; index < 23; index += 1) {
-      store.createItem({
+      await store.createItem({
         ...itemFields,
         id: testEntityId('it', `it_peer_${String(index).padStart(2, '0')}`),
         createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
@@ -1856,7 +1873,7 @@ describe('worker MCP routes', () => {
         text: `Product message ${index}`,
       });
     }
-    store.createItem({
+    await store.createItem({
       ...itemFields,
       id: testEntityId('it', 'it_peer_plan'),
       type: 'plan',
@@ -1864,7 +1881,7 @@ describe('worker MCP routes', () => {
       summary: null,
       steps: [],
     });
-    store.createItem({
+    await store.createItem({
       ...itemFields,
       id: testEntityId('it', 'it_peer_tool'),
       type: 'tool-call',
@@ -1875,7 +1892,7 @@ describe('worker MCP routes', () => {
       error: null,
       durationMs: 1,
     });
-    store.createItem({
+    await store.createItem({
       ...itemFields,
       id: testEntityId('it', 'it_peer_status'),
       type: 'status',
@@ -1883,7 +1900,7 @@ describe('worker MCP routes', () => {
       summary: null,
       level: 'info',
     });
-    store.createItem({
+    await store.createItem({
       ...itemFields,
       id: testEntityId('it', 'it_peer_reasoning'),
       type: 'reasoning',
@@ -1898,7 +1915,7 @@ describe('worker MCP routes', () => {
       const workspaceTurns = workspaceThreads.flatMap((thread) =>
         seeded.listThreadTurns(workspace.id, thread.id)
       );
-      store.importWorkspaceSnapshot({
+      await store.importWorkspaceSnapshot({
         ...notebookImportFixture({
           workspaceId: workspace.id,
           knowledge: seeded.getWorkspaceResources(workspace.id).knowledge,
@@ -2172,13 +2189,13 @@ describe('worker MCP routes', () => {
         bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
       });
       expect(after).toBe(before);
-      store.updateTurn(peer.id, { status: 'pending' });
+      await store.updateTurn(peer.id, { status: 'pending' });
       const pendingPeers = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
       expect(pendingPeers.find((entry) => entry.handle === readable.handle)).toMatchObject({
         activeTurn: true,
       });
-      store.updateTurn(peer.id, { status: 'running' });
+      await store.updateTurn(peer.id, { status: 'running' });
       environmentPackage = packages[1]!;
       const reverse = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
@@ -2201,7 +2218,7 @@ describe('worker MCP routes', () => {
         visibility: 'workspace',
         privateOwnerUserId: undefined,
       });
-      store.createItem({
+      await store.createItem({
         ...itemFields,
         id: testEntityId('it', 'it_peer_oversized'),
         createdAt: '2026-09-30T01:00:00.000Z',
@@ -2231,7 +2248,7 @@ describe('worker MCP routes', () => {
         threadId: peer.threadId,
         timestamp,
       });
-      store.updateTurn(turns[0]!.id, { status: 'completed', completedAt: timestamp });
+      await store.updateTurn(turns[0]!.id, { status: 'completed', completedAt: timestamp });
       // Product terminal alone does not release execution. This metadata-only worker fixture
       // owns no Native operation or output stream; its caller binding is still unoccupied.
       expect(
@@ -2268,7 +2285,7 @@ describe('worker MCP routes', () => {
         .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
         VALUES ('usr_00000000-0000-7ea2-a10a-dd9edb0e2650', 'Peer Admin', 'peer-admin@example.com', 0, ?, ?, 'human', 'active')`)
         .run(Date.now(), Date.now());
-      const later = store.createTurn(
+      const later = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         turns[0]!.threadId,
         'Later read',
@@ -2277,7 +2294,7 @@ describe('worker MCP routes', () => {
           id: 'usr_00000000-0000-7ea2-a10a-dd9edb0e2650',
         }
       );
-      store.updateTurn(later.id, { agentSessionId: testEntityId('as', 'as_native_caller') });
+      await store.updateTurn(later.id, { agentSessionId: testEntityId('as', 'as_native_caller') });
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: testEntityId('as', 'as_native_caller'),
@@ -2341,7 +2358,7 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const threadId = 'th_00000000-0000-7000-8000-000000000001';
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
@@ -2367,8 +2384,8 @@ describe('worker MCP routes', () => {
       ],
     };
     const setup = createTestAgentSetup({ mcpIds: ['echo'] });
-    const makePackage = (requestId: string) => {
-      const turn = store.createTurn(workspaceId, threadId, 'Use current MCP schema', actor);
+    const makePackage = async (requestId: string) => {
+      const turn = await store.createTurn(workspaceId, threadId, 'Use current MCP schema', actor);
       const pkg = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: testEntityId('as', requestId),
@@ -2382,14 +2399,14 @@ describe('worker MCP routes', () => {
         workspaceRoots: [],
         workspaceMcpServerCatalog: catalog,
       });
-      store.updateTurn(turn.id, {
+      await store.updateTurn(turn.id, {
         agentId: pkg.agent.agentId,
         agentSessionId: pkg.scope.agentSessionId,
       });
       recordMcpWorkerLineage(coreDb, pkg);
       return pkg;
     };
-    let environmentPackage = makePackage('req_schema_first');
+    let environmentPackage = await makePackage('req_schema_first');
     const firstTurnId = environmentPackage.scope.turnId;
     const original = [mcpEchoTool(), { ...mcpEchoTool(), name: 'review-echo' }];
     const changed = [
@@ -2522,7 +2539,10 @@ describe('worker MCP routes', () => {
       // Route reconstruction loses process-local state but must keep the Turn selection.
       app = register();
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
-      store.updateTurn(firstTurnId, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(firstTurnId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       const closing = markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', `lease_${firstTurnId}`),
         cause: 'worker-final-status',
@@ -2546,7 +2566,7 @@ describe('worker MCP routes', () => {
         proof,
         fenceRef: release.fenceRef!,
       });
-      environmentPackage = makePackage('req_schema_second');
+      environmentPackage = await makePackage('req_schema_second');
       expect(await request('tools/list')).toMatchObject({ result: { tools: changed } });
       expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
         result: { content: [{ text: 'called' }] },
@@ -2615,7 +2635,7 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2634,7 +2654,7 @@ describe('worker MCP routes', () => {
       tokenId: 'token_mcp_admin',
       workspaceIds: [],
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Call MCP as admin',
@@ -2676,7 +2696,7 @@ describe('worker MCP routes', () => {
       workspaceMcpServerCatalog: catalog,
       workspaceRoots: [],
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: environmentPackage.agent.agentId,
       agentSessionId: environmentPackage.scope.agentSessionId,
     });
@@ -2780,13 +2800,13 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Call echo',
@@ -2795,7 +2815,7 @@ describe('worker MCP routes', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', 'as_pending_echo'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2805,7 +2825,7 @@ describe('worker MCP routes', () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'as_pending_echo'),
     });
@@ -3042,7 +3062,10 @@ describe('worker MCP routes', () => {
         .find((item) => item.type === 'approval-request');
       if (!approvalItem || approvalItem.type !== 'approval-request')
         throw new Error('Missing approval request.');
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       if (change === 'revoke') revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
       if (change === 'schema-drift') {
         const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -3417,7 +3440,7 @@ describe('worker MCP routes', () => {
     const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -4319,7 +4342,7 @@ describe('worker MCP routes', () => {
         ) VALUES ('usr_00000000-0000-780b-b93c-e2479beb99f1', 'Backup owner', 'backup@example.com', false, ?, ?, 'human', 'active', NULL)`
       )
       .run(ownerCreatedAt, ownerCreatedAt);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-780b-b93c-e2479beb99f1',
@@ -4334,7 +4357,7 @@ describe('worker MCP routes', () => {
         ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(memberCreatedAt, memberCreatedAt, memberCreatedAt);
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Classify MCP failures',
@@ -4397,7 +4420,7 @@ describe('worker MCP routes', () => {
     // Production records the AgentSession and then its AEP snapshot before the worker that reaches
     // this gateway exists. The snapshot directory is pruned to the AgentSessions the store knows
     // (`workspace-file-records.ts` removeStaleDirectories), so the record has to exist here too.
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: environmentPackage.agent.agentId,
       createdAt: '2026-09-03T00:00:00.000Z',
       id: environmentPackage.scope.agentSessionId,
@@ -4907,7 +4930,7 @@ describe('worker MCP routes', () => {
         })
       );
 
-      const deniedTurn = store.createTurn(
+      const deniedTurn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Reject unauthorized MCP use',
@@ -5077,20 +5100,20 @@ describe('worker MCP routes', () => {
     'noncanonical',
     'programming',
     'coded-programming',
-  ] as const)('defers only unavailable named snapshot storage during real MCP boot reconciliation: %s', (failure) => {
+  ] as const)('defers only unavailable named snapshot storage during real MCP boot reconciliation: %s', async (failure) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-backfill-unavailable-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     const timestamp = '2026-09-22T00:00:00.000Z';
     const packages: AgentEnvironmentPackage[] = [];
     try {
       for (const suffix of ['0_unavailable', '1_healthy']) {
-        const thread = store.createThread(
+        const thread = await store.createThread(
           'ws_00000000-0000-7000-8000-000000000001',
           `MCP backfill ${suffix}`
         );
-        const turn = store.createTurn(
+        const turn = await store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
           thread.id,
           'Recover decided MCP publication',
@@ -5099,7 +5122,7 @@ describe('worker MCP routes', () => {
           { startedAt: timestamp }
         );
         // Store writes preserve retained package directories only for registered product sessions.
-        const session = store.createAgentSession({
+        const session = await store.createAgentSession({
           id: testEntityId('as', `as_mcp_${suffix}`),
           agentId: 'agent_codex_host',
           workspaceId: workspaceIdForOwner(turn.owner),
@@ -5109,7 +5132,7 @@ describe('worker MCP routes', () => {
           createdAt: timestamp,
           updatedAt: timestamp,
         });
-        store.updateTurn(turn.id, { agentSessionId: session.id });
+        await store.updateTurn(turn.id, { agentSessionId: session.id });
         const environmentPackage = resolveAgentEnvironmentPackage({
           agentSetup: createTestAgentSetup(),
           agentSessionId: session.id,
@@ -5151,7 +5174,7 @@ describe('worker MCP routes', () => {
           workspaceDb,
           now: new Date(timestamp),
         });
-        store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+        await store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
       }
     } finally {
       workspaceDb.sqlite.close();
@@ -5277,10 +5300,10 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it('recreates a missing terminal Item without changing its successful call', () => {
+  it('recreates a missing terminal Item without changing its successful call', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-item-recovery-'));
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Recover the MCP Item',
@@ -5359,13 +5382,13 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Call HTTP MCP',
@@ -5742,7 +5765,10 @@ describe('worker MCP routes', () => {
           },
         ],
       };
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       const closing = markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
         cause: 'worker-final-status',
@@ -5767,7 +5793,7 @@ describe('worker MCP routes', () => {
         proof,
         fenceRef: release.fenceRef!,
       });
-      const replacementTurn = store.createTurn(
+      const replacementTurn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Use the explicitly rebound grant',
@@ -5862,4 +5888,9 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
     './test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

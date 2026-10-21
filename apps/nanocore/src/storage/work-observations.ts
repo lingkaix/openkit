@@ -1,14 +1,4 @@
 import { createHash } from 'node:crypto';
-import {
-  type BigIntStats,
-  closeSync,
-  constants,
-  existsSync,
-  fsyncSync,
-  ftruncateSync,
-  lstatSync,
-  openSync,
-} from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -26,28 +16,20 @@ import {
   SystemPromptDigestSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
-  workspaceIdForOwner,
-  writeRetainedV1,
 } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { retainWorkObservationBody, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import type { ControlProductOwner } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
-import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
-import { readServerTurnRecord } from './server-thread-records.js';
+import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
-  appendCanonicalTextFile,
-  assertCanonicalDirectory,
-  assertSafeWorkspacePathSegment,
-  CaptureCoverageBindingSchema,
-  readCanonicalFile,
-  readCanonicalTextFile,
-  readPublishedTurnFileRecords,
-  syncCanonicalDirectory,
-  TurnReaderSchema,
-  writeFileAtomic,
+  nativeProductScope,
+  preserveDescriptiveRecord,
+  readNativeTurnHistory,
 } from './workspace-file-records.js';
 
 /** A scoped citation; publication edges are minted only by the storage owner. */
@@ -134,7 +116,7 @@ export interface AdmittedWorkBody {
   readonly boundary: string;
 }
 
-/** Persisted observation; sequence is file-local ingest order, not narrative order. */
+/** Persisted observation; sequence is Turn-local ingest order, not narrative order. */
 export interface WorkObservationRecord extends WorkObservationDraft {
   readonly v: 1;
   readonly seq: number;
@@ -403,181 +385,406 @@ export function readWorkObservationTurnBinding(
   workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ) {
-  for (const id of [
-    ...(workspaceDb.scope === 'workspace' ? [workspaceDb.workspaceId] : []),
-    input.threadId,
-    input.turnId,
-  ])
-    assertSafeWorkspacePathSegment(id, 'Observation owner');
-  if (workspaceDb.scope === 'core') {
-    let root = workspaceDb.dataRoot;
-    for (const part of ['server', 'threads', input.threadId, 'turns', input.turnId]) {
-      root = join(root, part);
-      assertCanonicalDirectory(root);
-    }
-    const turn = readServerTurnRecord(workspaceDb.dataRoot, input.threadId, input.turnId);
-    const raw = readRetainedV1(
-      JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
-      (record) => record as Record<string, unknown>
-    );
-    return { root, turn, raw, coverage: turn.captureCoverage ?? null };
-  }
-  let root = workspaceDb.dataRoot;
-  for (const part of ['workspaces', workspaceDb.workspaceId, 'threads', input.threadId]) {
-    root = join(root, part);
-    assertCanonicalDirectory(root);
-  }
-  const thread = StoredThreadSnapshotV1Schema.parse(
-    JSON.parse(readCanonicalTextFile(join(root, 'thread.json')))
-  );
-  if (thread.id !== input.threadId || workspaceIdForOwner(thread.owner) !== workspaceDb.workspaceId)
-    throw new Error('recovery_required: observation Thread lineage mismatch');
-  for (const part of ['turns', input.turnId]) {
-    root = join(root, part);
-    assertCanonicalDirectory(root);
-  }
-  const raw = readRetainedV1(
-    JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
-    (record) => record as Record<string, unknown>
-  );
-  const metadata = StoredTurnV1Schema.parse(raw);
-  const turn = TurnReaderSchema.parse({ ...metadata, items: [] });
-  if (
-    turn.id !== input.turnId ||
-    turn.threadId !== input.threadId ||
-    workspaceIdForOwner(turn.owner) !== workspaceDb.workspaceId
-  )
-    throw new Error('recovery_required: observation Turn lineage mismatch');
-  return {
-    root,
-    turn,
-    raw,
-    coverage:
-      raw.captureCoverage === undefined
-        ? null
-        : CaptureCoverageBindingSchema.parse(raw.captureCoverage),
-  };
+  const owner: ControlProductOwner =
+    workspaceDb.scope === 'core'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  const binding = readControlWorkObservationTurnBinding(workspaceDb.sqlite, owner, input);
+  const root =
+    owner.kind === 'server'
+      ? join(workspaceDb.dataRoot, 'server', 'threads', input.threadId, 'turns', input.turnId)
+      : join(
+          workspaceDb.dataRoot,
+          'workspaces',
+          owner.workspaceId,
+          'threads',
+          input.threadId,
+          'turns',
+          input.turnId
+        );
+  return { root, turn: binding.turn, raw: binding.raw, coverage: binding.coverage };
 }
 
-/** Reads committed LF-terminated rows only; malformed interior data fails closed. */
+/** Reads complete ordered native pages; malformed or missing authority fails closed. */
 export function readWorkObservations(
   workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ): readonly WorkObservationRecord[] {
-  const { root, raw } = readWorkObservationTurnBinding(workspaceDb, input);
-  const path = join(root, 'observations.jsonl');
-  if (
-    existsSync(path) &&
-    !z
-      .array(z.string())
-      .parse(raw.requiredFeatures ?? [])
-      .includes('openkit.work-observations.v1')
-  )
-    throw new Error('recovery_required: missing observation manifest feature');
-  return readRows(path, input.turnId).rows;
+  const owner: ControlProductOwner =
+    workspaceDb.scope === 'core'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  const records: WorkObservationRecord[] = [];
+  let afterSequence = 0;
+  for (;;) {
+    const page = readControlWorkObservations(workspaceDb.sqlite, owner, {
+      ...input,
+      afterSequence,
+    });
+    records.push(...page);
+    if (page.length < 128) return records;
+    afterSequence = page.at(-1)!.seq;
+  }
 }
 
-/** Commits exact admitted bodies through evidence, then the single observation publication marker. */
-export function appendWorkObservation(
+/** Awaits expected metadata first; only durable evidence bytes can authorize the later publication marker. */
+export async function appendWorkObservation(
   workspaceDb: WorkspaceDb | CoreDb,
+  input: ControlWorkObservationPreparation
+): Promise<Pick<ControlWorkObservationResult, 'disposition' | 'observation'>> {
+  if (workspaceDb.sqlite.inTransaction)
+    throw new Error('Observation submission cannot span a Main transaction');
+  const owner: ControlProductOwner =
+    workspaceDb.scope === 'core'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  const prepared = prepareControlWorkObservation(owner, input);
+  const scope = nativeProductScope(workspaceDb.dataRoot, owner);
+  // Load only on the producer path; the native SQL owner must not start another writer host.
+  const { getControlStoreWorkerClient } = await import('./control-store-worker-client.js');
+  const client = getControlStoreWorkerClient();
+  const database = `${workspaceDb.scope}:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: workspaceDb.dataRoot,
+    create: false,
+    initialize: workspaceDb.scope,
+    productOwner: owner,
+    contentMount: scope.contentMount,
+  });
+  // This is the existing expectation/publication lifecycle, not a second writer or a retry.
+  // If independent evidence publication fails, the original expected observation remains available to its gap fact.
+  const expected = await client.observation(database, { ...prepared, publishBodies: false });
+  if (!prepared.publishBodies)
+    return { disposition: expected.disposition, observation: expected.observation };
+  const published = publishControlWorkObservationBodies(workspaceDb, input);
+  const result = await client.observation(database, published);
+  return { disposition: expected.disposition, observation: result.observation };
+}
+
+/** Exact immutable body identity prepared before the native SQL transition. */
+export type WorkObservationBodyDescriptor = z.infer<typeof bodyDescriptorSchema>;
+
+/** SQL-only input; body bytes and publication effects never enter the database worker. */
+export interface ControlWorkObservationInput {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly observation: WorkObservationDraft;
+  readonly bodies: readonly WorkObservationBodyDescriptor[];
+  readonly publishBodies?: boolean | undefined;
+}
+
+/** Savepoint result only: the worker must await outer FULL COMMIT before acknowledgement. */
+export interface ControlWorkObservationResult {
+  readonly disposition: 'committed' | 'duplicate';
+  readonly observation: WorkObservationRecord;
+  readonly publication: WorkObservationRecord | null;
+}
+
+/** Producer-owned complete bytes; deferral records expectations without publication authority. */
+export interface ControlWorkObservationPreparation {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly observation: WorkObservationDraft;
+  readonly bodies: readonly AdmittedWorkBody[];
+  readonly deferBodyPublication?: true;
+}
+
+/** Scoped selectors are not paths and cannot select a second owning database. */
+const controlObservationSelectorSchema = z.object({
+  threadId: z.string().min(1),
+  turnId: TurnIdSchema,
+});
+/** Closed native transport envelope; the complete SQL body validates retained observation semantics. */
+export const ControlWorkObservationInputSchema = controlObservationSelectorSchema
+  .extend({
+    observation: z.record(z.string(), z.unknown()),
+    bodies: z.array(bodyDescriptorSchema.strict()),
+    publishBodies: z.boolean().optional(),
+  })
+  .strict();
+
+/** Native index fields are checked against their frozen retained payload before use. */
+interface ControlObservationRow {
+  turn_id: string;
+  sequence: number;
+  id: string;
+  schema_version: number;
+  record_json: string;
+}
+
+/** Native retained binding; descriptive bytes remain available for the observation manifest update. */
+export interface ControlWorkObservationTurnBinding {
+  readonly turn: z.infer<typeof StoredTurnV1Schema>;
+  readonly raw: Record<string, unknown>;
+  readonly revision: number;
+  readonly coverage: NonNullable<z.infer<typeof StoredTurnV1Schema>['captureCoverage']> | null;
+}
+
+/** Reads native Thread/Turn authority in one short snapshot; no file fallback or current-policy inference. */
+export function readControlWorkObservationTurnBinding(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: { readonly threadId: string; readonly turnId: string }
+): ControlWorkObservationTurnBinding {
+  if (!sqlite.inTransaction)
+    return sqlite.transaction(() => readControlWorkObservationTurnBinding(sqlite, owner, input))();
+  controlObservationSelectorSchema.parse(input);
+  if (!isDeepStrictEqual(owner, StoredWorkOwnerV1Schema.parse(owner)))
+    throw new Error('Observation database owner is invalid');
+  const threadRow = sqlite
+    .prepare('SELECT * FROM control_threads WHERE id=?')
+    .get(input.threadId) as
+    | {
+        schema_version: number;
+        revision: number;
+        workspace_id: string | null;
+        status: string;
+        record_json: string;
+      }
+    | undefined;
+  const turnRow = sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(input.turnId) as
+    | {
+        schema_version: number;
+        revision: number;
+        thread_id: string;
+        agent_session_id: string | null;
+        status: string;
+        record_json: string;
+      }
+    | undefined;
+  if (
+    !threadRow ||
+    !turnRow ||
+    threadRow.schema_version !== 1 ||
+    turnRow.schema_version !== 1 ||
+    Buffer.byteLength(threadRow.record_json) > 64 * 1024 ||
+    Buffer.byteLength(turnRow.record_json) > 64 * 1024 ||
+    !Number.isSafeInteger(threadRow.revision) ||
+    threadRow.revision < 1 ||
+    !Number.isSafeInteger(turnRow.revision) ||
+    turnRow.revision < 1
+  )
+    throw new Error('recovery_required: missing or invalid native observation owner');
+  const threadRaw = JSON.parse(threadRow.record_json) as Record<string, unknown>;
+  const thread = readRetainedV1(threadRaw, () => StoredThreadSnapshotV1Schema.parse(threadRaw));
+  const raw = JSON.parse(turnRow.record_json) as Record<string, unknown>;
+  const turn = readRetainedV1(raw, () => StoredTurnV1Schema.parse(raw));
+  if (
+    threadRaw.requiredFeatures !== undefined &&
+    (!Array.isArray(threadRaw.requiredFeatures) || threadRaw.requiredFeatures.length !== 0)
+  )
+    throw new Error('recovery_required: unsupported required Thread semantics');
+  if (
+    thread.id !== input.threadId ||
+    turn.id !== input.turnId ||
+    turn.threadId !== input.threadId ||
+    turnRow.thread_id !== input.threadId ||
+    turnRow.agent_session_id !== (turn.agentSessionId ?? null) ||
+    threadRow.status !== thread.status ||
+    turnRow.status !== turn.status ||
+    threadRow.workspace_id !== (owner.kind === 'workspace' ? owner.workspaceId : null) ||
+    !isDeepStrictEqual(thread.owner, owner) ||
+    !isDeepStrictEqual(turn.owner, owner)
+  )
+    throw new Error('recovery_required: native observation owner lineage mismatch');
+  return { turn, raw, revision: turnRow.revision, coverage: turn.captureCoverage ?? null };
+}
+
+/** Checks native row version, known semantics and indexed identity without rewriting descriptive additions. */
+function decodeControlObservation(
+  row: ControlObservationRow,
+  turnId: string
+): WorkObservationRecord {
+  if (row.schema_version !== 1 || Buffer.byteLength(row.record_json) > 64 * 1024)
+    throw new Error('recovery_required: unsupported native observation record');
+  const raw = JSON.parse(row.record_json) as Record<string, unknown>;
+  if (
+    raw.requiredFeatures !== undefined &&
+    (!Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length !== 0)
+  )
+    throw new Error('recovery_required: unsupported required observation semantics');
+  const record = parseWorkObservationRecord(raw);
+  if (
+    record.turnId !== turnId ||
+    row.turn_id !== turnId ||
+    record.seq !== row.sequence ||
+    record.id !== row.id
+  )
+    throw new Error('recovery_required: native observation index mismatch');
+  return record;
+}
+
+/** Checks the committed manifest before a native observation can be consumed. */
+function assertControlObservationManifest(
+  binding: ReturnType<typeof readControlWorkObservationTurnBinding>
+): void {
+  if (!binding.coverage || !binding.turn.requiredFeatures?.includes('openkit.work-observations.v1'))
+    throw new Error('recovery_required: missing native observation capture manifest');
+}
+
+/** Returns one committed native identity, including the original sequence on replay. */
+export function readControlWorkObservation(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: { readonly threadId: string; readonly turnId: string; readonly id: string }
+): WorkObservationRecord | undefined {
+  if (!sqlite.inTransaction)
+    return sqlite.transaction(() => readControlWorkObservation(sqlite, owner, input))();
+  const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
+  const row = sqlite
+    .prepare('SELECT * FROM control_work_observations WHERE turn_id=? AND id=?')
+    .get(input.turnId, input.id) as ControlObservationRow | undefined;
+  if (!row) return undefined;
+  assertControlObservationManifest(binding);
+  const record = decodeControlObservation(row, input.turnId);
+  assertControlObservationLineage(sqlite, owner, input, record);
+  return record;
+}
+
+/** Reads a bounded ordered native page; end the read before streaming or awaiting downstream work. */
+export function readControlWorkObservations(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
   input: {
     readonly threadId: string;
     readonly turnId: string;
-    readonly observation: WorkObservationDraft;
-    readonly bodies: readonly AdmittedWorkBody[];
-    /** Records expected byte identity without writing content pending semantic-unit admission. */
-    readonly deferBodyPublication?: true;
+    readonly afterSequence?: number;
+    readonly limit?: number;
   }
-): {
-  readonly disposition: 'committed' | 'duplicate';
-  readonly observation: WorkObservationRecord;
-} {
-  const binding = readWorkObservationTurnBinding(workspaceDb, input);
-  if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
-  const draft = draftSchema.parse(input.observation);
-  if (
-    draft.type === 'env.bound' &&
-    (workspaceDb.scope === 'core'
-      ? draft.payload.workspaceId !== undefined ||
-        (draft.payload.owner as { kind?: string } | undefined)?.kind !== 'server'
-      : draft.payload.workspaceId !== workspaceDb.workspaceId || draft.payload.owner !== undefined)
-  )
-    throw new Error('Environment binding database owner mismatch.');
-  if (draft.refs?.some((ref) => ref.edge !== 'association') || 'bodies' in draft.payload)
-    throw new Error('Publication descriptors belong to the observation writer');
-  if (input.bodies.length && binding.coverage.value !== 'on')
-    throw new Error('Capture coverage is off');
-  if (input.bodies.length && draft.type !== 'model.observed' && draft.type !== 'runtime.observed')
-    throw new Error('This observation type has no admitted body');
-  if (
-    input.bodies.length &&
-    (draft.payload.content as { state?: string } | undefined)?.state !== 'expected'
-  )
-    throw new Error('Body requires an expected-content declaration');
-  const bodyIds = new Set<string>();
-  const descriptors = input.bodies.map((body) => {
-    if (
-      !body.id ||
-      bodyIds.has(body.id) ||
-      !body.mediaType ||
-      !body.boundary ||
-      !(body.bytes instanceof Uint8Array) ||
-      body.bytes.byteLength > 16 * 1024 * 1024
+): readonly WorkObservationRecord[] {
+  if (!sqlite.inTransaction)
+    return sqlite.transaction(() => readControlWorkObservations(sqlite, owner, input))();
+  const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
+  const after = z
+    .number()
+    .int()
+    .nonnegative()
+    .safe()
+    .parse(input.afterSequence ?? 0);
+  const limit = z
+    .number()
+    .int()
+    .min(1)
+    .max(128)
+    .parse(input.limit ?? 128);
+  const rows = sqlite
+    .prepare(
+      'SELECT * FROM control_work_observations WHERE turn_id=? AND sequence>? ORDER BY sequence LIMIT ?'
     )
-      throw new Error('Invalid or duplicate admitted body');
-    bodyIds.add(body.id);
-    return {
-      id: body.id,
-      bytes: body.bytes.byteLength,
-      mediaType: body.mediaType,
-      boundary: body.boundary,
-      sha256: createHash('sha256').update(body.bytes).digest('hex'),
-      bundleId: workObservationBodyBundleId(
-        workspaceDb.scope === 'core' ? { kind: 'server' } : workspaceDb.workspaceId,
-        input.threadId,
-        input.turnId,
-        draft.id,
-        body.id
-      ),
-    };
+    .all(input.turnId, after, limit) as ControlObservationRow[];
+  if (rows.length) assertControlObservationManifest(binding);
+  return rows.map((row, index) => {
+    const record = decodeControlObservation(row, input.turnId);
+    if (record.seq !== after + index + 1)
+      throw new Error('recovery_required: native observation sequence gap');
+    assertControlObservationLineage(sqlite, owner, input, record);
+    return record;
   });
-  const refs: WorkObservationReference[] = descriptors.map((body) => ({
-    kind: 'evidence-bundle',
-    scope: {
-      ...(workspaceDb.scope === 'core'
-        ? { owner: 'server' }
-        : { workspaceId: workspaceDb.workspaceId }),
-      pathClass: 'backend',
-    },
-    locator: body.bundleId,
-    digest: body.sha256,
-    edge: 'publication' as const,
-  }));
-  const path = join(binding.root, 'observations.jsonl');
-  const state = readAppendState(workspaceDb, path, input.turnId);
-  const { committedBytes, totalBytes } = state;
-  const existing = state.records.get(draft.id);
-  const candidate = parseWorkObservationRecord({
-    ...draft,
-    payload:
-      descriptors.length && draft.type !== 'runtime.observed'
-        ? {
-            ...draft.payload,
-            bodies: descriptors.map((body) => ({ ...body, state: 'expected' as const })),
-          }
-        : existing?.payload.bodies && draft.type === 'model.observed'
-          ? { ...draft.payload, bodies: existing.payload.bodies }
-          : draft.payload,
-    v: 1,
-    seq: existing?.seq ?? state.records.size + 1,
-    turnId: input.turnId,
-  });
-  if (draft.type === 'runtime.observed' && descriptors.length) {
-    const expected = WorkerObservationDataSchema.parse(draft.payload).content;
-    const body = descriptors[0];
+}
+
+/** Verifies retained causal edges, expected bodies and the exact scope of publication descriptors. */
+function assertControlObservationLineage(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: { readonly threadId: string; readonly turnId: string },
+  record: WorkObservationRecord
+): void {
+  if (
+    record.type === 'env.bound' &&
+    (owner.kind === 'server'
+      ? record.payload.workspaceId !== undefined ||
+        (record.payload.owner as { kind?: string } | undefined)?.kind !== 'server'
+      : record.payload.workspaceId !== owner.workspaceId || record.payload.owner !== undefined)
+  )
+    throw new Error('Environment binding database owner mismatch');
+  if (!record.parent) return;
+  const parentRow = sqlite
+    .prepare('SELECT * FROM control_work_observations WHERE turn_id=? AND id=?')
+    .get(input.turnId, record.parent) as ControlObservationRow | undefined;
+  if (!parentRow) {
+    // Portable remint preserves the format's Item parent alternative; it is not an observation-only edge.
+    const itemRow = sqlite
+      .prepare(
+        "SELECT identity_json FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(input.turnId, record.parent) as { identity_json: string } | undefined;
+    const item = itemRow ? (JSON.parse(itemRow.identity_json) as Record<string, unknown>) : null;
+    if (
+      record.type !== 'content.published' &&
+      !(record.type === 'model.observed' && record.payload.direction === 'response') &&
+      item?.id === record.parent &&
+      item.turnId === input.turnId &&
+      item.threadId === input.threadId &&
+      isDeepStrictEqual(item.owner, owner)
+    )
+      return;
+    throw new Error('recovery_required: missing native observation parent');
+  }
+  const parent = decodeControlObservation(parentRow, input.turnId);
+  if (parent.seq >= record.seq)
+    throw new Error('recovery_required: invalid native observation parent order');
+  if (
+    record.type === 'model.observed' &&
+    record.payload.direction === 'response' &&
+    (parent.type !== 'model.observed' ||
+      parent.payload.direction !== 'request' ||
+      parent.corr !== record.corr ||
+      parent.payload.attempt !== record.payload.attempt)
+  )
+    throw new Error('recovery_required: model observation request lineage mismatch');
+  if (record.type === 'content.published') {
+    const bodies = z.array(bodyDescriptorSchema).parse(record.payload.bodies);
+    // Import remints observation and bundle identities through their exact maps. Retained meaning uses the bound descriptors and refs, not a live producer's id derivation.
+    assertControlBodyDescriptors(owner, input, parent, bodies, false);
+    if (
+      record.ts !== parent.ts ||
+      record.obs !== parent.obs ||
+      record.ret !== 'turn-evidence' ||
+      !isDeepStrictEqual(record.refs, controlBodyReferences(owner, bodies))
+    )
+      throw new Error('recovery_required: native observation publication lineage mismatch');
+  }
+}
+
+/** Checks prepared identities against the deterministic body owner and the producer's expected-content declaration. */
+function assertControlBodyDescriptors(
+  owner: ControlProductOwner,
+  input: { readonly threadId: string; readonly turnId: string },
+  record: WorkObservationRecord,
+  bodies: readonly WorkObservationBodyDescriptor[],
+  requireDerivedIdentity = true
+): void {
+  if (!bodies.length) return;
+  if (
+    !['model.observed', 'runtime.observed'].includes(record.type) ||
+    (record.payload.content as { state?: string } | undefined)?.state !== 'expected' ||
+    new Set(bodies.map((body) => body.id)).size !== bodies.length
+  )
+    throw new Error('Observation body requires a unique expected-content declaration');
+  for (const body of bodies) {
+    bodyDescriptorSchema.parse(body);
+    if (
+      body.bytes > 16 * 1024 * 1024 ||
+      (requireDerivedIdentity &&
+        body.bundleId !==
+          workObservationBodyBundleId(
+            owner.kind === 'server' ? owner : owner.workspaceId,
+            input.threadId,
+            input.turnId,
+            record.id,
+            body.id
+          ))
+    )
+      throw new Error('recovery_required: observation body owner mismatch');
+  }
+  if (record.type === 'runtime.observed') {
+    const expected = WorkerObservationDataSchema.parse(record.payload).content;
+    const body = bodies[0];
     if (
       expected.state !== 'expected' ||
-      descriptors.length !== 1 ||
+      bodies.length !== 1 ||
       !body ||
       body.bytes !== expected.bytes ||
       `sha256:${body.sha256}` !== expected.sha256 ||
@@ -585,157 +792,429 @@ export function appendWorkObservation(
       body.mediaType !== expected.mediaType
     )
       throw new Error('Runtime body contradicts its expected declaration');
+  } else if (
+    !isDeepStrictEqual(
+      record.payload.bodies,
+      bodies.map((body) => ({ ...body, state: 'expected' }))
+    )
+  )
+    throw new Error('recovery_required: model body publication identity mismatch');
+}
+
+/** Only the observation owner mints scoped publication edges. */
+function controlBodyReferences(
+  owner: ControlProductOwner,
+  bodies: readonly WorkObservationBodyDescriptor[]
+): WorkObservationReference[] {
+  return bodies.map((body) => ({
+    kind: 'evidence-bundle',
+    scope: {
+      ...(owner.kind === 'server' ? { owner: 'server' } : { workspaceId: owner.workspaceId }),
+      pathClass: 'backend',
+    },
+    locator: body.bundleId,
+    digest: body.sha256,
+    edge: 'publication',
+  }));
+}
+
+/** Derives immutable expected identity without I/O; the SQL body revalidates it at admission. */
+export function prepareControlWorkObservation(
+  owner: ControlProductOwner,
+  input: ControlWorkObservationPreparation
+): ControlWorkObservationInput {
+  controlObservationSelectorSchema.parse(input);
+  draftSchema.parse(input.observation);
+  const bodies = input.bodies.map((body) => {
+    if (!(body.bytes instanceof Uint8Array) || body.bytes.byteLength > 16 * 1024 * 1024)
+      throw new Error('Invalid admitted observation body');
+    return bodyDescriptorSchema.parse({
+      id: body.id,
+      bytes: body.bytes.byteLength,
+      mediaType: body.mediaType,
+      boundary: body.boundary,
+      sha256: createHash('sha256').update(body.bytes).digest('hex'),
+      bundleId: workObservationBodyBundleId(
+        owner.kind === 'server' ? owner : owner.workspaceId,
+        input.threadId,
+        input.turnId,
+        input.observation.id,
+        body.id
+      ),
+    });
+  });
+  // Parse the same complete candidate as SQL before any immutable publication effect.
+  controlObservationCandidate({ ...input, bodies }, undefined, 1, owner);
+  return {
+    threadId: input.threadId,
+    turnId: input.turnId,
+    observation: input.observation,
+    bodies,
+    publishBodies: bodies.length > 0 && !input.deferBodyPublication,
+  };
+}
+
+/** Uses the existing evidence owner outside SQL, preserving its independent FULL-commit and expiry guards. */
+export function publishControlWorkObservationBodies(
+  db: WorkspaceDb | CoreDb,
+  input: ControlWorkObservationPreparation
+): ControlWorkObservationInput {
+  if (db.sqlite.inTransaction || Number(db.sqlite.pragma('synchronous', { simple: true })) < 2)
+    throw new Error('Observation evidence requires a durable independent owner commit');
+  const owner: ControlProductOwner =
+    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+  const prepared = prepareControlWorkObservation(owner, input);
+  const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, input);
+  if (!binding.coverage || (prepared.bodies.length && binding.coverage.value !== 'on'))
+    throw new Error('Observation capture coverage does not permit bodies');
+  const existing = readControlWorkObservation(db.sqlite, owner, {
+    ...input,
+    id: input.observation.id,
+  });
+  controlObservationCandidate(prepared, existing, existing?.seq ?? 1, owner);
+  const prior = readControlWorkObservation(db.sqlite, owner, {
+    ...input,
+    id: `${input.observation.id}:publication`,
+  });
+  if (prior) {
+    if (
+      !existing ||
+      (prepared.bodies.length > 0 && !isDeepStrictEqual(prior.payload.bodies, prepared.bodies))
+    )
+      throw new Error('recovery_required: observation publication conflict');
+    return prepared;
   }
+  if (prepared.publishBodies)
+    for (const [index, body] of input.bodies.entries()) {
+      const descriptor = prepared.bodies[index]!;
+      if (
+        retainWorkObservationBody(db, {
+          bundleId: descriptor.bundleId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          createdAt: input.observation.ts,
+          sha256: descriptor.sha256,
+          bytes: body.bytes,
+        }) === 'expired'
+      )
+        throw new Error('recovery_required: unpublished body was lawfully expired');
+    }
+  return prepared;
+}
+
+/** Builds a known-core candidate while leaving its retained descriptive source available to the insert. */
+function controlObservationCandidate(
+  input: ControlWorkObservationInput,
+  existing: WorkObservationRecord | undefined,
+  sequence: number,
+  owner: ControlProductOwner
+): WorkObservationRecord {
+  const required = (input.observation as unknown as Record<string, unknown>).requiredFeatures;
+  if (required !== undefined && (!Array.isArray(required) || required.length !== 0))
+    throw new Error('recovery_required: unsupported required observation semantics');
+  const draft = draftSchema.parse(input.observation);
+  if (
+    draft.type === 'content.published' ||
+    draft.refs?.some((ref) => ref.edge !== 'association') ||
+    'bodies' in draft.payload
+  )
+    throw new Error('Publication descriptors belong to the observation writer');
+  const payload =
+    draft.type === 'model.observed' && (input.bodies.length || existing?.payload.bodies)
+      ? {
+          ...draft.payload,
+          bodies: input.bodies.length
+            ? input.bodies.map((body) => ({ ...body, state: 'expected' }))
+            : existing?.payload.bodies,
+        }
+      : draft.payload;
+  const candidate = parseWorkObservationRecord({
+    ...draft,
+    payload,
+    v: 1,
+    seq: sequence,
+    turnId: input.turnId,
+  });
+  assertControlBodyDescriptors(owner, input, candidate, input.bodies);
   if (existing && !isDeepStrictEqual(existing, candidate))
     throw new Error('recovery_required: observation identity conflict');
-  const requiredFeatures = z.array(z.string()).parse(binding.raw.requiredFeatures ?? []);
-  if (!requiredFeatures.includes('openkit.work-observations.v1')) {
-    writeFileAtomic(
-      join(binding.root, 'turn.json'),
-      `${JSON.stringify(writeRetainedV1({ ...binding.raw, requiredFeatures: [...requiredFeatures, 'openkit.work-observations.v1'] }), null, 2)}\n`
-    );
-  }
-  // Replays synchronize even a previously failed commit. A fresh line's fsync also commits truncation.
-  if (existing || committedBytes !== totalBytes) {
-    const fd = openSync(path, constants.O_WRONLY | constants.O_NOFOLLOW);
-    try {
-      if (committedBytes !== totalBytes) ftruncateSync(fd, committedBytes);
-      if (existing) fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    if (existing) syncCanonicalDirectory(binding.root);
-  }
-  if (!existing) {
-    appendObservationRecord(path, state, candidate);
-  } else {
-    state.totalBytes = state.committedBytes;
-    state.stamp = lstatSync(path, { bigint: true });
-  }
-  // Metadata replay neither withdraws an existing publication nor publishes deferred content.
-  if (!descriptors.length || input.deferBodyPublication)
-    return { disposition: existing ? 'duplicate' : 'committed', observation: candidate };
-  const publicationId = `${draft.id}:publication`;
-  const priorPublication = state.records.get(publicationId);
-  const publication: WorkObservationRecord = {
-    v: 1,
-    id: publicationId,
-    type: 'content.published',
-    seq: priorPublication?.seq ?? state.records.size + 1,
-    ts: draft.ts,
-    obs: draft.obs,
-    turnId: input.turnId,
-    parent: draft.id,
-    ret: 'turn-evidence',
-    refs,
-    payload: { bodies: descriptors },
-  };
-  if (priorPublication && !isDeepStrictEqual(priorPublication, publication))
-    throw new Error('recovery_required: observation publication conflict');
-  // A committed marker survives lawful evidence expiry; replay never recreates its bytes.
-  if (priorPublication) return { disposition: 'duplicate', observation: candidate };
-  for (const [index, body] of input.bodies.entries()) {
-    const descriptor = descriptors[index];
-    if (!descriptor) throw new Error('Missing body descriptor');
-    const retained = retainWorkObservationBody(workspaceDb, {
-      bundleId: descriptor.bundleId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-      createdAt: draft.ts,
-      sha256: descriptor.sha256,
-      bytes: body.bytes,
-    });
-    if (retained === 'expired')
-      throw new Error('recovery_required: unpublished body was lawfully expired');
-  }
-  if (descriptors.length)
-    appendObservationRecord(path, state, parseWorkObservationRecord(publication));
-  return { disposition: existing ? 'duplicate' : 'committed', observation: candidate };
+  return candidate;
 }
 
-/** Validated writer projection; canonical files remain authoritative and reads always validate them. */
-interface ObservationAppendState {
-  readonly records: Map<string, WorkObservationRecord>;
-  committedBytes: number;
-  totalBytes: number;
-  stamp: BigIntStats | undefined;
-}
-
-// Scope reusable state to the borrowed database lifetime, without a second durable index.
-const observationAppendStates = new WeakMap<
-  WorkspaceDb | CoreDb,
-  Map<string, ObservationAppendState>
->();
-
-/** Opens a ledger with full validation; only this writer's unchanged committed prefix is reusable. */
-function readAppendState(
-  workspaceDb: WorkspaceDb | CoreDb,
-  path: string,
-  turnId: string
-): ObservationAppendState {
-  const states = observationAppendStates.get(workspaceDb) ?? new Map();
-  observationAppendStates.set(workspaceDb, states);
-  const cached = states.get(path);
-  const stamp = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  if (
-    cached &&
-    stamp?.isFile() &&
-    cached.stamp &&
-    stamp.dev === cached.stamp.dev &&
-    stamp.ino === cached.stamp.ino &&
-    stamp.size === cached.stamp.size &&
-    stamp.mtimeNs === cached.stamp.mtimeNs &&
-    stamp.ctimeNs === cached.stamp.ctimeNs
-  )
-    return cached;
-  // Replacement, edits, a torn tail, another handle's write and failed synchronization all reopen.
-  states.delete(path);
-  const { rows, committedBytes, totalBytes } = readRows(path, turnId);
-  const state: ObservationAppendState = {
-    records: new Map(rows.map((row) => [row.id, row])),
-    committedBytes,
-    totalBytes,
-    stamp,
-  };
-  states.set(path, state);
-  return state;
-}
-
-/** Advances validated state only after the existing file-and-directory synchronization succeeds. */
-function appendObservationRecord(
-  path: string,
-  state: ObservationAppendState,
-  record: WorkObservationRecord
+/** Checks only independently committed evidence metadata; file synchronization belongs to the existing body publisher. */
+function assertControlBodyPublished(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: ControlWorkObservationInput,
+  body: WorkObservationBodyDescriptor
 ): void {
-  const text = `${JSON.stringify(record)}\n`;
-  // Keep emitted bytes independent of mutable objects returned to producers.
-  const retained = parseWorkObservationRecord(JSON.parse(text));
-  appendCanonicalTextFile(path, text);
-  state.records.set(retained.id, retained);
-  state.committedBytes += Buffer.byteLength(text);
-  state.totalBytes = state.committedBytes;
-  state.stamp = lstatSync(path, { bigint: true });
+  const row = sqlite
+    .prepare('SELECT * FROM evidence_bundles WHERE evidence_bundle_id=?')
+    .get(body.bundleId) as
+    | {
+        schema_version: number;
+        workspace_id: string | null;
+        thread_id: string | null;
+        turn_id: string | null;
+        source_kind: string;
+        created_at: string;
+        content_digests_json: string;
+        required_features_json: string;
+        raw_evidence_refs_json: string;
+        import_status: string;
+        retention_class: string;
+        sensitivity_class: string;
+      }
+    | undefined;
+  if (
+    !row ||
+    row.schema_version !== 1 ||
+    row.workspace_id !== (owner.kind === 'server' ? null : owner.workspaceId) ||
+    row.thread_id !== input.threadId ||
+    row.turn_id !== input.turnId ||
+    row.source_kind !== 'work-observation-body' ||
+    row.created_at !== input.observation.ts ||
+    row.import_status !== 'promoted' ||
+    row.retention_class !== 'restricted-raw' ||
+    row.sensitivity_class !== 'restricted' ||
+    !isDeepStrictEqual(JSON.parse(row.content_digests_json), [body.sha256]) ||
+    !isDeepStrictEqual(JSON.parse(row.raw_evidence_refs_json), [
+      { kind: 'work-observation-body', ref: 'raw/content' },
+    ])
+  )
+    throw new Error('recovery_required: observation body lacks independent publication');
+  z.array(z.literal('openkit.work-observations.v1')).parse(JSON.parse(row.required_features_json));
 }
 
-/** Validates all complete records and preserves the exact truncation boundary for the writer. */
-function readRows(
-  path: string,
-  turnId: string
-): { rows: WorkObservationRecord[]; committedBytes: number; totalBytes: number } {
-  if (!existsSync(path)) return { rows: [], committedBytes: 0, totalBytes: 0 };
-  const bytes = readCanonicalFile(path);
-  const committedBytes = bytes.lastIndexOf(0x0a) + 1;
-  const rows: WorkObservationRecord[] = [];
-  const ids = new Set<string>();
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, committedBytes));
-  for (const line of text.split('\n').slice(0, -1)) {
-    const row = parseWorkObservationRecord(JSON.parse(line));
-    if (row.seq !== rows.length + 1 || row.turnId !== turnId || ids.has(row.id))
-      throw new Error('recovery_required: corrupt observation sequence or identity');
-    ids.add(row.id);
-    rows.push(row);
+/** Applies native metadata/order and optional publication in the caller's existing savepoint, without filesystem effects or COMMIT. */
+export function applyControlWorkObservation(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  value: ControlWorkObservationInput
+): ControlWorkObservationResult {
+  if (!sqlite.inTransaction || sqlite.readonly)
+    throw new Error('Native observations require the owning SQL transaction');
+  const parsed = ControlWorkObservationInputSchema.parse(value);
+  const input: ControlWorkObservationInput = {
+    ...parsed,
+    observation: parsed.observation as unknown as WorkObservationDraft,
+  };
+  const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
+  if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
+  if (input.bodies.length && binding.coverage.value !== 'on')
+    throw new Error('Capture coverage is off');
+  const existing = readControlWorkObservation(sqlite, owner, {
+    ...input,
+    id: input.observation.id,
+  });
+  const tail = sqlite
+    .prepare(
+      'SELECT MAX(sequence) AS last, COUNT(*) AS count FROM control_work_observations WHERE turn_id=?'
+    )
+    .get(input.turnId) as { last: number | null; count: number };
+  if ((tail.last ?? 0) !== tail.count || !Number.isSafeInteger(tail.count + 2))
+    throw new Error('recovery_required: corrupt native observation sequence');
+  if (tail.count > 0) assertControlObservationManifest(binding);
+  const candidate = controlObservationCandidate(
+    input,
+    existing,
+    existing?.seq ?? tail.count + 1,
+    owner
+  );
+  assertControlObservationLineage(sqlite, owner, input, candidate);
+  if (
+    candidate.type === 'turn.reap' &&
+    (['pending', 'running'].includes(binding.turn.status) ||
+      !binding.turn.completedAt ||
+      candidate.ts !== binding.turn.completedAt ||
+      candidate.id !== `turn.reap:${input.turnId}`)
+  )
+    throw new Error('turn.reap requires the native terminal Turn in the same transition');
+  const prior = readControlWorkObservation(sqlite, owner, {
+    ...input,
+    id: `${candidate.id}:publication`,
+  });
+  let publication = prior ?? null;
+  if (
+    prior &&
+    (prior.type !== 'content.published' ||
+      prior.parent !== candidate.id ||
+      (input.bodies.length > 0 && !isDeepStrictEqual(prior.payload.bodies, input.bodies)))
+  )
+    throw new Error('recovery_required: observation publication conflict');
+  if (input.publishBodies && input.bodies.length) {
+    publication = parseWorkObservationRecord({
+      v: 1,
+      id: `${candidate.id}:publication`,
+      type: 'content.published',
+      turnId: input.turnId,
+      seq: prior?.seq ?? tail.count + (existing ? 1 : 2),
+      ts: candidate.ts,
+      obs: candidate.obs,
+      parent: candidate.id,
+      ret: 'turn-evidence',
+      refs: controlBodyReferences(owner, input.bodies),
+      payload: { bodies: input.bodies },
+    });
+    if (prior && !isDeepStrictEqual(prior, publication))
+      throw new Error('recovery_required: observation publication conflict');
+    if (!prior)
+      for (const body of input.bodies) assertControlBodyPublished(sqlite, owner, input, body);
   }
-  return { rows, committedBytes, totalBytes: bytes.length };
+  // The caller's savepoint rolls back the manifest and both rows on any bound or SQL failure.
+  const insert = (record: WorkObservationRecord, raw: unknown): void => {
+    const text = JSON.stringify(preserveDescriptiveRecord(raw, record, record));
+    if (Buffer.byteLength(text) > 64 * 1024)
+      throw new Error('Observation metadata exceeds the native bound');
+    // Refuse an unknown required declaration even when the known-field parser would strip it.
+    decodeControlObservation(
+      {
+        turn_id: input.turnId,
+        id: record.id,
+        sequence: record.seq,
+        schema_version: 1,
+        record_json: text,
+      },
+      input.turnId
+    );
+    sqlite
+      .prepare(
+        'INSERT INTO control_work_observations (turn_id,sequence,id,schema_version,record_json) VALUES (?,?,?,1,?)'
+      )
+      .run(input.turnId, record.seq, record.id, text);
+  };
+  if (!binding.turn.requiredFeatures?.includes('openkit.work-observations.v1')) {
+    const turnJson = JSON.stringify({
+      ...binding.raw,
+      requiredFeatures: [...(binding.turn.requiredFeatures ?? []), 'openkit.work-observations.v1'],
+    });
+    if (Buffer.byteLength(turnJson) > 64 * 1024)
+      throw new Error('Observation Turn metadata exceeds the native bound');
+    const changed = sqlite
+      .prepare(
+        'UPDATE control_turns SET revision=revision+1,record_json=? WHERE id=? AND revision=?'
+      )
+      .run(turnJson, input.turnId, binding.revision);
+    if (changed.changes !== 1)
+      throw new Error('recovery_required: observation Turn revision conflict');
+  }
+  if (!existing)
+    insert(candidate, { ...input.observation, v: 1, seq: candidate.seq, turnId: input.turnId });
+  if (publication && !prior) insert(publication, publication);
+  return { disposition: existing ? 'duplicate' : 'committed', observation: candidate, publication };
+}
+
+/** Terminal snapshot arguments; product terminality and physical exclusion remain separate owners. */
+export interface ControlTurnReapInput {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly reason: string;
+  readonly inferredBy: string;
+}
+
+/** Prepares ordinary terminal evidence from native authority, preserving the first snapshot despite late observations. */
+export function prepareControlTurnReap(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: ControlTurnReapInput
+): ControlWorkObservationInput | null {
+  if (!sqlite.inTransaction)
+    throw new Error('Native reap preparation requires the owning SQL transaction');
+  z.string().min(1).parse(input.reason);
+  z.string().min(1).parse(input.inferredBy);
+  const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
+  if (!binding.coverage) {
+    if (
+      binding.turn.requiredFeatures?.includes('openkit.work-observations.v1') ||
+      sqlite
+        .prepare('SELECT 1 FROM control_work_observations WHERE turn_id=? LIMIT 1')
+        .get(input.turnId)
+    )
+      throw new Error('recovery_required: missing capture coverage for native observations');
+    return null;
+  }
+  if (['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt)
+    throw new Error('turn.reap requires the native terminal Turn in the same transition');
+  const id = `turn.reap:${input.turnId}`;
+  const existing = readControlWorkObservation(sqlite, owner, { ...input, id });
+  if (existing) {
+    if (existing.type !== 'turn.reap')
+      throw new Error('recovery_required: turn.reap identity conflict');
+    return { threadId: input.threadId, turnId: input.turnId, observation: existing, bodies: [] };
+  }
+  const calls = new Map<string, { corr: string; type: string; name: string | null; ts: string }>();
+  let afterSequence = 0;
+  let lastObservedTs: string | null = null;
+  for (;;) {
+    const rows = readControlWorkObservations(sqlite, owner, { ...input, afterSequence });
+    for (const row of rows) {
+      lastObservedTs = row.ts;
+      if (row.type === 'model.observed' && row.corr) {
+        const key = JSON.stringify([
+          row.type,
+          row.corr,
+          row.payload.direction === 'request' ? row.id : row.parent,
+        ]);
+        if (row.payload.direction === 'request')
+          calls.set(key, { corr: row.corr, type: row.type, name: null, ts: row.ts });
+        else if (
+          row.parent &&
+          ['done', 'error', 'interrupted', 'truncated', 'failed'].includes(
+            String(row.payload.event)
+          )
+        )
+          calls.delete(key);
+      } else if (row.type === 'runtime.observed') {
+        const { fact } = WorkerObservationDataSchema.parse(row.payload);
+        if (fact.kind !== 'tool' || !fact.callRef) continue;
+        const corr = row.corr ?? fact.callRef;
+        const key = JSON.stringify([row.type, corr]);
+        if (['completed', 'failed', 'interrupted', 'closed'].includes(fact.phase ?? ''))
+          calls.delete(key);
+        else if (['started', 'running', 'updated'].includes(fact.phase ?? '')) {
+          const previous = calls.get(key);
+          calls.set(key, {
+            corr,
+            type: row.type,
+            name: previous?.name ?? fact.toolName ?? null,
+            ts: previous?.ts ?? row.ts,
+          });
+        }
+      }
+    }
+    if (rows.length < 128) break;
+    afterSequence = rows.at(-1)!.seq;
+  }
+  return {
+    threadId: input.threadId,
+    turnId: input.turnId,
+    bodies: [],
+    observation: {
+      id,
+      type: 'turn.reap',
+      ts: binding.turn.completedAt,
+      obs: 'nanocore',
+      ret: 'turn-evidence',
+      payload: {
+        reason: input.reason,
+        lastObservedTs,
+        unresolvedCalls: [...calls.values()],
+        inferredBy: input.inferredBy,
+      },
+    },
+  };
+}
+
+/** Appends ordinary reap metadata inside the same terminal savepoint; never commits or performs restart-only repair. */
+export function applyControlTurnReap(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: ControlTurnReapInput
+): WorkObservationRecord | null {
+  if (!sqlite.inTransaction || sqlite.readonly)
+    throw new Error('Native observations require the owning SQL transaction');
+  const prepared = prepareControlTurnReap(sqlite, owner, input);
+  return prepared ? applyControlWorkObservation(sqlite, owner, prepared).observation : null;
 }
 
 /** Fixed adapter tool vocabulary permitted in ordinary timeline labels. */
@@ -880,12 +1359,15 @@ export function readThreadRuntimeActivity(
       entries.length = 0;
     }
     try {
-      const published = readPublishedTurnFileRecords(
-        workspaceDb.dataRoot,
-        workspaceDb.workspaceId,
-        input.threadId,
+      const published = readNativeTurnHistory(
+        nativeProductScope(workspaceDb.dataRoot, {
+          kind: 'workspace',
+          workspaceId: workspaceDb.workspaceId,
+        }),
         turnId
       );
+      if (published && published.turn.threadId !== input.threadId)
+        throw new Error('Runtime activity Turn belongs to another Thread.');
       const reply = published?.turn.items.findLast(
         (item) =>
           item.type === 'assistant-message' && item.text.length > 0 && isSafeTimelineText(item.text)

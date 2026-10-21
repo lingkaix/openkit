@@ -155,7 +155,7 @@ export async function withTurnModelCapture<T>(
               ? sourceCommit
               : `${releaseTag}@${sourceCommit}`;
         // Admission time and identity let the existing writer deduplicate exact re-entry and reject rebinding.
-        appendWorkObservation(captureDb, {
+        await appendWorkObservation(captureDb, {
           threadId: turn.threadId,
           turnId: turn.id,
           observation: {
@@ -198,7 +198,7 @@ export async function withTurnModelCapture<T>(
   }
 }
 
-/** Binds persisted admission and appends admitted semantic bytes through the sole Core writer. */
+/** Binds persisted admission and appends admitted semantic bytes through the sole native writer. */
 export class ModelCapture {
   private readonly enabled: boolean;
   private readonly attemptId = randomUUID();
@@ -225,10 +225,10 @@ export class ModelCapture {
   }
 
   /** Records a pre-adapter semantic request without cache keys, metadata or private carriers. */
-  public request(request: unknown): void {
+  public async request(request: unknown): Promise<void> {
     const input = record(request);
     const reasoning = record(input.reasoning);
-    this.record('request', 'request', () => admittedModelRequest(request), {
+    await this.record('request', 'request', () => admittedModelRequest(request), {
       providerRef: this.providerRef,
       model: input.model,
       systemPromptDigest: digestLlmSystemPrompt({
@@ -264,8 +264,8 @@ export class ModelCapture {
   }
 
   /** Defers original event bytes until the bounded assistant message passes a whole-unit scan. */
-  public event(event: ModelSemanticEvent): void {
-    this.record(
+  public async event(event: ModelSemanticEvent): Promise<void> {
+    await this.record(
       'response',
       event.type,
       () => event,
@@ -290,8 +290,10 @@ export class ModelCapture {
             containsExcludedCredential(parts.join(''), this.secrets)
           )
         )
-          this.rejectPending('credential-excluded');
-        else for (const pending of this.pending) this.append(pending.observation, pending.bodies);
+          await this.rejectPending('credential-excluded');
+        else
+          for (const pending of this.pending)
+            await this.append(pending.observation, pending.bodies);
       }
       this.pending = [];
       this.pendingBytes = 0;
@@ -300,21 +302,23 @@ export class ModelCapture {
   }
 
   /** Discards a whole incomplete message without publishing any original fragment. */
-  private rejectPending(reason: 'credential-excluded' | 'limit-exceeded' | 'capture-failed'): void {
+  private async rejectPending(
+    reason: 'credential-excluded' | 'limit-exceeded' | 'capture-failed'
+  ): Promise<void> {
     this.unitFailure = reason;
-    for (const pending of this.pending) this.gap(pending.observation, reason);
+    for (const pending of this.pending) await this.gap(pending.observation, reason);
     this.pending = [];
     this.pendingBytes = 0;
   }
 
   /** Commits structural metadata even when full capture is off or content admission fails. */
-  private record(
+  private async record(
     direction: 'request' | 'response',
     event: string,
     content: () => unknown,
     metadata: Record<string, unknown> = {},
     defer = false
-  ): void {
+  ): Promise<void> {
     const id = `${this.attemptId}:${this.sequence++}`;
     const ts = new Date().toISOString();
     let bytes: Uint8Array | undefined;
@@ -342,7 +346,7 @@ export class ModelCapture {
       state = { state: 'unavailable', reason: 'limit-exceeded' };
     }
     if (defer && state.state === 'unavailable' && !this.unitFailure)
-      this.rejectPending(
+      await this.rejectPending(
         state.reason as 'credential-excluded' | 'limit-exceeded' | 'capture-failed'
       );
     const observation: WorkObservationDraft = {
@@ -378,7 +382,7 @@ export class ModelCapture {
       },
     };
     if (containsExcludedCredential(metadata, this.secrets)) {
-      this.gap(observation, 'credential-excluded');
+      await this.gap(observation, 'credential-excluded');
       return;
     }
     const bodies = bytes
@@ -391,7 +395,7 @@ export class ModelCapture {
           },
         ]
       : [];
-    this.append(observation, bodies, defer);
+    await this.append(observation, bodies, defer);
     if (defer && bytes) {
       this.pending.push({ observation, bodies });
       this.pendingBytes += bytes.byteLength;
@@ -399,13 +403,13 @@ export class ModelCapture {
   }
 
   /** Commits metadata immediately; deferred bytes remain solely in bounded process memory. */
-  private append(
+  private async append(
     observation: WorkObservationDraft,
     bodies: readonly AdmittedWorkBody[],
     defer = false
-  ): void {
+  ): Promise<void> {
     try {
-      appendWorkObservation(this.context.workspaceDb, {
+      await appendWorkObservation(this.context.workspaceDb, {
         threadId: this.context.threadId,
         turnId: this.context.turnId,
         observation,
@@ -413,17 +417,17 @@ export class ModelCapture {
         ...(defer ? { deferBodyPublication: true } : {}),
       });
     } catch {
-      this.gap(observation, 'capture-failed');
+      await this.gap(observation, 'capture-failed');
     }
   }
 
   /** Records a failed or excluded publication against the exact original observation. */
-  private gap(
+  private async gap(
     observation: WorkObservationDraft,
     reason: 'credential-excluded' | 'limit-exceeded' | 'capture-failed'
-  ): void {
+  ): Promise<void> {
     try {
-      appendWorkObservation(this.context.workspaceDb, {
+      await appendWorkObservation(this.context.workspaceDb, {
         threadId: this.context.threadId,
         turnId: this.context.turnId,
         observation: {

@@ -8,7 +8,7 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAuthMiddleware } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import type { ProviderProfile } from './config/providers-loader.js';
@@ -24,6 +24,7 @@ import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountError } from './llm/provider-subscription-accounts.js';
 import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -1078,8 +1079,8 @@ describe('OpenAI-compatible agent gateway', () => {
   it('denies an attributed Gateway call when current Workspace authority is revoked before provider dispatch', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-current-authority-'));
     const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Gateway current authority');
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Gateway current authority');
     const providerOptions = createOllamaProviderOptions();
     let upstreamCalls = 0;
 
@@ -1166,13 +1167,13 @@ describe('OpenAI-compatible agent gateway', () => {
   ])('rejects foreign private Turn capture hints on %s before dispatch', async (path) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
     const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Private capture');
-    const thread = store.createThread(workspace.id, 'Private', undefined, 'conversation', {
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Private capture');
+    const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
-    const turn = store.createTurn(workspace.id, thread.id, 'Private prompt', {
+    const turn = await store.createTurn(workspace.id, thread.id, 'Private prompt', {
       kind: 'user',
       id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
@@ -1212,10 +1213,10 @@ describe('OpenAI-compatible agent gateway', () => {
   it('records durable usage for attributed Anthropic Chat Completions through pi-ai', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-usage-'));
     const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Gateway usage');
-    store.createThread(workspace.id, 'Gateway usage', testEntityId('th', 'thread_1'));
-    store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Gateway usage');
+    await store.createThread(workspace.id, 'Gateway usage', testEntityId('th', 'thread_1'));
+    await store.createTurn(
       workspace.id,
       testEntityId('th', 'thread_1'),
       'Gateway usage',
@@ -1406,8 +1407,8 @@ describe('OpenAI-compatible agent gateway', () => {
   it('persists a pre-adapter system-prompt digest on attributed family llm CapabilityCall rows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-system-prompt-digest-'));
     const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Gateway system-prompt digest');
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Gateway system-prompt digest');
     const defaultLiteral = 'You are a helpful assistant.';
 
     try {
@@ -1502,8 +1503,8 @@ describe('OpenAI-compatible agent gateway', () => {
   it('opens no CapabilityCall for a public Gateway request that has a workspace database but no lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-unattributed-'));
     const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Unattributed gateway');
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Unattributed gateway');
 
     try {
       applyMigrations(coreDb);
@@ -1563,9 +1564,13 @@ describe('OpenAI-compatible agent gateway', () => {
   it('records durable usage for attributed native OpenAI-compatible Chat Completions', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-openai-compatible-usage-'));
     const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Native OpenAI usage');
-    store.createThread(workspace.id, 'Native OpenAI usage', testEntityId('th', 'thread_openai'));
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Native OpenAI usage');
+    await store.createThread(
+      workspace.id,
+      'Native OpenAI usage',
+      testEntityId('th', 'thread_openai')
+    );
 
     try {
       applyMigrations(coreDb);
@@ -3950,4 +3955,9 @@ it('the API-key path restores the same member on next resolve without reload', a
     reload.mockRestore();
     coreDb.sqlite.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

@@ -14,14 +14,14 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const owned: { root: string; db: CoreDb }[] = [];
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'automation-api-'));
   const db = openCoreDb(root);
   applyMigrations(db);
   const localUserId = ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Recurring');
-  const thread = store.createThread(workspace.id, 'Target');
+  const workspace = await store.createWorkspace('Recurring');
+  const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
@@ -68,7 +68,7 @@ afterEach(() => {
 
 describe('fixed-interval automation operations', () => {
   it('creates paused, resumes with exact time, pauses, edits, and retains a deleted tombstone', async () => {
-    const { request, input, automationStore, localUserId } = fixture();
+    const { request, input, automationStore, localUserId } = await fixture();
     const created = await request('create', input);
     expect(created.status).toBe(201);
     const schedule = await created.json();
@@ -105,7 +105,7 @@ describe('fixed-interval automation operations', () => {
   });
 
   it('rejects cron, short cadence, actor substitution, missing target, stale revision and invalid resume', async () => {
-    const { request, input } = fixture();
+    const { request, input } = await fixture();
     for (const invalid of [
       { ...input, cron: '* * * * *' },
       { ...input, intervalSeconds: 4 },
@@ -137,7 +137,7 @@ describe('fixed-interval automation operations', () => {
   });
 
   it('lists admitted Workspace definitions without treating the responsible user as a privilege tier', async () => {
-    const { db, store, input, automationStore } = fixture();
+    const { db, store, input, automationStore } = await fixture();
     const created = automationStore.createAutomation(testEntityId('usr', 'user_creator'), input);
     const operations = createAutomationOperationImplementations({
       coreDb: db,
@@ -166,7 +166,7 @@ describe('fixed-interval automation operations', () => {
 });
 
 it('paginates lossless ranges directly and joins accepted-but-queued truth without exposing host roots', async () => {
-  const { request, input, automationStore, setTime } = fixture();
+  const { request, input, automationStore, setTime } = await fixture();
   const schedule = await (await request('create', { ...input, intervalSeconds: 3600 })).json();
   expect(
     (
@@ -228,7 +228,7 @@ it('paginates lossless ranges directly and joins accepted-but-queued truth witho
 });
 
 it('attributes a member edit to the actual caller while preserving the responsible actor', async () => {
-  const { db, store, input, automationStore } = fixture();
+  const { db, store, input, automationStore } = await fixture();
   const schedule = automationStore.createAutomation(testEntityId('usr', 'user_creator'), input);
   const operations = createAutomationOperationImplementations({
     coreDb: db,

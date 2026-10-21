@@ -1,3 +1,4 @@
+import { createTestStore } from '../test-support/store.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -89,10 +90,10 @@ const timestamp = '2026-07-12T00:00:00.000Z';
  * @param prefix Temporary directory prefix.
  * @returns Store plus its workspace and canonical root.
  */
-function createFixture(prefix: string) {
+async function createFixture(prefix: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Direct canonical write boundary');
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Direct canonical write boundary');
 
   return {
     dataRoot,
@@ -182,12 +183,12 @@ function workspaceImportPayload(
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
   const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -224,7 +225,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
@@ -236,7 +237,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 describe('direct canonical write boundaries', () => {
   it('rejects a symlinked import staging parent before staging or publication', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-staging-symlink-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7cc0-bb9d-9038c067cd62';
     const workspacesRoot = join(dataRoot, 'workspaces');
     const outsideRoot = installOutsideParent(
@@ -267,7 +268,7 @@ describe('direct canonical write boundaries', () => {
     'managed-prefix',
     'staging',
   ] as const)('rejects a symlinked Source %s parent without writing outside the Knowledge Base', async (boundary) => {
-    const f = createFixture(`openkit-source-${boundary}-symlink-`);
+    const f = await createFixture(`openkit-source-${boundary}-symlink-`);
     const coreDb = openCoreDb(f.dataRoot);
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
@@ -304,16 +305,16 @@ describe('direct canonical write boundaries', () => {
   it.each([
     ['starts after sequence 1', [1, 2]],
     ['skips an intermediate sequence', [0, 2]],
-  ] as const)('rejects a canonical event log that %s', (_case, retainedIndexes) => {
-    const { dataRoot, store, workspace, workspaceRoot } = createFixture(
+  ] as const)('rejects a canonical event log that %s', async (_case, retainedIndexes) => {
+    const { dataRoot, store, workspace, workspaceRoot } = await createFixture(
       'openkit-event-continuity-'
     );
-    const thread = store.createThread(workspace.id, 'Event continuity thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Validate event continuity', {
+    const thread = await store.createThread(workspace.id, 'Event continuity thread');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Validate event continuity', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const item = store.createItem({
+    const item = await store.createItem({
       id: testEntityId('it', `it_${turn.id}`),
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
@@ -365,7 +366,7 @@ describe('direct canonical write boundaries', () => {
     const events = readFileSync(eventsPath, 'utf8').trim().split('\n');
     writeFileSync(eventsPath, `${retainedIndexes.map((index) => events[index]).join('\n')}\n`);
 
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 });
 
@@ -407,17 +408,17 @@ describe('canonical file durability failures', () => {
 });
 
 /** Composes each single-file producer with its real disk reader after replacement. */
-function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
+async function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
   const root = mkdtempSync(join(tmpdir(), `openkit-${kind}-durability-`));
   if (kind === 'feedback') {
-    const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Feedback durability');
-    const thread = store.createThread(workspace.id, 'Feedback');
-    const turn = store.createTurn(workspace.id, thread.id, 'Durable feedback', {
+    const store = createTestStore({ dataRoot: root });
+    const workspace = await store.createWorkspace('Feedback durability');
+    const thread = await store.createThread(workspace.id, 'Feedback');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Durable feedback', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
     const path = feedbackFilePath(store, store.getTurnById(turn.id));
     return {
       root,
@@ -451,8 +452,8 @@ describe('single-file publication seam', () => {
     'backup',
     'vault',
     'feedback',
-  ] as const)('syncs the %s bytes before rename and its exact parent afterward', (kind) => {
-    const f = durableFileFixture(kind);
+  ] as const)('syncs the %s bytes before rename and its exact parent afterward', async (kind) => {
+    const f = await durableFileFixture(kind);
     durability.events.length = 0;
     try {
       f.write();
@@ -481,8 +482,8 @@ describe('single-file publication seam', () => {
   it.each([
     'vault',
     'feedback',
-  ] as const)('preserves prior %s authority when its staged file sync fails', (kind) => {
-    const f = durableFileFixture(kind);
+  ] as const)('preserves prior %s authority when its staged file sync fails', async (kind) => {
+    const f = await durableFileFixture(kind);
     const before = readFileSync(f.path);
     durability.events.length = 0;
     durability.fail = (candidate, directory) =>
@@ -504,8 +505,8 @@ describe('single-file publication seam', () => {
   it.each([
     'vault',
     'feedback',
-  ] as const)('rejects %s success after its renamed parent sync fails and retains readable bytes', (kind) => {
-    const f = durableFileFixture(kind);
+  ] as const)('rejects %s success after its renamed parent sync fails and retains readable bytes', async (kind) => {
+    const f = await durableFileFixture(kind);
     durability.events.length = 0;
     durability.fail = (candidate, directory) =>
       directory &&

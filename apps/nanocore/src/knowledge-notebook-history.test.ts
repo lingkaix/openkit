@@ -9,6 +9,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -22,14 +23,14 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 const fixtures: Array<ReturnType<typeof fixture>> = [];
 
 /** Compose actual public admission, Store, SQLite and Git through the existing fresh-scope initializer. */
-function fixture(snapshotRoot?: string) {
+async function fixture(snapshotRoot?: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-history-'));
   if (snapshotRoot) cpSync(snapshotRoot, dataRoot, { recursive: true });
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = snapshotRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
+    const store = snapshotRoot ? new FsStore({ dataRoot }) : await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -174,7 +175,7 @@ describe('native Workspace Notebook history and restore', () => {
   let original: Awaited<ReturnType<typeof seed>>;
   // Share the closed native admission prefix; every mutation uses an independent copy.
   beforeAll(async () => {
-    const f = fixture();
+    const f = await fixture();
     original = await seed(f);
     f.workspaceDb.sqlite.close();
     f.coreDb.sqlite.close();
@@ -201,7 +202,7 @@ describe('native Workspace Notebook history and restore', () => {
     let updated: string;
     let baseRevision: string;
     beforeAll(async () => {
-      const f = fixture(originalSnapshotRoot);
+      const f = await fixture(originalSnapshotRoot);
       s = original;
       restored = s.original.replace('review_state: accepted', 'review_state: user-authored');
       updated = restored.replace('Original exact bytes.', 'Later exact bytes.');
@@ -233,7 +234,7 @@ describe('native Workspace Notebook history and restore', () => {
     });
 
     it('returns authorized exact history and diff bytes', async () => {
-      const f = fixture(snapshotRoot);
+      const f = await fixture(snapshotRoot);
       const history = await call(f, 'knowledge.notebook.history', { limit: 2 });
       expect(history.status, JSON.stringify(history.body)).toBe(200);
       expect(history.body.revisions).toEqual([
@@ -301,7 +302,7 @@ describe('native Workspace Notebook history and restore', () => {
     });
 
     it('restores exact bytes as new evidence', async () => {
-      const f = fixture(snapshotRoot);
+      const f = await fixture(snapshotRoot);
       const missing = await call(f, 'knowledge.notebook.restore', {
         requestId: randomUUID(),
         baseRevision,
@@ -327,7 +328,7 @@ describe('native Workspace Notebook history and restore', () => {
 
     describe('published restore receipt', () => {
       beforeAll(async () => {
-        const restoredFixture = fixture(snapshotRoot);
+        const restoredFixture = await fixture(snapshotRoot);
         restoreResult = await call(restoredFixture, 'knowledge.notebook.restore', restoreInput);
         expect(restoreResult.status, JSON.stringify(restoreResult.body)).toBe(200);
         restoredFixture.workspaceDb.sqlite.close();
@@ -336,7 +337,7 @@ describe('native Workspace Notebook history and restore', () => {
         fixtures.splice(fixtures.indexOf(restoredFixture), 1);
       });
       it('replays the exact restore receipt and refuses a stale request without overwriting the winner', async () => {
-        const f = fixture(restoredSnapshotRoot);
+        const f = await fixture(restoredSnapshotRoot);
         const input = restoreInput;
         const restore = restoreResult;
         const winner = restore.body.notebookRevision;
@@ -356,7 +357,7 @@ describe('native Workspace Notebook history and restore', () => {
       });
 
       it('requires explicit removal confirmation and retains the original history bytes', async () => {
-        const f = fixture(restoredSnapshotRoot);
+        const f = await fixture(restoredSnapshotRoot);
         const winner = restoreResult.body.notebookRevision;
         const removal = {
           requestId: randomUUID(),
@@ -388,7 +389,7 @@ describe('native Workspace Notebook history and restore', () => {
     });
   });
   it('bounds ordinary UTF-8 diff display and refuses an oversized restore before publication', async () => {
-    const f = fixture(originalSnapshotRoot);
+    const f = await fixture(originalSnapshotRoot);
     const s = original;
     const large = page('large', '🧭'.repeat(10_000), s.reference).replace(
       'review_state: accepted',
@@ -479,7 +480,7 @@ describe('native Workspace Notebook history and restore', () => {
     ).toBe(removed);
   });
   it('withholds source-denied historical metadata and bytes and rechecks a revoked credential', async () => {
-    const f = fixture();
+    const f = await fixture();
     const origin = f.store.createThread(DEMO_WORKSPACE_ID, 'Source audience');
     const source = await call(f, 'knowledge.source.register', {
       requestId: randomUUID(),
@@ -573,4 +574,9 @@ describe('native Workspace Notebook history and restore', () => {
     expect((await invoke('knowledge.notebook.restore', restore)).status).toBe(401);
     expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

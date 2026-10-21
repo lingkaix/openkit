@@ -255,7 +255,7 @@ export function createWorkerEnvironmentActivation(
           );
           dependencies.requireCurrentAdministrator(context.actor);
           requireCurrentCandidateAudiences(dependencies, context.actor, request);
-          const turn = createActivationTurn(
+          const turn = await createActivationTurn(
             dependencies.store,
             context.actor,
             home,
@@ -348,7 +348,7 @@ export function createWorkerEnvironmentActivation(
             response,
             now()
           );
-          dependencies.store.createArtifact(artifact);
+          await dependencies.store.createArtifact(artifact);
           await dependencies.store.updateTurn(turn.id, {
             completedAt: artifact.createdAt,
             status: 'completed',
@@ -723,7 +723,7 @@ function requireExactAffectedResult(
 }
 
 /** Creates the deterministic private activation Turn and request-digest status Item. */
-function createActivationTurn(
+async function createActivationTurn(
   store: FsStore,
   actor: Actor,
   home: CandidateHome,
@@ -732,7 +732,7 @@ function createActivationTurn(
   timestamp: string
 ) {
   requireNoUnrelatedRunningTurn(store, home, identity.turnId);
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     home.workspaceId,
     home.threadId,
     'Activate Worker environment',
@@ -740,7 +740,7 @@ function createActivationTurn(
     null,
     { startedAt: timestamp, turnId: identity.turnId }
   );
-  store.createItem({
+  await store.createItem({
     completedAt: timestamp,
     createdAt: timestamp,
     id: identity.itemId,

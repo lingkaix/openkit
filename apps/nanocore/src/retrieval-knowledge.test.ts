@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
@@ -13,6 +12,7 @@ import { createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const testRoots: string[] = [];
@@ -35,8 +35,8 @@ describe('Knowledge retrieval segmentation', () => {
   ])('retrieves segmented terms from the body and title: $title', async ({ body, one, two }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-knowledge-cjk-'));
     testRoots.push(dataRoot);
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Knowledge segmentation');
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Knowledge segmentation');
     const knowledgeBaseId = readDefaultKnowledgeBaseId({
       dataRoot,
       scope: { kind: 'workspace', workspaceId: workspace.id },

@@ -10,7 +10,6 @@ import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-
 import {
   AgentEnvironmentSnapshotReadError,
   listExportableAgentEnvironmentPackageSnapshots,
@@ -18,6 +17,7 @@ import {
   snapshotDigest,
 } from '../runtime/aep-snapshot-ledger.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
@@ -35,21 +35,22 @@ function mkdtempSync(prefix: string): string {
   roots.push(root);
   return root;
 }
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe('worker Context Package authority reader', () => {
-  it('reads the named AEP despite unrelated historical capture omissions and rejects selected corruption', () => {
+  it('reads the named AEP despite unrelated historical capture omissions and rejects selected corruption', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-context-authority-aep-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
 
     try {
-      const turn = store.createTurn(
+      const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Run worker',
@@ -57,7 +58,7 @@ describe('worker Context Package authority reader', () => {
         null,
         { turnId: 'tu_00000000-0000-72cd-966c-00128857206d' }
       );
-      const session = store.createAgentSession({
+      const session = await store.createAgentSession({
         id: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
         agentId: 'agent_codex_host',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -67,7 +68,7 @@ describe('worker Context Package authority reader', () => {
         createdAt: turn.startedAt!,
         updatedAt: turn.startedAt!,
       });
-      store.updateTurn(turn.id, { agentSessionId: session.id });
+      await store.updateTurn(turn.id, { agentSessionId: session.id });
       const environmentPackage = resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: session.id,
@@ -84,7 +85,7 @@ describe('worker Context Package authority reader', () => {
         createdAt: turn.startedAt!,
         environmentPackage,
       });
-      store.updateAgentSession(session.id, {
+      await store.updateAgentSession(session.id, {
         environmentPackageSnapshotId: environmentPackage.snapshotId,
       });
       const snapshotsRoot = join(
@@ -133,7 +134,7 @@ describe('worker Context Package authority reader', () => {
         )
       ).toEqual(record.snapshot);
       // Historical delivery names its snapshot even after the reusable session pointer advances.
-      store.updateAgentSession(session.id, { environmentPackageSnapshotId: 'aepsnap_later' });
+      await store.updateAgentSession(session.id, { environmentPackageSnapshotId: 'aepsnap_later' });
       expect(
         reader.readAgentEnvironmentPackage(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -171,11 +172,11 @@ describe('worker Context Package authority reader', () => {
     }
   });
 
-  it('rejects a Workspace database outside the product store lineage', () => {
+  it('rejects a Workspace database outside the product store lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-context-authority-lineage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71f5-922f-6fd42f52f580');
 
     try {
@@ -218,11 +219,11 @@ function sourceInventory(
 }
 
 describe('S39 exact source owner map', () => {
-  it('reads actual Artifact version, retained Material revision and immutable Turn ordinal without head substitution', () => {
+  it('reads actual Artifact version, retained Material revision and immutable Turn ordinal without head substitution', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 's39-source-authorities-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
     try {
@@ -233,7 +234,7 @@ describe('S39 exact source owner map', () => {
       writeFileSync(stage, original);
       const otherStage = join(dataRoot, 'private-other-input');
       writeFileSync(otherStage, original);
-      const turn = store.createTurn(
+      const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Read original',
@@ -262,7 +263,7 @@ describe('S39 exact source owner map', () => {
       const timestamp = turn.startedAt!;
       const artifactText = '# Source artifact\n';
       const artifactDigest = `sha256:${createHash('sha256').update(artifactText).digest('hex')}`;
-      store.createArtifact({
+      await store.createArtifact({
         id: 'ar_00000000-0000-7000-8000-0000000003eb',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -333,7 +334,7 @@ describe('S39 exact source owner map', () => {
           source: { ...artifact.source, kind: 'artifact', artifactVersion: 2 },
         })
       ).toBeNull();
-      store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+      await store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
       store.commitArtifactVersion({
         workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,

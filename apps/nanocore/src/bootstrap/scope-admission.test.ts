@@ -18,6 +18,7 @@ import {
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   createBootReadinessSnapshot,
   isScopeAdmitted,
@@ -111,11 +112,11 @@ describe('scope-owned admission', () => {
     ]);
   });
 
-  it('loads healthy file history without publishing a corrupt sibling cache', () => {
+  it('loads healthy file history without publishing a corrupt sibling cache', async () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
-    const good = initial.createWorkspace('Healthy history');
-    const bad = initial.createWorkspace('Damaged history');
+    const initial = createTestStore({ dataRoot });
+    const good = await initial.createWorkspace('Healthy history');
+    const bad = await initial.createWorkspace('Damaged history');
     const path = join(dataRoot, 'workspaces', bad.id, 'workspace-record.json');
     const damaged = '{not a canonical record';
     writeFileSync(path, damaged);
@@ -131,11 +132,11 @@ describe('scope-owned admission', () => {
     });
   });
 
-  it('validates file authority before scoped migration or call-loss recovery writes', () => {
+  it('validates file authority before scoped migration or call-loss recovery writes', async () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
-    const bad = initial.createWorkspace('Malformed file authority');
-    const good = initial.createWorkspace('Healthy file authority');
+    const initial = createTestStore({ dataRoot });
+    const bad = await initial.createWorkspace('Malformed file authority');
+    const good = await initial.createWorkspace('Healthy file authority');
     const callId = 'cap_00000000-0000-7800-b75d-def690d8fb88';
     for (const workspace of [bad, good]) {
       const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -176,11 +177,11 @@ describe('scope-owned admission', () => {
     }
   });
 
-  it('contains an unreadable Workspace traversal without refusing its readable sibling', () => {
+  it('contains an unreadable Workspace traversal without refusing its readable sibling', async () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
-    const bad = initial.createWorkspace('Unreadable subtree');
-    const good = initial.createWorkspace('Readable subtree');
+    const initial = createTestStore({ dataRoot });
+    const bad = await initial.createWorkspace('Unreadable subtree');
+    const good = await initial.createWorkspace('Readable subtree');
     const badRoot = join(dataRoot, 'workspaces', bad.id);
     chmodSync(badRoot, 0);
     try {
@@ -196,10 +197,10 @@ describe('scope-owned admission', () => {
     }
   });
 
-  it('validates files independently of approval SQL that needs an existing native migration', () => {
+  it('validates files independently of approval SQL that needs an existing native migration', async () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
-    const workspace = initial.createWorkspace('Earlier native schema');
+    const initial = createTestStore({ dataRoot });
+    const workspace = await initial.createWorkspace('Earlier native schema');
     const current = openWorkspaceDb(dataRoot, workspace.id);
     const ledgerDdl = current.sqlite
       .prepare("SELECT sql FROM sqlite_master WHERE name = '__drizzle_migrations'")
@@ -234,11 +235,11 @@ describe('scope-owned admission', () => {
     expect(new FsStore({ dataRoot }).getWorkspace(workspace.id).name).toBe('Earlier native schema');
   });
 
-  it('removes a later-refused Workspace from an already published Store listing', () => {
+  it('removes a later-refused Workspace from an already published Store listing', async () => {
     const dataRoot = root();
-    const store = new FsStore({ dataRoot });
-    const bad = store.createWorkspace('Migration failure');
-    const good = store.createWorkspace('Still admitted');
+    const store = createTestStore({ dataRoot });
+    const bad = await store.createWorkspace('Migration failure');
+    const good = await store.createWorkspace('Still admitted');
     const db = openWorkspaceDb(dataRoot, bad.id);
     try {
       db.sqlite.exec(
@@ -255,16 +256,16 @@ describe('scope-owned admission', () => {
     expect(new FsStore({ dataRoot }).listWorkspaces().map(({ id }) => id)).toEqual([good.id]);
   });
 
-  it('excludes previously cached Items after a late Workspace refusal without changing history', () => {
+  it('excludes previously cached Items after a late Workspace refusal without changing history', async () => {
     const dataRoot = root();
-    const store = new FsStore({ dataRoot });
-    const bad = store.createWorkspace('Refused aggregate source');
-    const good = store.createWorkspace('Admitted aggregate source');
+    const store = createTestStore({ dataRoot });
+    const bad = await store.createWorkspace('Refused aggregate source');
+    const good = await store.createWorkspace('Admitted aggregate source');
     const ids = new Map<string, string>();
     let badItemsPath = '';
     for (const workspace of [bad, good]) {
-      const thread = store.createThread(workspace.id, 'Retained source');
-      const turn = store.createTurn(
+      const thread = await store.createThread(workspace.id, 'Retained source');
+      const turn = await store.createTurn(
         workspace.id,
         thread.id,
         'Retained input',
@@ -274,7 +275,7 @@ describe('scope-owned admission', () => {
       const id = allocateEntityId('it');
       ids.set(workspace.id, id);
       const now = new Date().toISOString();
-      store.createItem({
+      await store.createItem({
         id,
         owner: turn.owner,
         threadId: thread.id,

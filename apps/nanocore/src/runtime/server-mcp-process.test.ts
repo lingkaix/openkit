@@ -23,9 +23,9 @@ it('partitions shared stdio sessions and mutable data by consuming Workspace and
   applyMigrations(coreDb);
   const store = new FsStore({ dataRoot });
   const consumers = [
-    store.createWorkspace('Shared first'),
-    store.createWorkspace('Shared second'),
-    store.createWorkspace('Local collision'),
+    await store.createWorkspace('Shared first'),
+    await store.createWorkspace('Shared second'),
+    await store.createWorkspace('Local collision'),
   ];
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   try {

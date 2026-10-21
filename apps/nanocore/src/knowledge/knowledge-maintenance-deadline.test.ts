@@ -47,7 +47,7 @@ type MaintenanceRun = KnowledgeManagerAgentRun | ServerKnowledgeManagerAgentRun;
 type ToolResult = Awaited<ReturnType<AgentTool['execute']>>;
 
 /** Real native scope admission, notebook and editor surround only the replaceable model wait. */
-function fixture(scope: Scope, deadlineMs = 300_000) {
+async function fixture(scope: Scope, deadlineMs = 300_000) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-editor-deadline-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -55,7 +55,7 @@ function fixture(scope: Scope, deadlineMs = 300_000) {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Editor deadline', {
+  const workspace = await store.createWorkspace('Editor deadline', {
     requestId: randomUUID(),
     producer: actor,
     instructionReference: 'test:maintenance-editor-deadline',
@@ -156,13 +156,13 @@ function fixture(scope: Scope, deadlineMs = 300_000) {
     dataRoot,
     initialSnapshot: snapshot,
   });
-  const updateTurn = (
+  const updateTurn = async (
     input: Pick<MaintenanceRun, 'turn'>,
     patch: Parameters<FsStore['updateTurn']>[1]
   ) =>
     input.turn.owner.kind === 'server'
-      ? store.updateServerTurn(input.turn.id, patch)
-      : store.updateTurn(input.turn.id, patch);
+      ? await store.updateServerTurn(input.turn.id, patch)
+      : await store.updateTurn(input.turn.id, patch);
   const dependencies = {
     store,
     coreDb,
@@ -201,13 +201,15 @@ function fixture(scope: Scope, deadlineMs = 300_000) {
     sources: [],
     signal: caller.signal,
   };
-  const maintain = () =>
+  const maintain = async () =>
     scope === 'workspace'
       ? maintainKnowledgeAgent(dependencies satisfies KnowledgeMaintenanceDependencies, input)
       : scope === 'server'
-        ? prepareServerKnowledgeMaintenance(
-            dependencies satisfies ServerKnowledgeMaintenanceDependencies,
-            input
+        ? (
+            await prepareServerKnowledgeMaintenance(
+              dependencies satisfies ServerKnowledgeMaintenanceDependencies,
+              input
+            )
           ).execute()
         : maintainUserMemoryAgent(dependencies satisfies UserMemoryMaintenanceDependencies, input);
   const readTurn = (turnId: string) =>
@@ -243,7 +245,7 @@ describe.each(['workspace', 'server', 'user'] as const)('%s notebook editor dead
     deadlineMs,
     elapsed,
   }) => {
-    const f = fixture(scope, deadlineMs);
+    const f = await fixture(scope, deadlineMs);
     let editorObservation:
       | { kind: 'returned'; result: ToolResult }
       | { kind: 'threw'; error: unknown }
@@ -267,7 +269,7 @@ describe.each(['workspace', 'server', 'user'] as const)('%s notebook editor dead
         summary: 'The current overview is sufficient.',
       });
       expect(input.validateResult('{"summary":"No changes are needed."}')).toBeUndefined();
-      f.updateTurn(input, { status: 'completed', completedAt: new Date().toISOString() });
+      await f.updateTurn(input, { status: 'completed', completedAt: new Date().toISOString() });
       return { turnId: input.turn.id, text: '{"summary":"No changes are needed."}' };
     });
     f.dependencies.run = run;
@@ -297,7 +299,7 @@ describe.each(['workspace', 'server', 'user'] as const)('%s notebook editor dead
     ).toEqual([result]);
   });
   it('stops the editor on caller cancellation before the pinned run deadline', async () => {
-    const f = fixture(scope, 600_000);
+    const f = await fixture(scope, 600_000);
     let editorObservation: 'returned' | 'threw' | undefined;
     const run = vi.fn(async (input: MaintenanceRun) => {
       vi.setSystemTime(Date.now() + 150_000);
@@ -332,7 +334,7 @@ it.each([
   'workspace',
   'user',
 ] as const)('returns the owned timeout code in %s maintenance without publication or retry', async (scope) => {
-  const f = fixture(scope);
+  const f = await fixture(scope);
   const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
   const snapshot = createInMemoryRuntimeConfigSnapshot({
     dataRoot: f.dataRoot,
@@ -473,7 +475,7 @@ it.each([
 });
 
 it('returns the owned timeout code in the Server maintenance summary without publication or retry', async () => {
-  const f = fixture('server');
+  const f = await fixture('server');
   const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
   const snapshot = createInMemoryRuntimeConfigSnapshot({
     dataRoot: f.dataRoot,

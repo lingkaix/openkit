@@ -183,6 +183,40 @@ function knowledgeProposalDraftFailure(error: unknown): never {
   );
 }
 
+/** Complete Knowledge Usage chain on its supplied owner; scope lifetime and migration stay with the caller. */
+export function recordKnowledgeGatewayUsageInDb(
+  writer: ReturnType<typeof openWorkspaceDb>,
+  input: Omit<Parameters<typeof recordKnowledgeGatewayUsage>[0], 'coreDb'>
+): void {
+  const call = startCapabilityCall({
+    authorityActor: input.authorityActor,
+    capabilityId: input.capabilityId,
+    family: 'knowledge',
+    operation: input.operation,
+    providerRef: 'nanocore-knowledge',
+    redactionClass: 'metadata-only',
+    requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
+    serviceRef: input.serviceRef,
+    summary: input.summary,
+    workspaceDb: writer,
+    workspaceId: input.workspaceId,
+  });
+  recordUsage({
+    call,
+    records: [
+      {
+        category: 'tool',
+        providerRef: 'nanocore-knowledge',
+        quantity: 1,
+        source: input.usageSource,
+        unit: 'capability_calls',
+      },
+    ],
+    workspaceDb: writer,
+  });
+  finishCapabilityCall({ workspaceDb: writer, callId: call.id, status: 'succeeded' });
+}
+
 /**
  * Records durable usage for one successful Knowledge Store gateway operation.
  *
@@ -216,34 +250,7 @@ function recordKnowledgeGatewayUsage(input: {
 
   try {
     applyScopedMigrations(workspaceDb);
-    const call = startCapabilityCall({
-      authorityActor: input.authorityActor,
-      capabilityId: input.capabilityId,
-      family: 'knowledge',
-      operation: input.operation,
-      providerRef: 'nanocore-knowledge',
-      redactionClass: 'metadata-only',
-      requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
-      serviceRef: input.serviceRef,
-      summary: input.summary,
-      workspaceDb,
-      workspaceId: input.workspaceId,
-    });
-
-    recordUsage({
-      call,
-      records: [
-        {
-          category: 'tool',
-          providerRef: 'nanocore-knowledge',
-          quantity: 1,
-          source: input.usageSource,
-          unit: 'capability_calls',
-        },
-      ],
-      workspaceDb,
-    });
-    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+    recordKnowledgeGatewayUsageInDb(workspaceDb, input);
   } finally {
     workspaceDb.sqlite.close();
   }
@@ -1606,7 +1613,7 @@ export function createTaskKnowledgePreparation(
       readonly turnId?: string;
     }
   ): Promise<import('./knowledge-manager.js').PreparedTaskKnowledgeContext> => {
-    const admitted = admitOperation(
+    const admitted = await admitOperation(
       KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'],
       value,
       { kind: 'public', actor: context.actor, delivery: 'model' },

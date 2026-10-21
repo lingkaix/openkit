@@ -5,17 +5,18 @@ import { join } from 'node:path';
 import { allocateEntityId, KnowledgeBaseIdSchema } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
-it('publishes one independent default base with each new Workspace and retains it after restart', () => {
+it('publishes one independent default base with each new Workspace and retains it after restart', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-base-creation-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('First base');
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('First base');
   const owner = { dataRoot, scope: { kind: 'workspace' as const, workspaceId: workspace.id } };
   const knowledgeBaseId = readDefaultKnowledgeBaseId(owner);
   expect(KnowledgeBaseIdSchema.safeParse(knowledgeBaseId).success).toBe(true);
-  const other = store.createWorkspace('Another base');
+  const other = await store.createWorkspace('Another base');
   expect(
     readDefaultKnowledgeBaseId({
       dataRoot,
@@ -28,15 +29,15 @@ it('publishes one independent default base with each new Workspace and retains i
   expect(readDefaultKnowledgeBaseId(owner)).toBe(knowledgeBaseId);
 });
 
-it('retains the trusted reminted import base before Notebook publication', () => {
+it('retains the trusted reminted import base before Notebook publication', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-base-import-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const source = store.createWorkspace('Source');
   const workspaceId = allocateEntityId('ws');
   const knowledgeBaseId = allocateEntityId('kb');
   let stagedBase: unknown;
-  store.importWorkspaceSnapshot({
+  await store.importWorkspaceSnapshot({
     workspace: { ...source, id: workspaceId, name: 'Imported' },
     defaultKnowledgeBaseId: knowledgeBaseId,
     threads: [],

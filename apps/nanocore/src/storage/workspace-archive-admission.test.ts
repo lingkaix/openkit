@@ -25,14 +25,14 @@ afterEach(() => {
 });
 
 /** Creates a real server-mode archive owner with an ordinary canonical-user session. */
-function archiveFixture(fileAdmission?: FileStorageAdmission) {
+async function archiveFixture(fileAdmission?: FileStorageAdmission) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-archive-admission-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Archive admission');
+  const workspace = await store.createWorkspace('Archive admission');
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -67,7 +67,7 @@ function archiveFixture(fileAdmission?: FileStorageAdmission) {
 }
 
 /** Produces verified archive bytes through the retained download route, without fabricating archive authority. */
-async function exportedArchive(fixture: ReturnType<typeof archiveFixture>) {
+async function exportedArchive(fixture: Awaited<ReturnType<typeof archiveFixture>>) {
   const response = await fixture.app.request(
     ...operationRequest(
       'workspace.export',
@@ -84,7 +84,7 @@ async function exportedArchive(fixture: ReturnType<typeof archiveFixture>) {
 }
 
 /** Reads canonical registry and membership bytes so refusal cannot hide a durable import or owner change. */
-function workspaceAuthority(fixture: ReturnType<typeof archiveFixture>) {
+function workspaceAuthority(fixture: Awaited<ReturnType<typeof archiveFixture>>) {
   return {
     members: fixture.coreDb.sqlite
       .prepare('SELECT * FROM workspace_members ORDER BY workspace_id, user_id')
@@ -104,7 +104,7 @@ describe('retained archive primary admission', () => {
       () => 0n,
       () => availableBytes
     );
-    const fixture = archiveFixture(admission);
+    const fixture = await archiveFixture(admission);
     const archive = await exportedArchive(fixture);
     const before = workspaceAuthority(fixture);
     // The existing App-owned reservation can consume capacity before the next transfer.
@@ -149,9 +149,9 @@ describe('retained archive primary admission', () => {
     ['workspace-readonly', 'import-dry-run'],
     ['workspace-readonly', 'import'],
   ] as const)('refuses %s bearer foreign archive %s before staging or ownership changes', async (scope, operation) => {
-    const source = archiveFixture();
+    const source = await archiveFixture();
     const archive = await exportedArchive(source);
-    const target = archiveFixture();
+    const target = await archiveFixture();
     const credential = target.token(scope);
     const before = workspaceAuthority(target);
     const staging = join(target.dataRoot, 'server', 'files', 'workspace-archive-requests');
@@ -192,7 +192,7 @@ describe('retained archive primary admission', () => {
     'session',
     'administrator',
   ] as const)('fences retained %s download while its Workspace is closed', async (actor) => {
-    const fixture = archiveFixture();
+    const fixture = await archiveFixture();
     const archive = await exportedArchive(fixture);
     const headers =
       actor === 'administrator'
@@ -216,9 +216,9 @@ describe('retained archive primary admission', () => {
     'session',
     'administrator',
   ] as const)('preserves %s foreign archive dry-run and import', async (actor) => {
-    const source = archiveFixture();
+    const source = await archiveFixture();
     const archive = await exportedArchive(source);
-    const target = archiveFixture();
+    const target = await archiveFixture();
     const headers = {
       ...(actor === 'administrator'
         ? { authorization: `Bearer ${target.token('server-admin').secret}` }

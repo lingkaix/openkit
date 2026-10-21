@@ -147,7 +147,7 @@ function toolOutput(request: TransportRequest, name: string) {
 }
 
 /** Real scoped admission, Sources, fixed-base editor/publication, human Review and retrieval. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'typed-rule-continuity-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -155,7 +155,7 @@ function fixture() {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Aster rule continuity', {
+  const workspace = await store.createWorkspace('Aster rule continuity', {
     requestId: randomUUID(),
     producer: actor,
     instructionReference: 'fixture:human-notebook-creation',
@@ -229,8 +229,8 @@ function fixture() {
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
-    pin: (input) => {
-      store.updateTurn(input.turn.id, {
+    pin: async (input) => {
+      await store.updateTurn(input.turn.id, {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'knowledge',
@@ -296,7 +296,7 @@ function fixture() {
           baseRevision,
         });
         expect(input.validateResult('{"summary":"Native candidate prepared."}')).toBeUndefined();
-        store.updateTurn(input.turn.id, {
+        await store.updateTurn(input.turn.id, {
           status: 'completed',
           completedAt: new Date().toISOString(),
         });
@@ -360,11 +360,17 @@ function fixture() {
     /** Each ask starts in a new empty asking Thread and reads only real selected page bytes. */
     ask: async (pages: ExpectedPage[], revision: string) => {
       const question = 'Find the current Aster metric rules for issue preparation.';
-      const thread = store.createThread(workspace.id, 'Fresh issue', undefined, 'conversation', {
-        visibility: 'private',
-        privateOwnerUserId: userId,
-      });
-      const turn = store.createTurn(workspace.id, thread.id, question, actor);
+      const thread = await store.createThread(
+        workspace.id,
+        'Fresh issue',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: userId,
+        }
+      );
+      const turn = await store.createTurn(workspace.id, thread.id, question, actor);
       expect(turn.items).toEqual([]);
       const askingCall = startCapabilityCall({
         workspaceDb,
@@ -513,7 +519,7 @@ function fixture() {
 }
 
 it('D1 preserves three confirmed Rule origins and exact evidence across Review, reopen and a fresh KM ask', async () => {
-  const f = fixture();
+  const f = await fixture();
   const pages: ExpectedPage[] = [];
   // Source writes are serial at this Notebook's one publication head.
   for (const rule of RULES) {
@@ -552,7 +558,7 @@ it('D1 preserves three confirmed Rule origins and exact evidence across Review, 
 }, 120_000);
 
 it('D2 publishes supersession and replacement in one fixed-base revision without losing prior meaning or authority', async () => {
-  const f = fixture();
+  const f = await fixture();
   const originalRule = RULES[0]!;
   const originalPin = await f.capture(`${originalRule.meaning}\n\n${originalRule.origin}\n`);
   const original = rulePage(f.workspace.id, originalRule, [originalPin]);

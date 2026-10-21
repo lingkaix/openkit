@@ -80,7 +80,7 @@ it('admits member management and exact member deletion replay while preserving p
     applyMigrations(coreDb);
     for (const [label, id] of Object.entries(USER_IDS)) insertUser(coreDb, id, label);
     const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Equal members');
+    const workspace = await store.createWorkspace('Equal members');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
@@ -93,7 +93,7 @@ it('admits member management and exact member deletion replay while preserving p
       (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
       VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
         .run(workspace.id, id, now, now, now);
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       workspace.id,
       'Private history',
       undefined,

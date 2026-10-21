@@ -22,7 +22,6 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
-import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
@@ -39,6 +38,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
@@ -62,8 +62,8 @@ type ProviderResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createR
 /** Only the external Responses transport is replaced; Core, publication and the retrieval Kernel are real. */
 async function fixture(withServerKnowledge = false, emptyOverview = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-query-proof-'));
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Knowledge query proof');
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Knowledge query proof');
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
@@ -77,7 +77,7 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const sourceThread = store.createThread(
+  const sourceThread = await store.createThread(
     workspace.id,
     'Private source',
     undefined,
@@ -352,7 +352,7 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     }),
     openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
   };
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspace.id,
     'Asking conversation',
     undefined,
@@ -362,7 +362,12 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
       privateOwnerUserId: userId,
     }
   );
-  const turn = store.createTurn(workspace.id, thread.id, 'Which launch gate and date?', actor);
+  const turn = await store.createTurn(
+    workspace.id,
+    thread.id,
+    'Which launch gate and date?',
+    actor
+  );
   const askingCall = startCapabilityCall({
     workspaceDb,
     workspaceId: workspace.id,
@@ -650,8 +655,8 @@ it('keeps real Workspace and Server selections distinct while reading exact page
 
 it('binds Worker dispatch to its package Workspace and shared audience, refusing private-source reads with visible uncertainty', async () => {
   const f = await fixture();
-  const thread = f.store.createThread(f.workspace.id, 'Shared Worker output');
-  const turn = f.store.createTurn(f.workspace.id, thread.id, 'Ask knowledge', f.actor);
+  const thread = await f.store.createThread(f.workspace.id, 'Shared Worker output');
+  const turn = await f.store.createTurn(f.workspace.id, thread.id, 'Ask knowledge', f.actor);
   // This fixture proves the dispatch binding after admission; it does not simulate an authenticated MCP transport or CapabilityCall delivery.
   const environmentPackage = resolveAgentEnvironmentPackage({
     coreDb: f.coreDb,
@@ -665,7 +670,7 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
-  f.store.updateTurn(turn.id, {
+  await f.store.updateTurn(turn.id, {
     status: 'running',
     agentId: environmentPackage.agent.agentId,
     agentSessionId: environmentPackage.scope.agentSessionId,
@@ -1230,8 +1235,13 @@ async function memoryFixture() {
       { kind: 'user', userId: f.userId }
     ),
   });
-  const timeline = openAssistantTimeline(f.store, f.workspace.id, f.userId, 'Private Assistant');
-  const turn = f.store.createTurn(f.workspace.id, timeline.id, 'Which tea?', f.actor);
+  const timeline = await openAssistantTimeline(
+    f.store,
+    f.workspace.id,
+    f.userId,
+    'Private Assistant'
+  );
+  const turn = await f.store.createTurn(f.workspace.id, timeline.id, 'Which tea?', f.actor);
   const access = {
     ...f.access,
     userDb,
@@ -1341,9 +1351,15 @@ it('answers from only current-self Memory through actual search, page and model-
 
 it('refuses Memory for shared work, another User or a Worker before Provider dispatch', async () => {
   const f = await memoryFixture();
-  const shared = f.store.createThread(f.workspace.id, 'Shared work', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
+  const shared = await f.store.createThread(
+    f.workspace.id,
+    'Shared work',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
   for (const question of [
     {
       ...f.question,

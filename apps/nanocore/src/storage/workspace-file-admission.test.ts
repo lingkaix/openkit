@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { allocateEntityId, ItemSchema, readRetainedV1, WorkOwnerSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 import { openWorkspaceDb } from './db.js';
 import { WorkOwnershipViolationError } from './fs-layout.js';
 
@@ -14,17 +15,17 @@ afterEach(() => {
 });
 
 /** Publishes real history before fault injection; the later Thread sorts after both append logs. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'workspace-file-admission-'));
   roots.push(root);
-  const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Damaged source');
-  const healthy = store.createWorkspace('Healthy source');
+  const store = createTestStore({ dataRoot: root });
+  const workspace = await store.createWorkspace('Damaged source');
+  const healthy = await store.createWorkspace('Healthy source');
   const [first, later] = [
-    store.createThread(workspace.id, 'First'),
-    store.createThread(workspace.id, 'Later'),
+    await store.createThread(workspace.id, 'First'),
+    await store.createThread(workspace.id, 'Later'),
   ].sort((a, b) => a.id.localeCompare(b.id));
-  const turn = store.createTurn(workspace.id, first.id, 'Retained input', actor);
+  const turn = await store.createTurn(workspace.id, first.id, 'Retained input', actor);
   const item = store.createItem({
     id: allocateEntityId('it'),
     owner: turn.owner,
@@ -75,8 +76,8 @@ describe('Workspace file admission preservation', () => {
     it.each([
       'no-newline',
       'incomplete-fragment',
-    ] as const)(`preserves ${log} %s bytes when later history refuses the scope`, (fault) => {
-      const f = fixture();
+    ] as const)(`preserves ${log} %s bytes when later history refuses the scope`, async (fault) => {
+      const f = await fixture();
       const path = log === 'items' ? f.itemsPath : f.eventsPath;
       const complete = readFileSync(path);
       expect(complete.at(-1)).toBe(0x0a);
@@ -94,13 +95,13 @@ describe('Workspace file admission preservation', () => {
         expect.objectContaining({ code: 'recovery_required' })
       );
       expect(reopened.getWorkspace(f.healthy.id)).toEqual(f.healthy);
-      reopened.createThread(f.healthy.id, 'Still writable');
+      await reopened.createThread(f.healthy.id, 'Still writable');
       expect(tree(f.workspaceRoot)).toEqual(before);
     });
   }
 
-  it('does not normalize file tails before a later approval SQL-reader refusal', () => {
-    const f = fixture();
+  it('does not normalize file tails before a later approval SQL-reader refusal', async () => {
+    const f = await fixture();
     const complete = readFileSync(f.itemsPath);
     writeFileSync(f.itemsPath, complete.subarray(0, -1));
     const db = openWorkspaceDb(f.root, f.workspace.id);
@@ -120,8 +121,8 @@ describe('Workspace file admission preservation', () => {
     'workspace',
     'missing',
     'unsupported',
-  ] as const)('keeps the required refusal boundary for %s Item ownership', (kind) => {
-    const f = fixture();
+  ] as const)('keeps the required refusal boundary for %s Item ownership', async (kind) => {
+    const f = await fixture();
     const raw = JSON.parse(readFileSync(f.itemsPath, 'utf8').trimEnd());
     if (kind === 'missing') delete raw.owner;
     else

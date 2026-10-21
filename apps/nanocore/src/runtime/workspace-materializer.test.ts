@@ -1,7 +1,8 @@
 import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -13,9 +14,9 @@ import {
 } from './workspace-materializer.js';
 
 describe('workspace materializer records', () => {
-  it('builds product-safe input snapshots from an Agent Environment Package', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+  it('builds product-safe input snapshots from an Agent Environment Package', async () => {
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Update docs',
@@ -88,9 +89,9 @@ describe('workspace materializer records', () => {
     expect(JSON.stringify(snapshots)).not.toContain('/Users/m5pro');
   });
 
-  it('builds the exact S39 context handoff without changing generated near misses', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+  it('builds the exact S39 context handoff without changing generated near misses', async () => {
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Use the accepted context package',
@@ -227,9 +228,9 @@ describe('workspace materializer records', () => {
     });
   });
 
-  it('carries catalog source ids into workspace lineage records', () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+  it('carries catalog source ids into workspace lineage records', async () => {
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Update docs from catalog source',
@@ -403,4 +404,9 @@ describe('workspace materializer records', () => {
       status: 'pending',
     });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

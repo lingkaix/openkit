@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,13 +11,13 @@ import {
   fauxThinking,
   fauxToolCall,
 } from '@earendil-works/pi-ai';
-import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   type AssistantSkillAdmission,
   appendWorkObservation,
@@ -41,17 +41,28 @@ const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
+});
+
+// Keep the shared native host alive until every isolated fixture root can be removed safely.
+afterAll(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Uses the real admission, Core append and evidence owners rather than a capture mock. */
-function fixture(value: 'off' | 'on' = 'on') {
+async function fixture(value: 'off' | 'on' = 'on') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-capture-'));
   roots.push(dataRoot);
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+  } finally {
+    coreDb.sqlite.close();
+  }
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Capture');
-  const thread = store.createThread(workspace.id, 'Capture');
-  const turn = store.createTurn(
+  const workspace = await store.createWorkspace('Capture');
+  const thread = await store.createThread(workspace.id, 'Capture');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Request',
@@ -74,7 +85,7 @@ function fixture(value: 'off' | 'on' = 'on') {
 }
 
 /** Reads actual published bytes using their canonical association and digest. */
-function bodies(f: ReturnType<typeof fixture>) {
+function bodies(f: Awaited<ReturnType<typeof fixture>>) {
   const rows = readWorkObservations(f.workspaceDb, f);
   return rows.flatMap((row) =>
     (row.refs ?? [])
@@ -89,6 +100,14 @@ function bodies(f: ReturnType<typeof fixture>) {
         return JSON.parse(new TextDecoder().decode(bytes!));
       })
   );
+}
+
+/** Reads exact retained row bytes in native sequence order for the existing preservation checks. */
+function observationBytes(f: Awaited<ReturnType<typeof fixture>>): string {
+  const rows = f.workspaceDb.sqlite
+    .prepare('SELECT record_json FROM control_work_observations WHERE turn_id=? ORDER BY sequence')
+    .all(f.turnId) as { record_json: string }[];
+  return rows.map(({ record_json }) => `${record_json}\n`).join('');
 }
 
 const provider = {
@@ -107,7 +126,7 @@ it.each([
   'chat',
   'responses',
 ] as const)('services the event loop between durable buffered %s observations', async (format) => {
-  const f = fixture('off');
+  const f = await fixture('off');
   const faux = fauxProvider({
     api: 'openai-responses',
     provider: provider.id,
@@ -126,12 +145,18 @@ it.each([
   events.push({ type: 'done', reason: 'stop', message: partial });
   events.end(partial);
   const capture = new ModelCapture({ ...f, corr: 'responsiveness' }, [], provider.id);
+  // Direct Pi calls need the actual request observation normally committed by the dispatcher.
+  await capture.request(
+    format === 'chat'
+      ? { model: 'capture-model', messages: [{ role: 'user', content: 'hello' }], stream: true }
+      : { model: 'capture-model', input: 'hello', stream: true }
+  );
   let deltas = 0;
   let probe!: Promise<number>;
   const client = new PiAiGatewayClient({ models });
   const transport = {
-    onModelEvent: (event: Parameters<ModelCapture['event']>[0]) => {
-      capture.event(event);
+    onModelEvent: async (event: Parameters<ModelCapture['event']>[0]) => {
+      await capture.event(event);
       if (event.type === 'text_delta' && ++deltas === 1)
         probe = new Promise((resolve) => setImmediate(() => resolve(deltas)));
     },
@@ -176,7 +201,7 @@ describe('Turn environment retention', () => {
       version: 'unknown',
     },
   ])('retains the $build build identity before model access', async ({ identity, version }) => {
-    const f = fixture('off');
+    const f = await fixture('off');
     vi.mocked(readReleaseIdentity).mockReturnValueOnce(identity);
     const run = vi.fn(async (capture) => {
       expect(readWorkObservations(capture.workspaceDb, capture)).toMatchObject([
@@ -191,7 +216,7 @@ describe('Turn environment retention', () => {
   });
 
   it.each(['off', 'on'] as const)('retains env.bound before run with capture %s', async (value) => {
-    const f = fixture(value);
+    const f = await fixture(value);
     const environment = {
       systemPrompt: '  PRIVATE_PROMPT 雪\r\n\t',
       tools: [
@@ -245,7 +270,7 @@ describe('Turn environment retention', () => {
   });
 
   it('retains one immutable empty-tool environment on exact repeated Turn entry', async () => {
-    const f = fixture('off');
+    const f = await fixture('off');
     expect(f.turn.startedAt).toEqual(expect.any(String));
     expect(readWorkObservationTurnBinding(f.workspaceDb, f).turn.startedAt).toBe(f.turn.startedAt);
     const environment = { systemPrompt: 'Current prompt', tools: [] };
@@ -266,20 +291,18 @@ describe('Turn environment retention', () => {
   });
 
   it('rejects a missing admitted start time instead of inventing an environment timestamp', async () => {
-    const f = fixture('off');
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      f.workspaceDb.workspaceId,
-      'threads',
-      f.threadId,
-      'turns',
-      f.turnId,
-      'turn.json'
+    const f = await fixture('off');
+    const persisted = JSON.parse(
+      (
+        f.workspaceDb.sqlite
+          .prepare('SELECT record_json FROM control_turns WHERE id=?')
+          .get(f.turnId) as { record_json: string }
+      ).record_json
     );
-    const persisted = JSON.parse(readFileSync(path, 'utf8'));
     persisted.startedAt = null;
-    writeFileSync(path, JSON.stringify(persisted));
+    f.workspaceDb.sqlite
+      .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+      .run(JSON.stringify(persisted), f.turnId);
     const run = vi.fn(async () => 'must not run');
     await expect(
       withTurnModelCapture({ ...f, environment: { systemPrompt: 'Prompt', tools: [] } }, run)
@@ -290,18 +313,9 @@ describe('Turn environment retention', () => {
   });
 
   it('fails required env.bound persistence before running the model effect', async () => {
-    const f = fixture('off');
-    mkdirSync(
-      join(
-        f.dataRoot,
-        'workspaces',
-        f.workspaceDb.workspaceId,
-        'threads',
-        f.threadId,
-        'turns',
-        f.turnId,
-        'observations.jsonl'
-      )
+    const f = await fixture('off');
+    f.workspaceDb.sqlite.exec(
+      "CREATE TRIGGER fail_observation_append BEFORE INSERT ON control_work_observations BEGIN SELECT RAISE(ABORT, 'test failure'); END"
     );
     const run = vi.fn(async () => 'must not run');
     await expect(
@@ -312,20 +326,18 @@ describe('Turn environment retention', () => {
   });
 
   it('verifies persisted admission before writing env.bound', async () => {
-    const f = fixture('off');
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      f.workspaceDb.workspaceId,
-      'threads',
-      f.threadId,
-      'turns',
-      f.turnId,
-      'turn.json'
+    const f = await fixture('off');
+    const persisted = JSON.parse(
+      (
+        f.workspaceDb.sqlite
+          .prepare('SELECT record_json FROM control_turns WHERE id=?')
+          .get(f.turnId) as { record_json: string }
+      ).record_json
     );
-    const persisted = JSON.parse(readFileSync(path, 'utf8'));
     delete persisted.captureCoverage;
-    writeFileSync(path, JSON.stringify(persisted));
+    f.workspaceDb.sqlite
+      .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+      .run(JSON.stringify(persisted), f.turnId);
     const run = vi.fn(async () => 'must not run');
     await expect(
       withTurnModelCapture({ ...f, environment: { systemPrompt: 'Prompt', tools: [] } }, run)
@@ -335,7 +347,7 @@ describe('Turn environment retention', () => {
   });
 
   it('leaves callers without environment input unchanged', async () => {
-    const f = fixture('off');
+    const f = await fixture('off');
     await expect(withTurnModelCapture(f, async () => 'ran')).resolves.toBe('ran');
     expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
   });
@@ -366,7 +378,7 @@ describe('Assistant Skill admission capture', () => {
     'off',
     'on',
   ] as const)('retains exact minimal admission in the complete environment before dispatch with capture %s', async (value) => {
-    const f = fixture(value);
+    const f = await fixture(value);
     const input = { ...f, environment, requireAssistantSkillAdmission: true };
     const run = vi.fn(async () => {
       const rows = readWorkObservations(f.workspaceDb, f);
@@ -416,7 +428,7 @@ describe('Assistant Skill admission capture', () => {
     false,
     true,
   ])('records explicit empty selection without a catalog with required admission %s', async (required) => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const empty: AssistantSkillAdmission = { catalogRevision: null, skills: [] };
     const input = {
       ...f,
@@ -436,7 +448,7 @@ describe('Assistant Skill admission capture', () => {
     undefined,
     { systemPrompt: 'Prompt', tools: [] },
   ])('blocks missing required admission before dispatch for environment %j', async (missingEnvironment) => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const input = {
       ...f,
       ...(missingEnvironment ? { environment: missingEnvironment } : {}),
@@ -476,7 +488,7 @@ describe('Assistant Skill admission capture', () => {
     ['null admission', null],
   ])('blocks %s at the capture boundary even when admission is optional', async (_name, invalid) => {
     for (const required of [false, true]) {
-      const f = fixture('off');
+      const f = await fixture('off');
       const input = {
         ...f,
         environment: {
@@ -496,7 +508,7 @@ describe('Assistant Skill admission capture', () => {
   });
 
   it('re-enters the exact retained environment after reopening storage without adding a row', async () => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const input = { ...f, environment, requireAssistantSkillAdmission: true };
     const run = vi.fn(async () => 'dispatched');
     await withTurnModelCapture(input, run);
@@ -552,35 +564,25 @@ describe('Assistant Skill admission capture', () => {
       },
     ],
   ])('rejects changed %s under the same Turn identity without dispatch or replacement', async (_name, changedEnvironment) => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const input = { ...f, environment, requireAssistantSkillAdmission: true };
     await withTurnModelCapture(input, async () => 'first dispatch');
     const before = readWorkObservations(f.workspaceDb, f);
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      workspaceIdForOwner(f.turn.owner),
-      'threads',
-      f.threadId,
-      'turns',
-      f.turnId,
-      'observations.jsonl'
-    );
-    const originalBytes = readFileSync(path, 'utf8');
+    const originalBytes = observationBytes(f);
     const run = vi.fn(async () => 'must not dispatch');
     await expect(
       withTurnModelCapture({ ...input, environment: changedEnvironment }, run)
     ).rejects.toMatchObject({ name: 'ModelCaptureError', code: 'model_capture_unavailable' });
     expect(run).not.toHaveBeenCalled();
     expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
-    expect(readFileSync(path, 'utf8')).toBe(originalBytes);
+    expect(observationBytes(f)).toBe(originalBytes);
   });
 
   it.each([
     admission,
     { catalogRevision: null, skills: [] },
   ])('does not enrich an earlier environment without admission with %j', async (laterAdmission) => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const legacyEnvironment = {
       systemPrompt: environment.systemPrompt,
       tools: environment.tools,
@@ -603,7 +605,7 @@ describe('Assistant Skill admission capture', () => {
   });
 
   it('does not remove retained admission through an optional legacy environment', async () => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const input = { ...f, environment, requireAssistantSkillAdmission: true };
     await withTurnModelCapture(input, async () => 'first dispatch');
     const before = readWorkObservations(f.workspaceDb, f);
@@ -619,18 +621,10 @@ describe('Assistant Skill admission capture', () => {
   });
 
   it('blocks dispatch when the real canonical environment append cannot write', async () => {
-    const f = fixture('off');
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      workspaceIdForOwner(f.turn.owner),
-      'threads',
-      f.threadId,
-      'turns',
-      f.turnId,
-      'observations.jsonl'
+    const f = await fixture('off');
+    f.workspaceDb.sqlite.exec(
+      "CREATE TRIGGER fail_observation_append BEFORE INSERT ON control_work_observations BEGIN SELECT RAISE(ABORT, 'test failure'); END"
     );
-    mkdirSync(path);
     const input = { ...f, environment, requireAssistantSkillAdmission: true };
     const run = vi.fn(async () => 'must not dispatch');
     await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
@@ -646,9 +640,12 @@ describe('Assistant Skill admission capture', () => {
 });
 
 describe('Gateway model retention', () => {
-  it.each(['off', 'on'] as const)('omits unrequested sampling fields with capture %s', (value) => {
-    const f = fixture(value);
-    new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
+  it.each([
+    'off',
+    'on',
+  ] as const)('omits unrequested sampling fields with capture %s', async (value) => {
+    const f = await fixture(value);
+    await new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
     const rows = readWorkObservations(f.workspaceDb, f).filter(
       (row) => row.type === 'model.observed' && row.payload.direction === 'request'
     );
@@ -661,9 +658,9 @@ describe('Gateway model retention', () => {
     'max_output_tokens',
     'max_completion_tokens',
     'max_tokens',
-  ])('preserves explicit zero sampling values from %s', (tokenField) => {
-    const f = fixture('off');
-    new ModelCapture(f, [], provider.id).request({
+  ])('preserves explicit zero sampling values from %s', async (tokenField) => {
+    const f = await fixture('off');
+    await new ModelCapture(f, [], provider.id).request({
       model: 'capture-model',
       input: 'hello',
       temperature: 0,
@@ -677,9 +674,9 @@ describe('Gateway model retention', () => {
     });
   });
 
-  it('retains only supplied reasoning sampling fields', () => {
-    const f = fixture('off');
-    new ModelCapture(f, [], provider.id).request({
+  it('retains only supplied reasoning sampling fields', async () => {
+    const f = await fixture('off');
+    await new ModelCapture(f, [], provider.id).request({
       model: 'capture-model',
       input: 'hello',
       reasoning: { effort: 'none', summary: 'off', context: 'all_turns' },
@@ -691,9 +688,9 @@ describe('Gateway model retention', () => {
     });
   });
 
-  it('preserves explicit null sampling values without substituting another request field', () => {
-    const f = fixture('off');
-    new ModelCapture(f, [], provider.id).request({
+  it('preserves explicit null sampling values without substituting another request field', async () => {
+    const f = await fixture('off');
+    await new ModelCapture(f, [], provider.id).request({
       model: 'capture-model',
       input: 'hello',
       temperature: null,
@@ -714,8 +711,8 @@ describe('Gateway model retention', () => {
     });
   });
 
-  it('keeps retained null-filled sampling readable while appending omitted fields', () => {
-    const f = fixture('off');
+  it('keeps retained null-filled sampling readable while appending omitted fields', async () => {
+    const f = await fixture('off');
     const sampling = {
       temperature: null,
       topP: null,
@@ -724,7 +721,7 @@ describe('Gateway model retention', () => {
       reasoningSummary: null,
       reasoningContext: null,
     };
-    appendWorkObservation(f.workspaceDb, {
+    await appendWorkObservation(f.workspaceDb, {
       ...f,
       observation: {
         id: 'retained-request',
@@ -749,24 +746,14 @@ describe('Gateway model retention', () => {
       },
       bodies: [],
     });
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      f.workspaceDb.workspaceId,
-      'threads',
-      f.threadId,
-      'turns',
-      f.turnId,
-      'observations.jsonl'
-    );
-    const retainedBytes = readFileSync(path, 'utf8');
+    const retainedBytes = observationBytes(f);
     expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual(sampling);
-    new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
+    await new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
     const rows = readWorkObservations(f.workspaceDb, f);
     expect(rows).toHaveLength(2);
     expect(rows[0]?.payload.sampling).toEqual(sampling);
     expect(rows[1]?.payload.sampling).toEqual({});
-    expect(readFileSync(path, 'utf8').startsWith(retainedBytes)).toBe(true);
+    expect(observationBytes(f).startsWith(retainedBytes)).toBe(true);
   });
 
   for (const streaming of [false, true]) {
@@ -774,7 +761,7 @@ describe('Gateway model retention', () => {
       undefined,
       96,
     ])(`retains sampling from the admitted Chat request with capture off (stream=${streaming}, max_tokens=%s)`, async (maxTokens) => {
-      const f = fixture('off');
+      const f = await fixture('off');
       const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
       const models = createModels();
       models.setProvider(faux.provider);
@@ -840,7 +827,7 @@ describe('Gateway model retention', () => {
   }
 
   it('retains admitted Chat content with capture on while excluding private request carriers', async () => {
-    const f = fixture();
+    const f = await fixture();
     const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
     const models = createModels();
     models.setProvider(faux.provider);
@@ -901,7 +888,7 @@ describe('Gateway model retention', () => {
       'on',
       'off',
     ] as const)(`${method} retains exact admitted bytes only when %s`, async (value) => {
-      const f = fixture(value);
+      const f = await fixture(value);
       const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
       const models = createModels();
       models.setProvider(faux.provider);
@@ -983,7 +970,7 @@ describe('Gateway model retention', () => {
   }
 
   it('links fallback attempts and response parents within one fresh logical correlation per call', async () => {
-    const f = fixture('off');
+    const f = await fixture('off');
     const call = () =>
       dispatchLogicalModel({
         logicalModel: {
@@ -1005,8 +992,8 @@ describe('Gateway model retention', () => {
         resolveGatewayProvider: () => provider,
         attempt: async ({ corr, attempt }) => {
           const capture = new ModelCapture({ ...f, corr, attempt }, [], provider.id);
-          capture.request({ model: 'capture-model', input: 'safe', temperature: 0.2 });
-          capture.event({
+          await capture.request({ model: 'capture-model', input: 'safe', temperature: 0.2 });
+          await capture.event({
             type: attempt === 0 ? 'error' : 'done',
             reportedModel: 'physical-snapshot',
           });
@@ -1096,11 +1083,11 @@ describe('Gateway model retention', () => {
     'resolved-private-credential',
     'Bearer opaque-credential',
     'sk-privatecanary123',
-  ])('excludes whole bodies containing %s rather than claiming redacted losslessness', (secret) => {
-    const f = fixture();
+  ])('excludes whole bodies containing %s rather than claiming redacted losslessness', async (secret) => {
+    const f = await fixture();
     const capture = new ModelCapture(f, [provider.apiKey], provider.id);
-    capture.request({ model: 'capture-model', input: `prefix ${secret} suffix` });
-    capture.event({ type: 'toolcall_delta', delta: JSON.stringify({ value: secret }) });
+    await capture.request({ model: 'capture-model', input: `prefix ${secret} suffix` });
+    await capture.event({ type: 'toolcall_delta', delta: JSON.stringify({ value: secret }) });
     expect(bodies(f)).toEqual([]);
     expect(readWorkObservations(f.workspaceDb, f).map((row) => row.payload.content)).toEqual([
       { state: 'unavailable', reason: 'credential-excluded' },
@@ -1112,17 +1099,17 @@ describe('Gateway model retention', () => {
     'done',
     'interrupted',
     'failed',
-  ] as const)('rejects credentials split across deltas before publishing a %s unit', (terminal) => {
-    const f = fixture();
+  ] as const)('rejects credentials split across deltas before publishing a %s unit', async (terminal) => {
+    const f = await fixture();
     const capture = new ModelCapture(f, [provider.apiKey], provider.id);
-    capture.request({ model: 'capture-model', input: 'safe' });
-    capture.event({ type: 'text_delta', contentIndex: 0, delta: 'resolved-private-' });
+    await capture.request({ model: 'capture-model', input: 'safe' });
+    await capture.event({ type: 'text_delta', contentIndex: 0, delta: 'resolved-private-' });
     expect(bodies(f)).toHaveLength(1);
     expect(readWorkObservations(f.workspaceDb, f).at(-1)?.payload.content).toEqual({
       state: 'expected',
     });
-    capture.event({ type: 'text_delta', contentIndex: 0, delta: 'credential' });
-    capture.event({ type: terminal });
+    await capture.event({ type: 'text_delta', contentIndex: 0, delta: 'credential' });
+    await capture.event({ type: terminal });
     expect(bodies(f)).toHaveLength(1);
     expect(
       readWorkObservations(f.workspaceDb, f).some(
@@ -1133,30 +1120,30 @@ describe('Gateway model retention', () => {
     ).toBe(true);
   });
 
-  it('scans decoded tool argument fragments and preserves safe interrupted bytes exactly', () => {
-    const f = fixture();
+  it('scans decoded tool argument fragments and preserves safe interrupted bytes exactly', async () => {
+    const f = await fixture();
     const capture = new ModelCapture(f, [provider.apiKey], provider.id);
-    capture.request({ model: 'capture-model', input: 'safe' });
-    capture.event({
+    await capture.request({ model: 'capture-model', input: 'safe' });
+    await capture.event({
       type: 'toolcall_delta',
       contentIndex: 0,
       delta: '{"value":"resolved-private-',
     });
-    capture.event({ type: 'toolcall_delta', contentIndex: 0, delta: '\\u0063redential"}' });
-    capture.event({ type: 'interrupted' });
+    await capture.event({ type: 'toolcall_delta', contentIndex: 0, delta: '\\u0063redential"}' });
+    await capture.event({ type: 'interrupted' });
     expect(bodies(f)).toHaveLength(1);
     const next = new ModelCapture({ ...f, corr: 'safe' }, [], provider.id);
-    next.request({ model: 'capture-model', input: 'safe' });
+    await next.request({ model: 'capture-model', input: 'safe' });
     const event = { type: 'text_delta', contentIndex: 0, delta: '  partial 雪\r\n\t' };
-    next.event(event);
-    next.event({ type: 'interrupted' });
+    await next.event(event);
+    await next.event({ type: 'interrupted' });
     expect(bodies(f).slice(-2)).toEqual([event, { type: 'interrupted' }]);
   });
 
-  it('retains outward mixed source content while excluding every private carrier', () => {
-    const f = fixture();
+  it('retains outward mixed source content while excluding every private carrier', async () => {
+    const f = await fixture();
     const capture = new ModelCapture(f, [provider.apiKey], provider.id);
-    capture.request({
+    await capture.request({
       model: 'capture-model',
       input: [
         {
@@ -1198,7 +1185,7 @@ describe('Gateway model retention', () => {
       diagnostics: [{ message: 'PRIVATE_DIAGNOSTIC' }],
       headers: { authorization: 'CREDENTIAL_CARRIER' },
     });
-    capture.event(admittedModelEvent({ type: 'done', reason: 'stop', message })!);
+    await capture.event(admittedModelEvent({ type: 'done', reason: 'stop', message })!);
     const serialized = JSON.stringify(bodies(f));
     for (const excluded of [
       'REQUEST_ENCRYPTED',
@@ -1228,7 +1215,7 @@ describe('Gateway model retention', () => {
   });
 
   it('retains failed nonstream partial content and records usage exactly once', async () => {
-    const f = fixture();
+    const f = await fixture();
     const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
     const models = createModels();
     models.setProvider(faux.provider);
@@ -1260,20 +1247,18 @@ describe('Gateway model retention', () => {
   });
 
   it('blocks missing persisted admission before contacting the provider', async () => {
-    const f = fixture();
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      f.workspaceDb.workspaceId,
-      'threads',
-      f.threadId,
-      'turns',
-      f.turnId,
-      'turn.json'
+    const f = await fixture();
+    const turn = JSON.parse(
+      (
+        f.workspaceDb.sqlite
+          .prepare('SELECT record_json FROM control_turns WHERE id=?')
+          .get(f.turnId) as { record_json: string }
+      ).record_json
     );
-    const turn = JSON.parse(readFileSync(path, 'utf8'));
     delete turn.captureCoverage;
-    writeFileSync(path, JSON.stringify(turn));
+    f.workspaceDb.sqlite
+      .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+      .run(JSON.stringify(turn), f.turnId);
     const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
     const models = createModels();
     models.setProvider(faux.provider);
@@ -1291,7 +1276,7 @@ describe('Gateway model retention', () => {
   });
 
   it('keeps expected-content and an explicit gap after body failure without repeating the model call', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.workspaceDb.sqlite.exec(
       "CREATE TRIGGER fail_capture BEFORE INSERT ON evidence_bundles BEGIN SELECT RAISE(ABORT, 'test failure'); END"
     );

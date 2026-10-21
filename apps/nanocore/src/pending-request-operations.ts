@@ -34,6 +34,7 @@ import {
   readPendingRequest,
   readPendingRequestLineage,
 } from './runtime/pending-requests.js';
+import { ControlPendingReceiptSchema } from './storage/control-store-pending.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Executes one captured approval call inside the approval response. */
@@ -136,7 +137,7 @@ export function createPendingRequestOperationImplementations({
           },
           input,
           responseKind: 'approval',
-          execute: async () => {
+          execute: async (receipt) => {
             const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
             try {
               const current = readPendingRequest(workspaceDb.sqlite, input.approvalRequestId);
@@ -171,12 +172,18 @@ export function createPendingRequestOperationImplementations({
                 coreDb,
                 requestActor: actor,
                 dependencies: admission(),
-                admitExecution: () => {
+                receipt: {
+                  original: ControlPendingReceiptSchema.parse(receipt),
+                  input,
+                  responseId: current.requestId,
+                },
+                admitExecution: (failure?: string) => {
                   executionCall = admitCapturedPendingCall(
                     current,
                     workspaceDb,
                     input.requestId,
-                    prepared
+                    prepared,
+                    failure
                   );
                 },
                 ...(prepareCapturedCall
@@ -255,10 +262,10 @@ export function createPendingRequestOperationImplementations({
           },
           input,
           responseKind: 'pending_request',
-          execute: () => {
+          execute: async (receipt) => {
             const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
             try {
-              const record = answerRecordedUserInput(
+              const record = await answerRecordedUserInput(
                 store,
                 workspaceDb.sqlite,
                 {
@@ -270,7 +277,12 @@ export function createPendingRequestOperationImplementations({
                 actor.userId,
                 coreDb,
                 actor,
-                admission()
+                admission(),
+                {
+                  original: ControlPendingReceiptSchema.parse(receipt),
+                  input,
+                  responseId: input.userInputRequestId,
+                }
               );
               return PendingRequestOutcomeSchema.parse(outcomeOf(record));
             } finally {
@@ -322,10 +334,10 @@ export function createPendingRequestOperationImplementations({
           },
           input,
           responseKind: 'pending_request',
-          execute: () => {
+          execute: async (receipt) => {
             const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
             try {
-              const record = withdrawRecordedPendingRequest(
+              const record = await withdrawRecordedPendingRequest(
                 store,
                 workspaceDb.sqlite,
                 input.pendingRequestId,
@@ -333,7 +345,12 @@ export function createPendingRequestOperationImplementations({
                 input.threadId,
                 actor.userId,
                 admission(),
-                actor
+                actor,
+                {
+                  original: ControlPendingReceiptSchema.parse(receipt),
+                  input,
+                  responseId: input.pendingRequestId,
+                }
               );
               return PendingRequestOutcomeSchema.parse(outcomeOf(record));
             } finally {

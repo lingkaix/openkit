@@ -23,13 +23,13 @@ const NOW = '2026-10-19T00:00:00.000Z';
 const digest = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
 
 /** Actual native scope creation and Git publication; no parser or authorization double. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'knowledge-meaning-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Meaning references');
+  const workspace = await store.createWorkspace('Meaning references');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const access: KnowledgeRetrievalAccess = {
     coreDb,
@@ -66,7 +66,7 @@ function page(ownerScope: KnowledgeOwnerScope, sourceReferences: string[] = []) 
 
 /** Fixed Git publication is the fixture effect; the subject is the native read boundary. */
 function publish(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   notebook: KnowledgeNotebook,
   content: string,
   retainOnly = false
@@ -89,7 +89,7 @@ function publish(
 }
 
 function reference(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   scope: Exclude<KnowledgeOwnerScope, { kind: 'user' }> = f.ownerScope,
   content = page(f.ownerScope)
 ) {
@@ -99,7 +99,7 @@ function reference(
   return formatReferenceUri({ scopeId, objectId: 'domain' }, digest(content));
 }
 
-function resolve(f: ReturnType<typeof fixture>, uri: string) {
+function resolve(f: Awaited<ReturnType<typeof fixture>>, uri: string) {
   return resolveKnowledgeMeaningReference({
     workspaceId: f.workspace.id,
     reference: uri,
@@ -111,7 +111,7 @@ const unavailable = (reference: string) => ({ status: 'unavailable', reference }
 
 describe('exact governed Knowledge meaning receiver', () => {
   it('returns exact current and older published bytes without selecting an unpublished candidate', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = page(f.ownerScope);
     const revision = publish(f, f.notebook, content);
     const uri = reference(f);
@@ -138,7 +138,7 @@ describe('exact governed Knowledge meaning receiver', () => {
   });
 
   it('refuses missing pins, wrong bytes/KB/Workspace, private User and unsupported raw targets uniformly', async () => {
-    const f = fixture();
+    const f = await fixture();
     publish(f, f.notebook, page(f.ownerScope));
     const uri = reference(f);
     for (const denied of [
@@ -161,7 +161,7 @@ describe('exact governed Knowledge meaning receiver', () => {
   });
 
   it('rechecks current caller and current page sensitivity even for a retained old pin', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = page(f.ownerScope);
     publish(f, f.notebook, content);
     const uri = reference(f);
@@ -178,15 +178,15 @@ describe('exact governed Knowledge meaning receiver', () => {
   });
 
   it('keeps current recursive Source audience checks on exact page reads', async () => {
-    const f = fixture();
-    const sourceThread = f.store.createThread(
+    const f = await fixture();
+    const sourceThread = await f.store.createThread(
       f.workspace.id,
       'Source audience',
       undefined,
       'conversation',
       { visibility: 'workspace' }
     );
-    const destination = f.store.createThread(
+    const destination = await f.store.createThread(
       f.workspace.id,
       'Meaning consumer',
       undefined,
@@ -227,7 +227,7 @@ describe('exact governed Knowledge meaning receiver', () => {
   });
 
   it('refuses invalid governed pages and fabricated delegation while preserving descriptive extensions', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = updateOkfFrontmatter({
       path: 'domain.md',
       content: page(f.ownerScope),
@@ -251,7 +251,7 @@ describe('exact governed Knowledge meaning receiver', () => {
   });
 
   it('admits Server meaning separately and does not treat Workspace membership as Server authority', async () => {
-    const f = fixture();
+    const f = await fixture();
     initializeScopedNotebook({
       coreDb: f.coreDb,
       actor: f.access.requestActor,

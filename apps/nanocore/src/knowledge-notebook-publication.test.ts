@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -40,13 +41,13 @@ interface Edit {
 const fixtures: Array<ReturnType<typeof fixture>> = [];
 
 /** Compose actual public admission, Store, SQLite and Git through the existing fresh-scope initializer. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-publication-'));
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -186,7 +187,8 @@ function publishedCount(f: ReturnType<typeof fixture>): number {
   return Number(git(f, ['rev-list', '--count', 'refs/heads/published']).trim());
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.useRealTimers();
   for (const f of fixtures.splice(0)) {
     if (f.workspaceDb.sqlite.open) f.workspaceDb.sqlite.close();
@@ -212,7 +214,7 @@ async function command(
 
 describe('native Workspace notebook publication with real Git and SQLite', () => {
   it('publishes page commands once and replays their exact old bytes after later edits and reopen', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const baseRevision = initial.notebookRevision;
     const createRequestId = randomUUID();
@@ -297,7 +299,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('replays an updated page after removal without resurrection and still rechecks its Source audience', async () => {
-    const f = fixture();
+    const f = await fixture();
     const source = await command(f, 'knowledge.source.register', randomUUID(), {
       kind: 'document',
       title: 'Replay source',
@@ -367,7 +369,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('preserves unknown nested OKF metadata through the native full-page update and restart', async () => {
-    const f = fixture();
+    const f = await fixture();
     const id = 'notes/metadata';
     const created = await command(f, 'knowledge.notebook.create', randomUUID(), {
       baseRevision: (await listing(f)).notebookRevision,
@@ -437,7 +439,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('retains generic valid pages without managed entry fields or body text across reopen', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const raw = page('rough', '').replace(/^openkit_entry_id:.*\n/m, '');
     const published = await publish(f, {
@@ -463,8 +465,8 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(git(f, ['show', `${published.notebookRevision}:pages/rough.md`])).toBe(raw);
   });
 
-  it('publishes the initial notebook inside fresh Workspace creation before any notebook read', () => {
-    const f = fixture();
+  it('publishes the initial notebook inside fresh Workspace creation before any notebook read', async () => {
+    const f = await fixture();
     expect(existsSync(f.repositoryPath)).toBe(true);
     const revision = git(f, ['rev-parse', 'refs/heads/published']).trim();
     expect(git(f, ['rev-list', '--parents', '-1', revision]).trim()).toBe(revision);
@@ -480,7 +482,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('publishes two pages once and replays the exact old receipt after a later edit and reopen', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const initialTree = git(f, ['rev-parse', `${initial.notebookRevision}^{tree}`]).trim();
     const firstEdit = edit(initial.notebookRevision, 'Alpha links to [[beta]].');
@@ -556,7 +558,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('rejects changed input under a completed request without another commit', async () => {
-    const f = fixture();
+    const f = await fixture();
     const request = edit((await listing(f)).notebookRevision);
     const first = await publish(f, request);
     const count = publishedCount(f);
@@ -571,7 +573,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     // Fix service-owned attribution time so this ABA returns to the same exact content tree.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-16T01:00:00.000Z'));
-    const f = fixture();
+    const f = await fixture();
     const first = await publish(f, edit((await listing(f)).notebookRevision));
     const original = git(f, ['show', `${first.notebookRevision}:pages/alpha.md`]);
     const second = await publish(f, edit(first.notebookRevision, 'Alpha version two.'));
@@ -601,7 +603,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('keeps unrelated FsStore persistence from rewriting the notebook through a stale page projection', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const staleStore = new FsStore({ dataRoot: f.dataRoot });
     const published = await publish(
@@ -616,7 +618,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     const sentinelPath = join(pagesRoot, 'materialization-sentinel.md');
     const sentinel = page('materialization-sentinel', 'Inert materialization bytes.');
     writeFileSync(sentinelPath, sentinel);
-    staleStore.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
+    await staleStore.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
       name: 'Unrelated persisted Thread title',
     });
     expect(readFileSync(sentinelPath, 'utf8')).toBe(sentinel);
@@ -631,7 +633,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('cannot publish when the real SQLite admission Audit write fails', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const request = edit(initial.notebookRevision);
     f.workspaceDb.sqlite.exec(
@@ -658,7 +660,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   });
 
   it('retains committed admission and the old published ref when actual Git ref publication fails', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initial = await listing(f);
     const request = edit(initial.notebookRevision);
     const count = publishedCount(f);
@@ -687,7 +689,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     'receipt',
     'completion Audit',
   ] as const)('requires recovery when a published command loses its exact %s evidence', async (missing) => {
-    const f = fixture();
+    const f = await fixture();
     const request = edit((await listing(f)).notebookRevision);
     const published = await publish(f, request);
     const count = publishedCount(f);

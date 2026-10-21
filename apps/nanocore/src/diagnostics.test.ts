@@ -9,6 +9,7 @@ import { resolveTelemetryConfiguration } from './telemetry.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { initializeTestCore } from './test-support/store.js';
 
 /**
  * Creates a minimal Better Auth stub for diagnostics tests.
@@ -228,6 +229,7 @@ describe('Settings diagnostics app API', () => {
 
   it('exposes the aggregate diagnostics snapshot in local mode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
+    initializeTestCore(dataRoot);
     const app = createApp({
       dataRoot,
       providerRegistry: new ProviderRegistry([]),
@@ -270,6 +272,7 @@ describe('Settings diagnostics app API', () => {
 
   it('exposes redacted setup diagnostics for server config, providers, and agent setup', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
+    initializeTestCore(dataRoot);
     const rawSecrets = ['sk-openkit-secret', 'ghp_openkit_secret'];
     const providerRegistry = new ProviderRegistry([
       {

@@ -27,3 +27,5 @@ Capability admission captures the supplied actor in the existing linked Audit fa
 CapabilityCall uses one canonical owner union for both database scopes. The admitted database supplies storage authority; the existing nullable SQL Workspace column supplies none by itself. Exported Workspace calls retain their explicit owner, and Server calls remain in Core. Usage measurements keep their existing schema.
 
 Workspace ledger import validates every call owner against the target database before inserting calls. A Server or foreign Workspace owner refuses the batch before its first call write.
+
+The exported call ledger can project proved `upstreamContacted: false` from the original Main submission PermissionDecision. Only the exact denied captured-call submission reason and correlated call identity supply that fact. Missing knowledge is omitted; absence of usage alone does not prove no contact. This projection adds no call ledger, stored field or writer and does not change live protocol shapes.

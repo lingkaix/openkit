@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 const fault = vi.hoisted(() => ({
@@ -62,11 +63,11 @@ afterEach(() => {
 });
 
 describe('unacknowledged canonical Thread publication', () => {
-  it('preserves the visible candidate during later unrelated Workspace persistence', () => {
+  it('preserves the visible candidate during later unrelated Workspace persistence', async () => {
     dataRoot = mkdtempSync(join(tmpdir(), 'store-unacknowledged-publication-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Initial Workspace');
-    const previousThread = store.createThread(workspace.id, 'Previous Thread');
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Initial Workspace');
+    const previousThread = await store.createThread(workspace.id, 'Previous Thread');
     const path = join(
       dataRoot,
       'workspaces',
@@ -111,7 +112,7 @@ describe('unacknowledged canonical Thread publication', () => {
     // Core Storage and Fault Tolerance require preservation of the uncertain publication.
     // Availability is a separate decision: either success or a surfaced refusal is permitted here.
     try {
-      store.updateWorkspace(workspace.id, { name: 'Unrelated Workspace update' });
+      await store.updateWorkspace(workspace.id, { name: 'Unrelated Workspace update' });
     } catch {
       // A refusal must still preserve the complete canonical candidate for inspection and reopen.
     }

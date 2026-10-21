@@ -8,13 +8,14 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
-import type { FsStore } from '../lib/store.js';
+import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import type { TurnCommandRuntimeContext } from '../runtime/types.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
@@ -40,11 +41,21 @@ const activeKnowledgeRuns = new WeakMap<
 /** Stops an active KM Turn and waits for its ordinary terminal record before accepting Stop. */
 export async function interruptKnowledgeManagerTurn(
   store: FsStore,
-  turnId: string
+  turnId: string,
+  context?: TurnCommandRuntimeContext
 ): Promise<boolean> {
   const run = activeKnowledgeRuns.get(store)?.get(turnId);
   if (!run) return false;
-  run.controller.abort();
+  if (context?.command && context.command.receipt.command !== 'turn.interrupt')
+    throw new Error('Internal interruption requires its original interrupt command.');
+  if (
+    run.controller.signal.aborted &&
+    context?.command?.receipt.key !==
+      (run.controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command?.receipt.key
+  )
+    throw new Error('Another interruption already owns this run.');
+  // The existing cancellation reason carries the original command to the first terminal publisher.
+  run.controller.abort(context);
   await run.finished;
   return true;
 }
@@ -73,6 +84,8 @@ export interface KnowledgeManagerAgentRun {
   readonly resultSchema: JsonSchema;
   /** Returns safe repair guidance for a missing prerequisite; throws for other admission failures. */
   readonly validateResult: (text: string) => undefined | string;
+  /** Prepares the domain's original result Items before the shared role seals its Turn. */
+  readonly terminalItems?: (patch: Parameters<FsStore['updateTurn']>[1]) => readonly Item[];
 }
 
 /** Server runs use the same bounded role loop and the existing Core evidence owner. */
@@ -94,14 +107,25 @@ function runTurn(store: FsStore, input: Pick<AnyKnowledgeManagerAgentRun, 'turn'
 }
 
 /** Writes only the Turn whose immutable owner admitted this run. */
-function updateRunTurn(store: FsStore, turn: Turn, patch: Parameters<FsStore['updateTurn']>[1]) {
+async function updateRunTurn(
+  store: FsStore,
+  turn: Turn,
+  patch: Parameters<FsStore['updateTurn']>[1],
+  items?: readonly Item[],
+  interruptCommand?: TerminalTurnPublication['interruptCommand']
+) {
+  if (patch.status && isSealedTurnTerminal(patch.status))
+    return await store.completeTurn(turn.id, patch, {
+      ...(items ? { items } : {}),
+      interruptCommand,
+    });
   return turn.owner.kind === 'server'
-    ? store.updateServerTurn(turn.id, patch)
-    : store.updateTurn(turn.id, patch);
+    ? await store.updateServerTurn(turn.id, patch)
+    : await store.updateTurn(turn.id, patch);
 }
 
 /** Pins finite role admission before a daily trigger returns; this performs no Provider effect. */
-export function pinKnowledgeManagerExecution(
+export async function pinKnowledgeManagerExecution(
   dependencies: KnowledgeManagerAgentDependencies,
   input: Pick<AnyKnowledgeManagerAgentRun, 'turn' | 'inputs'>
 ) {
@@ -146,7 +170,7 @@ export function pinKnowledgeManagerExecution(
     maxToolCalls: 24,
     deadlineMs: KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
   };
-  updateRunTurn(dependencies.store, turn, {
+  await updateRunTurn(dependencies.store, turn, {
     internalExecution: {
       roleId: 'knowledge-manager',
       logicalModelId: selection.logicalModel.id,
@@ -211,10 +235,11 @@ async function runBoundedKnowledgeManagerAgent(
   if (runs.has(input.turn.id)) throw new Error('Knowledge Manager Turn is already running.');
   runs.set(input.turn.id, { controller, finished });
   try {
-    return await executeKnowledgeManagerAgent(dependencies, {
-      ...input,
-      signal: AbortSignal.any([input.signal, controller.signal]),
-    });
+    return await executeKnowledgeManagerAgent(
+      dependencies,
+      { ...input, signal: AbortSignal.any([input.signal, controller.signal]) },
+      controller.signal
+    );
   } finally {
     runs.delete(input.turn.id);
     finish();
@@ -224,7 +249,8 @@ async function runBoundedKnowledgeManagerAgent(
 /** Executes within the caller's live cancellation handle, retaining the normal Turn lifecycle. */
 async function executeKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
-  input: AnyKnowledgeManagerAgentRun
+  input: AnyKnowledgeManagerAgentRun,
+  interruptSignal: AbortSignal
 ): Promise<{ readonly turnId: string; readonly text: string }> {
   const { store } = dependencies;
   const turn = runTurn(store, input);
@@ -234,7 +260,10 @@ async function executeKnowledgeManagerAgent(
   try {
     input.signal.throwIfAborted();
     input.assertCurrent();
-    const { selection, threshold, limits } = pinKnowledgeManagerExecution(dependencies, input);
+    const { selection, threshold, limits } = await pinKnowledgeManagerExecution(
+      dependencies,
+      input
+    );
     const logicalModel = selection.logicalModel;
     const systemPrompt = assembleBuiltInSystemPrompt('knowledge-manager');
     deadlineSignal = AbortSignal.timeout(limits.deadlineMs);
@@ -402,7 +431,7 @@ async function executeKnowledgeManagerAgent(
           signal,
         };
         let exit = await runInternalAgentLoop(loopInput, resultProvider);
-        commitMessages(exit.messages);
+        await commitMessages(exit.messages);
         if (resultText === undefined && exit.kind === 'quiescent' && !repairUsed) {
           repairUsed = true;
           if (usedToolCalls >= limits.maxToolCalls)
@@ -429,7 +458,7 @@ async function executeKnowledgeManagerAgent(
             },
             resultProvider
           );
-          commitMessages(exit.messages);
+          await commitMessages(exit.messages);
         }
         signal.throwIfAborted();
         input.assertCurrent();
@@ -438,7 +467,11 @@ async function executeKnowledgeManagerAgent(
         return resultText;
       }
     );
-    updateRunTurn(store, turn, { status: 'completed', completedAt: new Date().toISOString() });
+    const terminal = {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    } as const;
+    await updateRunTurn(store, turn, terminal, input.terminalItems?.(terminal));
     return { turnId: turn.id, text: result };
   } catch (error) {
     // Only this role's deadline is a KM timeout; caller cancellation keeps its original cause.
@@ -449,8 +482,8 @@ async function executeKnowledgeManagerAgent(
             message: 'knowledge_manager_timeout: Knowledge Manager reached its run deadline.',
           }
         : undefined;
-    if (!isSealedTurnTerminal(runTurn(store, input).status))
-      updateRunTurn(store, turn, {
+    if (!isSealedTurnTerminal(runTurn(store, input).status)) {
+      const terminal = {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
         error: timeout ??
@@ -459,13 +492,21 @@ async function executeKnowledgeManagerAgent(
             message:
               'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
           },
-      });
+      } as const;
+      await updateRunTurn(
+        store,
+        turn,
+        terminal,
+        input.terminalItems?.(terminal),
+        (interruptSignal.reason as TurnCommandRuntimeContext | undefined)?.command ?? undefined
+      );
+    }
     throw timeout ? Object.assign(new Error(timeout.message), { code: timeout.code }) : error;
   }
 }
 
 /**
- * Commits accepted loop messages once through ordinary Items, including each completed Tool pair.
+ * Awaits acknowledged ordinary Items for accepted loop messages, including each completed Tool pair.
  *
  * Model call IDs correlate retained calls but select no effect. The full ordered source inventory is returned for compaction; summaries are never copied into that inventory.
  */
@@ -474,13 +515,13 @@ export function createKnowledgeManagerTranscript(
   store: FsStore,
   turn: Turn,
   actor: ActorRef
-): (messages: readonly AgentMessage[]) => readonly Item[] {
+): (messages: readonly AgentMessage[]) => Promise<readonly Item[]> {
   const committed = new Map<string, Item>();
-  const create = (value: unknown): Item =>
+  const create = (value: unknown): Promise<Item> =>
     turn.owner.kind === 'server'
       ? store.createServerItem(ItemSchema.parse(value))
       : store.createItem(ItemSchema.parse(value));
-  return (messages) => {
+  return async (messages) => {
     const items: Item[] = [];
     for (const [index, message] of messages.entries()) {
       if (message.role === 'tool') continue;
@@ -503,7 +544,7 @@ export function createKnowledgeManagerTranscript(
           };
           committed.set(
             key,
-            create(
+            await create(
               message.role === 'user'
                 ? { ...base, type: 'user-message', actor }
                 : { ...base, type: 'assistant-message' }
@@ -525,7 +566,7 @@ export function createKnowledgeManagerTranscript(
           const timestamp = new Date().toISOString();
           committed.set(
             key,
-            create({
+            await create({
               id: allocateEntityId('it'),
               owner: turn.owner,
               threadId: turn.threadId,

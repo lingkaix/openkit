@@ -1,5 +1,7 @@
 # Internal Core Roles
 
+An internal Stop uses the existing live cancellation handle to carry its original command to the first terminal publication. Knowledge Manager publishes that Stop receipt and Audit with its cancelled Turn. Native refusal remains recovery_required; cancellation knowledge does not imply a committed terminal result.
+
 This directory owns the deterministic Workflow Coordinator, Internal Role Execution Profile resolution, the bounded shared Internal Agent Loop, structured worker delegation payloads, and shared redaction helpers used by NanoCore services.
 
 ## Boundaries
@@ -64,5 +66,7 @@ Shared narrative records now carry the explicit Protocol owner union. Knowledge 
 Knowledge Manager defaults to a 300-second run and editor deadline, with existing explicitly authored profile limits unchanged. Its own deadline retains `knowledge_manager_timeout` on the failed Turn; caller cancellation remains separate. The timeout adds no retry or alternate Provider path.
 
 Rolling context reports unavailable required source evidence as `internal_agent_context_source_unavailable`, separately from physical capacity. Internal diagnostics name only the fixed native check; Turn errors keep a safe summary. Empty retrieval traces keep current owner, audience, KB and identity admission and carry no selected-page byte dependency; their age grants no exception. Source failure stops the affected Provider dispatch.
+
+Internal Chat and Knowledge Manager interruption forward the original command carrier to the active run owner. That owner acknowledges the native Stop receipt and Audit before it signals cancellation, then waits for its ordinary terminal publication. Stop acceptance supplies no execution, terminal or cleanup proof and leaves the conversation result receipt with its original owner.
 
 The Goal Coordinator uses current native Policy facts, explicit bounded Task dispatch, and Knowledge queries for specific missing facts. Captured inactive domains are approval candidates. Publication failures use the existing exact approval retry; unsupported candidates require a corrected proposal and new approval. Shared deadline errors do not assign a failure phase.

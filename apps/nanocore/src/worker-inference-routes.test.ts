@@ -56,6 +56,7 @@ import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-
 import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { readWorkerRawOutput } from './runtime/worker-raw-output.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
@@ -323,7 +324,8 @@ const WORKER_PROVIDER_MODEL = 'openai/gpt-5.2';
 const CODEX_PROVIDER_ID = 'openai-codex';
 const CODEX_PROVIDER_MODEL = 'openai-codex/gpt-5.6-sol';
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const coreDb of ownedCoreDatabases.splice(0)) {
     coreDb.sqlite.close();
@@ -342,7 +344,7 @@ afterEach(() => {
  * @param options Optional provider family, admitted authority and logical model, and current Gateway supply.
  * @returns Route fixture.
  */
-function createWorkerInferenceRouteFixture(
+async function createWorkerInferenceRouteFixture(
   trustedRelay = true,
   coreDb?: CoreDb,
   durableStorage = true,
@@ -363,7 +365,7 @@ function createWorkerInferenceRouteFixture(
     readonly gatewayConfig?: GatewayConfig;
     readonly providerRegistry?: ProviderRegistry;
   } = {}
-): WorkerInferenceRouteFixture {
+): Promise<WorkerInferenceRouteFixture> {
   const providerProfileId =
     options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_ID : 'agent-openrouter';
   const providerModel =
@@ -385,8 +387,8 @@ function createWorkerInferenceRouteFixture(
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   }
-  const store = createDemoStore();
-  const turn = store.createTurn(
+  const store = await createDemoStore();
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Call worker inference',
@@ -399,7 +401,7 @@ function createWorkerInferenceRouteFixture(
   );
   if (options.persistedTurn && appCoreDb) {
     const persisted = new FsStore({ dataRoot: appCoreDb.dataRoot });
-    persisted.importWorkspaceSnapshot({
+    await persisted.importWorkspaceSnapshot({
       ...notebookImportFixture({
         workspaceId: store.getWorkspace(workspaceIdForOwner(turn.owner)).id,
         knowledge: [],
@@ -763,7 +765,7 @@ describe('worker inference routes', () => {
     false,
     true,
   ])('refuses successful Provider output without native raw observation proof (stream=%s)', async (stream) => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(
       async (_provider, request) => ({
         id: 'resp_unobserved',
@@ -824,7 +826,7 @@ describe('worker inference routes', () => {
         },
       },
     ]);
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       providerRegistry,
     });
     const source = vi.spyOn(fixture.dispatcher, 'observeSource');
@@ -877,7 +879,7 @@ describe('worker inference routes', () => {
   });
 
   it('dispatches canonical Responses through the AEP provider', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const response = await postWorkerResponses(
       fixture,
       {
@@ -939,7 +941,7 @@ describe('worker inference routes', () => {
   });
 
   it('normalizes pinned Codex Responses tools into the message-anchored prefix', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       subscriptionFamily: 'openai-codex',
     });
     const tools = [
@@ -976,7 +978,7 @@ describe('worker inference routes', () => {
   });
 
   it('keeps worker function tools through direct stock IR mapping', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const tool = {
       description: 'Return the provided text unchanged.',
       name: 'probe_echo',
@@ -1036,7 +1038,7 @@ describe('worker inference routes', () => {
   });
 
   it('does not recover missing adapter authority from descriptive runtime kind', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     Reflect.deleteProperty(fixture.environmentPackage.control, 'adapter');
 
     const response = await postWorkerResponses(fixture, {
@@ -1052,7 +1054,7 @@ describe('worker inference routes', () => {
   });
 
   it('dispatches Chat Completions through the AEP provider and model', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const response = await fixture.app.request('/api/worker-inference/v1/chat/completions', {
       body: JSON.stringify({
         messages: [{ content: 'Hello', role: 'user' }],
@@ -1077,7 +1079,7 @@ describe('worker inference routes', () => {
     false,
     true,
   ])('maps native Codex metadata through Integration and Core with mapping=%s', async (mapped) => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, mapped);
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, mapped);
     const canonical = JSON.stringify({
       request_kind: 'turn',
       session_id: 'native-session',
@@ -1226,7 +1228,7 @@ describe('worker inference routes', () => {
     false,
     true,
   ])('consumes normalized runtime hints with provenance required=%s', async (required) => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, required);
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, required);
     const turnMetadata = {
       parent_thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e04',
       request_kind: 'turn',
@@ -1288,7 +1290,7 @@ describe('worker inference routes', () => {
   });
 
   it('requires canonical runtime hints for provenance-required packages', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, true);
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, true);
     const response = await postWorkerResponses(fixture, {
       input: 'Missing provenance hint',
       model: WORKER_LOGICAL_MODEL_ID,
@@ -1307,7 +1309,7 @@ describe('worker inference routes', () => {
     {},
     { nativeSessionId: 'private-id', nativeThreadId: '', runtimeFamily: 'codex' },
   ])('rejects malformed normalized hints before provider dispatch: %j', async (hint) => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
       model: WORKER_LOGICAL_MODEL_ID,
@@ -1325,7 +1327,7 @@ describe('worker inference routes', () => {
   });
 
   it('does not parse retired native metadata at Core', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, true);
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, true);
     const native = JSON.stringify({
       request_kind: 'turn',
       session_id: 'session',
@@ -1354,7 +1356,7 @@ describe('worker inference routes', () => {
   });
 
   it('preserves provider-compatible Chat Completions message fields', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const toolCalls = [
       {
         function: { arguments: '{"path":"README.md"}', name: 'read_file' },
@@ -1383,7 +1385,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects duplicate Chat and Responses callable keys before provider dispatch', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const cases = [
       {
         body: {
@@ -1437,7 +1439,7 @@ describe('worker inference routes', () => {
   });
 
   it('preserves Chat Completions and Responses SSE bytes', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const cases = [
       {
         body: { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID, stream: true },
@@ -1483,7 +1485,7 @@ describe('worker inference routes', () => {
   });
 
   it('cancels worker inference streams once and preserves its terminal evidence', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldHoldResponsesStream = true;
     const request = new Request('http://localhost/api/worker-inference/v1/responses', {
       body: JSON.stringify({
@@ -1569,7 +1571,7 @@ describe('worker inference routes', () => {
 
   it('emits a bounded SSE heartbeat while worker inference is idle', async () => {
     vi.useFakeTimers();
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldHoldResponsesStream = true;
     const response = await postWorkerResponses(fixture, {
       input: 'Wait through one idle interval',
@@ -1598,7 +1600,7 @@ describe('worker inference routes', () => {
   });
 
   it('cancels the upstream stream when a real HTTP consumer disconnects', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldHoldResponsesStream = true;
     const server = serve({ fetch: fixture.app.fetch, hostname: '127.0.0.1', port: 0 });
     await new Promise<void>((resolve, reject) => {
@@ -1674,7 +1676,7 @@ describe('worker inference routes', () => {
       expectedLedgerStatus: 'failed',
     },
   ])('classifies $caseName by the thrown error cause', async (testCase) => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const abortController = new AbortController();
     fixture.dispatcher.responseErrorAfterAbort = testCase.error;
     const responsePromise = fixture.app.fetch(
@@ -1706,7 +1708,7 @@ describe('worker inference routes', () => {
   });
 
   it('preserves sanitized terminal SSE when durable finish audit insertion fails', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const workspaceDb = openWorkspaceDb(
       fixture.coreDb!.dataRoot,
       fixture.environmentPackage.scope.workspaceId
@@ -1745,7 +1747,7 @@ describe('worker inference routes', () => {
 
     try {
       applyMigrations(coreDb);
-      const fixture = createWorkerInferenceRouteFixture(true, coreDb);
+      const fixture = await createWorkerInferenceRouteFixture(true, coreDb);
 
       await postWorkerResponses(fixture, {
         input: 'First sibling call',
@@ -1798,7 +1800,7 @@ describe('worker inference routes', () => {
   });
 
   it('denies worker inference when the exact AEP actor loses current Workspace authority', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.coreDb!.sqlite.transaction(() => {
       disableCanonicalUser(fixture.coreDb!, 'usr_00000000-0000-7000-8000-000000000001');
     })();
@@ -1833,7 +1835,7 @@ describe('worker inference routes', () => {
   });
 
   it('reloads administrator provenance and refuses its revocation even after the actor becomes a Workspace member', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       adminBearer: true,
     });
     const reloaded = openCoreDb(fixture.coreDb!.dataRoot);
@@ -1883,7 +1885,7 @@ describe('worker inference routes', () => {
   });
 
   it('uses the exact admitted admin bearer for nonmember inference and denies revocation or lineage drift', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       adminBearer: true,
     });
     const request = () =>
@@ -1926,7 +1928,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects missing and invalid worker identity', async () => {
-    const trusted = createWorkerInferenceRouteFixture();
+    const trusted = await createWorkerInferenceRouteFixture();
     const requests = [
       trusted.app.request('/api/worker-inference/v1/responses', {
         body: JSON.stringify({ input: 'Hello', model: WORKER_LOGICAL_MODEL_ID }),
@@ -1952,7 +1954,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects caller authority conflicts before provider dispatch', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const conflicts = [
       { model: 'other-model' },
       { model_id: 'other-model' },
@@ -1987,7 +1989,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects caller authority aliases even when they match trusted AEP authority', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const scope = fixture.environmentPackage.scope;
     const aliases = [
       { provider_id: 'agent-openrouter' },
@@ -2013,7 +2015,7 @@ describe('worker inference routes', () => {
   });
 
   it('enforces the persisted absolute attempt deadline at the mediated inference boundary', async () => {
-    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       durableAuthority: true,
     });
     const db = f.coreDb!;
@@ -2062,7 +2064,7 @@ describe('worker inference routes', () => {
   });
 
   it('fails closed when the durable lease dies or a restored session has no AEP', async () => {
-    const deadLease = createWorkerInferenceRouteFixture();
+    const deadLease = await createWorkerInferenceRouteFixture();
     deadLease.expireLease();
     const deadLeaseResponse = await postWorkerResponses(deadLease, {
       input: 'Hello',
@@ -2075,7 +2077,7 @@ describe('worker inference routes', () => {
     });
     expect(deadLease.dispatcher.responseCalls).toEqual([]);
 
-    const unhydrated = createWorkerInferenceRouteFixture();
+    const unhydrated = await createWorkerInferenceRouteFixture();
     const scope = unhydrated.environmentPackage.scope;
     unhydrated.workerControlGateway.unregisterSession(unhydrated.environmentPackage.snapshotId);
     unhydrated.workerControlGateway.restoreSession({
@@ -2106,7 +2108,7 @@ describe('worker inference routes', () => {
   });
 
   it('strips cache hints and rejects provider-side state authority', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const scope = fixture.environmentPackage.scope;
     const accepted = await postWorkerResponses(fixture, {
       input: 'Hello',
@@ -2179,7 +2181,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects worker inference when durable capability storage is unavailable', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, false);
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, false);
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
       model: WORKER_LOGICAL_MODEL_ID,
@@ -2193,7 +2195,7 @@ describe('worker inference routes', () => {
   });
 
   it('projects durable workspace failures as worker inference unavailability', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const originalDataRoot = fixture.coreDb!.dataRoot;
     const blockedParent = mkdtempSync(join(tmpdir(), 'openkit-worker-inference-blocked-'));
     const blockedDataRoot = join(blockedParent, 'not-a-directory');
@@ -2218,7 +2220,7 @@ describe('worker inference routes', () => {
   });
 
   it('marks dispatch and response serialization failures in the durable ledger', async () => {
-    const dispatchFailure = createWorkerInferenceRouteFixture();
+    const dispatchFailure = await createWorkerInferenceRouteFixture();
     dispatchFailure.dispatcher.responseError = new Error('private provider failure');
     const rejected = await postWorkerResponses(dispatchFailure, {
       input: 'Hello',
@@ -2230,7 +2232,7 @@ describe('worker inference routes', () => {
       expect.objectContaining({ errorCode: 'worker_inference_failed', status: 'failed' }),
     ]);
 
-    const serializationFailure = createWorkerInferenceRouteFixture();
+    const serializationFailure = await createWorkerInferenceRouteFixture();
     const cyclicResponse: Record<string, unknown> = {
       id: 'resp_cyclic',
       object: 'response',
@@ -2255,7 +2257,7 @@ describe('worker inference routes', () => {
     false,
     true,
   ])('preserves typed unsupported feature failures before stream=%s', async (stream) => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const request = { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID, stream };
     const supported = await postWorkerResponses(fixture, request);
     expect(supported.status).toBe(200);
@@ -2298,7 +2300,7 @@ describe('worker inference routes', () => {
   });
 
   it('projects typed provider request failures as generic worker errors', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.responseError = attachPiAiFailure(
       new OpenAICompatibleProviderError({
         code: 'model_not_supported',
@@ -2332,7 +2334,7 @@ describe('worker inference routes', () => {
   });
 
   it('marks post-start stream read failures before emitting terminal SSE', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldFailResponsesStream = true;
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
@@ -2378,7 +2380,7 @@ describe('worker inference routes', () => {
         durableErrorCode: 'worker_inference_stream_failed',
       },
     ]) {
-      const fixture = createWorkerInferenceRouteFixture();
+      const fixture = await createWorkerInferenceRouteFixture();
       fixture.dispatcher.shouldFailResponsesStream = true;
       fixture.dispatcher.responsesStreamFailure = Object.assign(
         new Error('Provider stream failed. token=tok_00000000-0000-7608-9cb9-96beaf03534f'),
@@ -2416,7 +2418,7 @@ describe('worker inference routes', () => {
   });
 
   it('records classified worker stream failures as the public OpenKit code', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldFailResponsesStream = true;
     fixture.dispatcher.responsesStreamFailure = attachPiAiFailure(
       new Error('rate limit exceeded token=tok_00000000-0000-7608-9cb9-96beaf03534f')
@@ -2441,7 +2443,7 @@ describe('worker inference routes', () => {
   });
 
   it('records unsupported-feature stream failures as invalid request, not the uncoded envelope', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldFailResponsesStream = true;
     fixture.dispatcher.responsesStreamFailure = new GatewayUnsupportedFeatureError(
       'pi-ai Responses reasoning stream'
@@ -2466,7 +2468,7 @@ describe('worker inference routes', () => {
   });
 
   it('records provider registry drift as a failed capability call without fallback', async () => {
-    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, false, false, {
+    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, false, false, {
       persistedTurn: true,
     });
     const response = await postWorkerResponses(fixture, {
@@ -2493,7 +2495,7 @@ describe('worker inference routes', () => {
   });
 
   it('decodes identity and Zstd JSON into the same provider request', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const body = JSON.stringify({
       input: 'Compressed worker input',
       model: WORKER_LOGICAL_MODEL_ID,
@@ -2523,7 +2525,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects unsupported representations and malformed worker JSON', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const cases = [
       {
         body: JSON.stringify({ input: 'Hello', model: WORKER_LOGICAL_MODEL_ID }),
@@ -2569,7 +2571,7 @@ describe('worker inference routes', () => {
   });
 
   it('rejects encoded and decoded worker bodies above the fixed limit', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     const encodedOverflow = await postRawWorkerResponses(
       fixture,
       Buffer.alloc(WORKER_INFERENCE_TEST_BODY_LIMIT + 1, 0x20)
@@ -2619,7 +2621,7 @@ describe('worker inference pre-commit privacy', () => {
     },
   ])('holds Response and heartbeat until the first output: %j', async (output) => {
     vi.useFakeTimers();
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.holdLifecycle = true;
     let visible: Response | undefined;
     const pending = postWorkerResponses(fixture, {
@@ -2657,7 +2659,7 @@ describe('worker inference pre-commit privacy', () => {
 
   it('returns private JSON for a held first failure without publishing lifecycle or heartbeat', async () => {
     vi.useFakeTimers();
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.holdLifecycle = true;
     const pending = postWorkerResponses(fixture, {
       input: 'hello',
@@ -2720,7 +2722,7 @@ describe('Round 2 worker exhaustion cause', () => {
         try {
           const disabled = 'disabled' in scenario;
           const terminal = scenario.kind === 'context_overflow';
-          const fixture = createWorkerInferenceRouteFixture(
+          const fixture = await createWorkerInferenceRouteFixture(
             true,
             undefined,
             true,
@@ -2792,7 +2794,7 @@ describe('Round 2 worker exhaustion cause', () => {
 
 describe('slice 1d Worker durable selection', () => {
   it('A2 retains one failed logical call with exclusions and no dispatch observations or usage', async () => {
-    const f = createWorkerInferenceRouteFixture(true, undefined, true, false, false, {
+    const f = await createWorkerInferenceRouteFixture(true, undefined, true, false, false, {
       persistedTurn: true,
     });
     const response = await postWorkerResponses(f, {
@@ -2837,7 +2839,7 @@ describe('slice 1d Worker durable selection', () => {
   });
   it('A2 subscription check failure records one unavailable entry, no attempt and the closed public cause', async () => {
     vi.useFakeTimers();
-    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       subscriptionFamily: 'openai-codex',
       subscriptionCheckUnavailable: true,
       persistedTurn: true,
@@ -2884,7 +2886,7 @@ describe('slice 1d Worker durable selection', () => {
   for (const endpoint of ['responses', 'chat/completions'])
     for (const stream of [false, true]) {
       it(`${endpoint} stream=${stream} transport carries the absolute deadline`, async () => {
-        const f = createWorkerInferenceRouteFixture();
+        const f = await createWorkerInferenceRouteFixture();
         const before = Date.now();
         const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
           method: 'POST',
@@ -2909,7 +2911,7 @@ describe('slice 1d Worker durable selection', () => {
 describe('slice 1d round 2 terminal frame closeout', () => {
   for (const failed of [true, false])
     it(`Worker released ${failed ? 'failed' : 'incomplete'} frame keeps its logical outcome`, async () => {
-      const f = createWorkerInferenceRouteFixture();
+      const f = await createWorkerInferenceRouteFixture();
       const frames = [
         { type: 'response.output_text.delta', delta: 'released' },
         {
@@ -2982,7 +2984,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
         },
       },
     ]);
-    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       persistedTurn: true,
       providerRegistry,
     });
@@ -3062,7 +3064,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
     'responses',
     'chat/completions',
   ] as const)('refuses unknown %s effort without an effect', async (endpoint) => {
-    const f = createWorkerInferenceRouteFixture();
+    const f = await createWorkerInferenceRouteFixture();
     for (const effort of ['turbo', null, 4, {}]) {
       const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
         method: 'POST',
@@ -3101,7 +3103,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
     const dispatcher = new LLMGatewayProviderDispatcher({
       piAiClient: new PiAiGatewayClient({ models }),
     });
-    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+    const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       persistedTurn: true,
       dispatcher,
       ...(recorded ? { reasoningEffort: recorded } : {}),
@@ -3140,7 +3142,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
 });
 
 it('Worker inference skips missing API-key supply without a Provider callback', async () => {
-  const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+  const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
     missingApiKey: true,
   });
   const response = await postWorkerResponses(fixture, {
@@ -3238,7 +3240,7 @@ describe('Worker Turn admitted limits', () => {
         providerProfileId: profile.id,
         providerModel: WORKER_PROVIDER_MODEL,
       }));
-      const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
         persistedTurn: true,
         admittedLogicalModel:
           scenario === 'absent modelParameters' ? modelWithoutParameters : admittedModel,

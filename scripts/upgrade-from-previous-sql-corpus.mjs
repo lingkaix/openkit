@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -426,9 +427,9 @@ export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, ca
 export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, selectors }) {
   const o = await owners(appRoot);
   const { workspaceId, threadId, turnId } = selectors;
-  const core = o.db.openCoreDb(dataRoot);
-  const user = o.db.openUserDb(dataRoot, userId);
-  const workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
+  let core = o.db.openCoreDb(dataRoot);
+  let user = o.db.openUserDb(dataRoot, userId);
+  let workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
   const actor = { kind: 'user', id: userId };
   const sql = {
     userId,
@@ -766,25 +767,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       status: 'succeeded',
       now: new Date(NOW),
     });
-    sql.receiptKeys = {};
-    for (const [scopeName, handle, scope] of [
-      ['core', core, { coreId: 'server' }],
-      ['user', user, { userId }],
-      ['workspace', workspace, { workspaceId }],
-    ]) {
-      const record = {
-        key: `task.start|upgrade-corpus-${scopeName}|${scopeName}`,
-        command: 'task.start',
-        requestId: `upgrade-corpus-${scopeName}`,
-        scope,
-        inputHash: 'sha256:synthetic-corpus',
-        response: { kind: 'turn', id: turnId },
-        createdAt: NOW,
-        expiresAt: EXPIRES,
-      };
-      o.commands.recordCommandRequestRecordInDb(handle, record);
-      sql.receiptKeys[scopeName] = record.key;
-    }
+    await seedTaskReceipts(o, core, user, workspace, store, sql);
     sql.readItemId = store
       .listThreadItems(workspaceId, threadId)
       .find((item) => item.type === 'user-message')?.id;
@@ -927,13 +910,345 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     } finally {
       appHandle.sqlite.close();
     }
-    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot);
+    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, async () => {
+      const { shutdownControlStoreWorkerClient } = await o.load(
+        'storage/control-store-worker-client'
+      );
+      await shutdownControlStoreWorkerClient();
+      workspace.sqlite.close();
+      user.sqlite.close();
+      core.sqlite.close();
+      // A fresh process has no surviving Store, writer, admission cache or SQLite connection.
+      const child = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `import(process.argv[1]).then(async ({ recoverStoppedSqlCorpus }) => {
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const result = await recoverStoppedSqlCorpus(input);
+process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
+});`,
+          import.meta.url,
+        ],
+        {
+          encoding: 'utf8',
+          input: JSON.stringify({ appRoot, dataRoot, sql }),
+        }
+      );
+      if (child.error) throw child.error;
+      if (child.status !== 0)
+        throw new Error(`SQL corpus cold boot failed: ${child.stderr || child.stdout}`);
+      const line = child.stdout.split('\n').find((row) => row.startsWith('SQL_CORPUS_COLD_BOOT '));
+      if (!line) throw new Error('SQL corpus cold boot returned no owner readback.');
+      const recovered = JSON.parse(line.slice('SQL_CORPUS_COLD_BOOT '.length));
+      const { isCurrentAgentSessionStatus } = await o.load('storage/workspace-file-records');
+      if (
+        isCurrentAgentSessionStatus(recovered.session.status) &&
+        recovered.turn.status === 'running'
+      )
+        throw new Error(
+          `Cold boot recovery left the context Session current and its Turn running: ${JSON.stringify(
+            {
+              turn: {
+                status: recovered.turn.status,
+                linked: recovered.turn.agentSessionId === recovered.session.id,
+              },
+              session: { status: recovered.session.status, stale: recovered.session.stale },
+              checkpointRecoveryFailures: recovered.checkpointRecoveryFailures,
+              checkpointRecoveryErrors: recovered.checkpointRecoveryErrors,
+              projectRecoveredTurnCalls: recovered.projectRecoveredTurnCalls,
+            }
+          )}`
+        );
+      sql.contextRecovery = { turn: recovered.turn, session: recovered.session };
+      core = o.db.openCoreDb(dataRoot);
+      user = o.db.openUserDb(dataRoot, userId);
+      workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
+      return { core, workspace, store: new o.store.FsStore({ dataRoot }) };
+    });
     return { sql };
   } finally {
-    workspace.sqlite.close();
-    user.sqlite.close();
+    const { shutdownControlStoreWorkerClient } = await o.load(
+      'storage/control-store-worker-client'
+    );
+    await shutdownControlStoreWorkerClient();
+    if (workspace.sqlite.open) workspace.sqlite.close();
+    if (user.sqlite.open) user.sqlite.close();
+    if (core.sqlite.open) core.sqlite.close();
+  }
+}
+
+/** Runs the selected image's pre-listen storage and recovery owners in a fresh process. */
+export async function recoverStoppedSqlCorpus({ appRoot, dataRoot, sql }) {
+  const o = await owners(appRoot);
+  const core = o.db.openCoreDbWithIntegrityCheck(dataRoot, { freshInitialization: false });
+  const admission = new o.admission.WorkspaceMutationAdmission();
+  const [
+    readiness,
+    records,
+    indexes,
+    managers,
+    restart,
+    native,
+    factory,
+    app,
+    terminal,
+    observations,
+    flow,
+    modes,
+  ] = await Promise.all(
+    [
+      'bootstrap/readiness',
+      'storage/workspace-file-records',
+      'storage/index-rebuild',
+      'knowledge/server-knowledge-maintenance',
+      'runtime/scheduler-restart-recovery',
+      'runtime/nanohost-attempt-recovery',
+      'runtime/turn-executor-factory',
+      'app',
+      'runtime/worker-turn-failure',
+      'storage/work-observation-recovery',
+      'runtime/pending-request-flow',
+      'mode-entry-routes',
+    ].map(o.load)
+  );
+  try {
+    o.migrate.applyMigrations(core);
+    readiness.restoreWorkspaceRetirementAdmission({
+      coreDb: core,
+      workspaceMutationAdmission: admission,
+    });
+    o.usage.recoverRunningCapabilityCalls({ workspaceDb: core });
+    o.db.verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+      o.store.FsStore.validateFileAuthority(dataRoot)
+    );
+    const store = new o.store.FsStore({ dataRoot });
+    indexes.rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
+    app.restoreWorkspaceDeletionMutationAdmission({
+      coreDb: core,
+      dataRoot,
+      workspaceMutationAdmission: admission,
+    });
+    o.targets.fenceNanoHostRuntimeTargetAfterRestart(core, new Date().toISOString());
+    records.discardAbandonedWorkspaceStaging(dataRoot);
+    await managers.recoverServerKnowledgeManagerTurns(store);
+    // The real lifecycle backend is constructed without ambient environment or an effect dispatcher.
+    const runtime = factory.createConfiguredWorkerLifecycleRuntime({
+      env: {},
+      coreDb: core,
+      store,
+      workspaceMutationAdmission: admission,
+    });
+    let projectRecoveredTurnCalls = 0;
+    const recovery = {
+      executionBackend: runtime.turnExecutor.executionBackend,
+      store,
+      reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,
+      cleanupBackendSession: runtime.cleanupBackendSession,
+      isTurnExecutionActive: runtime.isTurnExecutionActive,
+      prepareBackendCleanup: runtime.prepareBackendCleanup,
+      restoreBackendSession: runtime.restoreBackendSession,
+      // This is the composition used by index.ts, invoked only for subjects the recovery owner selects.
+      projectRecoveredTurn: async (subject) => {
+        projectRecoveredTurnCalls += 1;
+        const context = o.scheduler.requireSchedulerExecutionAttemptAdmissionContext(
+          core,
+          subject.attemptId
+        );
+        const anchored = 'state' in subject;
+        const result = await terminal.terminalizeGovernedWorkerTurn({
+          agentSessionId: subject.agentSessionId,
+          completedAt: new Date().toISOString(),
+          errorCode: 'worker_governance_restart_recovery',
+          message: anchored
+            ? 'Worker execution was interrupted during scheduler recovery.'
+            : 'Worker execution stopped during scheduler recovery.',
+          outcome: anchored ? 'interrupted' : 'failed',
+          requestId: context.requestId,
+          store,
+          turnId: subject.turnId,
+        });
+        if (!['completed', 'failed', 'interrupted', 'cancelled', 'missing'].includes(result.status))
+          throw new Error(
+            `Restart recovery left turn ${subject.turnId} non-terminal: ${result.status}.`
+          );
+        if ('id' in result && result.error?.code === 'worker_governance_restart_recovery') {
+          const db = o.db.openBootVerifiedWorkspaceDb(dataRoot, result.owner.workspaceId);
+          try {
+            observations.appendRecoveredTurnObservation(
+              db,
+              result,
+              anchored ? 'anchored-cleanup' : 'pre-anchor'
+            );
+          } finally {
+            db.sqlite.close();
+          }
+        }
+        return { status: result.status };
+      },
+    };
+    await restart.runSchedulerRestartRecovery(core, recovery);
+    await native.classifyNanoHostAttemptsAfterRestart(core, recovery);
+    let checkpointRecoveryFailures = 0;
+    const checkpointRecoveryErrors = [];
+    // Match index.ts: checkpoint failures degrade readiness but do not bypass later recovery.
+    for (const { workspaceId } of o.db.listExistingWorkspaceDatabaseScopes(dataRoot)) {
+      let db;
+      try {
+        db = o.db.openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+        for (const checkpoint of o.checkpoints.listExportableWorkerCheckpoints(db, workspaceId)) {
+          try {
+            if (checkpoint.goalId !== null || checkpoint.taskId !== null)
+              throw new Error('Worker checkpoint has only one Goal lineage owner.');
+            await modes.classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb: core,
+              store,
+              workspaceDb: db,
+              checkpoint,
+            });
+          } catch (error) {
+            checkpointRecoveryFailures += 1;
+            checkpointRecoveryErrors.push(error.message);
+          }
+        }
+      } catch (error) {
+        checkpointRecoveryFailures += 1;
+        checkpointRecoveryErrors.push(error.message);
+      } finally {
+        db?.sqlite.close();
+      }
+    }
+    const pendingWorkspace = {
+      coreDb: core,
+      openWorkspace: (workspaceId) => o.db.openBootVerifiedWorkspaceDb(dataRoot, workspaceId),
+    };
+    flow.installPendingRequestAdmission(store, pendingWorkspace);
+    await flow.recoverPendingRequestsAtBoot(store, pendingWorkspace);
+    return {
+      turn: store.getTurnById(sql.contextTurnId),
+      session: store.getAgentSession(sql.contextAgentSessionId),
+      checkpointRecoveryFailures,
+      checkpointRecoveryErrors,
+      projectRecoveredTurnCalls,
+    };
+  } finally {
+    const worker = await o.load('storage/control-store-worker-client');
+    await worker.shutdownControlStoreWorkerClient();
     core.sqlite.close();
   }
+}
+
+/** Admits fresh, unexecuted Task Turns and their original receipts in the selected native writer. */
+async function seedTaskReceipts(o, core, user, workspace, store, sql) {
+  const records = await o.load('storage/workspace-file-records');
+  const { getControlStoreWorkerClient } = await o.load('storage/control-store-worker-client');
+  const protocol = await o.loadPackage('@openkit/protocol');
+  const { commandInputHash } = await o.load('runtime/idempotent-command');
+  sql.receiptKeys = {};
+  sql.receipts = {};
+  for (const [scopeName, handle, owner] of [
+    ['core', core, { kind: 'server' }],
+    ['workspace', workspace, { kind: 'workspace', workspaceId: workspace.workspaceId }],
+  ]) {
+    const thread =
+      owner.kind === 'server'
+        ? await store.createServerThread('Synthetic retained Task admission')
+        : await store.createThread(owner.workspaceId, 'Synthetic retained Task admission');
+    const scope =
+      owner.kind === 'server' ? { coreId: 'server' } : { workspaceId: owner.workspaceId };
+    const requestId = randomUUID();
+    const prompt = 'Retain this Task admission without executing it.';
+    const turn = protocol.TurnSchema.parse({
+      id: protocol.allocateEntityId('tu'),
+      owner,
+      threadId: thread.id,
+      triggerActor: { kind: 'user', id: sql.userId },
+      items: [],
+      status: 'pending',
+      error: null,
+      configVersion: null,
+      startedAt: NOW,
+      completedAt: null,
+      durationMs: null,
+    });
+    const receipt = {
+      key: o.store.commandRequestKey('task.start', requestId, scope),
+      command: 'task.start',
+      requestId,
+      scope,
+      inputHash: commandInputHash({ input: prompt }),
+      response: { kind: 'turn', id: turn.id },
+      createdAt: NOW,
+      expiresAt: EXPIRES,
+    };
+    const native = records.nativeProductScope(core.dataRoot, owner);
+    const previous = records.readNativeProduct(native, 'thread', thread.id);
+    const client = getControlStoreWorkerClient();
+    const database = `${scopeName}:${native.path}`;
+    await client.open({
+      database,
+      path: native.path,
+      dataRoot: core.dataRoot,
+      create: false,
+      initialize: owner.kind === 'server' ? 'core' : 'workspace',
+      productOwner: owner,
+      contentMount: native.contentMount,
+    });
+    const admitted = await client.transition(database, {
+      receipt,
+      products: [
+        {
+          kind: 'thread',
+          expectedRevision: previous.revision,
+          record: protocol.writeRetainedV1({ ...previous.record, preview: prompt, updatedAt: NOW }),
+        },
+        { kind: 'turn', expectedRevision: 0, record: protocol.writeRetainedV1(turn) },
+      ],
+      entries: [],
+      audit: o.audit.prepareAuditEvent({
+        workspaceId: owner.kind === 'workspace' ? owner.workspaceId : null,
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId,
+        actor: turn.triggerActor,
+        category: 'command',
+        action: 'task.start',
+        resource: `turn:${turn.id}`,
+        outcome: 'succeeded',
+        summary: 'Synthetic Task admitted without execution.',
+        now: new Date(NOW),
+      }),
+    });
+    assert.deepEqual(admitted.response, receipt.response);
+    const retained = required(
+      o.commands.getCommandRequestRecordFromDb(handle, receipt.key, NOW),
+      `${scopeName} Task admission receipt`
+    );
+    assert.deepEqual(retained, receipt);
+    assert.deepEqual(
+      records.readNativeProduct(native, 'turn', admitted.response.id).record,
+      protocol.writeRetainedV1(turn)
+    );
+    sql.receiptKeys[scopeName] = retained.key;
+    sql.receipts[scopeName] = retained;
+  }
+  // User receipts keep their existing Main owner; the Task pointer comes from native admission.
+  const receipt = {
+    key: 'task.start|upgrade-corpus-user|user',
+    command: 'task.start',
+    requestId: 'upgrade-corpus-user',
+    scope: { userId: sql.userId },
+    inputHash: 'sha256:synthetic-corpus',
+    response: sql.receipts.workspace.response,
+    createdAt: NOW,
+    expiresAt: EXPIRES,
+  };
+  o.commands.recordCommandRequestRecordInDb(user, receipt);
+  sql.receiptKeys.user = receipt.key;
+  sql.receipts.user = required(
+    o.commands.getCommandRequestRecordFromDb(user, receipt.key, NOW),
+    'User command receipt'
+  );
 }
 
 /** Seeds deployment-local channel history through native owners, using only in-memory synthetic signing material. */
@@ -1053,7 +1368,7 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
 }
 
 /** Seeds correlated AEP, Context Package, and original evidence through their product owners. */
-async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) {
+async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, coldReopen) {
   const [
     aep,
     resolver,
@@ -1100,13 +1415,13 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     escalationConditions: [],
     reviewContext: null,
   });
-  const turn = store.createTurn(workspaceId, threadId, workerRequest, actor, null, {
+  const turn = await store.createTurn(workspaceId, threadId, workerRequest, actor, null, {
     captureCoverage: { scope: 'server', value: 'on' },
   });
   sql.contextTurnId = turn.id;
   sql.contextAgentSessionId = id('as', 'context-session');
   const requestItemId = id('it', 'context-request');
-  store.createItem({
+  await store.createItem({
     id: requestItemId,
     owner: turn.owner,
     threadId,
@@ -1162,20 +1477,48 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     actor: { kind: 'session', userId: sql.userId },
     inflightCommands: new WeakMap(),
   };
-  workspace.sqlite.transaction(() =>
-    judgements.appendArtifactJudgement(access, {
-      requestId: 'upgrade-corpus-artifact-judgement',
-      artifactId: artifact.id,
-      artifactVersion: artifact.version,
-      contentDigest: artifact.contentDigest,
-      kind: 'accept',
-      choice: null,
-      note: 'Synthetic retained human assessment.',
-    })
-  )();
+  const judgementInput = {
+    requestId: 'upgrade-corpus-artifact-judgement',
+    artifactId: artifact.id,
+    artifactVersion: artifact.version,
+    contentDigest: artifact.contentDigest,
+    kind: 'accept',
+    choice: null,
+    note: 'Synthetic retained human assessment.',
+  };
+  await hashing.runIdempotentCommand({
+    store,
+    workspaceDb: workspace,
+    inflightCommands: access.inflightCommands,
+    command: 'evaluation.judgement-add',
+    requestId: judgementInput.requestId,
+    scope: { workspaceId },
+    input: {
+      actor,
+      judgement: {
+        target: {
+          kind: 'artifact-version',
+          artifactId: artifact.id,
+          artifactVersion: artifact.version,
+          contentDigest: artifact.contentDigest,
+        },
+        kind: judgementInput.kind,
+        choice: judgementInput.choice,
+        note: judgementInput.note,
+      },
+    },
+    responseKind: 'evaluation_judgement',
+    responseId: () => judgementInput.requestId,
+    execute: (receipt) => judgements.appendArtifactJudgement(access, judgementInput, receipt),
+    replay: () =>
+      required(
+        judgements.readArtifactJudgement(access, judgementInput),
+        'Retained Artifact judgement'
+      ),
+  });
   const secondBody = `${content}Second synthetic candidate.\n`;
   const secondDigest = `sha256:${digest(secondBody)}`;
-  const second = store.createArtifact({
+  const second = await store.createArtifact({
     ...artifact,
     id: id('ar', 'evaluation-candidate'),
     threadId: null,
@@ -1217,7 +1560,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   });
   const pendingFlow = await o.load('runtime/pending-request-flow');
   sql.pendingRequestId = '00000000-0000-4000-8000-000000000901';
-  pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
+  await pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
     requestId: sql.pendingRequestId,
     workspaceId,
     threadId,
@@ -1234,7 +1577,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     },
     now: turn.startedAt,
   });
-  store.createItem({
+  await store.createItem({
     id: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
     owner: turn.owner,
     threadId,
@@ -1286,7 +1629,6 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     }
   );
   sql.presentationId = presentation.id;
-  store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
   const setup = syntheticAgentSetup();
   const image = imagePreparation.materializeRuntimeImage(setup.manifest.runtime.image);
   const inputDigest = hashing.commandInputHash(image);
@@ -1350,18 +1692,21 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     environmentPackage,
     createdAt: turn.startedAt,
   }).snapshotId;
-  store.createAgentSession({
+  await store.createAgentSession({
     id: sql.contextAgentSessionId,
     workspaceId,
     threadId,
     agentId: 'agent_codex_host',
-    status: 'closed',
+    status: 'idle',
     message: 'Synthetic retained session.',
     createdAt: turn.startedAt,
     updatedAt: turn.startedAt,
     environmentPackageSnapshotId: sql.aepSnapshotId,
-    stale: true,
+    stale: false,
   });
+  // Only genuine shutdown and boot recovery may establish this Session's historical state.
+  await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
+  ({ core, workspace, store } = await coldReopen());
   const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
     backendId: 'nanohost',
     queueEntryId: 'upgrade-corpus-context-queue',
@@ -1515,7 +1860,6 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     authoritativeGeneration: null,
     observedAt: new Date().toISOString(),
   });
-  store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
   const lineage = {
     agentSessionId: sql.contextAgentSessionId,
     packageSnapshotId: sql.aepSnapshotId,
@@ -1650,7 +1994,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     store,
     workspace
   );
-  pendingFlow.archiveThreadWithCloseout(
+  await pendingFlow.archiveThreadWithCloseout(
     store,
     {
       openWorkspace: (selectedWorkspaceId) =>
@@ -1854,8 +2198,16 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
           'Light App command receipt'
         )
       );
-    const receipt = (handle, key) =>
-      o.commands.readCommandRequestRecordsFromSqlite(handle.sqlite).find((row) => row.key === key);
+    const receipt = (handle, key) => {
+      const retained = o.commands
+        .readCommandRequestRecordsFromSqlite(handle.sqlite)
+        .find((row) => row.key === key);
+      assert.deepEqual(
+        retained,
+        Object.values(sql.receipts).find((row) => row.key === key)
+      );
+      return retained;
+    };
     const linked = await readLinkedEvidence(o, core, workspace, store, sql);
     const evaluation = await o.load('evaluation-candidates');
     const candidateSet = evaluation.readCandidateSet(

@@ -19,13 +19,13 @@ describe('raw Workspace configuration Policy edits', () => {
     ensureLocalUser(coreDb);
     try {
       const store = new FsStore({ dataRoot });
-      const workspace = store.createWorkspace('Managed Workspace');
+      const workspace = await store.createWorkspace('Managed Workspace');
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: workspace.id,
         ownerUserId: FIXTURE_LOCAL_USER_ID,
       });
-      const thread = store.createThread(workspace.id, 'Managed Thread');
+      const thread = await store.createThread(workspace.id, 'Managed Thread');
       const source = {
         schemaVersion: 1,
         requiredFeatures: ['openkit.workspace-resource-policy.v1'],

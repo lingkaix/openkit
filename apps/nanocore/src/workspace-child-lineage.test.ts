@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -32,10 +33,10 @@ async function createLineageFixture() {
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    const allowedWorkspace = store.createWorkspace('Allowed lineage Workspace');
-    const foreignWorkspace = store.createWorkspace('Foreign lineage Workspace');
+    const allowedWorkspace = await store.createWorkspace('Allowed lineage Workspace');
+    const foreignWorkspace = await store.createWorkspace('Foreign lineage Workspace');
 
     for (const workspace of [allowedWorkspace, foreignWorkspace]) {
       recordWorkspaceOwnerMembership({
@@ -45,9 +46,9 @@ async function createLineageFixture() {
       });
     }
 
-    const allowedThread = store.createThread(allowedWorkspace.id, 'Allowed lineage Thread');
-    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign lineage Thread');
-    const foreignTurn = store.createTurn(
+    const allowedThread = await store.createThread(allowedWorkspace.id, 'Allowed lineage Thread');
+    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign lineage Thread');
+    const foreignTurn = await store.createTurn(
       foreignWorkspace.id,
       foreignThread.id,
       'Foreign lineage Turn',
@@ -118,7 +119,7 @@ async function createLineageFixture() {
     const { source: foreignKnowledgeSource } = await foreignSourceResponse.json();
     const artifactBody = 'Foreign Artifact content.';
     const artifactRequestId = 'foreign-artifact-lineage';
-    const foreignArtifact = store.createArtifact({
+    const foreignArtifact = await store.createArtifact({
       id: 'ar_00000000-0000-7ef1-bb38-38a02dd7b18c',
       workspaceId: foreignWorkspace.id,
       threadId: foreignThread.id,
@@ -222,7 +223,8 @@ beforeEach(async () => {
   fixture = await createLineageFixture();
 }, 30_000);
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   if (fixture?.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
   if (fixture) rmSync(fixture.dataRoot, { recursive: true, force: true });
 });

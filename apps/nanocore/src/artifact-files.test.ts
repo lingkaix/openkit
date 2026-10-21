@@ -14,6 +14,7 @@ import { FsStore } from './lib/store.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { stageArtifactPayload } from './storage/artifacts/file-payload.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -43,20 +44,21 @@ const corpus = JSON.parse(
   }>;
 };
 const cleanups: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
   vi.mocked(open).mockClear();
 });
 
 /** Uses real canonical files, Workspace receipts, local authority, and the composed App routes. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-files-'));
   cleanups.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
   cleanups.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspace = store.listWorkspaces()[0]!;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
   return { dataRoot, coreDb, store, workspace, app: createApp({ coreDb, dataRoot, store }) };
@@ -102,14 +104,14 @@ function download(state: ReturnType<typeof fixture>, artifactId: string, artifac
 
 describe('exact Artifact file import and download', () => {
   it('publishes binary v2 through the composed stream route and retains both exact originals after reopen', async () => {
-    const state = fixture();
+    const state = await fixture();
     const original = corpus.originals.find(({ id }) => id === 'binary-invalid-utf8')!;
     const firstBytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
     const imported = await upload(state, original);
     expect(imported.status, await imported.clone().text()).toBe(201);
     const { artifactId } = (await imported.json()) as { artifactId: string };
     const first = state.store.getArtifact(state.workspace.id, artifactId);
-    const thread = state.store.createThread(
+    const thread = await state.store.createThread(
       state.workspace.id,
       'Binary version publication',
       undefined,
@@ -212,7 +214,7 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('closes the original file when the public archive response is cancelled', async () => {
-    const state = fixture();
+    const state = await fixture();
     // Incompressible bytes keep the actual source reader under backpressure at cancellation.
     const bytes = randomBytes(2 * 1024 * 1024);
     const uploaded = await upload(
@@ -274,7 +276,7 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('preserves exact originals through public Workspace archive transfer', async () => {
-    const source = fixture();
+    const source = await fixture();
     const originals = corpus.originals.filter(
       ({ id }) => id === 'empty' || id === 'binary-invalid-utf8'
     );
@@ -324,7 +326,7 @@ describe('exact Artifact file import and download', () => {
     'retained-lines',
   ] as const)('refuses %s before effects when a reviewed original has no exact Worker delivery', async (kind) => {
     const decision = kind === 'binary-file' ? 'needs_refinement' : 'redo';
-    const state = fixture();
+    const state = await fixture();
     const { coreDb, dataRoot, workspace } = state;
     // This domain fixture owns its roster directly; App catalog projection is tested separately.
     const store = new FsStore({ dataRoot });
@@ -342,15 +344,21 @@ describe('exact Artifact file import and download', () => {
       sandboxSummary: null,
       health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
     });
-    const thread = store.createThread(workspace.id, 'File Review', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    });
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce original', {
+    const thread = await store.createThread(
+      workspace.id,
+      'File Review',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
+    );
+    const turn = await store.createTurn(workspace.id, thread.id, 'Produce original', {
       kind: 'user',
       id: LOCAL_USER_ID,
     });
-    store.updateTurn(turn.id, { agentId });
+    await store.updateTurn(turn.id, { agentId });
     const bytes =
       kind === 'retained-lines'
         ? Buffer.from(`${'line\n'.repeat(50)}end`)
@@ -377,7 +385,7 @@ describe('exact Artifact file import and download', () => {
     const artifactId = allocateEntityId('ar');
     const recordedAt = new Date().toISOString();
     try {
-      store.createArtifact(
+      await store.createArtifact(
         {
           id: artifactId,
           workspaceId: workspace.id,
@@ -412,7 +420,7 @@ describe('exact Artifact file import and download', () => {
       await staged?.remove();
       reservation.release();
     }
-    store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt });
     const db = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(db);
     try {
@@ -475,7 +483,7 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('preserves exact binary originals through two authorized Workspace export and import cycles', async () => {
-    const state = fixture();
+    const state = await fixture();
     const original = corpus.originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
     const acceptedResponse = await upload(state, original);
     expect(acceptedResponse.status).toBe(201);
@@ -531,7 +539,7 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('downloads an original when retained title text contains an unpaired surrogate', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       original = corpus.originals[0]!;
     // URLSearchParams normalizes lone surrogates; use the canonical command for this retained-title fixture.
     const workspaceDb = openWorkspaceDb(state.dataRoot, state.workspace.id);
@@ -575,7 +583,7 @@ describe('exact Artifact file import and download', () => {
     );
   });
   it('refuses a corrupt exact version with a recovery result instead of returning substituted bytes', async () => {
-    const state = fixture(),
+    const state = await fixture(),
       original = corpus.originals.find((candidate) => candidate.size > 0)!;
     const imported = await upload(state, original);
     expect(imported.status).toBe(201);
@@ -595,7 +603,7 @@ describe('exact Artifact file import and download', () => {
   it.each(
     corpus.originals
   )('round-trips the frozen $id original and retains metadata without a body', async (original) => {
-    const state = fixture();
+    const state = await fixture();
     const imported = await upload(state, original);
     expect(imported.status).toBe(201);
     const accepted = (await imported.json()) as { artifactId: string; artifactVersion: number };
@@ -619,7 +627,7 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('replays an accepted request without recapturing changed retry bytes', async () => {
-    const state = fixture();
+    const state = await fixture();
     const original = corpus.originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
     const requestId = randomUUID();
     const first = await upload(state, original, { requestId });
@@ -639,7 +647,7 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('refuses a bad digest without publishing an Artifact', async () => {
-    const state = fixture();
+    const state = await fixture();
     const before = state.store.listArtifacts(state.workspace.id).map((artifact) => artifact.id);
     const original = corpus.originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
     const response = await upload(state, original, { contentDigest: `sha256:${'0'.repeat(64)}` });
@@ -650,14 +658,14 @@ describe('exact Artifact file import and download', () => {
   });
 
   it('refuses a file that exceeds declared size or the one-billion-byte limit', async () => {
-    const state = fixture();
+    const state = await fixture();
     const original = corpus.originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
     expect((await upload(state, original, { byteLength: 1 })).status).toBe(400);
     expect((await upload(state, original, { byteLength: 1_000_000_001 })).status).toBe(413);
   });
 
   it('does not substitute the latest file for a missing immutable version', async () => {
-    const state = fixture();
+    const state = await fixture();
     const response = await upload(state, corpus.originals[0]!);
     const accepted = (await response.json()) as { artifactId: string };
     expect((await download(state, accepted.artifactId, 2)).status).toBe(404);

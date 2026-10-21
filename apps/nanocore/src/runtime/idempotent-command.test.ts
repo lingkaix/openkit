@@ -1,10 +1,11 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -52,9 +53,63 @@ describe('workspace-transaction idempotent commands', () => {
     expect(executionCount).toBe(2);
   });
 
+  it('preserves the original User receipt committed before model work without a later rewrite', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime('2026-10-20T12:00:00.000Z');
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-user-original-receipt-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = new FsStore({ dataRoot });
+    const userId = testEntityId('usr', 'original-user-receipt');
+    const turnId = testEntityId('tu', 'original-user-receipt');
+    const userDb = openUserDb(dataRoot, userId);
+    try {
+      applyScopedMigrations(userDb);
+      let original: unknown;
+      const read = () => userDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+      const result = await runIdempotentCommand<{ turnId: string }>({
+        store,
+        receiptDb: userDb,
+        inflightCommands: new WeakMap(),
+        command: 'knowledge.maintain',
+        requestId: 'original-user-receipt',
+        scope: { userId, actorId: userId },
+        input: { instructions: 'Keep this original receipt.' },
+        responseKind: 'turn',
+        responseId: (result) => result.turnId,
+        replay: () => {
+          throw new Error('Fresh work must not replay.');
+        },
+        execute: async (receipt) => {
+          await store.recordCommandRequest(
+            { ...receipt, response: { kind: 'turn', id: turnId } },
+            userDb
+          );
+          original = read();
+          userDb.sqlite.exec(
+            "CREATE TRIGGER refuse_receipt_rewrite BEFORE UPDATE ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'original receipt must not be rewritten'); END"
+          );
+          // Model work finishes later, but does not own another receipt or reset its expiry.
+          vi.setSystemTime('2026-10-20T12:05:00.000Z');
+          return { turnId };
+        },
+      });
+      expect(result).toEqual({ turnId });
+      expect(read()).toEqual(original);
+      expect(read()).toHaveLength(1);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+      vi.useRealTimers();
+    }
+  });
+
   it('commits Core authority, audit, and pointer receipt in one transaction', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-core-idempotent-command-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
     const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
     const scope: CommandRequestScope = {
@@ -63,7 +118,6 @@ describe('workspace-transaction idempotent commands', () => {
     };
 
     try {
-      applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       const common = {
         command: 'user.disable' as const,
@@ -178,13 +232,17 @@ describe('workspace-transaction idempotent commands', () => {
         )
       ).toThrow('must name exactly one Core, User, Workspace, or App owner');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
   it('commits synchronous owners with receipts and rolls back incomplete commands', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-idempotent-command-'));
     const workspaceId = 'ws_00000000-0000-796a-8af7-97608a790532';
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
 
@@ -305,7 +363,10 @@ describe('workspace-transaction idempotent commands', () => {
         )
         .toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });

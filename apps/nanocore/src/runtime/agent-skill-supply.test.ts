@@ -15,6 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -27,15 +28,15 @@ import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.
 
 describe('release-declared catalog Skill supply', () => {
   let coreDb: ReturnType<typeof openCoreDb>;
-  let store: ReturnType<typeof createDemoStore>;
-  let turn: ReturnType<typeof store.createTurn>;
+  let store: Awaited<ReturnType<typeof createDemoStore>>;
+  let turn: Awaited<ReturnType<typeof store.createTurn>>;
   let digest: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-skill-supply-')));
     applyMigrations(coreDb);
-    store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    turn = store.createTurn(
+    store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Use catalog Skill',
@@ -64,7 +65,8 @@ describe('release-declared catalog Skill supply', () => {
     }).version.digest;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
   });

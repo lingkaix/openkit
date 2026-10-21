@@ -16,6 +16,8 @@ import {
   artifactVersionRecordPath,
   readArtifactVersionRecord,
 } from '../storage/artifacts/artifact-version-records.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { FsStore } from './store.js';
 
@@ -31,17 +33,20 @@ function digest(body: string): string {
 }
 
 /** Creates real retained authority without a Worker, scheduler or generated source. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-versions-'));
   roots.push(dataRoot);
+  const core = openCoreDb(dataRoot);
+  applyMigrations(core);
+  core.sqlite.close();
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Artifact versions');
-  const thread = store.createThread(workspace.id, 'Producing work');
-  const turn = store.createTurn(workspace.id, thread.id, 'Revise imported output', actor);
-  store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+  const workspace = await store.createWorkspace('Artifact versions');
+  const thread = await store.createThread(workspace.id, 'Producing work');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Revise imported output', actor);
+  await store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
   const body = '\uFEFFfirst\r\noriginal\n';
   const recordedAt = '2026-10-17T00:00:00.000Z';
-  const artifact = store.createArtifact({
+  const artifact = await store.createArtifact({
     id: testEntityId('ar', 'artifact-version-history'),
     workspaceId: workspace.id,
     threadId: null,
@@ -70,8 +75,8 @@ function fixture() {
 }
 
 /** Keeps every retained version byte and missing entry while proving independent sibling progress. */
-function expectArtifactWorkspaceQuarantined(
-  state: ReturnType<typeof fixture>,
+async function expectArtifactWorkspaceQuarantined(
+  state: Awaited<ReturnType<typeof fixture>>,
   healthyId: string
 ): void {
   const workspaceRoot = join(state.dataRoot, 'workspaces', state.workspace.id);
@@ -84,18 +89,20 @@ function expectArtifactWorkspaceQuarantined(
   const refusal = expect.objectContaining({ code: 'recovery_required' });
   expect(() => reopened.getWorkspace(state.workspace.id)).toThrow(refusal);
   expect(() => reopened.getArtifact(state.workspace.id, state.artifact.id)).toThrow(refusal);
-  expect(() => reopened.createThread(state.workspace.id, 'Must not publish')).toThrow(refusal);
+  await expect(reopened.createThread(state.workspace.id, 'Must not publish')).rejects.toThrow(
+    refusal
+  );
   expect(reopened.listWorkspaces().map(({ id }) => id)).not.toContain(state.workspace.id);
   expect(reopened.getWorkspace(healthyId)).toEqual(state.store.getWorkspace(healthyId));
-  const thread = reopened.createThread(healthyId, 'Healthy sibling write');
+  const thread = await reopened.createThread(healthyId, 'Healthy sibling write');
   expect(new FsStore({ dataRoot: state.dataRoot }).getThread(healthyId, thread.id)).toEqual(thread);
   expect(readdirSync(workspaceRoot, { recursive: true }).sort()).toEqual(entries);
   expect(files.map((path) => readFileSync(path))).toEqual(bytes);
 }
 
 describe('Artifact immutable version authority', () => {
-  it('reloads exact selected immutable content when the disposable current body is absent', () => {
-    const state = fixture();
+  it('reloads exact selected immutable content when the disposable current body is absent', async () => {
+    const state = await fixture();
     const artifactRoot = join(
       state.dataRoot,
       'workspaces',
@@ -108,8 +115,8 @@ describe('Artifact immutable version authority', () => {
     expect(reopened.getArtifact(state.workspace.id, state.artifact.id)).toEqual(state.artifact);
   });
 
-  it('refuses a contradictory selected descriptor instead of substituting its current body', () => {
-    const state = fixture();
+  it('refuses a contradictory selected descriptor instead of substituting its current body', async () => {
+    const state = await fixture();
     const artifactRoot = join(
       state.dataRoot,
       'workspaces',
@@ -118,16 +125,16 @@ describe('Artifact immutable version authority', () => {
       state.artifact.id
     );
     const path = join(artifactRoot, 'artifact.json');
-    const healthy = state.store.createWorkspace('Healthy descriptor sibling');
+    const healthy = await state.store.createWorkspace('Healthy descriptor sibling');
     const metadata = JSON.parse(readFileSync(path, 'utf8'));
     metadata.title = 'Contradictory projection';
     writeFileSync(path, JSON.stringify(metadata));
-    expectArtifactWorkspaceQuarantined(state, healthy.id);
+    await expectArtifactWorkspaceQuarantined(state, healthy.id);
   });
 
-  it('validates actual staged import history before publication and fills the immediate cache', () => {
-    const source = fixture();
-    source.store.commitArtifactVersion({
+  it('validates actual staged import history before publication and fills the immediate cache', async () => {
+    const source = await fixture();
+    await source.store.commitArtifactVersion({
       workspaceId: source.workspace.id,
       artifactId: source.artifact.id,
       threadId: source.thread.id,
@@ -143,6 +150,9 @@ describe('Artifact immutable version authority', () => {
     const createImport = (corrupt: boolean) => {
       const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-versions-import-'));
       roots.push(dataRoot);
+      const core = openCoreDb(dataRoot);
+      applyMigrations(core);
+      core.sqlite.close();
       const target = new FsStore({ dataRoot });
       const input = {
         workspace: source.store.getWorkspace(source.workspace.id),
@@ -173,12 +183,12 @@ describe('Artifact immutable version authority', () => {
       return { dataRoot, target, input };
     };
     const refused = createImport(true);
-    expect(() => refused.target.importWorkspaceSnapshot(refused.input)).toThrow(
+    await expect(refused.target.importWorkspaceSnapshot(refused.input)).rejects.toThrow(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(existsSync(join(refused.dataRoot, 'workspaces', source.workspace.id))).toBe(false);
     const accepted = createImport(false);
-    accepted.target.importWorkspaceSnapshot(accepted.input);
+    await accepted.target.importWorkspaceSnapshot(accepted.input);
     expect(
       accepted.target.listArtifactVersions(source.workspace.id, source.artifact.id)
     ).toHaveLength(2);
@@ -193,8 +203,8 @@ describe('Artifact immutable version authority', () => {
     ).toHaveLength(2);
   });
 
-  it('rejects absent, unknown and legacy physical retained markers without a fallback reader', () => {
-    const state = fixture();
+  it('rejects absent, unknown and legacy physical retained markers without a fallback reader', async () => {
+    const state = await fixture();
     const root = join(state.dataRoot, 'workspaces', state.workspace.id);
     const path = artifactVersionRecordPath(root, state.artifact.id, 1);
     const record = JSON.parse(readFileSync(path, 'utf8'));
@@ -218,13 +228,13 @@ describe('Artifact immutable version authority', () => {
       .toThrow(/unsupported.*format|format.*unsupported/i);
   });
 
-  it('stores snapshot facts once and preserves distinct version producers after restart', () => {
-    const state = fixture();
+  it('stores snapshot facts once and preserves distinct version producers after restart', async () => {
+    const state = await fixture();
     const laterActor = {
       kind: 'user' as const,
       id: 'usr_00000000-0000-7000-8000-000000000002',
     };
-    const committed = state.store.commitArtifactVersion({
+    const committed = await state.store.commitArtifactVersion({
       workspaceId: state.workspace.id,
       artifactId: state.artifact.id,
       threadId: state.thread.id,
@@ -281,24 +291,24 @@ describe('Artifact immutable version authority', () => {
       revised.version,
     ]);
   });
-  it('fails closed for absent real version history and never bootstraps it from a head projection', () => {
-    const state = fixture();
+  it('fails closed for absent real version history and never bootstraps it from a head projection', async () => {
+    const state = await fixture();
     const path = artifactVersionRecordPath(
       join(state.dataRoot, 'workspaces', state.workspace.id),
       state.artifact.id,
       1
     );
-    const healthy = state.store.createWorkspace('Healthy missing-history sibling');
+    const healthy = await state.store.createWorkspace('Healthy missing-history sibling');
     rmSync(path);
-    expectArtifactWorkspaceQuarantined(state, healthy.id);
+    await expectArtifactWorkspaceQuarantined(state, healthy.id);
     expect(existsSync(path)).toBe(false);
     expect(() => state.store.getArtifactVersion(state.workspace.id, state.artifact.id, 1)).toThrow(
       expect.objectContaining({ code: 'recovery_required' })
     );
   });
 
-  it('tolerates descriptive version metadata without rewriting immutable bytes', () => {
-    const state = fixture();
+  it('tolerates descriptive version metadata without rewriting immutable bytes', async () => {
+    const state = await fixture();
     const path = artifactVersionRecordPath(
       join(state.dataRoot, 'workspaces', state.workspace.id),
       state.artifact.id,
@@ -316,8 +326,8 @@ describe('Artifact immutable version authority', () => {
     );
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   });
-  it('advances once with exact parent and Item proof, preserves v1 bytes, and rejects stale CAS', () => {
-    const state = fixture();
+  it('advances once with exact parent and Item proof, preserves v1 bytes, and rejects stale CAS', async () => {
+    const state = await fixture();
     const input = {
       workspaceId: state.workspace.id,
       artifactId: state.artifact.id,
@@ -331,7 +341,7 @@ describe('Artifact immutable version authority', () => {
       content: { format: 'text' as const, body: 'second\noriginal\r\n' },
     };
 
-    const result = state.store.commitArtifactVersion(input);
+    const result = await state.store.commitArtifactVersion(input);
     expect(result.artifact).toMatchObject({
       version: 2,
       title: input.title,
@@ -361,9 +371,9 @@ describe('Artifact immutable version authority', () => {
         lastMutationRequestId: input.requestId,
       })
     );
-    expect(() =>
+    await expect(
       state.store.commitArtifactVersion({ ...input, requestId: 'stale-writer' })
-    ).toThrow(expect.objectContaining({ code: 'conflict' }));
+    ).rejects.toThrow(expect.objectContaining({ code: 'conflict' }));
 
     const reopened = new FsStore({ dataRoot: state.dataRoot });
     const original = reopened.getArtifactVersion(state.workspace.id, state.artifact.id, 1);
@@ -414,9 +424,9 @@ describe('Artifact immutable version authority', () => {
         recordedAt: input.recordedAt,
       },
     ]);
-    const healthy = state.store.createWorkspace('Healthy version-lineage sibling');
+    const healthy = await state.store.createWorkspace('Healthy version-lineage sibling');
     corrupted.version.turnId = state.turn.id;
     writeFileSync(path, JSON.stringify(corrupted));
-    expectArtifactWorkspaceQuarantined(state, healthy.id);
+    await expectArtifactWorkspaceQuarantined(state, healthy.id);
   });
 });

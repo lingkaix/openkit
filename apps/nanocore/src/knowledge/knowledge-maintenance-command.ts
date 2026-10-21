@@ -1,7 +1,7 @@
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
-import { commandInputHash, runIdempotentCommand } from '../runtime/idempotent-command.js';
+import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import {
   type KnowledgeMaintenanceDependencies,
   type KnowledgeMaintenanceInput,
@@ -30,7 +30,7 @@ export async function runKnowledgeMaintenanceCommand(
   };
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
   try {
-    return await runIdempotentCommand({
+    return await runIdempotentCommand<ReturnType<typeof KnowledgeMaintenanceResponseSchema.parse>>({
       store: dependencies.store,
       inflightCommands: dependencies.inflightCommands,
       command,
@@ -40,18 +40,8 @@ export async function runKnowledgeMaintenanceCommand(
       workspaceDb,
       responseKind: 'turn',
       responseId: (result) => result.turnId,
-      execute: async () => {
-        const prepared = prepareKnowledgeMaintenance(dependencies, input);
-        dependencies.store.recordCommandRequest(
-          {
-            command,
-            requestId: input.requestId,
-            scope,
-            inputHash: commandInputHash(canonicalInput),
-            response: { kind: 'turn', id: prepared.turnId },
-          },
-          workspaceDb
-        );
+      execute: async (receipt) => {
+        const prepared = await prepareKnowledgeMaintenance(dependencies, { ...input, receipt });
         return prepared.execute();
       },
       replay: (receipt) => {

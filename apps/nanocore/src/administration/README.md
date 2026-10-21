@@ -1,5 +1,7 @@
 # Private Administration Entry
 
+Administration waits for the native terminal acknowledgement before it accepts Stop. Its original conversation receipt and Audit join the waiting Stop receipt and Audit in that transaction; a refusal commits neither command tuple and returns recovery_required.
+
 This directory owns the private administration conversation entry and its fixed model-visible Tool assembly. It reuses the shared Internal Agent Loop and existing Core operation owners; it does not own configuration, Worker environment, approval, authentication, or storage effects.
 
 ## Boundaries
@@ -30,3 +32,5 @@ The private apply Tool preserves the existing unknown-effect boundary after CAS 
 Administration environment Tools use their `worker-environment.*` operation IDs. The fixed assembly retains the current administrator check on every call; a name match does not remove that authority check.
 
 Server MCP binding authoring controls selected allowedTools supply only. Per-Tool prohibit and require_approval use the existing human full Policy candidate and confirmation, with exact Workspace selectors; no second MCP permission writer exists.
+
+Administration acknowledges the original `turn.interrupt` receipt and authenticated Audit with the live Turn before it signals cancellation. Acceptance proves no terminal outcome; the existing interruption path still waits for the retained interrupted result. The original `conversation.submit` receipt, response metadata and Audit commit with that conversation's own terminal tuple, including refusal and interruption, so replay does not write a receipt from Main.

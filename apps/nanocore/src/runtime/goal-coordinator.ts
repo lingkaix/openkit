@@ -58,16 +58,15 @@ import {
   requireCoordinatorGoal,
 } from './goal-owner.js';
 import { StoredGoalV1Schema } from './goal-retained-v1.js';
-import { proveFrozenDelivery } from './pending-requests.js';
 import { recoverTaskTerminalFacts } from './task-terminal-fact.js';
 
 /** Marker admission uses only ordinary Threads and Turns; no queue, timer or run record exists. */
-export function considerGoal(
+export async function considerGoal(
   store: FsStore,
   db: WorkspaceDb,
   goalId: string,
   mayAdmit: (actor: Actor) => boolean = () => true
-): ReturnType<FsStore['createTurn']> | null {
+): Promise<Awaited<ReturnType<FsStore['createTurn']>> | null> {
   const goal = readGoalView(store, db, goalId).goal;
   if (
     !goal ||
@@ -81,7 +80,7 @@ export function considerGoal(
   const actor: Actor = goalActor(goal);
   if (!mayAdmit(actor)) return null;
   // Ordinary admission owns its Pending Request freeze; do not hold a second SQL writer around it.
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     goal.workspaceId,
     goal.threadId,
     'Consider current Goal records',
@@ -671,7 +670,12 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         { store, turn, workspaceDb: db, environment: { systemPrompt, tools } },
         async (capture) => {
           // Native acceptance of exact source input proves delivery, never grant consumption.
-          proveFrozenDelivery(db.sqlite, turnId, new Date().toISOString());
+          await store.applyPendingRequestCommand(goal.workspaceId, {
+            action: 'delivery-prove',
+            workspaceId: goal.workspaceId,
+            turnId,
+            now: new Date().toISOString(),
+          });
           const provider = createInternalAgentGatewayProvider({
             capture,
             logicalModel: selection.logicalModel,
@@ -883,10 +887,10 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       db.sqlite.close();
     }
   }
-  function wake(workspaceId: string, goalId: string): void {
+  async function wake(workspaceId: string, goalId: string): Promise<void> {
     const db = options.openWorkspace(workspaceId);
     try {
-      const turn = considerGoal(options.store, db, goalId, (actor) =>
+      const turn = await considerGoal(options.store, db, goalId, (actor) =>
         Boolean(
           options.coreDb &&
             authorizeWorkspace(options.coreDb, actor, workspaceId, {
@@ -900,7 +904,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       db.sqlite.close();
     }
   }
-  function terminal(turn: ReturnType<FsStore['getTurnById']>): void {
+  async function terminal(turn: ReturnType<FsStore['getTurnById']>): Promise<void> {
     const db = options.openWorkspace(workspaceIdForOwner(turn.owner));
     try {
       const rows = db.sqlite
@@ -909,16 +913,16 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         )
         .all(turn.threadId, turn.threadId) as { schemaVersion: unknown; goal_id: string }[];
       const goalIds = rows.map((row) => readRetainedV1(row, () => row.goal_id));
-      for (const goalId of new Set(goalIds)) wake(workspaceIdForOwner(turn.owner), goalId);
+      for (const goalId of new Set(goalIds)) await wake(workspaceIdForOwner(turn.owner), goalId);
     } finally {
       db.sqlite.close();
     }
   }
-  function boot(): void {
+  async function boot(): Promise<void> {
     for (const workspace of options.store.listWorkspaces()) {
       const db = options.openWorkspace(workspace.id);
       try {
-        recoverTaskTerminalFacts(options.store, db);
+        await recoverTaskTerminalFacts(options.store, db);
         for (const row of db.sqlite
           .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals')
           .all() as {
@@ -934,12 +938,12 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
               !isSealedTurnTerminal(turn.status) &&
               !active.has(turn.id)
             )
-              options.store.updateTurn(turn.id, {
+              await options.store.updateTurn(turn.id, {
                 status: 'failed',
                 completedAt: new Date().toISOString(),
                 error: { code: 'core_restarted', message: 'Coordinator Turn ended at restart.' },
               });
-          wake(workspace.id, goal.goalId);
+          await wake(workspace.id, goal.goalId);
         }
       } finally {
         db.sqlite.close();

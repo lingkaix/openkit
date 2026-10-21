@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -47,7 +48,8 @@ import {
 const temporaryRoots: string[] = [];
 const LOCAL_AUTHORITY_ACTOR = { kind: 'user', id: LOCAL_USER_ID } as const;
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { force: true, recursive: true });
   }
@@ -519,7 +521,7 @@ describe('workspace review application', () => {
           decision: 'rejected',
           requestId: 'request-git-fallback-discard',
           reviewId: fallbackReview.review.id,
-          store: createDemoStore(),
+          store: await createDemoStore(),
           workspaceDb,
           workspaceId,
         })

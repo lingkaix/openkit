@@ -24,7 +24,6 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from './storage/artifacts/file-payload.js';
-import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
 import type { WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
@@ -129,30 +128,29 @@ export async function commitArtifactVersionCommand(
         input.assertAuthorized();
         context.signal?.throwIfAborted();
         reservation?.assertAvailable();
-        const publication = () =>
-          store.commitArtifactVersion(
-            {
-              ...metadata,
-              actor: context.actorRef,
-              recordedAt: new Date().toISOString(),
-              command: input.command,
-              content:
-                input.command === 'artifact.version-commit'
-                  ? input.metadata.content
-                  : {
-                      format: 'file',
-                      mediaType: input.metadata.mediaType,
-                      byteLength: input.metadata.byteLength,
-                    },
-              ...(input.command === 'artifact.version-file-commit'
-                ? { contentDigest: input.metadata.contentDigest }
-                : {}),
-            },
-            staged
-          );
         const admission =
           input.command === 'artifact.version-file-commit' ? input.file.admission : input.admission;
-        return admission ? withCanonicalFileWriteAdmission(admission, publication) : publication();
+        return await store.commitArtifactVersion(
+          {
+            ...metadata,
+            actor: context.actorRef,
+            recordedAt: new Date().toISOString(),
+            command: input.command,
+            content:
+              input.command === 'artifact.version-commit'
+                ? input.metadata.content
+                : {
+                    format: 'file',
+                    mediaType: input.metadata.mediaType,
+                    byteLength: input.metadata.byteLength,
+                  },
+            ...(input.command === 'artifact.version-file-commit'
+              ? { contentDigest: input.metadata.contentDigest }
+              : {}),
+          },
+          staged,
+          admission
+        );
       },
       replay: (receipt) => {
         input.assertAuthorized();

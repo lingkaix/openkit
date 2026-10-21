@@ -16,6 +16,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { stageArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -67,7 +68,8 @@ const request = serializeStructuredWorkerDelegationRequest(
   })
 );
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -80,7 +82,7 @@ function digest(bytes: Uint8Array | string): string {
 async function artifactFixture(bytes: Buffer, mediaType: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'context-digest-reference-'));
   roots.push(dataRoot);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspace = store.listWorkspaces().find((entry) => entry.kind === 'code')!;
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const admission = new FileStorageAdmission(dataRoot, () => 0n);

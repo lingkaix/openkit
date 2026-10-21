@@ -10,6 +10,7 @@ import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
@@ -39,7 +40,7 @@ function text(reply: DiscordReply): string {
 }
 
 /** Composes real signed channel input, Core authority, native invocation and Pending storage. */
-function fixture(kind: 'approval' | 'user-input' = 'approval') {
+async function fixture(kind: 'approval' | 'user-input' = 'approval') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'channel-pending-seam-'));
   directories.push(dataRoot);
   let coreDb = openCoreDb(dataRoot);
@@ -50,7 +51,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
     SELECT ?, 'Channel member', 'member-' || email, email_verified, created_at, updated_at, 'human' FROM users WHERE id = ?`)
     .run(actor.userId, FIXTURE_LOCAL_USER_ID);
-  let store = createDemoStore({ dataRoot });
+  let store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: FIXTURE_LOCAL_USER_ID,
@@ -60,7 +61,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     .prepare(`INSERT INTO workspace_members (workspace_id,user_id,status,joined_at,created_at,updated_at,revision)
     SELECT workspace_id,?,status,joined_at,created_at,updated_at,revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?`)
     .run(actor.userId, DEMO_WORKSPACE_ID, FIXTURE_LOCAL_USER_ID);
-  const thread = store.createThread(
+  const thread = await store.createThread(
     DEMO_WORKSPACE_ID,
     'Exact channel request',
     undefined,
@@ -69,7 +70,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
       visibility: 'workspace',
     }
   );
-  const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Request a decision', {
+  const turn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Request a decision', {
     kind: 'user',
     id: actor.userId,
   });
@@ -89,7 +90,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
   applyScopedMigrations(workspaceDb);
   try {
     if (kind === 'approval') {
-      store.createItem({
+      await store.createItem({
         id: itemId,
         owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
         threadId: thread.id,
@@ -124,7 +125,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
           isSecret: false,
         },
       ];
-      store.createItem({
+      await store.createItem({
         id: itemId,
         owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
         threadId: thread.id,
@@ -297,15 +298,16 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
 
 describe('Discord to native Pending Request seam', () => {
-  it('admits only the recorded local User to pairing in local mode', () => {
-    const f = fixture();
+  it('admits only the recorded local User to pairing in local mode', async () => {
+    const f = await fixture();
     const openWorkspace = vi.fn(() => {
       throw new Error('Pairing must not open Workspace storage');
     });
@@ -331,8 +333,8 @@ describe('Discord to native Pending Request seam', () => {
     expect(invokePending).not.toHaveBeenCalled();
   });
 
-  it('skips unavailable Workspace recovery and later queues the exact retained request', () => {
-    const f = fixture();
+  it('skips unavailable Workspace recovery and later queues the exact retained request', async () => {
+    const f = await fixture();
     const pending = f.record();
     f.setWorkspaceAvailable(false);
     expect(() => f.services.recoverAttention()).not.toThrow();
@@ -362,7 +364,7 @@ describe('Discord to native Pending Request seam', () => {
   });
 
   it('retains native binding status and revocation after Discord configuration is removed', async () => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     f.services.discord!.beginPairing(actor);
     expect(
@@ -399,7 +401,7 @@ describe('Discord to native Pending Request seam', () => {
     'approval',
     'user-input',
   ] as const)('settles one exact %s response through its native owner once', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     await f.pair();
     const disclosure = await f.disclose();
     const command = kind === 'approval' ? 'deny' : 'answer';
@@ -439,7 +441,7 @@ describe('Discord to native Pending Request seam', () => {
   });
 
   it('keeps approval grants in the App without invoking the native response owner', async () => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     const reply = text(await f.send('approve', f.target));
     const link = reply.match(/https:\/\/\S+/)?.[0];
@@ -459,7 +461,7 @@ describe('Discord to native Pending Request seam', () => {
     'audience',
     'binding',
   ] as const)('refuses a response after current %s authority changes following disclosure', async (loss) => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     const disclosure = await f.disclose();
     if (loss === 'membership') {
@@ -482,7 +484,7 @@ describe('Discord to native Pending Request seam', () => {
     'membership',
     'binding',
   ] as const)('rechecks %s after asynchronous vendor preparation before sending a message', async (loss) => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     let entered: (() => void) | undefined;
     let release: (() => void) | undefined;
@@ -522,7 +524,7 @@ describe('Discord to native Pending Request seam', () => {
   });
 
   it('keeps notification uncertainty across restart without changing or resending its Core request', async () => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     f.sendAttention.mockRejectedValue(new Error('simulated lost message acknowledgement'));
     const pending = f.record();
@@ -545,7 +547,7 @@ describe('Discord to native Pending Request seam', () => {
   });
 
   it('does not send a duplicate explicit retry when its first execution also proves no-send', async () => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     f.sendAttention.mockResolvedValue({
       status: 'failed-no-send',
@@ -571,7 +573,7 @@ describe('Discord to native Pending Request seam', () => {
   });
 
   it('does not redispatch after Core denial commits but channel receipt publication fails', async () => {
-    const f = fixture();
+    const f = await fixture();
     await f.pair();
     const disclosure = await f.disclose();
     const event = f.envelope('deny', { ...f.target, disclosure });

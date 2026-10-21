@@ -13,7 +13,7 @@ import type {
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerAdapterResult,
   WorkerResidentTurnInput,
@@ -31,6 +31,7 @@ import {
 } from '../../../../packages/worker-shim/src/runtime-capture.js';
 import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
 import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
@@ -57,18 +58,18 @@ import { createWorkerControlSequenceRecorder } from './worker-control-sequences.
  * @param adapter Actual adapter whose native evidence the fixture publishes.
  * @returns Package fixture and lineage expected by the control gateway.
  */
-function createWorkerControlFixture(
+async function createWorkerControlFixture(
   suffix = '1',
   dataRoot?: string,
   captureValue: 'off' | 'on' = 'on',
   adapter: 'codex' | 'deepseek' | 'opencode' | 'pi' = 'codex'
-): {
+): Promise<{
   environmentPackage: AgentEnvironmentPackage;
   lineage: WorkerControlLineage;
-} {
-  const store = createDemoStore(dataRoot ? { dataRoot } : {});
+}> {
+  const store = await createDemoStore(dataRoot ? { dataRoot } : {});
   if (dataRoot) store.setLiveCaptureCoverage({ scope: 'server', value: captureValue });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Control worker',
@@ -103,7 +104,7 @@ function createWorkerControlFixture(
   });
 
   if (dataRoot) {
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', `as_control_${suffix}`),
       agentId: environmentPackage.agent.agentId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -113,7 +114,7 @@ function createWorkerControlFixture(
       createdAt: turn.startedAt!,
       updatedAt: turn.startedAt!,
     });
-    store.updateTurn(turn.id, { agentSessionId: testEntityId('as', `as_control_${suffix}`) });
+    await store.updateTurn(turn.id, { agentSessionId: testEntityId('as', `as_control_${suffix}`) });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
     try {
       // Production retains this exact launch package before any native observation is admitted.
@@ -226,8 +227,8 @@ function heartbeatRequest(
 }
 
 describe('descriptive admission normalization', () => {
-  it('persists and publishes only the parsed event and capability core and ignores extension-only replay changes', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture('extensions');
+  it('persists and publishes only the parsed event and capability core and ignores extension-only replay changes', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture('extensions');
     const persisted: unknown[] = [];
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_extensions',
@@ -309,7 +310,7 @@ describe('WorkerControlGateway', () => {
     value,
   }) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-adapter-retention-'));
-    const fixture = createWorkerControlFixture(
+    const fixture = await createWorkerControlFixture(
       `retention-${adapter}-${value}`,
       root,
       value,
@@ -725,7 +726,7 @@ describe('WorkerControlGateway', () => {
 
   it('persists rejected tool arguments and results under their exact expected observations', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-rejected-observation-'));
-    const fixture = createWorkerControlFixture('rejected-observation', root);
+    const fixture = await createWorkerControlFixture('rejected-observation', root);
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
@@ -804,9 +805,9 @@ describe('WorkerControlGateway', () => {
     }
   });
 
-  it('rejects an unavailability anchor to earlier content-free metadata in the same package', () => {
+  it('rejects an unavailability anchor to earlier content-free metadata in the same package', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-rejected-anchor-'));
-    const fixture = createWorkerControlFixture('rejected-anchor', root);
+    const fixture = await createWorkerControlFixture('rejected-anchor', root);
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
@@ -874,7 +875,7 @@ describe('WorkerControlGateway', () => {
     gapRejected,
   }) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-ancestry-outcome-'));
-    const fixture = createWorkerControlFixture('ancestry-outcome', root);
+    const fixture = await createWorkerControlFixture('ancestry-outcome', root);
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
@@ -991,7 +992,7 @@ describe('WorkerControlGateway', () => {
 
   it('retains live nested Codex producer content through the real codec, restart, publication and timeline', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-live-observation-'));
-    const fixture = createWorkerControlFixture('capture', root);
+    const fixture = await createWorkerControlFixture('capture', root);
     let coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const makeGateway = () => {
@@ -1248,8 +1249,8 @@ describe('WorkerControlGateway', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
-  it('authenticates sandbox tokens and records live heartbeat plus artifact notices', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('authenticates sandbox tokens and records live heartbeat plus artifact notices', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_control_1',
       now: () => '2026-06-16T00:00:01.000Z',
@@ -1292,8 +1293,8 @@ describe('WorkerControlGateway', () => {
     expect(JSON.stringify(snapshot)).not.toContain('token_control_1');
   });
 
-  it('revokes a registered session and its sandbox token', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('revokes a registered session and its sandbox token', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_control_revoke_1',
     });
@@ -1307,8 +1308,8 @@ describe('WorkerControlGateway', () => {
     expect(gateway.unregisterSession(environmentPackage.snapshotId)).toBe(false);
   });
 
-  it('invalidates the prior token when the same package snapshot is registered again', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('invalidates the prior token when the same package snapshot is registered again', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const tokens = ['token_control_old_1', 'token_control_new_1'];
     const gateway = new WorkerControlGateway({
       createToken: () => tokens.shift() ?? 'unexpected_control_token',
@@ -1324,9 +1325,9 @@ describe('WorkerControlGateway', () => {
     ).toMatchObject({ sequence: 1, status: 'running' });
   });
 
-  it('exposes no worker command queue; private Harness turn.interrupt is the only interrupt', () => {
+  it('exposes no worker command queue; private Harness turn.interrupt is the only interrupt', async () => {
     const gateway = new WorkerControlGateway();
-    const fixture = createWorkerControlFixture();
+    const fixture = await createWorkerControlFixture();
     gateway.registerSession(fixture.environmentPackage);
 
     for (const retired of [
@@ -1342,8 +1343,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('accepts canonical event append records and exposes them in the session snapshot', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('accepts canonical event append records and exposes them in the session snapshot', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_control_1',
       now: () => '2026-06-16T00:00:01.000Z',
@@ -1371,8 +1372,8 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('records supply refresh acknowledgements in the session snapshot', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('records supply refresh acknowledgements in the session snapshot', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'token_control_1',
       now: () => '2026-06-16T00:00:01.000Z',
@@ -1398,8 +1399,8 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('records capability summaries in the session snapshot', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('records capability summaries in the session snapshot', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
 
@@ -1423,8 +1424,8 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('does not project knowledge proposal summaries in the session snapshot', () => {
-    const { environmentPackage } = createWorkerControlFixture();
+  it('does not project knowledge proposal summaries in the session snapshot', async () => {
+    const { environmentPackage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     gateway.registerSession(environmentPackage);
 
@@ -1433,8 +1434,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('deduplicates exact sequenced control operation retries', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('deduplicates exact sequenced control operation retries', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
 
@@ -1486,8 +1487,8 @@ describe('WorkerControlGateway', () => {
     expect(snapshot?.capabilitySummaries).toHaveLength(1);
   });
 
-  it('retries heartbeat projection before durably recording or publishing its snapshot', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('retries heartbeat projection before durably recording or publishing its snapshot', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const observations: string[] = [];
     let projectionAttempts = 0;
     let gateway!: WorkerControlGateway;
@@ -1534,8 +1535,8 @@ describe('WorkerControlGateway', () => {
     });
   });
 
-  it('rejects stale or conflicting sequenced control operations', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('rejects stale or conflicting sequenced control operations', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
     const authorization = `Bearer ${registration.token}`;
@@ -1578,8 +1579,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('deduplicates exact canonical event append retries', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('deduplicates exact canonical event append retries', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
     const record = createEventRecord(lineage, 3);
@@ -1599,8 +1600,8 @@ describe('WorkerControlGateway', () => {
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toHaveLength(1);
   });
 
-  it('retries canonical event persistence before publishing its snapshot', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('retries canonical event persistence before publishing its snapshot', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const persistedRecords: unknown[] = [];
     let persistenceAttempts = 0;
     const gateway = new WorkerControlGateway({
@@ -1644,8 +1645,8 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('rejects stale or conflicting canonical event append sequences', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('rejects stale or conflicting canonical event append sequences', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
 
@@ -1681,8 +1682,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('rejects canonical event records whose embedded lineage does not match the request', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('rejects canonical event records whose embedded lineage does not match the request', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
 
@@ -1703,8 +1704,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('rejects missing tokens and mismatched worker lineage', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('rejects missing tokens and mismatched worker lineage', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({ createToken: () => 'token_control_1' });
     const registration = gateway.registerSession(environmentPackage);
 
@@ -1732,8 +1733,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('checks registered sandbox tokens against a durable lease binding resolver', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('checks registered sandbox tokens against a durable lease binding resolver', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const resolvedBindings: Array<{ sandboxBindingRef: string; lineage: WorkerControlLineage }> =
       [];
     const gateway = new WorkerControlGateway({
@@ -1762,8 +1763,8 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('authenticates a package from its bearer token and server-owned lineage only', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('authenticates a package from its bearer token and server-owned lineage only', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const resolvedBindings: Array<{ sandboxBindingRef: string; lineage: WorkerControlLineage }> =
       [];
     const gateway = new WorkerControlGateway({
@@ -1809,8 +1810,8 @@ describe('WorkerControlGateway', () => {
     ]);
   });
 
-  it('hydrates token-only package authentication when a durable session is restored', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('hydrates token-only package authentication when a durable session is restored', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
     });
@@ -1830,8 +1831,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('fails token-only package authentication without a live hydrated package', () => {
-    const { lineage } = createWorkerControlFixture();
+  it('fails token-only package authentication without a live hydrated package', async () => {
+    const { lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
     });
@@ -1856,8 +1857,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('requires a durable scheduler lease for token-only package authentication', () => {
-    const { environmentPackage } = createWorkerControlFixture();
+  it('requires a durable scheduler lease for token-only package authentication', async () => {
+    const { environmentPackage } = await createWorkerControlFixture();
     const gateways = [
       new WorkerControlGateway({ createToken: () => 'lease-binding:without_resolver' }),
       new WorkerControlGateway({
@@ -1878,8 +1879,8 @@ describe('WorkerControlGateway', () => {
     }
   });
 
-  it('rejects a restored package whose lineage differs from the token session', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('rejects a restored package whose lineage differs from the token session', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway();
 
     expect(() =>
@@ -1910,8 +1911,8 @@ describe('WorkerControlGateway', () => {
     expect(source).not.toContain('Sandbox-local bearer token injected through runtime secrets.');
   });
 
-  it('rejects registered sandbox tokens when the durable lease binding is not live', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('rejects registered sandbox tokens when the durable lease binding is not live', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       createToken: () => 'lease-binding:control_1',
       resolveTokenBinding: () => ({ status: 'rejected', reason: 'lease-not-live' }),
@@ -1932,8 +1933,8 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('passes owner-independent lineage to final-status lifecycle hooks', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
+  it('passes owner-independent lineage to final-status lifecycle hooks', async () => {
+    const { environmentPackage, lineage } = await createWorkerControlFixture();
     const acceptedInputs: unknown[] = [];
     const committedInputs: unknown[] = [];
     const gateway = new WorkerControlGateway({
@@ -1964,4 +1965,9 @@ describe('WorkerControlGateway', () => {
     expect(acceptedInputs).toEqual([expectedInput]);
     expect(committedInputs).toEqual([expectedInput]);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

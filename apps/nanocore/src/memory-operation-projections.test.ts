@@ -237,7 +237,7 @@ it('forwards inherited optional metadata selectors through private native Memory
     initialization: { requestId: randomUUID(), instructionReference: 'test:domain-memory' },
   });
   userDb.sqlite.close();
-  const workspace = f.store.createWorkspace('Private typed selection');
+  const workspace = await f.store.createWorkspace('Private typed selection');
   recordWorkspaceOwnerMembership({
     coreDb: f.coreDb,
     workspaceId: workspace.id,

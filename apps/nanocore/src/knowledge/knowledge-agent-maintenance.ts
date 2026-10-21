@@ -3,10 +3,17 @@ import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  ActorRefSchema,
   allocateEntityId,
+  type Item,
   isSealedTurnTerminal,
+  KnowledgeOwnerScopeSchema,
+  RequestIdSchema,
   responsibleUserIdForActor,
+  ThreadIdSchema,
+  TurnIdSchema,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
@@ -15,16 +22,43 @@ import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
-import type { FsStore, KnowledgeSourceRecord } from '../lib/store.js';
+import {
+  commandRequestKey,
+  type FsStore,
+  type KnowledgeSourceRecord,
+  quickChatWorkspaceIdForUser,
+} from '../lib/store.js';
 
 import {
   admitKnowledgeRetrieval,
-  knowledgeSourceAudienceReadable,
+  knowledgeSourceLineageReadable,
   readAuthorizedWorkspaceNotebookPages,
   threadReadable,
 } from '../retrieval-knowledge-adapter.js';
-import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import {
+  commandInputHash,
+  IdempotencyKeyConflictError,
+  type IdempotentCommandReceipt,
+  type InflightIdempotentCommand,
+} from '../runtime/idempotent-command.js';
+import {
+  getCommandRequestRecordFromDb,
+  normalizeCommandRequestResponse,
+  recordControlCommandRequestRecordInDb,
+} from '../storage/command-request-records.js';
+import {
+  applyControlProducts,
+  assertControlProductWriter,
+  type ControlProductMutation,
+  decode as decodeControlProduct,
+  readProduct,
+} from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import {
+  ensureCanonicalDirectoryAsync,
+  nativeProductScope,
+} from '../storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
@@ -49,6 +83,343 @@ import { readManagedSourceText } from './source-reading.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 
+/** Original request facts from runIdempotentCommand, not a second request or receipt owner. */
+const MaintenanceReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum([
+      'knowledge.maintain',
+      'knowledge.tell',
+      'knowledge.server.maintain',
+      'knowledge.server.tell',
+    ]),
+    requestId: RequestIdSchema,
+    scope: z.union([
+      z.object({ actorId: z.string().min(1), workspaceId: z.string().min(1) }).strict(),
+      z.object({ actorId: z.string().min(1), coreId: z.literal('server') }).strict(),
+    ]),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    responseKind: z.literal('turn'),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+
+/** Closed native admission; model content cannot select a database, execution callback, or immutable byte body. */
+export const ControlMaintenanceAdmissionInputSchema = z
+  .object({
+    purpose: z.enum(['maintenance', 'query']),
+    ownerScope: KnowledgeOwnerScopeSchema,
+    actor: ActorRefSchema,
+    requestId: RequestIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    startedAt: z.string().datetime(),
+    trigger: z.enum(['request', 'schedule']),
+    instructions: z.string().max(64 * 1024),
+    captureCoverage: z
+      .object({ scope: z.enum(['server', 'workspace', 'task']), value: z.enum(['off', 'on']) })
+      .strict(),
+    outputThreadId: ThreadIdSchema.optional(),
+    receipt: MaintenanceReceiptSchema.optional(),
+  })
+  .strict();
+
+/** Structured-clone input to the existing control worker; authority is admitted before dispatch. */
+export type ControlMaintenanceAdmissionInput = z.infer<
+  typeof ControlMaintenanceAdmissionInputSchema
+>;
+
+/** Only acknowledged product identities leave SQL; busy admission has no permission to invoke a model. */
+export const ControlMaintenanceAdmissionResultSchema = z.object({
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  busy: z.boolean(),
+  replayed: z.boolean(),
+});
+
+/** A complete acknowledged admission result; consumers ignore additive descriptive fields. */
+export type ControlMaintenanceAdmissionResult = z.infer<
+  typeof ControlMaintenanceAdmissionResultSchema
+>;
+
+/**
+ * Selects and admits complete Knowledge work against current native scope state in the caller's savepoint.
+ *
+ * Workspace/User maintenance serializes on its existing notebook Thread. Queries always create a fresh Thread. User Memory receipts remain in User SQLite and cannot join this Workspace transaction. No file effects, sibling connection, callback, or commit occurs here.
+ */
+export function applyControlMaintenanceAdmission(
+  db: CoreDb | WorkspaceDb,
+  value: ControlMaintenanceAdmissionInput
+): ControlMaintenanceAdmissionResult {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlMaintenanceAdmissionInputSchema.parse(value);
+  const userId = responsibleUserIdForActor(input.actor);
+  if (!userId) throw new NotebookError('invalid_request');
+  const owner =
+    db.scope === 'core'
+      ? { kind: 'server' as const }
+      : { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  if (
+    (input.ownerScope.kind === 'server') !== (db.scope === 'core') ||
+    (input.ownerScope.kind === 'workspace' &&
+      (db.scope !== 'workspace' || input.ownerScope.workspaceId !== db.workspaceId)) ||
+    (input.ownerScope.kind === 'user' &&
+      (input.ownerScope.userId !== userId ||
+        db.scope !== 'workspace' ||
+        (input.purpose === 'maintenance' &&
+          db.workspaceId !== quickChatWorkspaceIdForUser(userId)))) ||
+    (input.purpose === 'query' && (db.scope !== 'workspace' || input.trigger !== 'request')) ||
+    (input.purpose === 'maintenance' && input.outputThreadId !== undefined)
+  )
+    throw new NotebookError('invalid_request');
+  const receipt = input.receipt;
+  if (receipt) {
+    if (
+      input.purpose !== 'maintenance' ||
+      input.ownerScope.kind === 'user' ||
+      receipt.requestId !== input.requestId ||
+      receipt.scope.actorId !== input.actor.id ||
+      receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+      receipt.expiresAt <= receipt.createdAt ||
+      (owner.kind === 'server'
+        ? !('coreId' in receipt.scope) ||
+          receipt.scope.coreId !== 'server' ||
+          !receipt.command.startsWith('knowledge.server.')
+        : !('workspaceId' in receipt.scope) ||
+          receipt.scope.workspaceId !== owner.workspaceId ||
+          receipt.command.startsWith('knowledge.server.'))
+    )
+      throw new NotebookError('invalid_request');
+    const prior = getCommandRequestRecordFromDb(db, receipt.key, receipt.createdAt);
+    if (prior) {
+      if (
+        prior.command !== receipt.command ||
+        prior.requestId !== receipt.requestId ||
+        commandRequestKey(prior.command, prior.requestId, prior.scope) !== receipt.key
+      )
+        throw new NotebookError('recovery_required');
+      if (prior.inputHash !== receipt.inputHash) throw new IdempotencyKeyConflictError();
+      const turn = readProduct(db.sqlite, owner, 'turn', prior.response.id);
+      if (!turn || prior.response.kind !== 'turn') throw new NotebookError('recovery_required');
+      return {
+        threadId: turn.record.threadId as string,
+        turnId: prior.response.id,
+        busy: false,
+        replayed: true,
+      };
+    }
+  }
+  const workspace =
+    owner.kind === 'workspace'
+      ? readProduct(db.sqlite, owner, 'workspace', owner.workspaceId)
+      : undefined;
+  if (
+    (owner.kind === 'workspace' && workspace?.record.status !== 'active') ||
+    (input.ownerScope.kind === 'user' &&
+      input.purpose === 'maintenance' &&
+      workspace?.record.kind !== 'personal')
+  )
+    throw new NotebookError('invalid_request');
+  // Decode every candidate through the retained owner. Unknown core semantics must not disappear from selection.
+  const threads =
+    input.purpose === 'query'
+      ? []
+      : (
+          db.sqlite.prepare('SELECT id FROM control_threads ORDER BY id').all() as { id: string }[]
+        ).map(({ id }) => readProduct(db.sqlite, owner, 'thread', id)!);
+  const turns =
+    input.purpose === 'query'
+      ? []
+      : (
+          db.sqlite.prepare('SELECT id FROM control_turns ORDER BY id').all() as { id: string }[]
+        ).map(({ id }) => readProduct(db.sqlite, owner, 'turn', id)!);
+  const summary =
+    input.purpose === 'query'
+      ? 'Knowledge question.'
+      : input.ownerScope.kind === 'user'
+        ? 'User Memory maintenance.'
+        : input.trigger === 'schedule'
+          ? 'Knowledge Manager scheduled maintenance.'
+          : 'Knowledge maintenance.';
+  const priorRuns =
+    input.purpose === 'query'
+      ? []
+      : turns.filter(({ record }) => {
+          const knowledge = (record.internalExecution as Turn['internalExecution'])?.knowledge;
+          if (knowledge?.purpose === 'maintenance') {
+            const scope = knowledge.ownerScope;
+            return (
+              scope.kind === input.ownerScope.kind &&
+              (scope.kind === 'workspace'
+                ? input.ownerScope.kind === 'workspace' &&
+                  scope.workspaceId === input.ownerScope.workspaceId
+                : scope.kind === 'user'
+                  ? input.ownerScope.kind === 'user' && scope.userId === input.ownerScope.userId
+                  : true)
+            );
+          }
+          const trigger = record.triggerSource as Turn['triggerSource'];
+          return (
+            record.agentId === 'knowledge-manager' &&
+            (input.ownerScope.kind === 'user'
+              ? trigger?.summary === 'User Memory maintenance.'
+              : trigger?.summary === 'Knowledge maintenance.' ||
+                trigger?.summary === 'Knowledge Manager scheduled maintenance.')
+          );
+        });
+  const ids = new Set(priorRuns.map(({ record }) => record.threadId as string));
+  if (input.ownerScope.kind === 'server' && input.purpose === 'maintenance')
+    for (const thread of threads)
+      if (thread.record.entryPath === 'knowledge-manager') ids.add(thread.record.id as string);
+  if (ids.size > 1) throw new NotebookError('recovery_required');
+  const existingId = [...ids][0];
+  const existing = existingId ? threads.find(({ record }) => record.id === existingId) : undefined;
+  if (existingId && !existing) throw new NotebookError('recovery_required');
+  let visibility: 'private' | 'workspace' | 'server' =
+    owner.kind === 'server' ? 'server' : 'workspace';
+  if (input.ownerScope.kind === 'user' || input.purpose === 'query') visibility = 'private';
+  if (input.outputThreadId) {
+    const parent = readProduct(db.sqlite, owner, 'thread', input.outputThreadId);
+    if (
+      !parent ||
+      (parent.record.visibility === 'private' && parent.record.privateOwnerUserId !== userId)
+    )
+      throw new NotebookError('invalid_request');
+    if (input.ownerScope.kind !== 'user' && parent.record.visibility === 'workspace')
+      visibility = 'workspace';
+  }
+  // Exact retained maintenance scope owns Thread selection; older runs can use a conversation entry path.
+  if (
+    existing &&
+    (existing.record.status !== 'active' ||
+      existing.record.visibility !== visibility ||
+      (visibility === 'private' && existing.record.privateOwnerUserId !== userId))
+  )
+    throw new NotebookError('recovery_required');
+  // Daily occurrence selection belongs to the scanner; only the original command receipt can replay a request.
+  const threadId = existingId ?? input.threadId;
+  const busy =
+    input.purpose === 'maintenance' &&
+    turns.some(
+      ({ record }) =>
+        record.threadId === threadId && (record.status === 'running' || record.status === 'pending')
+    );
+  const title =
+    input.purpose === 'query'
+      ? 'Knowledge question'
+      : input.ownerScope.kind === 'user'
+        ? 'Memory maintenance'
+        : owner.kind === 'server'
+          ? 'Server Knowledge maintenance'
+          : 'Knowledge maintenance';
+  const products: ControlProductMutation[] = [];
+  if (workspace)
+    products.push({
+      kind: 'workspace',
+      expectedRevision: workspace.revision,
+      record: { ...workspace.record, updatedAt: input.startedAt },
+    });
+  products.push({
+    kind: 'thread',
+    expectedRevision: existing?.revision ?? 0,
+    record: {
+      ...(existing?.record ?? {
+        schemaVersion: 1,
+        id: threadId,
+        owner,
+        name: title,
+        status: 'active',
+        entryPath: 'knowledge-manager',
+        threadSource: 'conversation',
+        visibility,
+        ...(visibility === 'private' ? { privateOwnerUserId: userId } : {}),
+        createdAt: input.startedAt,
+      }),
+      schemaVersion: 1,
+      preview: input.instructions.slice(0, 160),
+      updatedAt: input.startedAt,
+    },
+  });
+  products.push({
+    kind: 'turn',
+    expectedRevision: 0,
+    record: {
+      schemaVersion: 1,
+      id: input.turnId,
+      owner,
+      threadId,
+      triggerActor: input.actor,
+      status: 'running',
+      error: null,
+      configVersion: null,
+      startedAt: input.startedAt,
+      completedAt: null,
+      durationMs: null,
+      agentId: 'knowledge-manager',
+      triggerSource: {
+        kind: input.trigger === 'schedule' ? 'automation' : 'system-input',
+        summary,
+      },
+      captureCoverage: input.captureCoverage,
+    },
+  });
+  if (busy) {
+    // A skipped service Turn owns no execution or external effects. It must be born terminal so the existing single-flight index keeps the active run excluded.
+    const skipped = products.pop()!;
+    const record = {
+      ...skipped.record,
+      items: [],
+      status: 'completed',
+      completedAt: input.startedAt,
+      durationMs: 0,
+    };
+    decodeControlProduct('turn', record, owner);
+    applyControlProducts(db.sqlite, owner, products, []);
+    db.sqlite
+      .prepare(
+        'INSERT INTO control_turns (id,schema_version,revision,record_json,thread_id,agent_session_id,status) VALUES (?,1,1,?,?,NULL,?)'
+      )
+      .run(input.turnId, JSON.stringify(record), threadId, 'completed');
+  } else {
+    applyControlProducts(db.sqlite, owner, products, []);
+  }
+  if (receipt) {
+    const response = normalizeCommandRequestResponse(receipt.command, {
+      kind: 'turn',
+      id: input.turnId,
+    });
+    recordControlCommandRequestRecordInDb(db, { ...receipt, response });
+  }
+  return { threadId, turnId: input.turnId, busy, replayed: false };
+}
+
+/** Opens the exact physical product owner and awaits its complete native admission; no binding is upgraded. */
+export async function admitControlMaintenance(
+  dataRoot: string,
+  workspaceId: string | undefined,
+  input: ControlMaintenanceAdmissionInput
+): Promise<ControlMaintenanceAdmissionResult> {
+  const scope = nativeProductScope(
+    dataRoot,
+    workspaceId === undefined ? { kind: 'server' } : { kind: 'workspace', workspaceId }
+  );
+  await ensureCanonicalDirectoryAsync(scope.contentMount.root);
+  const path = scope.path;
+  const database = workspaceId === undefined ? `core:${path}` : `workspace:${path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path,
+    dataRoot,
+    create: false,
+    initialize: workspaceId === undefined ? 'core' : 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  return client.maintenance(database, input);
+}
+
 /** Trusted request admission supplies identity and the native authority closure, never model arguments. */
 export interface KnowledgeMaintenanceInput {
   readonly workspaceId: string;
@@ -64,6 +435,8 @@ export interface KnowledgeMaintenanceInput {
   readonly askingThreadId?: string;
   readonly askingTurnId?: string;
   readonly signal: AbortSignal;
+  /** Original command facts, supplied only by the existing command owner before native admission. */
+  readonly receipt?: IdempotentCommandReceipt;
   /** Required for native Worker/scheduler calls without a public request actor. */
   readonly currentAdmission?:
     | ((request: NotebookUpdate) => NotebookPublicationAdmission)
@@ -78,7 +451,7 @@ export interface KnowledgeMaintenanceDependencies {
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void;
+  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void | Promise<void>;
   readonly run: (
     input: KnowledgeManagerAgentRun
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
@@ -97,8 +470,8 @@ function excerpt(text: string, maxBytes: number) {
   };
 }
 
-/** Executes one fresh bounded Workspace run; only actual Tool outcomes can report publication. */
-export function prepareKnowledgeMaintenance(
+/** Awaits one complete native Workspace admission; only actual Tool outcomes can report publication. */
+export async function prepareKnowledgeMaintenance(
   dependencies: KnowledgeMaintenanceDependencies,
   input: KnowledgeMaintenanceInput
 ) {
@@ -141,9 +514,27 @@ export function prepareKnowledgeMaintenance(
     changes: [],
     summary: input.instructions,
   });
+  input.signal.throwIfAborted();
+  const admitted = await admitControlMaintenance(dependencies.coreDb.dataRoot, input.workspaceId, {
+    purpose: 'maintenance',
+    ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
+    actor: input.actor,
+    requestId: input.requestId,
+    threadId: allocateEntityId('th'),
+    turnId: allocateEntityId('tu'),
+    startedAt: input.startedAt ?? new Date().toISOString(),
+    trigger: input.trigger,
+    instructions: input.instructions,
+    captureCoverage: store.getLiveCaptureCoverage(),
+    ...(input.receipt ? { receipt: MaintenanceReceiptSchema.parse(input.receipt) } : {}),
+  });
+  if (admitted.replayed) throw new NotebookError('recovery_required');
+  const thread = store.getThread(input.workspaceId, admitted.threadId);
+  const turn = store.getTurnById(admitted.turnId);
   const all = store
     .listThreads(input.workspaceId)
-    .flatMap((thread) => store.listThreadTurns(input.workspaceId, thread.id));
+    .flatMap((thread) => store.listThreadTurns(input.workspaceId, thread.id))
+    .filter((prior) => prior.id !== turn.id);
   const maintenance = all.filter((turn) => {
     const knowledge = turn.internalExecution?.knowledge;
     return (
@@ -157,17 +548,6 @@ export function prepareKnowledgeMaintenance(
             turn.triggerSource.summary === 'Knowledge maintenance.')))
     );
   });
-  const threadIds = new Set(maintenance.map((turn) => turn.threadId));
-  if (threadIds.size > 1) throw new NotebookError('recovery_required');
-  const thread = maintenance[0]
-    ? store.getThread(input.workspaceId, maintenance[0].threadId)
-    : store.createThread(
-        input.workspaceId,
-        'Knowledge maintenance',
-        undefined,
-        'knowledge-manager',
-        { visibility: 'workspace' }
-      );
   const access = {
     store,
     coreDb: dependencies.coreDb,
@@ -183,28 +563,13 @@ export function prepareKnowledgeMaintenance(
   };
   admitKnowledgeRetrieval(target);
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
-  const turn = store.createTurn(
-    input.workspaceId,
-    thread.id,
-    input.instructions,
-    input.actor,
-    null,
-    {
-      ...(input.startedAt ? { startedAt: input.startedAt } : {}),
-      agentId: 'knowledge-manager',
-      executorKind: 'assistant',
-      triggerSource: {
-        kind: input.trigger === 'schedule' ? 'automation' : 'system-input',
-        summary:
-          input.trigger === 'schedule'
-            ? 'Knowledge Manager scheduled maintenance.'
-            : 'Knowledge maintenance.',
-      },
-    }
-  );
-  const status = (summary: string, failed = false, result?: ReturnType<typeof response>) => {
+  const statusItem = (
+    summary: string,
+    failed = false,
+    result?: ReturnType<typeof response>
+  ): Item => {
     const timestamp = new Date().toISOString();
-    store.createItem({
+    return {
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: thread.id,
@@ -217,7 +582,10 @@ export function prepareKnowledgeMaintenance(
       status: failed ? 'failed' : 'completed',
       createdAt: timestamp,
       completedAt: timestamp,
-    });
+    };
+  };
+  const status = async (...args: Parameters<typeof statusItem>) => {
+    await store.createItem(statusItem(...args));
   };
   const response = (
     outcome: 'published' | 'review-required' | 'no-change' | 'skipped' | 'failed',
@@ -252,9 +620,9 @@ export function prepareKnowledgeMaintenance(
   };
   let outcome: ReturnType<typeof response> | undefined;
   let outcomeStatusRecorded = false;
-  const recordOutcome = () => {
+  const recordOutcome = async () => {
     if (outcome && !outcomeStatusRecorded) {
-      status(outcome.summary, false, outcome);
+      await status(outcome.summary, false, outcome);
       outcomeStatusRecorded = true;
     }
   };
@@ -265,24 +633,27 @@ export function prepareKnowledgeMaintenance(
       closed = true;
     }
   };
-  const fail = () => {
-    const current = store.getTurnById(turn.id);
-    const result =
-      outcome ??
-      response(
-        'failed',
-        current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
-      );
-    if (!isSealedTurnTerminal(current.status)) {
-      if (!outcomeStatusRecorded) status(result.summary, true, result);
-      store.updateTurn(turn.id, {
-        status: input.signal.aborted ? 'cancelled' : 'failed',
-        completedAt: new Date().toISOString(),
-        error: { code: 'knowledge_maintenance_failed', message: result.summary },
-      });
+  const fail = async () => {
+    try {
+      const current = store.getTurnById(turn.id);
+      const result =
+        outcome ??
+        response(
+          'failed',
+          current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
+        );
+      if (!isSealedTurnTerminal(current.status)) {
+        if (!outcomeStatusRecorded) await status(result.summary, true, result);
+        await store.updateTurn(turn.id, {
+          status: input.signal.aborted ? 'cancelled' : 'failed',
+          completedAt: new Date().toISOString(),
+          error: { code: 'knowledge_maintenance_failed', message: result.summary },
+        });
+      }
+      return result;
+    } finally {
+      close();
     }
-    close();
-    return result;
   };
   const settled = (result: ReturnType<typeof response>) => {
     close();
@@ -290,14 +661,20 @@ export function prepareKnowledgeMaintenance(
   };
   try {
     admission(empty);
-    if (maintenance.some((prior) => !isSealedTurnTerminal(prior.status))) {
+    if (admitted.busy) {
       const skipped = response('skipped', 'Another notebook maintenance Turn is still active.');
-      status(skipped.summary, false, skipped);
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      if (turn.status !== 'completed' || !turn.completedAt)
+        throw new NotebookError('recovery_required');
+      // Busy admission has no completion envelope yet; publish its actual Status with the first terminal tuple.
+      await store.completeTurn(
+        turn.id,
+        { status: 'completed', completedAt: turn.completedAt },
+        { items: [statusItem(skipped.summary, false, skipped)] }
+      );
       return settled(skipped);
     }
   } catch {
-    return settled(fail());
+    return settled(await fail());
   }
   let started = false;
   return {
@@ -324,8 +701,9 @@ export function prepareKnowledgeMaintenance(
           dataRoot: dependencies.coreDb.dataRoot,
           ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
         };
+        // Captured Source lineage is immutable; current audience and canonical digest are still checked on every use.
         const readSource = async (source: KnowledgeSourceRecord) => {
-          if (!knowledgeSourceAudienceReadable(target, source.id))
+          if (!knowledgeSourceLineageReadable(target, source))
             throw new NotebookError('invalid_request');
           const pointer = readSourcePointers(sourceOwner).get(source.id);
           if (!pointer || pointer.source.contentDigest !== source.contentDigest)
@@ -333,7 +711,7 @@ export function prepareKnowledgeMaintenance(
           const delivered = await readManagedSourceText({ owner: sourceOwner, pointer, access });
           if (
             delivered.status !== 'ok' ||
-            !knowledgeSourceAudienceReadable(target, source.id) ||
+            !knowledgeSourceLineageReadable(target, source) ||
             store.getKnowledgeSource(input.workspaceId, source.id).contentDigest !==
               source.contentDigest
           )
@@ -460,10 +838,12 @@ export function prepareKnowledgeMaintenance(
           workspaceId: input.workspaceId,
         });
         const selectedPages = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
-        for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
-          const id = path.slice(0, -3);
-          if (selectedPages && !selectedPages.has(id)) continue;
-          const content = notebook.readRevision(baseRevision, [path]).files[path]!;
+        const selectedPaths = Object.keys(notebook.inspectRevision(baseRevision).entries)
+          .sort()
+          .filter((path) => !selectedPages || selectedPages.has(path.slice(0, -3)));
+        const selectedFiles = notebook.readRevision(baseRevision, selectedPaths).files;
+        for (const path of selectedPaths) {
+          const content = selectedFiles[path]!;
           const parsed = parseOkfDocument({ path, content });
           if (!parsed.ok) throw new NotebookError('recovery_required');
           if (
@@ -472,16 +852,15 @@ export function prepareKnowledgeMaintenance(
             (parsed.document.reserved || parsed.document.frontmatter.openkit_status !== 'active')
           )
             continue;
-          const page = readAuthorizedWorkspaceNotebookPages({
-            ...target,
-            pageIds: [path.slice(0, -3)],
-          }).pages[0];
-          if (!page) throw new NotebookError('invalid_request');
           admitBytes(content);
           files[path] = content;
           for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
             admittedReferences.add(ref);
         }
+        readAuthorizedWorkspaceNotebookPages({
+          ...target,
+          pageIds: Object.keys(files).map((path) => path.slice(0, -3)),
+        });
         // Omitted base files stay immutable; an explicit selection may include non-active pages.
         for (const id of input.pageIds ?? []) {
           if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
@@ -528,20 +907,35 @@ export function prepareKnowledgeMaintenance(
           admission(empty);
           for (const source of sources.values())
             if (
-              !knowledgeSourceAudienceReadable(target, source.id) ||
+              !knowledgeSourceLineageReadable(target, source) ||
               store.getKnowledgeSource(input.workspaceId, source.id).contentDigest !==
                 source.contentDigest
             )
               throw new NotebookError('recovery_required');
-          for (const path of Object.keys(files).filter((path) => !path.startsWith('@sources/')))
-            readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] });
+          readAuthorizedWorkspaceNotebookPages({
+            ...target,
+            pageIds: Object.keys(files)
+              .filter((path) => !path.startsWith('@sources/'))
+              .map((path) => path.slice(0, -3)),
+          });
+          // Group one immutable revision per read; each group still rechecks current source and audience authority.
+          const historyByRevision = new Map<string, typeof historyReads>();
           for (const selection of historyReads) {
-            const page = readAuthorizedWorkspaceNotebookPages({
-              ...target,
-              notebookRevision: selection.notebookRevision,
-              pageIds: [selection.path.slice(0, -3)],
-            }).pages[0];
-            if (page?.content !== selection.content) throw new NotebookError('recovery_required');
+            const selections = historyByRevision.get(selection.notebookRevision) ?? [];
+            selections.push(selection);
+            historyByRevision.set(selection.notebookRevision, selections);
+          }
+          for (const [notebookRevision, selections] of historyByRevision) {
+            const pages = new Map(
+              readAuthorizedWorkspaceNotebookPages({
+                ...target,
+                notebookRevision,
+                pageIds: [...new Set(selections.map(({ path }) => path.slice(0, -3)))],
+              }).pages.map((page) => [page.path, page.content])
+            );
+            for (const selection of selections)
+              if (pages.get(selection.path) !== selection.content)
+                throw new NotebookError('recovery_required');
           }
         };
         const settings = () =>
@@ -845,7 +1239,7 @@ export function prepareKnowledgeMaintenance(
             async (value) => {
               const result = await editor.notebookUpdate({ summary: value.summary! });
               if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
-              recordOutcome();
+              await recordOutcome();
               return result;
             }
           ),
@@ -861,26 +1255,45 @@ export function prepareKnowledgeMaintenance(
           const parent = revision.parentRevision
             ? notebook.inspectRevision(revision.parentRevision)
             : undefined;
-          if (revision.metadata.producer.kind === 'user')
-            for (const path of new Set([
-              ...Object.keys(revision.entries),
-              ...Object.keys(parent?.entries ?? {}),
-            ])) {
-              if (selectedPages && !selectedPages.has(path.slice(0, -3))) continue;
-              if (revision.entries[path] === parent?.entries[path]) continue;
-              const read = (notebookRevision: string | undefined, exists: boolean) => {
-                if (!notebookRevision || !exists) return null;
-                const content = readAuthorizedWorkspaceNotebookPages({
-                  ...target,
-                  notebookRevision,
-                  pageIds: [path.slice(0, -3)],
-                }).pages[0]!.content;
+          if (revision.metadata.producer.kind === 'user') {
+            const changedPaths = [
+              ...new Set([...Object.keys(revision.entries), ...Object.keys(parent?.entries ?? {})]),
+            ].filter(
+              (path) =>
+                (!selectedPages || selectedPages.has(path.slice(0, -3))) &&
+                revision.entries[path] !== parent?.entries[path]
+            );
+            const read = (
+              notebookRevision: string | undefined,
+              paths: readonly string[]
+            ): ReadonlyMap<string, string> => {
+              if (!notebookRevision || !paths.length) return new Map();
+              const pages = readAuthorizedWorkspaceNotebookPages({
+                ...target,
+                notebookRevision,
+                pageIds: paths.map((path) => path.slice(0, -3)),
+              }).pages;
+              return new Map(pages.map((page) => [page.path, page.content]));
+            };
+            const beforePages = read(
+              parent?.revision,
+              changedPaths.filter((path) => Boolean(parent?.entries[path]))
+            );
+            const afterPages = read(
+              revision.revision,
+              changedPaths.filter((path) => Boolean(revision.entries[path]))
+            );
+            for (const path of changedPaths) {
+              const before = beforePages.get(path) ?? null;
+              const after = afterPages.get(path) ?? null;
+              for (const [notebookRevision, content] of [
+                [parent?.revision, before],
+                [revision.revision, after],
+              ] as const) {
+                if (content === null || notebookRevision === undefined) continue;
                 admitBytes(content);
                 historyReads.push({ notebookRevision, path, content });
-                return content;
-              };
-              const before = read(parent?.revision, Boolean(parent?.entries[path]));
-              const after = read(revision.revision, Boolean(revision.entries[path]));
+              }
               // Creation records its human caller even when navigation is the unchanged native seed.
               if (
                 !parent &&
@@ -892,6 +1305,7 @@ export function prepareKnowledgeMaintenance(
               humanChanges.push({ path, before, after });
               if (humanChanges.length > 256) throw new NotebookError('invalid_request');
             }
+          }
           cursor = revision.parentRevision;
         }
         if (cursor && cursor !== previous) throw new NotebookError('invalid_request');
@@ -962,19 +1376,21 @@ export function prepareKnowledgeMaintenance(
             additionalProperties: false,
           },
           validateResult: () => {
-            assertCurrent();
-            if (!outcome)
+            if (!outcome) {
+              assertCurrent();
               return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
+            }
+            // History admission invokes this run's native assertCurrent before checking its selected ranges.
             history.assertCurrent();
-            recordOutcome();
           },
         };
-        dependencies.pin(runInput);
+        await dependencies.pin(runInput);
         await dependencies.run(runInput);
+        await recordOutcome();
         if (!outcome) throw new NotebookError('invalid_request');
         return outcome;
       } catch {
-        return fail();
+        return await fail();
       } finally {
         close();
       }
@@ -982,10 +1398,10 @@ export function prepareKnowledgeMaintenance(
   };
 }
 
-/** Explicit requests use the same synchronous admission and detached execution boundary as schedules. */
+/** Explicit requests await the same native admission and detached execution boundary as schedules. */
 export async function maintainKnowledgeAgent(
   dependencies: KnowledgeMaintenanceDependencies,
   input: KnowledgeMaintenanceInput
 ) {
-  return prepareKnowledgeMaintenance(dependencies, input).execute();
+  return (await prepareKnowledgeMaintenance(dependencies, input)).execute();
 }

@@ -7,11 +7,11 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
-import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -34,7 +34,7 @@ function forwardedEffort(options: Record<string, unknown>) {
 }
 
 /** Loads real routes and canonical lineage; faux captures prove option forwarding, not stock HTTP serialization. */
-function fixture(
+async function fixture(
   options: {
     reasoning?: boolean;
     levels?: ReasoningEffort[];
@@ -47,10 +47,10 @@ function fixture(
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-effort-'));
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Effort');
-  const thread = store.createThread(workspace.id, 'Effort');
-  const turn = store.createTurn(
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Effort');
+  const thread = await store.createThread(workspace.id, 'Effort');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Request',
@@ -336,7 +336,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', false],
     ['chat/completions', true],
   ] as const)('custom stock none body matches canonical Workspace lineage %s stream=%s', async (endpoint, stream) => {
-    const f = fixture({ customStock: true, levels: ['none', 'high'] });
+    const f = await fixture({ customStock: true, levels: ['none', 'high'] });
     const response = await f.post(endpoint, 'none', stream);
     expect(response.status, await response.clone().text()).toBe(200);
     await response.text();
@@ -356,7 +356,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', false],
     ['chat/completions', true],
   ] as const)('keeps handed effort on a Provider-side failure %s stream=%s', async (endpoint, stream) => {
-    const f = fixture({ levels: ['low', 'high'] });
+    const f = await fixture({ levels: ['low', 'high'] });
     f.primary.setResponses([
       () =>
         fauxAssistantMessage([], {
@@ -387,7 +387,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', false],
     ['chat/completions', true],
   ] as const)('keeps handed effort on stock-internal auth failure %s stream=%s', async (endpoint, stream) => {
-    const f = fixture({ levels: ['low', 'high'] });
+    const f = await fixture({ levels: ['low', 'high'] });
     vi.spyOn(f.models, 'getAuth').mockRejectedValue(new Error('synthetic stock auth failure'));
     const response = await f.post(endpoint, 'medium', stream);
     // Keep stock setup-error projection; the deciding oracle is the retained handed effort.
@@ -409,7 +409,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     true,
   ])('does not invent a dropped/default reason before Provider handoff stream=%s', async (stream) => {
     for (const reasoning of [false, true]) {
-      const f = fixture({ levels: [], reasoning, nativeResponses: true });
+      const f = await fixture({ levels: [], reasoning, nativeResponses: true });
       const response = await f.app.request('/v1/responses', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -433,7 +433,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     false,
     true,
   ])('records requested effort only when native admission rejects before Provider stream=%s', async (stream) => {
-    const f = fixture({ levels: ['low', 'high'], nativeResponses: true });
+    const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
     const response = await f.app.request('/v1/responses', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -466,7 +466,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     [undefined, 'low', 'low'],
     [undefined, undefined, undefined],
   ] as const)('persists native request %s / %s separately from bound Turn on tool-aware Responses', async (turnEffort, requested, expected) => {
-    const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
+    const f = await fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
     const before = structuredClone(
       f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
     );
@@ -492,7 +492,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     false,
     true,
   ])('persists fitted effort through the tool-aware Responses bridge; stream=%s', async (stream) => {
-    const f = fixture({ levels: ['low', 'high'] });
+    const f = await fixture({ levels: ['low', 'high'] });
     const response = await f.post('responses', 'medium', stream, false, true, true);
     expect(response.status, await response.text()).toBe(200);
     expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
@@ -507,7 +507,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     true,
   ])('fits native Responses and bridged Chat before the Provider; stream=%s', async (stream) => {
     for (const endpoint of ['responses', 'chat/completions'] as const) {
-      const f = fixture({ levels: ['low', 'high'], nativeResponses: true });
+      const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
       const response = await f.post(endpoint, 'medium', stream, true);
       expect(response.status, await response.text()).toBe(200);
       expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
@@ -527,7 +527,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
   });
 
   it.each([false, true])('keeps native unattributed inference blind; stream=%s', async (stream) => {
-    const f = fixture({ levels: ['low', 'high'], nativeResponses: true });
+    const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
     const response = await f.post('responses', 'medium', stream, false, false);
     expect(response.status, await response.text()).toBe(200);
     expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
@@ -542,7 +542,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
   }) => {
     const envelopes: unknown[] = [];
     for (const nativeResponses of [false, true]) {
-      const f = fixture({ levels: ['low', 'high'], nativeResponses });
+      const f = await fixture({ levels: ['low', 'high'], nativeResponses });
       const response = await f.app.request('/v1/responses', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -572,7 +572,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     'responses',
     'chat/completions',
   ] as const)('refuses unknown %s effort before Provider effects', async (endpoint) => {
-    const f = fixture({ levels: ['low', 'high'] });
+    const f = await fixture({ levels: ['low', 'high'] });
     for (const effort of ['turbo', null, 7, {}]) {
       const response = await f.post(endpoint, effort);
       expect(response.status).toBe(400);
@@ -611,7 +611,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     endpoint,
     stream,
   }) => {
-    const f = fixture({ levels: [...levels] });
+    const f = await fixture({ levels: [...levels] });
     const dispatch = vi.spyOn(
       f.dispatcher,
       endpoint === 'responses'
@@ -642,7 +642,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     [true, [], 'provider_default_no_options'],
   ] as const)('drops control with reasoning=%s and levels=%j', async (reasoning, levels, reason) => {
     for (const endpoint of ['responses', 'chat/completions'] as const) {
-      const f = fixture({ reasoning, ...(levels ? { levels: [...levels] } : {}) });
+      const f = await fixture({ reasoning, ...(levels ? { levels: [...levels] } : {}) });
       const dispatch = vi.spyOn(
         f.dispatcher,
         endpoint === 'responses' ? 'createResponses' : 'createChatCompletion'
@@ -671,7 +671,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', undefined, 'low', 'low'],
     ['chat/completions', undefined, undefined, undefined],
   ] as const)('uses native %s effort before recorded Turn, then default: turn=%s request=%s effective=%s', async (endpoint, turnEffort, requested, expected) => {
-    const f = fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
+    const f = await fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
     const before = structuredClone(
       f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
     );
@@ -694,7 +694,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     false,
     true,
   ])('recomputes fitting on failover and retains both attempt facts; toolAware=%s', async (toolAware) => {
-    const f = fixture({ levels: ['low', 'high'], backupLevels: ['minimal', 'medium'] });
+    const f = await fixture({ levels: ['low', 'high'], backupLevels: ['minimal', 'medium'] });
     f.primary.setResponses([
       (_context, options) => {
         f.received.push({
@@ -733,7 +733,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     false,
     true,
   ])('fits each same-member retry without changing the classified retry policy; toolAware=%s', async (toolAware) => {
-    const f = fixture({ levels: ['low', 'high'] });
+    const f = await fixture({ levels: ['low', 'high'] });
     f.primary.setResponses([
       (_context, options) => {
         f.received.push({
@@ -783,7 +783,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     false,
     true,
   ])('records effort only for a reached member, never an unavailable entry; toolAware=%s', async (toolAware) => {
-    const f = fixture({ levels: ['low', 'high'], unavailablePrimary: true });
+    const f = await fixture({ levels: ['low', 'high'], unavailablePrimary: true });
     const response = await f.post('responses', 'medium', false, false, true, toolAware);
     expect(response.status, await response.text()).toBe(200);
     const [unavailable, reached] = f.entries();
@@ -800,7 +800,11 @@ describe('Gateway reasoning effort admission and fitting', () => {
   });
 
   it('advertises current levels, empty options and absent control after reload and restart', async () => {
-    const f = fixture({ levels: ['low', 'high'], discoveryProfiles: true, turnEffort: 'high' });
+    const f = await fixture({
+      levels: ['low', 'high'],
+      discoveryProfiles: true,
+      turnEffort: 'high',
+    });
     const admittedTurn = structuredClone(
       f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
     );
@@ -824,7 +828,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
   });
 
   it('keeps omitted unbound effort absent and retained configuration byte-identical', async () => {
-    const f = fixture({ levels: ['low', 'high'], turnEffort: 'high' });
+    const f = await fixture({ levels: ['low', 'high'], turnEffort: 'high' });
     const path = join(f.dataRoot, 'config', 'providers', 'p.provider.jsonc');
     const original = readFileSync(path, 'utf8');
     const dispatched = vi.spyOn(f.dispatcher, 'createResponses');

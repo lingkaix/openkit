@@ -26,7 +26,7 @@ const dataRoot = retainedRoot ?? mkdtempSync(join(tmpdir(), 'pending-publication
 const coreDb = openCoreDb(dataRoot);
 applyMigrations(coreDb);
 ensureLocalUser(coreDb);
-const store = retainedRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
+const store = retainedRoot ? new FsStore({ dataRoot }) : await createDemoStore({ dataRoot });
 const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 applyScopedMigrations(db);
 if (retainedRoot) {
@@ -77,7 +77,7 @@ if (retainedRoot) {
   });
   const app = createApp({ coreDb, store, dataRoot });
   const now = new Date().toISOString();
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Crash publication',
@@ -86,7 +86,7 @@ if (retainedRoot) {
   );
   for (let index = 0; index < 2; index++) {
     const requestId = `ap_crash_${index}`;
-    store.createItem({
+    await store.createItem({
       id: pendingRequestItemId(requestId, 'request'),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -100,7 +100,7 @@ if (retainedRoot) {
       createdAt: now,
       completedAt: now,
     });
-    raiseRecordedPendingRequest(store, db.sqlite, {
+    await raiseRecordedPendingRequest(store, db.sqlite, {
       requestId,
       requestItemId: pendingRequestItemId(requestId, 'request'),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -145,7 +145,7 @@ if (retainedRoot) {
   // Explicitly interrupted barrier is the reviewer's F4 entry point.
   if (mode !== 'invalidation') store.setTurnAdmissionHooks(null);
   if (!(mode === 'delivery' && phase === 'between'))
-    store.updateTurn(turn.id, { status: 'completed', completedAt: now });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: now });
   if (mode === 'delivery' || mode === 'throw') {
     // Restore the ordinary owner hook before the deciding response command.
     const { installPendingRequestAdmission } = await import('../runtime/pending-request-flow.js');
@@ -156,17 +156,17 @@ if (retainedRoot) {
   }
   if (phase === 'before-association') {
     const originalCreateTurn = store.createTurn.bind(store);
-    store.createTurn = (...args) => {
-      // The real canonical write completes, then the process dies before the freeze hook can run.
+    store.createTurn = async (...args) => {
+      // Await the real canonical write before the process dies ahead of the freeze hook.
       store.setTurnAdmissionHooks(null);
-      originalCreateTurn(...args);
+      await originalCreateTurn(...args);
       console.log(JSON.stringify({ dataRoot }));
       process.exit(23);
     };
   }
   const original = store.createItem.bind(store);
   let writes = 0;
-  store.createItem = (item, ...args) => {
+  store.createItem = async (item, ...args) => {
     if (
       [0, 1].some(
         (index) => item.causationId === pendingRequestItemId(`ap_crash_${index}`, 'request')
@@ -179,10 +179,10 @@ if (retainedRoot) {
         process.exit(23);
       }
     }
-    return original(item, ...args);
+    return await original(item, ...args);
   };
   if (mode === 'delivery' && phase === 'between')
-    store.updateTurn(turn.id, { status: 'completed', completedAt: now });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: now });
   const response =
     mode === 'delivery' || mode === 'throw'
       ? await respond(0)

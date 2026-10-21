@@ -19,6 +19,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -53,12 +54,12 @@ function threadRecord(dataRoot: string, workspaceId: string, threadId: string) {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
   const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -95,7 +96,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
@@ -105,11 +106,11 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 }
 
 describe('Thread canonical record envelope', () => {
-  it('writes entryPath behind its required feature and rejects unsupported Thread semantics', () => {
+  it('writes entryPath behind its required feature and rejects unsupported Thread semantics', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-envelope-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Envelope workspace');
-    const thread = store.createThread(
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Envelope workspace');
+    const thread = await store.createThread(
       workspace.id,
       'Envelope thread',
       undefined,
@@ -142,17 +143,23 @@ describe('Thread canonical record envelope', () => {
         requiredFeatures: ['openkit.thread-entry.v1', 'workspace.mount.fuse'],
       })}\n`
     );
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
-  it('refuses a pre-envelope Thread without rewriting its bytes after the reset boundary', () => {
+  it('refuses a pre-envelope Thread without rewriting its bytes after the reset boundary', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-cutover-'));
     const store = createOwnerBoundStore(dataRoot);
-    const workspace = store.ensureQuickChatWorkspace(LOCAL_USER_ID);
-    const thread = store.createThread(workspace.id, 'Cutover thread', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    });
+    const workspace = await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+    const thread = await store.createThread(
+      workspace.id,
+      'Cutover thread',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: LOCAL_USER_ID,
+      }
+    );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     const legacy = { ...persisted.value };
     for (const field of [
@@ -174,7 +181,7 @@ describe('Thread canonical record envelope', () => {
     writeFileSync(persisted.path, `${JSON.stringify(legacy)}\n`);
 
     const bytes = readFileSync(persisted.path, 'utf8');
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   });
 });
@@ -205,26 +212,26 @@ function predecessorRecord(value: Record<string, unknown>) {
   return predecessor;
 }
 
-it('refuses predecessor envelopes for both formal and conversation history without publication', () => {
+it('refuses predecessor envelopes for both formal and conversation history without publication', async () => {
   for (const formal of [true, false]) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-project-cutover-'));
-    const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Cutover');
-    const thread = store.createThread(workspace.id, 'Historical conversation');
-    const turn = store.createTurn(workspace.id, thread.id, 'Work', {
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Cutover');
+    const thread = await store.createThread(workspace.id, 'Historical conversation');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Work', {
       kind: 'user',
       id: LOCAL_USER_ID,
     });
-    if (formal) store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    if (formal) await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
     const bytes = readFileSync(persisted.path, 'utf8');
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   }
 });
 
-it('rejects damaged current visibility instead of reclassifying it at restart', () => {
+it('rejects damaged current visibility instead of reclassifying it at restart', async () => {
   for (const damage of [
     { visibility: undefined },
     { privateOwnerUserId: undefined },
@@ -232,8 +239,8 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
   ]) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-damaged-visibility-'));
     const store = createOwnerBoundStore(dataRoot);
-    const workspace = store.ensureQuickChatWorkspace(LOCAL_USER_ID);
-    const thread = store.createThread(
+    const workspace = await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+    const thread = await store.createThread(
       workspace.id,
       'Private conversation',
       undefined,
@@ -245,21 +252,21 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
     );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   }
 });
 
-it('does not infer shared inception when formal and conversation Turns have tied timestamps', () => {
+it('does not infer shared inception when formal and conversation Turns have tied timestamps', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-ambiguous-order-'));
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Ambiguous order');
-  const thread = store.createThread(workspace.id, 'Mixed history');
-  const formal = store.createTurn(workspace.id, thread.id, 'Formal', {
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Ambiguous order');
+  const thread = await store.createThread(workspace.id, 'Mixed history');
+  const formal = await store.createTurn(workspace.id, thread.id, 'Formal', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
-  store.updateTurn(formal.id, { agentId: 'agent_codex_host' });
-  const conversation = store.createTurn(workspace.id, thread.id, 'Conversation', {
+  await store.updateTurn(formal.id, { agentId: 'agent_codex_host' });
+  const conversation = await store.createTurn(workspace.id, thread.id, 'Conversation', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
@@ -277,7 +284,7 @@ it('does not infer shared inception when formal and conversation Turns have tied
   writeFileSync(conversationPath, JSON.stringify({ ...rawTurn, startedAt: formal.startedAt }));
   const persisted = threadRecord(dataRoot, workspace.id, thread.id);
   writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
-  expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+  await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
 });
 
 it.each([
@@ -288,12 +295,12 @@ it.each([
     value: LOCAL_USER_ID,
   },
   { name: 'self-parent Thread', field: 'parentThreadId', value: 'self' },
-])('refuses a current record with $name without rewriting its bytes', ({ field, value }) => {
+])('refuses a current record with $name without rewriting its bytes', async ({ field, value }) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-invalid-thread-predecessor-'));
   try {
     const store = createOwnerBoundStore(dataRoot);
-    const workspace = store.ensureQuickChatWorkspace(LOCAL_USER_ID);
-    const thread = store.createThread(
+    const workspace = await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+    const thread = await store.createThread(
       workspace.id,
       'Invalid predecessor',
       undefined,
@@ -311,20 +318,20 @@ it.each([
     const bytes = `${JSON.stringify(predecessor)}\n`;
     writeFileSync(persisted.path, bytes);
 
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
-it('preserves current administration entry and validates its envelope without rewriting', () => {
+it('preserves current administration entry and validates its envelope without rewriting', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-thread-predecessor-'));
   try {
     const store = createOwnerBoundStore(dataRoot);
     const userId = LOCAL_USER_ID;
-    const workspace = store.ensureQuickChatWorkspace(userId);
-    const thread = store.createThread(
+    const workspace = await store.ensureQuickChatWorkspace(userId);
+    const thread = await store.createThread(
       workspace.id,
       'Administration predecessor',
       undefined,
@@ -344,7 +351,7 @@ it('preserves current administration entry and validates its envelope without re
     ]) {
       const bytes = `${JSON.stringify({ ...predecessor, ...damage })}\n`;
       writeFileSync(persisted.path, bytes);
-      expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+      await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
       expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
     }
     writeFileSync(persisted.path, `${JSON.stringify(predecessor)}\n`);

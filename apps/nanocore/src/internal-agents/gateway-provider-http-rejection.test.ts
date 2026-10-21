@@ -13,7 +13,6 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
-import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { OpenAICompatibleProviderError } from '../llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
@@ -21,6 +20,7 @@ import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 
 const roots: string[] = [];
@@ -50,13 +50,13 @@ afterEach(() => {
 });
 
 /** Uses the real persisted Turn and database owners required by internal Gateway capture. */
-function captureBinding() {
+async function captureBinding() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'internal-http-rejection-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('HTTP diagnostic seam');
-  const thread = store.createThread(workspace.id, 'HTTP diagnostic seam');
-  const turn = store.createTurn(
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('HTTP diagnostic seam');
+  const thread = await store.createThread(workspace.id, 'HTTP diagnostic seam');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Request',
@@ -89,7 +89,7 @@ function providerConfig(model: Model<string>, id: string): ResolvedLLMProviderCo
 }
 
 /** Composes the real P04 producer, dispatcher, P05 projection, and Gateway execution. */
-function bindProvider(
+async function bindProvider(
   models: Models,
   model: Model<string>,
   options: {
@@ -98,7 +98,7 @@ function bindProvider(
     resolve?: (id: string) => ResolvedLLMProviderConfig;
   } = {}
 ) {
-  const capture = captureBinding();
+  const capture = await captureBinding();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
     if (options.loggerThrows) throw new Error('Synthetic log sink failure.');
   });
@@ -159,7 +159,7 @@ function bindProvider(
   return { capture, warn, resolve, provider, request };
 }
 
-type Fixture = ReturnType<typeof bindProvider>;
+type Fixture = Awaited<ReturnType<typeof bindProvider>>;
 type Hook = (options: StreamOptions | undefined, model: Model<string>) => void | Promise<void>;
 interface SemanticStep {
   observe?: Hook;
@@ -268,7 +268,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
         })
     );
     vi.stubGlobal('fetch', fetch);
-    const f = bindProvider(models, model, { loggerThrows });
+    const f = await bindProvider(models, model, { loggerThrows });
 
     const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
@@ -299,7 +299,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
         },
       },
     ]);
-    const f = bindProvider(semantic.models, semantic.model);
+    const f = await bindProvider(semantic.models, semantic.model);
 
     const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
@@ -315,7 +315,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
     const semantic = semanticFixture([
       { exposedStatus: scenario.status, observe: (options, model) => observe(options, model, 401) },
     ]);
-    const f = bindProvider(semantic.models, semantic.model);
+    const f = await bindProvider(semantic.models, semantic.model);
 
     const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
@@ -356,7 +356,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
         },
       },
     ]);
-    const f = bindProvider(semantic.models, semantic.model, {
+    const f = await bindProvider(semantic.models, semantic.model, {
       members: kind === 'retry' ? ['primary'] : ['primary', 'backup'],
       ...(kind === 'resolver'
         ? {
@@ -400,7 +400,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
         observe: (options, model) => observe(options, model, 401),
       },
     ]);
-    const f = bindProvider(semantic.models, semantic.model);
+    const f = await bindProvider(semantic.models, semantic.model);
 
     const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
@@ -413,7 +413,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
     const semantic = semanticFixture([
       { success: true, observe: (options, model) => observe(options, model, 401) },
     ]);
-    const f = bindProvider(semantic.models, semantic.model);
+    const f = await bindProvider(semantic.models, semantic.model);
 
     await expect(f.provider(f.request)).resolves.toMatchObject({
       message: { content: [{ type: 'text', text: 'Accepted.' }] },

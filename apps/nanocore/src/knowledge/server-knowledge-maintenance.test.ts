@@ -107,7 +107,7 @@ function fixture(enabled: boolean) {
       summary: 'Keep the human overview and add the explicit fact.',
     });
     expect(input.validateResult(JSON.stringify({ summary: 'Finished.' }))).toBeUndefined();
-    store.updateServerTurn(input.turn.id, {
+    await store.updateServerTurn(input.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -122,8 +122,8 @@ function fixture(enabled: boolean) {
       }),
     } as unknown as RuntimeConfigManager,
     inflightCommands: new WeakMap(),
-    pin: (input) => {
-      store.updateServerTurn(input.turn.id, {
+    pin: async (input) => {
+      await store.updateServerTurn(input.turn.id, {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'server-model',
@@ -239,7 +239,7 @@ it.each([
           signal: run.signal,
         });
     }
-    f.store.updateServerTurn(run.turn.id, {
+    await f.store.updateServerTurn(run.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -340,7 +340,7 @@ it('keeps independent historical human page bodies when their original Source is
         { summary: 'Preserve the independent human edits.' },
         { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
       );
-    f.store.updateServerTurn(run.turn.id, {
+    await f.store.updateServerTurn(run.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -485,13 +485,13 @@ it('recalls the exact Server candidate only after its human Review publishes the
   const published = f.notebook.readRevision(accepted.notebookRevision!);
   expect(published.metadata.producer).toEqual(producer);
   expect(published.files['release-rule.md']).toBe(preview.after);
-  const workspace = f.store.createWorkspace('Server review recall');
+  const workspace = await f.store.createWorkspace('Server review recall');
   recordWorkspaceOwnerMembership({
     coreDb: f.coreDb,
     workspaceId: workspace.id,
     ownerUserId: f.requestActor.userId,
   });
-  const thread = f.store.createThread(
+  const thread = await f.store.createThread(
     workspace.id,
     'Shared Server query',
     undefined,
@@ -528,27 +528,31 @@ it('recalls the exact Server candidate only after its human Review publishes the
 
 it('retains skipped active-writer and missing-authority schedule outcomes without a model call', async () => {
   const f = fixture(true);
-  const thread = f.store.createServerThread('Server Knowledge maintenance');
-  const active = f.store.createServerTurn(thread.id, 'Active run', f.input.actor, null, {
+  const thread = await f.store.createServerThread('Server Knowledge maintenance');
+  const active = await f.store.createServerTurn(thread.id, 'Active run', f.input.actor, null, {
     agentId: 'knowledge-manager',
   });
-  const skipped = await prepareServerKnowledgeMaintenance(f.dependencies, {
-    ...f.input,
-    trigger: 'schedule',
-  }).execute();
+  const skipped = await (
+    await prepareServerKnowledgeMaintenance(f.dependencies, {
+      ...f.input,
+      trigger: 'schedule',
+    })
+  ).execute();
   expect(skipped.outcome).toBe('skipped');
   expect(f.run).not.toHaveBeenCalled();
   expect(f.store.getServerTurnById(active.id).status).toBe('running');
-  f.store.updateServerTurn(active.id, {
+  await f.store.updateServerTurn(active.id, {
     status: 'failed',
     completedAt: new Date().toISOString(),
     error: { code: 'recovery_required', message: 'Interrupted run.' },
   });
-  const failed = await prepareServerKnowledgeMaintenance(f.dependencies, {
-    ...f.input,
-    requestActor: undefined,
-    trigger: 'schedule',
-  }).execute();
+  const failed = await (
+    await prepareServerKnowledgeMaintenance(f.dependencies, {
+      ...f.input,
+      requestActor: undefined,
+      trigger: 'schedule',
+    })
+  ).execute();
   expect(failed.outcome).toBe('failed');
   expect(f.run).not.toHaveBeenCalled();
   expect(f.store.getServerTurnById(failed.turnId).items).toContainEqual(

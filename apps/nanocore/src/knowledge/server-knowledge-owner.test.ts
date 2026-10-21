@@ -133,7 +133,7 @@ describe('Server literal Source owner', () => {
     await expect(
       registerServerKnowledgeSource(f, { ...request, content: 'Changed' })
     ).rejects.toThrow();
-    const workspace = f.store.createWorkspace('Separate Workspace Source owner');
+    const workspace = await f.store.createWorkspace('Separate Workspace Source owner');
     const workspaceSourceId = 'ks_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({
       coreDb: f.coreDb,

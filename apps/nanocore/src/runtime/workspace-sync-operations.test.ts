@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -145,7 +146,7 @@ const routes = [
 
 describe('Workspace synchronization operation cutover', () => {
   it.each(routes)('retires the authorized former $id binding', async ({ verb, path }) => {
-    const f = fixture();
+    const f = await fixture();
     const url = path
       .replace('{workspaceId}', 'ws_00000000-0000-7000-8000-000000000001')
       .replace('{reviewId}', f.item.review.id)
@@ -227,13 +228,14 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
 }
 
 const cleanups: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0)) close();
 });
 
 /** Creates explicit current membership, persisted review and recovery rows, and bearer authority. */
-function fixture(
+async function fixture(
   options: {
     readonly?: boolean;
     accepting?: boolean;
@@ -245,7 +247,7 @@ function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   if (options.administrator)
     coreDb.sqlite
       .prepare(
@@ -422,7 +424,7 @@ function inputs() {
 
 /** Creates a real foreign-owned filesystem review with staged bytes and exact no-write observations. */
 async function foreignFilesystemFixture() {
-  const f = fixture({ administrator: true, sessionAuth: true });
+  const f = await fixture({ administrator: true, sessionAuth: true });
   const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-admin-target-'));
   const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-admin-worker-'));
   const stagingRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-admin-staging-'));
@@ -532,7 +534,7 @@ describe('Workspace synchronization native projections', () => {
     'sync.review-decide',
     'sync.recovery-decide',
   ])('propagates an unexpected admission exception for %s to the HTTP error handler', async (id) => {
-    const f = fixture();
+    const f = await fixture();
     const fault = new Error('b8-admission-fault');
     const errorHandler = vi.fn((error: Error) => {
       expect(error).toBe(fault);
@@ -777,7 +779,7 @@ describe('Workspace synchronization native projections', () => {
   });
 
   it('reaches all fifteen owner outcomes through HTTP, Core Client, CLI and remote MCP with exact replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     const { operationCatalog } = await import(
       new URL('../../../../skills/openkit-operations.mjs', import.meta.url).href
     );
@@ -834,7 +836,7 @@ describe('Workspace synchronization native projections', () => {
   });
 
   it('replays a retained pre-cutover receipt with the exact original decision body', async () => {
-    const f = fixture();
+    const f = await fixture();
     const input = {
       requestId: 'retained-decision',
       decision: 'rejected' as const,
@@ -891,7 +893,7 @@ describe('Workspace synchronization native projections', () => {
     'sync.review-decide',
     'sync.recovery-decide',
   ])('refuses changed-input replay for %s through HTTP and MCP without changing owner rows or receipts', async (id) => {
-    const f = fixture();
+    const f = await fixture();
     const input = { ...inputs()[id]!, message: 'Captured decision intent.' };
     const first = await f.http(id, input);
     expect(first.status).toBe(200);
@@ -920,7 +922,7 @@ describe('Workspace synchronization native projections', () => {
       )
     )
   )('denies $condition before $id changes its row or receipt', async ({ id, condition }) => {
-    const f = fixture({
+    const f = await fixture({
       readonly: condition === 'readonly',
       accepting: condition !== 'closed readiness',
     });
@@ -971,7 +973,7 @@ it.each([
   ['sync.recovery-decide', 'HTTP'],
   ['sync.recovery-decide', 'MCP'],
 ] as const)('preserves classified native terminal %s refusal through %s without changes', async (id, projection) => {
-  const f = fixture();
+  const f = await fixture();
   const selectors =
     id === 'sync.review-decide'
       ? { reviewId: f.item.review.id }
@@ -1014,7 +1016,7 @@ it.each([
   ['sync.recovery-decide', 'HTTP'],
   ['sync.recovery-decide', 'MCP'],
 ] as const)('preserves classified native unavailable %s refusal through %s without changes', async (id, projection) => {
-  const f = fixture();
+  const f = await fixture();
   if (id === 'sync.recovery-decide')
     f.db.sqlite
       .prepare('DELETE FROM worker_output_manifests WHERE workspace_id = ?')
@@ -1049,7 +1051,7 @@ it.each([
   'HTTP',
   'MCP',
 ] as const)('preserves classified native retained review integrity refusal through %s without changes', async (projection) => {
-  const f = fixture();
+  const f = await fixture();
   const patchPayload = { ...f.item.patchPayload!, text: 'tampered retained patch' };
   f.db.sqlite
     .prepare(
@@ -1128,7 +1130,7 @@ it.each([
   'HTTP',
   'MCP',
 ] as const)('keeps an unknown native Sync failure unclassified through %s without changes', async (projection) => {
-  const f = fixture();
+  const f = await fixture();
   const sentinel = new Error('private native Sync sentinel');
   const owner = vi
     .spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview')
