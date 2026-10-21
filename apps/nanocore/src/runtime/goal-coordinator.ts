@@ -173,13 +173,34 @@ export function createGoalTools(input: {
               turnId: input.turnId,
               requestId: randomUUID(),
             });
-            return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+            const domainServices = input.services.goalDomain;
+            const value =
+              key === 'goal.read'
+                ? {
+                    ...result,
+                    policyAdministration: domainServices
+                      ? {
+                          policyRevision: domainServices.currentRevision(),
+                          domain: domainServices.forActor(input.actor, input.db).read({
+                            workspaceId: goal.workspaceId,
+                            goalId: goal.goalId,
+                          }),
+                        }
+                      : null,
+                  }
+                : result;
+            return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
           } catch (error) {
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: error instanceof Error ? error.message : 'Goal operation failed.',
+                  text: JSON.stringify(
+                    projectOperationError(error) ?? {
+                      code: 'internal_error',
+                      message: 'Goal operation failed.',
+                    }
+                  ),
                 },
               ],
               isError: true,
