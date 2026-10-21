@@ -27,4 +27,4 @@ The first stable release establishes retained-data continuity, or the engineer c
 
 - [Release Management](../specs/20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts).
 - [Pre-Stable Data Continuity](20261014-pre_stable_data_continuity.md).
-- [Core Protocol](../core/protocol.md#ids).
+- [Protocol Identifiers And Enums](../specs/20261021-protocol_identifiers_and_enums.md#ids).

@@ -19,6 +19,8 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 **Report only what the evidence establishes.** A timeout, disconnect or crash establishes that a result is unavailable, not that an effect did not happen. Unknown is a valid, visible outcome. A later attempt keeps the earlier attempt's result and uncertainty.
 
+Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen.
+
 **Recover from durable records.** Recovery MUST start from the effect owner's durable records. Before dispatch, that owner MUST record the effect intent and the decision that permits it. If the result is not established, recovery MUST preserve the uncertainty and use the owning recovery contract to obtain proof or report unknown. Recorded decisions remain evidence; any further governed effect MUST satisfy current authorization under [Permissions](permissions.md).
 
 **One owner and one deadline per operation.** An operation that crosses a process or network boundary MUST have one end-to-end owner and one deadline covering its waiting, delivery, execution allowance and result collection. Inner waits and retries MUST use the remaining allowance, and a liveness signal MUST NOT extend it. Expiry MUST stop ordinary retries and invoke the owner's failure or unknown-outcome handling; it MUST NOT be treated as proof that external execution has stopped. Cleanup remains subject to the runtime's fencing requirements.

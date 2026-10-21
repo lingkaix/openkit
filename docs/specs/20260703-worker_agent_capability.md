@@ -201,7 +201,7 @@ MCP tool calls must produce `CapabilityCall`, `UsageRecord` where measurable, an
 
 ### MCP Item Identifier Name
 
-An existing product-visible MCP tool-call Item uses `it` UUIDv5 with exact JSON name `["mcp", packageSnapshotId, serverId, toolName, protocolRequestId]`. Inputs are the authenticated frozen AEP snapshot, exact bound catalog server, complete tool name and native JSON-RPC request ID. Preserve the admitted string or number type of that request ID. [Core Protocol](../core/protocol.md#ids) supplies canonical name bytes under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md).
+An existing product-visible MCP tool-call Item uses `it` UUIDv5 with exact JSON name `["mcp", packageSnapshotId, serverId, toolName, protocolRequestId]`. Inputs are the authenticated frozen AEP snapshot, exact bound catalog server, complete tool name and native JSON-RPC request ID. Preserve the admitted string or number type of that request ID. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids) supplies canonical name bytes under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md).
 
 An approval or `work_input_request` request Item instead uses only [Pending Requests' name](20260930-pending_requests.md#deliver): `[durableRequestId, "request"]`. No nested digest, Turn-derived or MCP-specific alias supplies another product request Item. Item identity supplies neither call-start idempotency nor captured-call authority; those remain with Capability Usage Gateway Foundation and Pending Requests.
 

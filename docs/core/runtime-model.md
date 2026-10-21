@@ -148,7 +148,7 @@ Observable conformance requires one runtime inventory to distinguish all four pr
 
 `core-concepts.md` owns the `Turn` definition, and `protocol.md` owns its lifecycle and trigger vocabulary. Runtime owns assignment: a Turn run by a schedulable Agent is assigned to one AgentSession before dispatch; a pending queued worker may remain sessionless until then, and one current AgentSession may execute multiple sequential Turns from its bound Thread. A Core-local service Turn uses `agentSessionId=null` only under the protocol exception and MUST NOT be presented as worker execution or runtime continuity.
 
-Turn replaces `AgentRun` in the core model. Execution metadata belongs on the turn, AgentSession, item payloads, artifact records, approval records, or implementation telemetry.
+Execution metadata belongs on the turn, AgentSession, item payloads, artifact records, approval records, or implementation telemetry.
 
 ## Item
 
@@ -182,7 +182,7 @@ A thread may contain:
 - review turns that inspect artifacts or item history from earlier turns
 - refinement or redo turns after user feedback
 
-The Thread remains one single-flight durable narrative. Handoff creates a linked Thread for the receiving execution rather than changing the writer inside the originating Thread. Historical AgentSessions may have executed its sequential Turns, but only the current AgentSession may receive another worker Turn.
+[Core Concepts](core-concepts.md#thread) owns Thread meaning and single-flight cardinality. Runtime handoff creates a linked Thread for the receiving execution rather than changing the writer inside the originating Thread. Historical AgentSessions may have executed its sequential Turns, but only the current AgentSession may receive another worker Turn.
 
 ## Parallel Work
 
@@ -212,7 +212,7 @@ This keeps implementation-review loops visible without creating a special run mo
 
 NanoCore remains the orchestration and governance center. A container, VM or other admitted backend is an execution resource, not the center of the product model. Healthy compatible Sandboxes SHOULD remain reusable; routine NanoCore/Web delivery MUST NOT require NanoHost delivery or destruction of healthy execution resources. A bounded Core disconnect may preserve exact execution only under the existing attempt, identity, sequence and continuity proofs; it does not guarantee every in-flight inference or external call survives.
 
-[Storage](storage.md) owns retained working volumes independently of execution lifetime. Planned environment replacement prepares and validates the candidate before draining affected work, fences every old writer before reattachment, refreshes current authority, and proves the new environment before admitting execution. Replacement may occur during a long-running logical task, but it does not move an active Turn between identities or restore process memory; a successor AgentSession may resume the exact retained native conversation. Failed continuity retains the truthful result the Turn's lifecycle owner determined and permits only new authorized work. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen. Image rollback is not data rollback.
+[Storage](storage.md) owns retained working volumes independently of execution lifetime. Planned environment replacement prepares and validates the candidate before draining affected work, fences every old writer before reattachment, refreshes current authority, and proves the new environment before admitting execution. Replacement may occur during a long-running logical task, but it does not move an active Turn between identities or restore process memory; a successor AgentSession may resume the exact retained native conversation. Failed continuity retains the truthful result the Turn's lifecycle owner determined and permits only new authorized work. [Fault Tolerance](fault-tolerance.md#principles) owns effect uncertainty and recovery responsibility during environment replacement. Image rollback is not data rollback.
 
 ## Execution-Substrate Lifecycle
 

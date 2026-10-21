@@ -93,6 +93,8 @@ Internal Agent runtime and resources:
 
 Kernel, protocol, and product surfaces:
 
+- [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md): entity prefixes and derivations, Item delta contracts, and closed enum inventories.
+
 - [Generative Kernel Data And Operations](./20260908-generative_kernel_data_operations.md) — Accepted; initial MVP contract, implementation Partial.
 - [Generative UI Interaction](./20260908-generative_ui_interaction.md) — Accepted; initial native MVP contract, implementation Partial.
 

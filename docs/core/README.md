@@ -117,7 +117,7 @@ The current required core aspect set contains 22 documents. Future merge or reti
 ### Resources And Agent Supply
 
 - `generative-apps.md` — Light Apps, stable data kernels, agent-first understanding and operation, and optional generative presentation.
-- `storage.md` — file-system-first storage layout, SQLite roles, indexes, and workspace data partitioning.
+- `storage.md` — scope-owned stores, control-record authority, immutable content, retained working volumes, and rebuildable indexes.
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 - `knowledge.md` — workspace knowledge, source references, proposals, review, and context injection.
