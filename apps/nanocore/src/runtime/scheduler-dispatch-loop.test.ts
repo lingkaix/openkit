@@ -2959,21 +2959,19 @@ describe('scheduler dispatch loop', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       await setup(coreDb, store);
-      await publishTestAdmission(
-        store,
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          queueEntryId: 'queue_replacement_candidate',
-          requestId: fixtureRequestId('req_replacement_candidate'),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_replacement_candidate'),
-          turnInput: 'Use incompatible future static inputs',
-          requestedAgentId: 'agent_codex_host',
-          profileRef: null,
-        })
-      );
+      const candidate = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        queueEntryId: 'queue_replacement_candidate',
+        requestId: fixtureRequestId('req_replacement_candidate'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: testEntityId('tu', 'turn_replacement_candidate'),
+        turnInput: 'Use incompatible future static inputs',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: null,
+      });
+      expect(() => store.getTurnById(candidate.turnId)).toThrow();
 
       let observed: unknown;
       try {
@@ -3149,22 +3147,20 @@ describe('scheduler dispatch loop', () => {
         now: () => '2026-07-05T00:00:01.000Z',
       });
       expect(blocker.phase).toBe('open');
-      await publishTestAdmission(
-        store,
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          queueEntryId: 'queue_busy_followup',
-          requestId: fixtureRequestId('req_busy_followup'),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_busy_followup'),
-          turnInput: 'Stay queued while the Thread is busy',
-          requestedAgentId: 'agent_codex_host',
-          profileRef: null,
-          now: () => '2026-07-05T00:00:02.000Z',
-        })
-      );
+      const followup = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        queueEntryId: 'queue_busy_followup',
+        requestId: fixtureRequestId('req_busy_followup'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: testEntityId('tu', 'turn_busy_followup'),
+        turnInput: 'Stay queued while the Thread is busy',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: null,
+        now: () => '2026-07-05T00:00:02.000Z',
+      });
+      expect(() => store.getTurnById(followup.turnId)).toThrow();
       await publishTestAdmission(
         store,
         createSchedulerAdmissionEntry(coreDb, {
