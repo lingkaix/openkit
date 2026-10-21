@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 ---
 # Unified Policy Shapes And I16 Proof
 
@@ -21,6 +21,8 @@ The coordinator applied the joint Astra review on 2026-10-18: the reset cohort c
 The engineer-approved mechanism audit on 2026-10-19 directs removal of the duplicate Gateway Tool grant selector before the rc.10 reset. Ordinary permission effects retain their exact MCP target only in the existing resource scope. Necessity: a second Tool-name list can disagree with the Workspace/server/Tool target. No replacement field, family, authority or compatibility reader is added. Permission and Goal-delegation forms and their native activation guards remain.
 
 ## Current Checkpoint
+
+The shape, Gateway-selector and human Storage-lease cuts are implemented on main at `e24694ba7`, `4974eb14b` and `c9a9edc57`. Current input-authority validation and passive-narrowing classification remain a separate unfinished Policy behavior increment under [Policy Review And Update](../../specs/20260703-policy_enforcement_mapping.md#policy-review-and-update). The remaining checkpoint and lease paragraphs preserve earlier evidence and scope limits; their landing gates are historical. No complete Goal runtime or live acceptance is claimed.
 
 The reset shapes and Goal publication are integrated on main. The Task-hook and finite-use slice landed at `12c8a69db`; the complete Policy suite passed 91 cases and the Kernel suite passed 13. Assigned Native Policy fixture repairs landed at `f9ab2c780`, with six affected tests, Native typecheck and independent review passing. These results do not claim complete Goal runtime enforcement or mediation behavior.
 

@@ -104,7 +104,7 @@ Replacement may follow an explicit or idle close, loss of the runtime host insta
 
 When the Thread has no retained native conversation, as on its first binding or after an explicit runtime switch, the successor starts a new native conversation, whose context comes from Core-owned Thread history. A missing, corrupt, incompatible, or mismatched retained conversation is an explicit resume failure. It MUST NOT be silently replaced by a new empty conversation or by reconstruction from visible messages, and the successor MUST NOT inherit unproved native state. Absence of an expected reference is a resume failure, never permission to start fresh. After a resume failure, the Thread keeps its history and truthful Turn outcomes. An authorized actor continues work in a new Thread with the old Thread as its parent. The new Thread uses authorized Core records as context. [Fault Tolerance](fault-tolerance.md) owns this continuation policy.
 
-An active Turn is never moved, resumed, or replayed through a successor AgentSession. If continuity is lost during an active Turn, that Turn retains the truthful result its lifecycle owner determined. Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen. Only a new authorized Turn may run on the successor.
+An active Turn is never moved, resumed, or replayed through a successor AgentSession. If continuity is lost during an active Turn, that Turn retains the truthful result its lifecycle owner determined. [Fault Tolerance](fault-tolerance.md#principles) owns effect uncertainty and recovery responsibility when continuity is lost. Only a new authorized Turn may run on the successor.
 
 ### Termination
 
@@ -164,7 +164,7 @@ The AgentSession model is accepted only when observable evidence proves all of t
 - AgentSession MUST mean the hidden Core execution-binding identity defined here.
 - An AgentSession MUST remain bound to exactly one Workspace and one Thread.
 - A Thread MUST have at most one current AgentSession and MAY retain historical predecessors.
-- An AgentSession MUST have at most one active Turn, and an active Turn MUST execute through exactly one AgentSession.
+- An AgentSession MUST have at most one active Turn. A Turn executed by a worker or other schedulable Agent MUST bind to exactly one AgentSession before dispatch; a queued pending worker Turn MAY remain sessionless until then. A Core-local service Turn MAY execute without an AgentSession only under the [Protocol exception](protocol.md#turn-semantics).
 - A connection, process, native handle, Harness, Sandbox, Runtime Epoch, or attempt MUST NOT replace AgentSession identity.
 - A successor MUST NOT become current before its predecessor is terminal, non-reusable, and runtime-fenced.
 - An active Turn MUST NOT move between AgentSessions or be replayed as continuity.

@@ -245,7 +245,7 @@ Routine NanoCore/Web updates do not restart NanoHost or erase retained roots. A 
 
 ## Preparation And Activation Identifier Names
 
-Existing preparation and activation outputs use these exact JSON names in [Core Protocol's kind-specific UUIDv5 namespaces](../core/protocol.md#ids), under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md):
+Existing preparation and activation outputs use these exact JSON names in [Protocol Identifiers And Enums's kind-specific UUIDv5 namespaces](20261021-protocol_identifiers_and_enums.md#ids), under the [accepted complete-name declaration](../decisions/20261015-identifier_owner_declarations.md):
 
 | Output | Prefix | Exact JSON name |
 | --- | --- | --- |

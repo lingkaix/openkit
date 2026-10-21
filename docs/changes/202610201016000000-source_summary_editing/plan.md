@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 ---
 # Workspace SourceSummary Editing
 
@@ -45,6 +45,8 @@ The Notebook content owner will supply the complete exact Page-plus-Source chang
 Run complete focused affected suites, compiler, lint and documentation checks. After the author stops, obtain one fresh independent read-only review. Qualify the exact pushed candidate with branch CI and the complete L0-L2 gate. The engineer reviews and lands; execution completion does not replace that decision.
 
 ## Current Review Checkpoint
+
+Workspace SourceSummary editing is implemented on main through merge `66ba7057f`. Its landing is complete. The following review and CI paragraphs preserve pre-landing evidence, including every failed run and timing limit; their pending landing requests are historical. This closeout adds no live acceptance claim.
 
 The initial Source and public history run passed all 18 cases, including cold saved-Proposal and accepted-Review reopening and replay. The complete other Knowledge and affected public Notebook/Store reload run passed 587 tests across 58 files. Compiler/build, compiled ESM import, focused lint and documentation checks passed.
 

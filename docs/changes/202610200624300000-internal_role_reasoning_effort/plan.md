@@ -20,7 +20,7 @@ Source: the coordinator corrected the earlier failure comparison and selected th
 - [Internal Agent Runtime](../../specs/20260813-internal_agent_runtime.md) owns internal-role profiles and shared execution.
 - [Knowledge Manager Runtime](../../specs/20260704-knowledge_manager_internal_agent_runtime.md) owns KM use of the selected profile.
 - [Gateway](../../specs/20260526-llm_gateway_responses_api.md#reasoning-effort-metadata-and-dispatch) and [AEP](../../specs/20260616-agent_environment_package.md) own existing Worker effort behavior.
-- [Protocol](../../core/protocol.md#canonical-enums) owns the reused effort values; no new enum or fallback owner is added.
+- [Protocol](../../specs/20261021-protocol_identifiers_and_enums.md#canonical-enums) owns the reused effort values; no new enum or fallback owner is added.
 
 The primary is the only writer. The cross-package seam is profile parsing and selection to the internal Gateway's native request, including ordinary and compaction calls. Tests must prove the selected profile reaches serialization, not merely that an isolated option is accepted. Four existing entry owners construct the Gateway provider; carry the selected profile value at each construction. The coordinator provides independent final review; no helpers are dispatched.
 

@@ -104,7 +104,7 @@ The current required core aspect set contains 22 documents. Future merge or reti
 - `core-concepts.md` — shared vocabulary and object boundaries.
 - `work-model.md` — user-facing work model.
 - `architecture.md` — stable system architecture and layer boundaries.
-- `fault-tolerance.md` — fault model, correctness properties under failure, collection before loss, proportional recovery, and guarantee limits.
+- `fault-tolerance.md` — fault model, durable execution, correctness properties under failure, collection before loss, proportional recovery, and guarantee limits.
 
 ### Execution And Communication
 
@@ -117,7 +117,7 @@ The current required core aspect set contains 22 documents. Future merge or reti
 ### Resources And Agent Supply
 
 - `generative-apps.md` — Light Apps, stable data kernels, agent-first understanding and operation, and optional generative presentation.
-- `storage.md` — file-system-first storage layout, SQLite roles, indexes, and workspace data partitioning.
+- `storage.md` — scope-owned stores, control-record authority, immutable content, retained working volumes, and rebuildable indexes.
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 - `knowledge.md` — workspace knowledge, source references, proposals, review, and context injection.
@@ -145,9 +145,9 @@ This index routes readers to the owner of each canonical term family. The owner 
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
 | App, Core, Agent layer boundary, Agent Adapter, workspace service, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
-| Fault Source, Acknowledgement Point, Collection Before Loss, Safe Point, Danger Window, End-To-End Owner, owning-scope failure and Workspace quarantine, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
+| Fault Source, Durable Execution, Acknowledgement Point, Collection Before Loss, Safe Point, Danger Window, End-To-End Owner, owning-scope failure and Workspace quarantine, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
 | Light App, Light App Catalog, Generative Kernel, Generative UI, agent-first data and presentation composition | `generative-apps.md` |
-| Agent, Runtime, turn assignment, Durable Execution, execution-substrate lifecycle | `runtime-model.md` |
+| Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
 | Client/Core communication, Core/agent communication, transport projections, communication planes, Proven Non-Receipt | `communication.md` |
 | Storage, scope-owned transactional control authority, immutable content, Workspace portability, item log persistence | `storage.md` |
