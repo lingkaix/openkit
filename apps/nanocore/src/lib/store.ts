@@ -117,6 +117,7 @@ import {
   type ControlProductEntry,
   type ControlProductMutation,
   type ControlProductOwner,
+  type ControlTerminalTransition,
   decode as decodeControlProduct,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-products.js';
@@ -167,6 +168,7 @@ import {
   publishTurnFileInputs,
   readCanonicalTextFile,
   readNativeProduct,
+  readNativeProductEntries,
   readNativeTurnEvents,
   readNativeTurnHistory,
   readWorkspaceKnowledgePage,
@@ -268,6 +270,24 @@ type TurnEventInput = Omit<
 > & {
   requestId?: string | null;
 };
+
+/** Actual products and evidence that must commit with a service or Worker Turn outcome. */
+export interface TerminalTurnPublication {
+  /** New or changed Items included in the terminal snapshot, in publication order. */
+  readonly items?: readonly Item[];
+  /** Original invocation correlation; omission preserves the existing null projection. */
+  readonly requestId?: string | null;
+  /** Observed stop cause, checked against the terminal status by the native owner. */
+  readonly stopReason?: 'completed' | 'length' | 'budget_exhausted' | 'error' | 'aborted';
+  /** Existing runtime evidence records; no record is inferred from product terminality. */
+  readonly evidence?: ControlTerminalTransition['evidence'];
+  /** Synchronized immutable content referenced by the supplied runtime evidence. */
+  readonly evidenceContent?: ControlTerminalTransition['evidenceContent'];
+  /** Applicable original scope-owned receipt and Audit; User receipts stay User-owned. */
+  readonly command?: ControlTerminalTransition['command'];
+  /** Actual admitted execution and step identities; omission creates no execution or release. */
+  readonly execution?: ControlTerminalTransition['execution'];
+}
 
 const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -4209,6 +4229,182 @@ export class FsStore {
       }
     }
     return this.getTurnById(turnId);
+  }
+
+  /**
+   * Commits the complete terminal snapshot through its immutable Workspace or Server owner.
+   *
+   * @param turnId Existing Turn identity; no missing execution or product is manufactured.
+   * @param patch Decided terminal fields with their original completion timestamp.
+   * @param publication Actual Items, evidence, receipt and execution facts joined to this outcome.
+   * @returns The authoritative Turn after FULL COMMIT; notifications remain synchronous caller work.
+   * @throws When lineage, terminal outcome or conditional native publication cannot be proved.
+   */
+  public async completeTurn(
+    turnId: string,
+    patch: Parameters<FsStore['updateTurn']>[1],
+    publication: TerminalTurnPublication = {}
+  ): Promise<Turn> {
+    const owner = this.dataRoot
+      ? this.findNativeOwner('turn', turnId)?.owner
+      : this.serverTurns.has(turnId)
+        ? { kind: 'server' as const }
+        : this.turns.get(turnId)?.owner;
+    if (!owner) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+    const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
+    const history = scope ? readNativeTurnHistory(scope, turnId) : undefined;
+    const before =
+      history?.turn ??
+      (owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId));
+    const completedAt = patch.completedAt ?? before.completedAt;
+    const items = new Map(before.items.map((item) => [item.id, item]));
+    for (const input of publication.items ?? []) {
+      const item = ItemSchema.parse(input);
+      if (
+        !isDeepStrictEqual(item.owner, owner) ||
+        item.threadId !== before.threadId ||
+        item.turnId !== turnId
+      )
+        throw new Error('Terminal Item requires its exact Turn owner.');
+      const previous = items.get(item.id);
+      if (previous) assertImmutableItemAttribution(previous, item);
+      items.set(item.id, item);
+    }
+    const turn = TurnSchema.parse({
+      ...before,
+      ...patch,
+      completedAt,
+      durationMs:
+        completedAt && before.startedAt
+          ? Math.max(0, new Date(completedAt).getTime() - new Date(before.startedAt).getTime())
+          : (patch.durationMs ?? before.durationMs),
+      items: [...items.values()],
+    });
+    if (!isSealedTurnTerminal(turn.status) || !turn.completedAt)
+      throw new Error('Terminal publication requires a decided outcome and completion timestamp.');
+    const events =
+      owner.kind === 'server'
+        ? this.getServerTurnTranscript(turnId)
+        : this.getTurnEventsForExport(turnId);
+    const prior = events.find((event) => event.data.type === 'turn-completed');
+    const stopReason =
+      publication.stopReason ??
+      (turn.status === 'completed' ? 'completed' : turn.status === 'failed' ? 'error' : 'aborted');
+    const event =
+      prior ??
+      (owner.kind === 'server' ? ServerTurnEventEnvelopeSchema : SseEventEnvelopeSchema).parse({
+        protocolVersion: PROTOCOL_VERSION,
+        ...(owner.kind === 'server' ? { owner } : { workspaceId: owner.workspaceId }),
+        threadId: turn.threadId,
+        turnId,
+        requestId:
+          owner.kind === 'server'
+            ? (publication.requestId ?? null)
+            : projectTurnEventRequestId(publication.requestId, owner.workspaceId, turn.threadId),
+        timestamp: turn.completedAt,
+        sequence: (events.at(-1)?.sequence ?? 0) + 1,
+        event: 'turn.completed',
+        data: { type: 'turn-completed', stopReason, turn },
+      });
+    if (
+      prior &&
+      (prior.data.type !== 'turn-completed' ||
+        prior.data.stopReason !== stopReason ||
+        !alreadyDecidedPublicationBytesEqual(prior.data.turn, turn))
+    )
+      throw terminalTurnPublicationConflict(turnId);
+    if (scope) {
+      const entries: ControlProductEntry[] = [];
+      const revisions = readNativeProductEntries(scope, turnId, 'item');
+      for (const item of publication.items ?? []) {
+        const existing = before.items.find((candidate) => candidate.id === item.id);
+        if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) continue;
+        const previous = revisions.filter((row) => row.id === item.id).at(-1);
+        const content = await publishImmutableProductJson(
+          scope.contentMount,
+          owner,
+          join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+          writeRetainedV1(item)
+        );
+        entries.push({
+          kind: 'item',
+          turnId,
+          sequence: revisions.length + entries.length + 1,
+          expectedRevision: previous?.revision ?? 0,
+          content,
+        });
+      }
+      let content: ControlProductEntry['content'];
+      if (prior) {
+        // A decoded view can reorder JSON keys. Replay retains the original immutable descriptor.
+        const reader = openControlStoreProductReadHandle(scope.path, owner);
+        try {
+          const entry = reader.entries(turnId, 'event', prior.sequence - 1, 1)[0];
+          if (!entry || entry.sequence !== prior.sequence)
+            throw terminalTurnPublicationConflict(turnId);
+          content = entry.content;
+        } finally {
+          reader.close();
+        }
+      } else {
+        content = await publishImmutableProductJson(
+          scope.contentMount,
+          owner,
+          join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+          writeRetainedV1(event)
+        );
+      }
+      entries.push({
+        kind: 'event',
+        turnId,
+        sequence: event.sequence,
+        expectedRevision: 0,
+        content,
+      });
+      const client = getControlStoreWorkerClient();
+      const database = `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot!,
+        create: false,
+        initialize: owner.kind === 'server' ? 'core' : 'workspace',
+        productOwner: owner,
+        contentMount: scope.contentMount,
+      });
+      await client.terminal(database, {
+        owner,
+        turn: {
+          kind: 'turn',
+          expectedRevision: history!.revision,
+          record: writeRetainedV1({ ...history!.metadata, ...turn, items: [] }),
+        },
+        products: [],
+        entries,
+        reap: { reason: turn.status, inferredBy: 'native-terminal-publication' },
+        evidence: publication.evidence ?? [],
+        evidenceContent: publication.evidenceContent ?? [],
+        command: publication.command ?? null,
+        execution: publication.execution ?? null,
+      });
+    } else {
+      for (const item of publication.items ?? []) {
+        if (owner.kind === 'server') await this.createServerItem(item);
+        else if (this.items.has(item.id)) await this.updateItem(item.id, item);
+        else await this.createItem(item);
+      }
+      if (owner.kind === 'server') await this.updateServerTurn(turnId, patch);
+      else await this.updateTurn(turnId, patch);
+      if (!prior) {
+        const stream =
+          owner.kind === 'server' ? this.serverTurnStream(turnId) : this.turnStream(turnId);
+        stream.sequence = event.sequence;
+        stream.events.push(event as never);
+        if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) stream.events.shift();
+      }
+    }
+    this.acknowledgedTurnEvents.set(event, structuredClone(event));
+    return owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId);
   }
 
   /**

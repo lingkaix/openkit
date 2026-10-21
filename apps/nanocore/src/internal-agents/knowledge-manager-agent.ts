@@ -73,6 +73,8 @@ export interface KnowledgeManagerAgentRun {
   readonly resultSchema: JsonSchema;
   /** Returns safe repair guidance for a missing prerequisite; throws for other admission failures. */
   readonly validateResult: (text: string) => undefined | string;
+  /** Prepares the domain's original result Items before the shared role seals its Turn. */
+  readonly terminalItems?: (patch: Parameters<FsStore['updateTurn']>[1]) => readonly Item[];
 }
 
 /** Server runs use the same bounded role loop and the existing Core evidence owner. */
@@ -97,8 +99,11 @@ function runTurn(store: FsStore, input: Pick<AnyKnowledgeManagerAgentRun, 'turn'
 async function updateRunTurn(
   store: FsStore,
   turn: Turn,
-  patch: Parameters<FsStore['updateTurn']>[1]
+  patch: Parameters<FsStore['updateTurn']>[1],
+  items?: readonly Item[]
 ) {
+  if (patch.status && isSealedTurnTerminal(patch.status))
+    return await store.completeTurn(turn.id, patch, items ? { items } : {});
   return turn.owner.kind === 'server'
     ? await store.updateServerTurn(turn.id, patch)
     : await store.updateTurn(turn.id, patch);
@@ -409,7 +414,7 @@ async function executeKnowledgeManagerAgent(
           signal,
         };
         let exit = await runInternalAgentLoop(loopInput, resultProvider);
-        commitMessages(exit.messages);
+        await commitMessages(exit.messages);
         if (resultText === undefined && exit.kind === 'quiescent' && !repairUsed) {
           repairUsed = true;
           if (usedToolCalls >= limits.maxToolCalls)
@@ -436,7 +441,7 @@ async function executeKnowledgeManagerAgent(
             },
             resultProvider
           );
-          commitMessages(exit.messages);
+          await commitMessages(exit.messages);
         }
         signal.throwIfAborted();
         input.assertCurrent();
@@ -445,10 +450,11 @@ async function executeKnowledgeManagerAgent(
         return resultText;
       }
     );
-    await updateRunTurn(store, turn, {
+    const terminal = {
       status: 'completed',
       completedAt: new Date().toISOString(),
-    });
+    } as const;
+    await updateRunTurn(store, turn, terminal, input.terminalItems?.(terminal));
     return { turnId: turn.id, text: result };
   } catch (error) {
     // Only this role's deadline is a KM timeout; caller cancellation keeps its original cause.
@@ -459,8 +465,8 @@ async function executeKnowledgeManagerAgent(
             message: 'knowledge_manager_timeout: Knowledge Manager reached its run deadline.',
           }
         : undefined;
-    if (!isSealedTurnTerminal(runTurn(store, input).status))
-      await updateRunTurn(store, turn, {
+    if (!isSealedTurnTerminal(runTurn(store, input).status)) {
+      const terminal = {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
         error: timeout ??
@@ -469,13 +475,15 @@ async function executeKnowledgeManagerAgent(
             message:
               'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
           },
-      });
+      } as const;
+      await updateRunTurn(store, turn, terminal, input.terminalItems?.(terminal));
+    }
     throw timeout ? Object.assign(new Error(timeout.message), { code: timeout.code }) : error;
   }
 }
 
 /**
- * Commits accepted loop messages once through ordinary Items, including each completed Tool pair.
+ * Awaits acknowledged ordinary Items for accepted loop messages, including each completed Tool pair.
  *
  * Model call IDs correlate retained calls but select no effect. The full ordered source inventory is returned for compaction; summaries are never copied into that inventory.
  */
@@ -484,13 +492,13 @@ export function createKnowledgeManagerTranscript(
   store: FsStore,
   turn: Turn,
   actor: ActorRef
-): (messages: readonly AgentMessage[]) => readonly Item[] {
+): (messages: readonly AgentMessage[]) => Promise<readonly Item[]> {
   const committed = new Map<string, Item>();
-  const create = (value: unknown): Item =>
+  const create = (value: unknown): Promise<Item> =>
     turn.owner.kind === 'server'
       ? store.createServerItem(ItemSchema.parse(value))
       : store.createItem(ItemSchema.parse(value));
-  return (messages) => {
+  return async (messages) => {
     const items: Item[] = [];
     for (const [index, message] of messages.entries()) {
       if (message.role === 'tool') continue;
@@ -513,7 +521,7 @@ export function createKnowledgeManagerTranscript(
           };
           committed.set(
             key,
-            create(
+            await create(
               message.role === 'user'
                 ? { ...base, type: 'user-message', actor }
                 : { ...base, type: 'assistant-message' }
@@ -535,7 +543,7 @@ export function createKnowledgeManagerTranscript(
           const timestamp = new Date().toISOString();
           committed.set(
             key,
-            create({
+            await create({
               id: allocateEntityId('it'),
               owner: turn.owner,
               threadId: turn.threadId,

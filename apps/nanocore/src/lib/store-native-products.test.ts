@@ -16,7 +16,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   nativeProductScope,
@@ -81,6 +81,69 @@ function message(
 }
 
 describe('native Store authority and immutable closure', () => {
+  it('publishes a service terminal tuple only after commit and retries a real SQL rollback', async () => {
+    const f = await workspaceFixture();
+    const item = message(f.turn, 'Terminal result');
+    const completedAt = f.turn.startedAt!;
+    const observed: number[] = [];
+    f.store.addTurnListener(f.turn.id, (event) => observed.push(event.sequence));
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    try {
+      db.sqlite.exec(`CREATE TRIGGER terminal_store_abort BEFORE UPDATE ON control_turns
+        WHEN NEW.status='completed' BEGIN SELECT RAISE(ABORT,'terminal_store_abort'); END`);
+      await expect(
+        f.store.completeTurn(f.turn.id, { status: 'completed', completedAt }, { items: [item] })
+      ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+      expect(f.store.getTurnById(f.turn.id)).toMatchObject({ status: 'running', items: [] });
+      expect(f.store.getTurnEventsForExport(f.turn.id)).toEqual([]);
+      expect(observed).toEqual([]);
+      db.sqlite.exec('DROP TRIGGER terminal_store_abort');
+      const turn = await f.store.completeTurn(
+        f.turn.id,
+        { status: 'completed', completedAt },
+        { items: [item] }
+      );
+      expect(turn).toMatchObject({ status: 'completed', items: [item] });
+      expect(observed).toEqual([]);
+      const event = f.store.getTurnEventsForExport(f.turn.id).at(-1)!;
+      expect(event).toMatchObject({ event: 'turn.completed', data: { turn } });
+      f.store.emitTurnEvent(f.turn.id, await f.store.persistTurnEvent(f.turn.id, event));
+      expect(observed).toEqual([1]);
+      await expect(
+        f.store.completeTurn(f.turn.id, { status: 'completed', completedAt }, { items: [item] })
+      ).resolves.toEqual(turn);
+      expect(f.store.getTurnEventsForExport(f.turn.id)).toEqual([event]);
+      await shutdownControlStoreWorkerClient();
+      expect(new FsStore({ dataRoot: f.root }).getTurnById(f.turn.id)).toEqual(turn);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('finishes a Server service Turn through its original native owner', async () => {
+    const f = fixture();
+    const thread = await f.store.createServerThread('Server terminal');
+    const turn = await f.store.createServerTurn(thread.id, 'Server input', actor);
+    const item = message(turn, 'Server failure');
+    const result = await f.store.completeTurn(
+      turn.id,
+      {
+        status: 'failed',
+        completedAt: turn.startedAt!,
+        error: { code: 'service_failed', message: 'Failed.' },
+      },
+      { items: [item] }
+    );
+    expect(result).toMatchObject({ status: 'failed', items: [item] });
+    const events = f.store.getServerTurnTranscript(turn.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event: 'turn.completed',
+      data: { stopReason: 'error', turn: result },
+    });
+    expect(new FsStore({ dataRoot: f.root }).getServerTurnById(turn.id)).toEqual(result);
+  });
+
   it('rereads SQL and every immutable revision after reopen, without mutable product files', async () => {
     const f = await workspaceFixture();
     const first = message(f.turn, 'First');

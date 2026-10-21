@@ -8,13 +8,23 @@ import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { commandRequestKey, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  type RuntimeConfigManager,
+} from '../config/runtime-config.js';
+import { runKnowledgeManagerAgent } from '../internal-agents/knowledge-manager-agent.js';
+import { commandRequestKey, FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import type { ControlMaintenanceAdmissionInput } from './knowledge-agent-maintenance.js';
 import { NotebookError } from './notebook.js';
+import { runUserMemoryMaintenanceCommand } from './user-memory-agent-maintenance.js';
 
 const timestamp = '2026-10-20T12:00:00.000Z';
 const userId = allocateEntityId('usr');
@@ -312,6 +322,85 @@ describe('native Knowledge maintenance admission', () => {
     expect(await f.sql('SELECT request_key FROM idempotency_requests')).toEqual([]);
     expect(await f.sql('SELECT count(*) AS count FROM control_turns')).toEqual([{ count: 1 }]);
   }, 30_000);
+
+  it('commits a User failure result with the real role terminal and replays it after cold reopen', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'memory-terminal-result-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const userDb = openUserDb(root, userId);
+    applyScopedMigrations(userDb);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    const store = new FsStore({ dataRoot: root });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: root });
+    let runs = 0;
+    const dependencies = {
+      coreDb,
+      userDb,
+      store,
+      runtimeConfigManager: {
+        current: () => ({
+          userConfigs: [
+            {
+              userId,
+              config: {
+                knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
+              },
+            },
+          ],
+        }),
+      } as unknown as RuntimeConfigManager,
+      openWorkspace: (id: string) => openWorkspaceDb(root, id),
+      inflightCommands: new WeakMap(),
+      pin: async () => {},
+      run: (input: Parameters<typeof runKnowledgeManagerAgent>[1]) => {
+        runs += 1;
+        return runKnowledgeManagerAgent(
+          {
+            store,
+            runtimeConfig: () => snapshot,
+            dispatcher: {
+              createResponses: async () => {
+                throw new Error('No Provider is admitted.');
+              },
+            },
+            resolveGatewayProvider: () => {
+              throw new Error('No Provider is admitted.');
+            },
+          },
+          input
+        );
+      },
+    };
+    const input = {
+      requestId: randomUUID(),
+      requestActor: { kind: 'local' as const, userId },
+      trigger: 'request' as const,
+      instructions: 'Inspect the current notebook.',
+      sources: [],
+      signal: new AbortController().signal,
+    };
+    const first = await runUserMemoryMaintenanceCommand(dependencies, input);
+    expect(first.outcome).toBe('failed');
+    const turn = store.getTurnById(first.turnId);
+    expect(turn).toMatchObject({ status: 'failed', error: { code: 'knowledge_manager_failed' } });
+    expect(turn.items.filter((item) => item.type === 'status')).toMatchObject([
+      { knowledgeMaintenanceResult: first },
+    ]);
+    const receipt = userDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+    await shutdownControlStoreWorkerClient();
+    const reopened = new FsStore({ dataRoot: root });
+    await expect(
+      runUserMemoryMaintenanceCommand({ ...dependencies, store: reopened }, input)
+    ).resolves.toEqual(first);
+    expect(runs).toBe(1);
+    expect(userDb.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(receipt);
+  });
 
   it('creates fresh private query identities and deduplicates scheduled days inside SQL', async () => {
     const f = fixture();

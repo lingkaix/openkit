@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  type Item,
+  isSealedTurnTerminal,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -71,7 +76,7 @@ export interface UserMemoryMaintenanceDependencies {
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void;
+  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void | Promise<void>;
   readonly run: (
     input: KnowledgeManagerAgentRun
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
@@ -287,10 +292,10 @@ export async function prepareUserMemoryMaintenance(
       closed = true;
     }
   };
-  const record = async (result: ReturnType<typeof response>) => {
-    if (recorded) return;
+  /** Prepares the User-owned result before either this domain or the shared role seals the Turn. */
+  const resultItem = (result: ReturnType<typeof response>): Item => {
     const now = new Date().toISOString();
-    await store.createItem({
+    return {
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId: thread.id,
@@ -303,7 +308,19 @@ export async function prepareUserMemoryMaintenance(
       status: result.outcome === 'failed' ? 'failed' : 'completed',
       createdAt: now,
       completedAt: now,
-    });
+    };
+  };
+  const record = async (
+    result: ReturnType<typeof response>,
+    terminal?: Parameters<FsStore['updateTurn']>[1]
+  ) => {
+    if (recorded) {
+      if (terminal) await store.completeTurn(turn.id, terminal);
+      return;
+    }
+    const item = resultItem(result);
+    if (terminal) await store.completeTurn(turn.id, terminal, { items: [item] });
+    else await store.createItem(item);
     recorded = true;
   };
   const fail = async () => {
@@ -316,8 +333,7 @@ export async function prepareUserMemoryMaintenance(
           current.error?.message ?? 'Memory maintenance failed. Inspect its retained Turn.'
         );
       if (!isSealedTurnTerminal(current.status)) {
-        await record(result);
-        await store.updateTurn(turn.id, {
+        await record(result, {
           status: input.signal.aborted ? 'cancelled' : 'failed',
           completedAt: new Date().toISOString(),
           error: { code: 'knowledge_maintenance_failed', message: result.summary },
@@ -338,14 +354,13 @@ export async function prepareUserMemoryMaintenance(
   try {
     if (admitted.busy) {
       const result = response('skipped', 'Another User Memory maintenance Turn is still active.');
-      await record(result);
+      await record(result, {});
       close();
       return { turnId: turn.id, execute: async () => result, fail };
     }
     if (input.trigger === 'schedule' && !settings().enabled) {
       const result = response('skipped', 'Daily User Memory maintenance is disabled.');
-      await record(result);
-      await store.updateTurn(turn.id, {
+      await record(result, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -625,7 +640,7 @@ export async function prepareUserMemoryMaintenance(
                       throw error;
                   }
                 }
-                const proposal = createUserMemoryProposal(
+                const proposal = await createUserMemoryProposal(
                   {
                     ...context,
                     store,
@@ -766,6 +781,19 @@ export async function prepareUserMemoryMaintenance(
           const makeRun = (): KnowledgeManagerAgentRun => ({
             turn,
             workspaceDb,
+            terminalItems: (patch) =>
+              recorded
+                ? []
+                : [
+                    resultItem(
+                      outcome ??
+                        response(
+                          'failed',
+                          patch.error?.message ??
+                            'Memory maintenance failed. Inspect its retained Turn.'
+                        )
+                    ),
+                  ],
             signal: input.signal,
             inputs: {
               purpose: 'maintenance',
@@ -845,7 +873,7 @@ export async function prepareUserMemoryMaintenance(
           }
           editor = createEditor();
           const run = makeRun();
-          dependencies.pin(run);
+          await dependencies.pin(run);
           await dependencies.run(run);
           if (!outcome) throw new NotebookError('invalid_request');
           await record(outcome);

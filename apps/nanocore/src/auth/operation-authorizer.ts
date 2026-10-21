@@ -790,7 +790,7 @@ async function resolveWorkspaceId(
     switch (route.access.resolver) {
       case 'actor-quick-chat-workspace':
         if (isUsablePresentedServerAdminToken(input.coreDb, actor)) {
-          ensureUserQuickChatWorkspace({
+          await ensureUserQuickChatWorkspace({
             coreDb: input.coreDb,
             store: input.store,
             userId: actor.userId,

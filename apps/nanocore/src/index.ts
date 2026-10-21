@@ -590,8 +590,8 @@ reconcileWorkerMcpItems(coreDb.dataRoot, store);
  *
  * @param userId Active canonical user starting the session.
  */
-function onActiveUserSession(userId: string): void {
-  ensureUserQuickChatWorkspace({ coreDb: activeCoreDb, store, userId });
+async function onActiveUserSession(userId: string): Promise<void> {
+  await ensureUserQuickChatWorkspace({ coreDb: activeCoreDb, store, userId });
 }
 
 const auth =
@@ -605,7 +605,7 @@ const auth =
 
 readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
-let prepareKnowledgeMaintenance: ((instant: string) => void) | undefined;
+let prepareKnowledgeMaintenance: ((instant: string) => Promise<void>) | undefined;
 const app = createApp({
   onKnowledgeMaintenanceReady: (prepare) => {
     prepareKnowledgeMaintenance = prepare;
@@ -743,9 +743,7 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   },
 });
 recurringSchedules = startRecurringScheduleService({
-  prepareKnowledgeMaintenance: (instant) => {
-    prepareKnowledgeMaintenance?.(instant);
-  },
+  prepareKnowledgeMaintenance: (instant) => prepareKnowledgeMaintenance?.(instant),
   schedules: automationStore,
   store,
   prepare: (occurrence) =>

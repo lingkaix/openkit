@@ -12,7 +12,7 @@ import {
   resolveProviderSubscriptionFamily,
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
-import type { ActorRef, TurnSchema } from '@openkit/protocol';
+import type { ActorRef, Item, TurnSchema } from '@openkit/protocol';
 import {
   allocateEntityId,
   isEntityId,
@@ -445,7 +445,7 @@ export interface CreateAppOptions {
   /** Optional private Discord send boundary; deterministic tests supply a fake. */
   discordAttentionTransport?: DiscordAttentionTransport;
   /** Boot joins this finite preparation callback to the existing recurring scanner. */
-  onKnowledgeMaintenanceReady?: (scan: (instant: string) => void) => void;
+  onKnowledgeMaintenanceReady?: (scan: (instant: string) => Promise<void>) => void;
   /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
   localUserId?: string;
   mode?: CoreMode;
@@ -1539,8 +1539,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           coreDb: options.coreDb,
           runtimeConfigManager,
           inflightCommands,
-          pin: (run) => {
-            pinKnowledgeManagerExecution(knowledgeDependencies, run);
+          pin: async (run) => {
+            await pinKnowledgeManagerExecution(knowledgeDependencies, run);
           },
           run: (run) => runServerKnowledgeManagerAgent(knowledgeDependencies, run),
         }
@@ -1549,11 +1549,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     userDb: import('./storage/db.js').UserDb
   ): UserMemoryMaintenanceDependencies => {
     if (!options.coreDb) throw new Error('Memory storage is unavailable.');
-    ensureUserQuickChatWorkspace({
-      coreDb: options.coreDb,
-      store: sharedStore,
-      userId: userDb.userId,
-    });
     return {
       store: sharedStore,
       coreDb: options.coreDb,
@@ -1561,8 +1556,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       runtimeConfigManager,
       openWorkspace: repositoryWorkspaceDb,
       inflightCommands,
-      pin: (run) => {
-        pinKnowledgeManagerExecution(knowledgeDependencies, run);
+      pin: async (run) => {
+        await pinKnowledgeManagerExecution(knowledgeDependencies, run);
       },
       run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
     };
@@ -1581,8 +1576,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           workspaceMutationAdmission,
           openWorkspace: repositoryWorkspaceDb,
           inflightCommands,
-          pin: (run) => {
-            pinKnowledgeManagerExecution(knowledgeDependencies, run);
+          pin: async (run) => {
+            await pinKnowledgeManagerExecution(knowledgeDependencies, run);
           },
           run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
         },
@@ -1590,10 +1585,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       );
     },
   };
-  options.onKnowledgeMaintenanceReady?.((instant) => {
+  options.onKnowledgeMaintenanceReady?.(async (instant) => {
     const coreDb = options.coreDb;
     if (!coreDb) return;
-    scanUserMemoryMaintenance({
+    await scanUserMemoryMaintenance({
       now: instant,
       store: sharedStore,
       coreDb,
@@ -1601,7 +1596,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(localUserId ? { localUserId } : {}),
       dependencies: userMemoryDependencies,
     });
-    scanDailyKnowledgeMaintenance({
+    await scanDailyKnowledgeMaintenance({
       now: instant,
       scopes: runtimeConfig().workspaceConfigs.map(({ workspaceId, config }) => ({
         ownerScope: { kind: 'workspace' as const, workspaceId },
@@ -1662,8 +1657,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               workspaceMutationAdmission,
               openWorkspace: repositoryWorkspaceDb,
               inflightCommands,
-              pin: (run) => {
-                pinKnowledgeManagerExecution(knowledgeDependencies, run);
+              pin: async (run) => {
+                await pinKnowledgeManagerExecution(knowledgeDependencies, run);
               },
               run: (run) => runKnowledgeManagerAgent(knowledgeDependencies, run),
             },
@@ -1753,7 +1748,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               },
             }
           );
-          await sharedStore.createItem({
+          const resultItem: Item = {
             id: allocateEntityId('it'),
             owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId: thread.id,
@@ -1766,22 +1761,26 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               'Scope, notebook or model admission was unavailable. Start a new explicit run after inspection.',
             createdAt: completedAt,
             completedAt,
-          });
-          await sharedStore.updateTurn(turn.id, {
-            status: 'failed',
-            completedAt,
-            error: {
-              code: 'knowledge_maintenance_unavailable',
-              message: 'Scheduled maintenance could not be admitted.',
+          };
+          await sharedStore.completeTurn(
+            turn.id,
+            {
+              status: 'failed',
+              completedAt,
+              error: {
+                code: 'knowledge_maintenance_unavailable',
+                message: 'Scheduled maintenance could not be admitted.',
+              },
             },
-          });
+            { items: [resultItem] }
+          );
           return null;
         }
       },
       onError: () => console.warn('Knowledge maintenance requires inspection.'),
     });
     if (serverKnowledgeMaintenance)
-      scanDailyKnowledgeMaintenance({
+      await scanDailyKnowledgeMaintenance({
         now: instant,
         scopes: [
           {

@@ -465,7 +465,7 @@ export interface KnowledgeMaintenanceDependencies {
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void;
+  readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void | Promise<void>;
   readonly run: (
     input: KnowledgeManagerAgentRun
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
@@ -1341,7 +1341,7 @@ export async function prepareKnowledgeMaintenance(
             history.assertCurrent();
           },
         };
-        dependencies.pin(runInput);
+        await dependencies.pin(runInput);
         await dependencies.run(runInput);
         await recordOutcome();
         if (!outcome) throw new NotebookError('invalid_request');

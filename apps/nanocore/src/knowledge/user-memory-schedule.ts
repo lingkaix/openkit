@@ -1,4 +1,4 @@
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, type Item } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { isCanonicalUserOperationAuthorized } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -138,7 +138,7 @@ export async function scanUserMemoryMaintenance(input: {
         const thread = store.getThread(workspaceId, admitted.threadId);
         const turn = store.getTurnById(admitted.turnId);
         const completedAt = new Date().toISOString();
-        await store.createItem({
+        const item: Item = {
           id: allocateEntityId('it'),
           owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId: thread.id,
@@ -152,16 +152,21 @@ export async function scanUserMemoryMaintenance(input: {
             : 'Current User authority, notebook or model admission is unavailable. Inspect the failure and request a new run.',
           createdAt: completedAt,
           completedAt,
-        });
-        if (!admitted.busy)
-          await store.updateTurn(turn.id, {
-            status: 'failed',
-            completedAt,
-            error: {
-              code: 'memory_maintenance_unavailable',
-              message: 'Scheduled Memory maintenance could not be admitted.',
-            },
-          });
+        };
+        await store.completeTurn(
+          turn.id,
+          admitted.busy
+            ? {}
+            : {
+                status: 'failed',
+                completedAt,
+                error: {
+                  code: 'memory_maintenance_unavailable',
+                  message: 'Scheduled Memory maintenance could not be admitted.',
+                },
+              },
+          { items: [item] }
+        );
         return null;
       }
     },
