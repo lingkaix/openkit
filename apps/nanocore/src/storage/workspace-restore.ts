@@ -7,7 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import {
@@ -265,7 +265,8 @@ export async function admitWorkspaceBackup(
         .get(workspaceId)
     )
       refuseRecovery('identity-collision');
-    const container = join(input.dataRoot, 'server/files/workspace-recovery', input.requestId);
+    // Unpublished databases stay outside the boot layout, owned by this root-locked admission.
+    const container = `${resolve(input.dataRoot)}.workspace-recovery-${input.requestId}`;
     const candidate = join(container, 'workspaces', workspaceId);
     mkdirSync(dirname(candidate), { recursive: true, mode: 0o700 });
     const staged = await stageWorkspaceBackup({
