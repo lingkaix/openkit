@@ -320,7 +320,8 @@ export async function prepareServerKnowledgeMaintenance(
   };
   if (busy) {
     const value = await retain(
-      result('skipped', 'Another Server Knowledge maintenance Turn is active.')
+      result('skipped', 'Another Server Knowledge maintenance Turn is active.'),
+      {}
     );
     return { turnId: turn.id, fail, execute: async () => value };
   }

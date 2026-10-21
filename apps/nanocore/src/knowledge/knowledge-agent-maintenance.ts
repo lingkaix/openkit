@@ -384,6 +384,7 @@ export function applyControlMaintenanceAdmission(
     const skipped = products.pop()!;
     const record = {
       ...skipped.record,
+      items: [],
       status: 'completed',
       completedAt: input.startedAt,
       durationMs: 0,
