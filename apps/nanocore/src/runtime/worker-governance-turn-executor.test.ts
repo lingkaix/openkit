@@ -54,7 +54,7 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
@@ -11937,6 +11937,10 @@ type NativePreSubmissionFault =
  * NanoHost responses are modeled. Each fault mutates the exact retained fact its consumer reads.
  */
 async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): Promise<void> {
+  let testFinished = false;
+  onTestFinished(() => {
+    testFinished = true;
+  });
   const fixture = await createWorkerContextExecutorFixture(`native-${fault}`);
   const { coreDb, store, turn, agentSessionId } = fixture;
   const attemptId = testEntityId('attempt', `lease_${turn.id}`);
@@ -12171,7 +12175,9 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
       done = true;
     });
   try {
-    for (let tick = 0; tick < 1000 && !done; tick += 1) {
+    // Native completion owns the drain; Vitest keeps the original 30-second test bound.
+    // A poll count can expire during an in-flight native commit and does not measure that bound.
+    while (!done && !testFinished) {
       const integrations = coreDb.sqlite
         .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
         .all() as { ref: string }[];
@@ -12231,7 +12237,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
         });
         runtime.acceptNanoHostHarnessResult(result);
       }
-      if (!done) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      if (!done) await Promise.race([running, delay(1)]);
     }
     expect(
       done,
