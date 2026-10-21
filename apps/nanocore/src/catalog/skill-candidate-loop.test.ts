@@ -285,15 +285,15 @@ describe('synthetic Skill Artifact/catalog component', () => {
     });
     const candidateTree = packageTree(join(fixtureRoot, 'workshop'));
     let selectedScript: string | null = null;
-    const artifacts: ReturnType<FsStore['createArtifact']>[] = [];
+    const artifacts: Awaited<ReturnType<FsStore['createArtifact']>>[] = [];
     const createArtifact = store.createArtifact.bind(store);
     // The existing simulator owns admission/closeout. Only its Worker output is fake-backed here.
-    vi.spyOn(store, 'createArtifact').mockImplementation((input) => {
+    vi.spyOn(store, 'createArtifact').mockImplementation(async (input) => {
       if (input.origin.kind !== 'turn-output') return createArtifact(input);
       const body = JSON.stringify(
         selectedScript === null ? candidateTree : runProposal(selectedScript, request)
       );
-      const artifact = createArtifact({
+      const artifact = await createArtifact({
         ...input,
         kind: 'file',
         title: 'SYNTHETIC Skill candidate output',

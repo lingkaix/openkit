@@ -115,26 +115,26 @@ describe('retained Artifact Skill candidate input', () => {
   });
 });
 
-function workSource(
-  state: ReturnType<typeof fixture>,
+async function workSource(
+  state: Awaited<ReturnType<typeof fixture>>,
   privateOwnerUserId?: string,
   agentId?: string
 ) {
   const workspaceId = state.selection.workspaceId;
-  const thread = state.store.createThread(
+  const thread = await state.store.createThread(
     workspaceId,
     'Producing work',
     undefined,
     'conversation',
     privateOwnerUserId ? { visibility: 'private', privateOwnerUserId } : { visibility: 'workspace' }
   );
-  const turn = state.store.createTurn(workspaceId, thread.id, 'Prepare Skill', {
+  const turn = await state.store.createTurn(workspaceId, thread.id, 'Prepare Skill', {
     kind: 'user',
     id: state.actor.userId,
   });
-  if (agentId) state.store.updateTurn(turn.id, { agentId });
+  if (agentId) await state.store.updateTurn(turn.id, { agentId });
   const original = state.store.getArtifact(workspaceId, state.selection.artifactId);
-  const artifact = state.store.createArtifact({
+  const artifact = await state.store.createArtifact({
     ...original,
     id: allocateEntityId('ar'),
     threadId: thread.id,
@@ -161,7 +161,7 @@ function refuses(
 
 describe('Skill Artifact source admission', () => {
   it('retains producing Worker lineage separately from the submitting user', async () => {
-    const state = workSource(await fixture(), undefined, 'ag_producing_worker');
+    const state = await workSource(await fixture(), undefined, 'ag_producing_worker');
     const reopened = new FsStore({ dataRoot: state.dataRoot });
     const result = readSkillCandidateArtifact({ ...state, store: reopened });
     expect(result).toMatchObject({
@@ -178,8 +178,8 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('retains exact v1 and v2 trees and their distinct producers after a head advance', async () => {
-    const state = workSource(await fixture(), undefined, 'ag_original_worker');
-    state.store.updateTurn(state.turn.id, {
+    const state = await workSource(await fixture(), undefined, 'ag_original_worker');
+    await state.store.updateTurn(state.turn.id, {
       status: 'completed',
       completedAt: '2026-10-16T00:01:00Z',
     });
@@ -187,7 +187,7 @@ describe('Skill Artifact source admission', () => {
       { ...tree[0], contentBase64: Buffer.from('Human correction.\n').toString('base64') },
     ];
     const revisedBody = JSON.stringify(revisedTree);
-    const second = state.store.commitArtifactVersion({
+    const second = await state.store.commitArtifactVersion({
       workspaceId: state.selection.workspaceId,
       artifactId: state.selection.artifactId,
       threadId: state.thread.id,
@@ -199,7 +199,7 @@ describe('Skill Artifact source admission', () => {
       requestId: 'correct-candidate',
       recordedAt: '2026-10-16T00:02:00Z',
     });
-    state.store.commitArtifactVersion({
+    await state.store.commitArtifactVersion({
       workspaceId: state.selection.workspaceId,
       artifactId: state.selection.artifactId,
       threadId: state.thread.id,
@@ -268,7 +268,7 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('reads exact file-backed Worker JSON as a native Skill candidate without changing the original', async () => {
-    const state = workSource(await fixture(), undefined, 'ag_producing_worker');
+    const state = await workSource(await fixture(), undefined, 'ag_producing_worker');
     const original = state.store.getArtifact(
       state.selection.workspaceId,
       state.selection.artifactId
@@ -291,7 +291,7 @@ describe('Skill Artifact source admission', () => {
     });
     let artifact: typeof original;
     try {
-      artifact = state.store.createArtifact(
+      artifact = await state.store.createArtifact(
         {
           ...original,
           id: allocateEntityId('ar'),
@@ -332,7 +332,7 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('reports unproven Worker identity as unavailable instead of using the submitter', async () => {
-    const state = workSource(await fixture());
+    const state = await workSource(await fixture());
     expect(readSkillCandidateArtifact(state)).toMatchObject({
       producer: null,
       producingTurn: { agentId: null },
@@ -356,14 +356,14 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('does not disclose another private Thread even to a Workspace owner', async () => {
-    const state = workSource(await fixture(), allocateEntityId('usr'), 'ag_private');
+    const state = await workSource(await fixture(), allocateEntityId('usr'), 'ag_private');
     refuses(state, 'source_unavailable');
   });
 
   it('admits the current private Thread owner', async () => {
     const state = await fixture();
     expect(
-      readSkillCandidateArtifact(workSource(state, state.actor.userId, 'ag_private')).tree
+      readSkillCandidateArtifact(await workSource(state, state.actor.userId, 'ag_private')).tree
     ).toEqual(tree);
   });
 
@@ -494,7 +494,7 @@ describe('Skill Artifact source admission', () => {
     'draft',
     'archived',
   ] as const)('admits an explicitly selected readable %s source without activation', async (status) => {
-    const state = workSource(await fixture());
+    const state = await workSource(await fixture());
     state.store.getArtifact(state.selection.workspaceId, state.selection.artifactId).status =
       status;
     expect(readSkillCandidateArtifact(state).tree).toEqual(tree);

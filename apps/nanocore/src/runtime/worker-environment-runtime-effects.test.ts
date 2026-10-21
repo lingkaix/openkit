@@ -6,6 +6,7 @@ import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
@@ -74,20 +75,25 @@ describe('Worker environment runtime effects', () => {
   it('binds prepare and restart settlement to the immutable authored candidate', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-image-effects-'));
     const coreDb = openCoreDb(root);
-    onTestFinished(() => {
+    onTestFinished(async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     });
     applyMigrations(coreDb);
     // Real Server history supplies provenance without inventing a Workspace or identity.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
     const store = new FsStore({ dataRoot: root });
-    const thread = store.createServerThread(
+    const thread = await store.createServerThread(
       'Administrative image preparation',
       undefined,
       'conversation'
     );
-    const publicationTurn = store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
+    const publicationTurn = await store.createServerTurn(
+      thread.id,
+      'Prepare the authored image.',
+      actor
+    );
     expect(getLocalUserId(coreDb)).toBe(actor.id);
     expect(
       new FsStore({ dataRoot: root }).getServerTurn(thread.id, publicationTurn.id)
@@ -182,20 +188,21 @@ describe('Worker environment runtime effects', () => {
   it('acquires an exact local digest before inspection and stops when acquisition fails', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-image-local-effects-'));
     const coreDb = openCoreDb(root);
-    onTestFinished(() => {
+    onTestFinished(async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     });
     applyMigrations(coreDb);
     // Keep the same recorded caller when the controlled Host reports mismatch or failure.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
     const store = new FsStore({ dataRoot: root });
-    const thread = store.createServerThread(
+    const thread = await store.createServerThread(
       'Administrative local image preparation',
       undefined,
       'conversation'
     );
-    const publicationTurn = store.createServerTurn(
+    const publicationTurn = await store.createServerTurn(
       thread.id,
       'Prepare the exact local image.',
       actor
