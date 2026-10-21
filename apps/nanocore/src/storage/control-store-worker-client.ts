@@ -134,7 +134,8 @@ class ControlStoreWorkerClient {
       const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
       const entry = new URL('./control-store-worker.ts', import.meta.url).href;
       this.worker = new Worker(
-        `import(${JSON.stringify(loader)}).then(({tsImport}) => tsImport(${JSON.stringify(entry)}, ${JSON.stringify(import.meta.url)}));`,
+        // This thread is already isolated. A second tsImport namespace adds synchronous CommonJS loader round trips for the complete owner graph.
+        `import(${JSON.stringify(loader)}).then(({register}) => { register(); return import(${JSON.stringify(entry)}); });`,
         { eval: true }
       );
     } else {
