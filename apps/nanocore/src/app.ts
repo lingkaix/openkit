@@ -276,7 +276,6 @@ import {
   listAllWorkspaceDeletionRequests,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
-import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
@@ -733,15 +732,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       (options.coreDb && options.localUserId !== undefined && options.localUserId !== localUserId)
     ) {
       throw new Error('App construction requires the unique canonical local User authority.');
-    }
-    if (options.coreDb) {
-      ensureUserQuickChatWorkspace({
-        coreDb: options.coreDb,
-        store: sharedStore,
-        userId: localUserId,
-      });
-    } else {
-      sharedStore.ensureQuickChatWorkspace(localUserId);
     }
   }
   const startupOpenKitConfig =

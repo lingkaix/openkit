@@ -556,7 +556,12 @@ const runtimeConfigManager = createRuntimeConfigManager({
 });
 
 if (mode === 'local') {
-  ensureLocalUser(coreDb);
+  // Boot owns durable personal scope; synchronous app composition cannot await native publication.
+  await ensureUserQuickChatWorkspace({
+    coreDb,
+    store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
+    userId: ensureLocalUser(coreDb),
+  });
 }
 if (mode === 'server') {
   const bootstrap = ensureServerBootstrapToken(coreDb);
