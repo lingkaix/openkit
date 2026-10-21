@@ -30,6 +30,7 @@ export class PiRuntimeCapture {
   private limited = false;
   private abandoned = false;
   private finished = false;
+  private fileFailed = false;
   private assistantCount = 0;
 
   /** Keeps capture admission immutable; abandonment suppresses subsequent calls, not an entered sink effect. */
@@ -88,7 +89,7 @@ export class PiRuntimeCapture {
   }
 
   /** Derives structural facts only after the original native unit has entered raw collection. */
-  public observe(value: unknown, nativeBytes?: Uint8Array, nativeCollection?: Promise<void>): void {
+  public observe(value: unknown, nativeCollection?: Promise<void>): void {
     if (this.abandoned || this.limited) return;
     let bytes: number;
     try {
@@ -97,11 +98,7 @@ export class PiRuntimeCapture {
       this.admit(() => this.gap('malformed-frame'), 0);
       return;
     }
-    const original = nativeCollection
-      ? undefined
-      : nativeBytes
-        ? Buffer.from(nativeBytes)
-        : Buffer.from(JSON.stringify(value) ?? '');
+    const original = nativeCollection ? undefined : Buffer.from(JSON.stringify(value) ?? '');
     this.admit(async () => {
       await (nativeCollection ?? this.collectNative(original!));
       await this.pollFile();
@@ -218,17 +215,20 @@ export class PiRuntimeCapture {
 
   /** Binds only the adapter-proved native file; a fresh allocation uses its known zero watermark. */
   public async bindFile(path: string, watermark?: number): Promise<void> {
+    if (this.fileFailed) return;
     if (this.file) {
-      if (this.file.path !== path) throw new Error('Pi native source changed.');
+      if (this.file.path !== path) await this.fileUnavailable('source-changed');
       return;
     }
     const handle = await open(
       path,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-    );
+    ).catch(() => null);
+    if (!handle) return this.fileUnavailable('source-missing');
     try {
-      const stat = await handle.stat();
-      if (!stat.isFile()) throw new Error('Pi native source is not a file.');
+      const stat = await handle.stat().catch(() => null);
+      if (!stat) return this.fileUnavailable('collector-failed');
+      if (!stat.isFile()) return this.fileUnavailable('source-changed');
       this.file = {
         path,
         position: watermark ?? stat.size,
@@ -237,13 +237,13 @@ export class PiRuntimeCapture {
         ino: stat.ino,
       };
     } finally {
-      await handle.close();
+      await handle.close().catch(() => this.fileUnavailable('collector-failed'));
     }
     this.schedule();
   }
   /** Polls an already proved source without asking the native runtime to do more work. */
   private schedule(): void {
-    if (this.abandoned || this.finished || !this.file) return;
+    if (this.abandoned || this.finished || this.fileFailed || !this.file) return;
     this.timer = setTimeout(() => {
       void this.enqueue(() => this.pollFile()).then(
         () => this.schedule(),
@@ -255,29 +255,29 @@ export class PiRuntimeCapture {
   /** Retains file bytes before any structural interpretation and refuses replacement or shrink. */
   private async pollFile(): Promise<void> {
     const file = this.file;
-    if (!file || this.abandoned) return;
+    if (!file || this.abandoned || this.fileFailed) return;
     const handle = await open(
       file.path,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-    );
+    ).catch(() => null);
+    if (!handle) return this.fileUnavailable('source-missing');
     try {
-      const stat = await handle.stat();
+      const stat = await handle.stat().catch(() => null);
+      if (!stat) return this.fileUnavailable('collector-failed');
       if (
         !stat.isFile() ||
         stat.dev !== file.dev ||
         stat.ino !== file.ino ||
         stat.size < file.position
       )
-        throw new Error('Pi native source changed.');
+        return this.fileUnavailable('source-changed');
       const buffer = Buffer.alloc(64 * 1024);
       while (file.position < stat.size) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, stat.size - file.position),
-          file.position
-        );
-        if (!bytesRead) throw new Error('Pi native source became unavailable.');
+        const read = await handle
+          .read(buffer, 0, Math.min(buffer.length, stat.size - file.position), file.position)
+          .catch(() => null);
+        if (!read || !read.bytesRead) return this.fileUnavailable('collector-failed');
+        const { bytesRead } = read;
         await this.native.write(`${this.sourceRef}:file`, buffer.subarray(0, bytesRead), {
           harness: 'pi',
           format: 'pi-session-jsonl',
@@ -287,8 +287,23 @@ export class PiRuntimeCapture {
         file.position += bytesRead;
       }
     } finally {
-      await handle.close();
+      await handle.close().catch(() => this.fileUnavailable('collector-failed'));
     }
+  }
+  /** Stops only the failed file source; publication errors still reject the shared queue. */
+  private async fileUnavailable(
+    reason: 'source-missing' | 'source-changed' | 'collector-failed'
+  ): Promise<void> {
+    if (this.fileFailed) return;
+    this.fileFailed = true;
+    clearTimeout(this.timer);
+    await this.native.unavailable(`${this.sourceRef}:file`, {
+      kind: 'coverage',
+      runtimeOriginRef: null,
+      family: 'primary-content',
+      coverage: 'unavailable',
+      reason,
+    });
   }
   /** Records actual log pipe EOF separately from native settlement. */
   public logEnded(logSource: 'stderr' | 'stdout-log'): void {

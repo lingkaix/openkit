@@ -804,7 +804,11 @@ class CodexResidentSession implements WorkerResidentSession {
       this.itemText.clear();
       this.active = false;
       // Stop collector scheduling immediately; a stalled observation sink must not delay native cleanup.
-      void (capture as CodexRuntimeCapture | null)?.invalidate().catch(() => undefined);
+      const stoppedCapture = capture as CodexRuntimeCapture | null;
+      void controlDeadline(
+        stoppedCapture?.invalidate() ?? Promise.resolve(),
+        native.deadline.remainingMs()
+      ).catch(() => stoppedCapture?.abandon());
       if (!this.unusable && !this.closing && !native.outstanding && !submitted) throw error;
       return this.abandonUnaccepted(error);
     }
@@ -1016,13 +1020,18 @@ class CodexResidentSession implements WorkerResidentSession {
       if (collectionStopStarted) return;
       collectionStopStarted = true;
       collectionIncomplete = true;
-      // Preserve observed log prefixes under the same stop allowance, including native crashes.
+      // Preserve observed log and rollout prefixes under the same stop allowance, including native crashes.
       // A stalled sink cannot extend that allowance or publish new work after abandonment.
       const logs = this.nativeLogs;
-      void controlDeadline(logs?.finish() ?? Promise.resolve(), deadline.remainingMs())
-        .catch(() => logs?.abandon())
+      void controlDeadline(
+        Promise.all([logs?.finish(), capture?.invalidate()]),
+        deadline.remainingMs()
+      )
+        .catch(() => {
+          logs?.abandon();
+          capture?.abandon();
+        })
         .finally(releaseCollection);
-      void capture?.invalidate().catch(() => undefined);
     };
     this.cancelCaptureFinalization = cancelCollection;
     const settled = completion

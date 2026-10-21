@@ -56,6 +56,8 @@ export class CodexRuntimeCapture {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private started = false;
   private stopped = false;
+  private abandoned = false;
+  private invalidating: Promise<void> | undefined;
   private failed: unknown;
   private initialScanTruncated = false;
   private initialScanFailed = false;
@@ -71,9 +73,13 @@ export class CodexRuntimeCapture {
     private readonly adapterVersion: string
   ) {
     this.primaryRef = runtimeRef('rts', input.packageSnapshotId, 'stdout');
-    this.semantic = new RuntimeSemanticCapture(input);
-    this.native = new NativeRuntimeCapture({
+    const captureInput: RuntimeCaptureInput = {
       ...input,
+      emit: (record, body) => (this.abandoned ? Promise.resolve() : input.emit(record, body)),
+    };
+    this.semantic = new RuntimeSemanticCapture(captureInput);
+    this.native = new NativeRuntimeCapture({
+      ...captureInput,
       authoredVersion: input.authoredVersion ?? adapterVersion,
     });
     this.primary = new RuntimeJsonlReader(async (bytes, _sequence, failure) => {
@@ -202,18 +208,36 @@ export class CodexRuntimeCapture {
     if (this.failed) throw this.failed;
   }
 
-  /** Releases timers after supervision failure; accepted Core observations are never erased. */
-  public async invalidate(): Promise<void> {
-    this.native.abandon();
+  /** Stops reads and drains the observed prefix; the adapter bounds this with its existing stop deadline. */
+  public invalidate(): Promise<void> {
+    if (this.invalidating) return this.invalidating;
     this.stopped = true;
     clearTimeout(this.timer);
-    await this.queue.catch(() => undefined);
-    await this.semantic.interrupt();
+    this.invalidating = this.enqueue(async () => {
+      await this.native.finish();
+      await this.semantic.interrupt();
+      await this.gap(this.primaryRef, 'primary-content', 'collector-failed');
+      for (const tail of this.tails.values())
+        await this.gap(
+          tail.sourceRef,
+          tail.context.parentThreadId ? 'child-content' : 'primary-content',
+          'collector-failed'
+        );
+    });
+    return this.invalidating;
+  }
+
+  /** Suppresses further publication only after failed publication or the owned stop deadline. */
+  public abandon(): void {
+    this.abandoned = true;
+    this.stopped = true;
+    clearTimeout(this.timer);
+    this.native.abandon();
   }
 
   /** Serializes timer and stdout mutations, retaining the original failure for finalization. */
   private enqueue(work: () => Promise<void>): Promise<void> {
-    const result = this.queue.then(work);
+    const result = this.queue.then(() => (this.abandoned ? undefined : work()));
     this.queue = result.catch((error: unknown) => {
       this.failed ??= error;
     });

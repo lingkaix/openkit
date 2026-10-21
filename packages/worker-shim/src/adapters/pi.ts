@@ -1223,7 +1223,7 @@ export class PiResidentBinding implements WorkerResidentSession {
             );
           }
         }
-        active.capture.observe(frame.data, undefined, nativeCollection);
+        active.capture.observe(frame.data, nativeCollection);
         this.#nativeEventCount += 1;
         this.#recordLifecycleFact?.({ label: 'native_event' });
       }

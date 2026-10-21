@@ -60,23 +60,45 @@ export function runtimeToolName(value: unknown): string | undefined {
     : undefined;
 }
 /** Decodes JSON string values for admission only; retained source bytes are never transformed. */
-function decodedContentStrings(text: string, inspect?: (value: string) => void): string[] {
-  const pending: unknown[] = [text];
+function decodedContentStrings(
+  text: string,
+  inspect?: (value: string) => void,
+  logical?: (path: string, value: string) => void
+): string[] {
+  const pending: Array<{ value: unknown; path: string }> = [{ value: text, path: '' }];
   const strings: string[] = [];
   while (pending.length) {
-    const value = pending.pop();
+    const { value, path } = pending.pop()!;
     if (typeof value === 'string') {
       inspect?.(value);
       try {
         const parsed: unknown = JSON.parse(value);
         if (typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object'))
-          pending.push(parsed);
-        else strings.push(value);
+          pending.push({ value: parsed, path });
+        else {
+          strings.push(value);
+          logical?.(path, value);
+        }
       } catch {
         strings.push(value);
+        logical?.(path, value);
+        // File buffers can contain adjacent JSONL units rather than one JSON document.
+        // Inspect complete values for safety only; the original file bytes remain unchanged.
+        if (value.includes('\n')) {
+          for (const line of value.split('\n').reverse()) {
+            try {
+              const parsed: unknown = JSON.parse(line);
+              if (typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object'))
+                pending.push({ value: parsed, path });
+            } catch {
+              // Torn or non-JSON lines still participate in the literal byte check above.
+            }
+          }
+        }
       }
     } else if (Array.isArray(value)) {
-      for (let index = value.length - 1; index >= 0; index -= 1) pending.push(value[index]);
+      for (let index = value.length - 1; index >= 0; index -= 1)
+        pending.push({ value: value[index], path: `${path}[]` });
     } else if (value && typeof value === 'object') {
       for (const [key, child] of Object.entries(value).reverse()) {
         inspect?.(key);
@@ -85,23 +107,29 @@ function decodedContentStrings(text: string, inspect?: (value: string) => void):
           /^(?:api_key|apiKey|access_token|refresh_token|password|authorization|cookie)$/i.test(key)
         )
           strings.push(`"${key}":`);
-        pending.push(child);
+        pending.push({ value: child, path: `${path}/${JSON.stringify(key)}` });
       }
     }
   }
   return strings;
 }
 /** Rejects known credentials in decoded values and their logical concatenation, not arbitrary encodings. */
-function containsCredential(text: string, values: readonly string[]): boolean {
-  const hasCredential = (value: string) => {
-    // Admission may decode JSON escapes even for a torn native frame; retained bytes stay exact.
-    const decoded = value.replace(
-      /\\u([0-9a-f]{4})|\\(["\\/bfnrt])/gi,
+function containsCredential(
+  text: string | readonly string[],
+  values: readonly string[],
+  holdFrom?: (unit: number) => void
+): boolean {
+  const decode = (value: string) =>
+    value.replace(
+      /\\u([0-9a-fA-F]{4})|\\(["\\/bfnrt])/g,
       (_match, unicode: string | undefined, escaped: string) =>
         unicode
           ? String.fromCharCode(Number.parseInt(unicode, 16))
           : (JSON.parse(`"\\${escaped}"`) as string)
     );
+  const hasCredential = (value: string) => {
+    // Admission may decode JSON escapes even for a torn native frame; retained bytes stay exact.
+    const decoded = decode(value);
     return (
       values.some(
         (secret) => secret.length > 0 && (value.includes(secret) || decoded.includes(secret))
@@ -112,10 +140,61 @@ function containsCredential(text: string, values: readonly string[]): boolean {
     );
   };
   let detected = false;
-  const strings = decodedContentStrings(text, (value) => {
-    detected ||= hasCredential(value);
-  });
-  return detected || strings.some(hasCredential) || hasCredential(strings.join(''));
+  const units = typeof text === 'string' ? [text] : text;
+  type Part = { text: string; unit: number };
+  const logical = new Map<string, Part[]>();
+  const flat: Part[] = [];
+  const strings = units.flatMap((unit, index) =>
+    decodedContentStrings(
+      unit,
+      (value) => {
+        detected ||= hasCredential(value);
+      },
+      (path, value) => {
+        const parts = logical.get(path) ?? [];
+        const part = { text: value, unit: index };
+        parts.push(part);
+        flat.push(part);
+        logical.set(path, parts);
+      }
+    )
+  );
+  const excluded =
+    detected ||
+    hasCredential(units.join('')) ||
+    strings.some(hasCredential) ||
+    hasCredential(strings.join('')) ||
+    [...logical.values()].some((parts) => hasCredential(parts.map((part) => part.text).join('')));
+  if (!excluded && holdFrom) {
+    // Pin the original units that can still complete a known secret. A large native wrapper
+    // must not let its early text fragment escape merely because later metadata fills the byte suffix.
+    for (const parts of [units.map((text, unit) => ({ text, unit })), flat, ...logical.values()]) {
+      const decoded = parts.map((part) => ({ ...part, text: decode(part.text) }));
+      const joined = decoded.map((part) => part.text).join('');
+      for (const secret of values) {
+        if (secret.length < 2) continue;
+        const tail = joined.slice(1 - secret.length);
+        for (
+          let start = tail.indexOf(secret[0]!);
+          start >= 0;
+          start = tail.indexOf(secret[0]!, start + 1)
+        ) {
+          const suffix = tail.slice(start);
+          if (!secret.startsWith(suffix)) continue;
+          let length = 0;
+          for (let index = decoded.length - 1; index >= 0; index--) {
+            length += decoded[index]!.text.length;
+            if (length >= suffix.length) {
+              holdFrom(decoded[index]!.unit);
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+  return excluded;
 }
 /** Per-admission, in-memory reservations; Core remains the durable Turn budget authority. */
 const nativeAllowances = new WeakMap<
@@ -369,7 +448,7 @@ export class RuntimeSemanticCapture {
     for (const [sourceRef, events] of this.nativeUnits) {
       this.nativeUnits.delete(sourceRef);
       const excluded = containsCredential(
-        Buffer.concat(events.map(({ body }) => Buffer.from(body.bytes))).toString('utf8'),
+        events.map(({ body }) => Buffer.from(body.bytes).toString('utf8')),
         this.input.credentialValues
       );
       for (const { fact, body, sourceTimestamp } of events) {
@@ -417,9 +496,7 @@ export class RuntimeSemanticCapture {
     if (
       !unit.reason &&
       containsCredential(
-        unit.events
-          .flatMap(({ body }) => decodedContentStrings(Buffer.from(body).toString('utf8')))
-          .join(''),
+        unit.events.map(({ body }) => Buffer.from(body).toString('utf8')),
         this.input.credentialValues
       )
     )
@@ -641,6 +718,7 @@ export class NativeRuntimeCapture {
     source: NativeCaptureSource;
     bytes: Buffer;
     start: number;
+    unit: { text: string; held: boolean };
   }> = [];
   private readonly blocked = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
@@ -705,6 +783,40 @@ export class NativeRuntimeCapture {
         await this.publish({ sourceRef, source, bytes: frame, start }, false);
         return;
       }
+      // Keep native unit boundaries for the same decoded admission used by semantic capture.
+      // Concatenated JSON documents cannot be decoded as one JSON value.
+      const unit = { text: frame.toString('utf8'), held: false };
+      const units = [
+        ...new Set(
+          this.pending.filter((entry) => entry.sourceRef === sourceRef).map((entry) => entry.unit)
+        ),
+        unit,
+      ];
+      for (const pending of units) pending.held = false;
+      if (
+        this.blocked.has(sourceRef) ||
+        containsCredential(
+          units.map((pending) => pending.text),
+          this.input.credentialValues,
+          (from) => {
+            for (const pending of units.slice(from)) pending.held = true;
+          }
+        )
+      ) {
+        const start = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
+        this.positions.set(sourceRef, start + frame.length);
+        if (!this.blocked.has(sourceRef)) {
+          this.blocked.add(sourceRef);
+          this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
+          await this.publish(
+            { sourceRef, source, bytes: Buffer.alloc(0), start },
+            false,
+            'credential-excluded',
+            'credential-excluded'
+          );
+        }
+        return;
+      }
       for (let offset = 0; offset < frame.length; offset += 64 * 1024) {
         if (this.abandoned) return;
         const copy = Buffer.from(
@@ -713,7 +825,7 @@ export class NativeRuntimeCapture {
         const start = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
         this.positions.set(sourceRef, start + copy.length);
         if (this.blocked.has(sourceRef)) continue;
-        this.pending.push({ sourceRef, source, bytes: copy, start });
+        this.pending.push({ sourceRef, source, bytes: copy, start, unit });
         const related = this.pending.filter((entry) => entry.sourceRef === sourceRef);
         const joined = Buffer.concat(related.map((entry) => entry.bytes));
         if (containsCredential(joined.toString('utf8'), this.input.credentialValues)) {
@@ -729,10 +841,20 @@ export class NativeRuntimeCapture {
         }
         // Keep a bounded suffix until later bytes decide split credential/UTF-8 admission.
         let waiting = joined.length;
+        if (waiting > RUNTIME_FRAME_MAX_BYTES) {
+          this.blocked.add(sourceRef);
+          this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
+          await this.publish(
+            { sourceRef, source, bytes: Buffer.alloc(0), start },
+            false,
+            'limit-exceeded'
+          );
+          continue;
+        }
         while (waiting > this.lookbehind + 64 * 1024) {
           const index = this.pending.findIndex((entry) => entry.sourceRef === sourceRef);
           const entry = this.pending[index]!;
-          if (waiting - entry.bytes.length < this.lookbehind) break;
+          if (entry.unit.held || waiting - entry.bytes.length < this.lookbehind) break;
           this.pending.splice(index, 1);
           waiting -= entry.bytes.length;
           await this.publish(entry, false);
@@ -765,6 +887,20 @@ export class NativeRuntimeCapture {
     void this.enqueue(async () => {
       this.ended.add(sourceRef);
     }).catch(() => undefined);
+  }
+  /** Drains a failed source's admitted prefix and names its gap on that same source sequence. */
+  public unavailable(
+    sourceRef: string,
+    fact: RuntimeFact & { kind: 'coverage'; coverage: 'unavailable' }
+  ): Promise<void> {
+    return this.enqueue(async () => {
+      const prefix = this.pending.filter((entry) => entry.sourceRef === sourceRef);
+      this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
+      for (const entry of prefix) await this.publish(entry, false);
+      const sourceSequence = this.sequences.get(sourceRef) ?? 0;
+      this.sequences.set(sourceRef, sourceSequence + 1);
+      await emitRuntimeFact(this.input, { sourceRef, sourceSequence }, fact);
+    });
   }
   /** Stops future publication on the adapter's existing abandonment boundary. */
   public abandon(): void {
