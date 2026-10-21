@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -426,9 +427,9 @@ export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, ca
 export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, selectors }) {
   const o = await owners(appRoot);
   const { workspaceId, threadId, turnId } = selectors;
-  const core = o.db.openCoreDb(dataRoot);
-  const user = o.db.openUserDb(dataRoot, userId);
-  const workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
+  let core = o.db.openCoreDb(dataRoot);
+  let user = o.db.openUserDb(dataRoot, userId);
+  let workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
   const actor = { kind: 'user', id: userId };
   const sql = {
     userId,
@@ -909,15 +910,230 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     } finally {
       appHandle.sqlite.close();
     }
-    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot);
+    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, async () => {
+      const { shutdownControlStoreWorkerClient } = await o.load(
+        'storage/control-store-worker-client'
+      );
+      await shutdownControlStoreWorkerClient();
+      workspace.sqlite.close();
+      user.sqlite.close();
+      core.sqlite.close();
+      // A fresh process has no surviving Store, writer, admission cache or SQLite connection.
+      const child = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `import(process.argv[1]).then(async ({ recoverStoppedSqlCorpus }) => {
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const result = await recoverStoppedSqlCorpus(input);
+process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
+});`,
+          import.meta.url,
+        ],
+        {
+          encoding: 'utf8',
+          input: JSON.stringify({ appRoot, dataRoot, sql }),
+        }
+      );
+      if (child.error) throw child.error;
+      if (child.status !== 0)
+        throw new Error(`SQL corpus cold boot failed: ${child.stderr || child.stdout}`);
+      const line = child.stdout.split('\n').find((row) => row.startsWith('SQL_CORPUS_COLD_BOOT '));
+      if (!line) throw new Error('SQL corpus cold boot returned no owner readback.');
+      const recovered = JSON.parse(line.slice('SQL_CORPUS_COLD_BOOT '.length));
+      const { isCurrentAgentSessionStatus } = await o.load('storage/workspace-file-records');
+      if (
+        isCurrentAgentSessionStatus(recovered.session.status) &&
+        recovered.turn.status === 'running'
+      )
+        throw new Error(
+          `Cold boot recovery left the context Session current and its Turn running: ${JSON.stringify(
+            {
+              turn: {
+                status: recovered.turn.status,
+                linked: recovered.turn.agentSessionId === recovered.session.id,
+              },
+              session: { status: recovered.session.status, stale: recovered.session.stale },
+              checkpointRecoveryFailures: recovered.checkpointRecoveryFailures,
+              checkpointRecoveryErrors: recovered.checkpointRecoveryErrors,
+              projectRecoveredTurnCalls: recovered.projectRecoveredTurnCalls,
+            }
+          )}`
+        );
+      sql.contextRecovery = { turn: recovered.turn, session: recovered.session };
+      core = o.db.openCoreDb(dataRoot);
+      user = o.db.openUserDb(dataRoot, userId);
+      workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
+      return { core, workspace, store: new o.store.FsStore({ dataRoot }) };
+    });
     return { sql };
   } finally {
     const { shutdownControlStoreWorkerClient } = await o.load(
       'storage/control-store-worker-client'
     );
     await shutdownControlStoreWorkerClient();
-    workspace.sqlite.close();
-    user.sqlite.close();
+    if (workspace.sqlite.open) workspace.sqlite.close();
+    if (user.sqlite.open) user.sqlite.close();
+    if (core.sqlite.open) core.sqlite.close();
+  }
+}
+
+/** Runs the selected image's pre-listen storage and recovery owners in a fresh process. */
+export async function recoverStoppedSqlCorpus({ appRoot, dataRoot, sql }) {
+  const o = await owners(appRoot);
+  const core = o.db.openCoreDbWithIntegrityCheck(dataRoot, { freshInitialization: false });
+  const admission = new o.admission.WorkspaceMutationAdmission();
+  const [
+    readiness,
+    records,
+    indexes,
+    managers,
+    restart,
+    native,
+    factory,
+    app,
+    terminal,
+    observations,
+    flow,
+    modes,
+  ] = await Promise.all(
+    [
+      'bootstrap/readiness',
+      'storage/workspace-file-records',
+      'storage/index-rebuild',
+      'knowledge/server-knowledge-maintenance',
+      'runtime/scheduler-restart-recovery',
+      'runtime/nanohost-attempt-recovery',
+      'runtime/turn-executor-factory',
+      'app',
+      'runtime/worker-turn-failure',
+      'storage/work-observation-recovery',
+      'runtime/pending-request-flow',
+      'mode-entry-routes',
+    ].map(o.load)
+  );
+  try {
+    o.migrate.applyMigrations(core);
+    readiness.restoreWorkspaceRetirementAdmission({
+      coreDb: core,
+      workspaceMutationAdmission: admission,
+    });
+    o.usage.recoverRunningCapabilityCalls({ workspaceDb: core });
+    o.db.verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+      o.store.FsStore.validateFileAuthority(dataRoot)
+    );
+    const store = new o.store.FsStore({ dataRoot });
+    indexes.rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
+    app.restoreWorkspaceDeletionMutationAdmission({
+      coreDb: core,
+      dataRoot,
+      workspaceMutationAdmission: admission,
+    });
+    o.targets.fenceNanoHostRuntimeTargetAfterRestart(core, new Date().toISOString());
+    records.discardAbandonedWorkspaceStaging(dataRoot);
+    await managers.recoverServerKnowledgeManagerTurns(store);
+    // The real lifecycle backend is constructed without ambient environment or an effect dispatcher.
+    const runtime = factory.createConfiguredWorkerLifecycleRuntime({
+      env: {},
+      coreDb: core,
+      store,
+      workspaceMutationAdmission: admission,
+    });
+    let projectRecoveredTurnCalls = 0;
+    const recovery = {
+      executionBackend: runtime.turnExecutor.executionBackend,
+      store,
+      reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,
+      cleanupBackendSession: runtime.cleanupBackendSession,
+      isTurnExecutionActive: runtime.isTurnExecutionActive,
+      prepareBackendCleanup: runtime.prepareBackendCleanup,
+      restoreBackendSession: runtime.restoreBackendSession,
+      // This is the composition used by index.ts, invoked only for subjects the recovery owner selects.
+      projectRecoveredTurn: async (subject) => {
+        projectRecoveredTurnCalls += 1;
+        const context = o.scheduler.requireSchedulerExecutionAttemptAdmissionContext(
+          core,
+          subject.attemptId
+        );
+        const anchored = 'state' in subject;
+        const result = await terminal.terminalizeGovernedWorkerTurn({
+          agentSessionId: subject.agentSessionId,
+          completedAt: new Date().toISOString(),
+          errorCode: 'worker_governance_restart_recovery',
+          message: anchored
+            ? 'Worker execution was interrupted during scheduler recovery.'
+            : 'Worker execution stopped during scheduler recovery.',
+          outcome: anchored ? 'interrupted' : 'failed',
+          requestId: context.requestId,
+          store,
+          turnId: subject.turnId,
+        });
+        if (!['completed', 'failed', 'interrupted', 'cancelled', 'missing'].includes(result.status))
+          throw new Error(
+            `Restart recovery left turn ${subject.turnId} non-terminal: ${result.status}.`
+          );
+        if ('id' in result && result.error?.code === 'worker_governance_restart_recovery') {
+          const db = o.db.openBootVerifiedWorkspaceDb(dataRoot, result.owner.workspaceId);
+          try {
+            observations.appendRecoveredTurnObservation(
+              db,
+              result,
+              anchored ? 'anchored-cleanup' : 'pre-anchor'
+            );
+          } finally {
+            db.sqlite.close();
+          }
+        }
+        return { status: result.status };
+      },
+    };
+    await restart.runSchedulerRestartRecovery(core, recovery);
+    await native.classifyNanoHostAttemptsAfterRestart(core, recovery);
+    let checkpointRecoveryFailures = 0;
+    const checkpointRecoveryErrors = [];
+    // Match index.ts: checkpoint failures degrade readiness but do not bypass later recovery.
+    for (const { workspaceId } of o.db.listExistingWorkspaceDatabaseScopes(dataRoot)) {
+      let db;
+      try {
+        db = o.db.openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+        for (const checkpoint of o.checkpoints.listExportableWorkerCheckpoints(db, workspaceId)) {
+          try {
+            if (checkpoint.goalId !== null || checkpoint.taskId !== null)
+              throw new Error('Worker checkpoint has only one Goal lineage owner.');
+            await modes.classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb: core,
+              store,
+              workspaceDb: db,
+              checkpoint,
+            });
+          } catch (error) {
+            checkpointRecoveryFailures += 1;
+            checkpointRecoveryErrors.push(error.message);
+          }
+        }
+      } catch (error) {
+        checkpointRecoveryFailures += 1;
+        checkpointRecoveryErrors.push(error.message);
+      } finally {
+        db?.sqlite.close();
+      }
+    }
+    const pendingWorkspace = {
+      coreDb: core,
+      openWorkspace: (workspaceId) => o.db.openBootVerifiedWorkspaceDb(dataRoot, workspaceId),
+    };
+    flow.installPendingRequestAdmission(store, pendingWorkspace);
+    await flow.recoverPendingRequestsAtBoot(store, pendingWorkspace);
+    return {
+      turn: store.getTurnById(sql.contextTurnId),
+      session: store.getAgentSession(sql.contextAgentSessionId),
+      checkpointRecoveryFailures,
+      checkpointRecoveryErrors,
+      projectRecoveredTurnCalls,
+    };
+  } finally {
+    const worker = await o.load('storage/control-store-worker-client');
+    await worker.shutdownControlStoreWorkerClient();
     core.sqlite.close();
   }
 }
@@ -1152,7 +1368,7 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
 }
 
 /** Seeds correlated AEP, Context Package, and original evidence through their product owners. */
-async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) {
+async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, coldReopen) {
   const [
     aep,
     resolver,
@@ -1488,13 +1704,9 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     environmentPackageSnapshotId: sql.aepSnapshotId,
     stale: false,
   });
-  // Assign only a current Session, then let its lifecycle owner decide whether it can close.
+  // Only genuine shutdown and boot recovery may establish this Session's historical state.
   await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
-  await store.updateAgentSession(sql.contextAgentSessionId, {
-    status: 'closed',
-    stale: true,
-    updatedAt: turn.startedAt,
-  });
+  ({ core, workspace, store } = await coldReopen());
   const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
     backendId: 'nanohost',
     queueEntryId: 'upgrade-corpus-context-queue',
@@ -1648,7 +1860,6 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     authoritativeGeneration: null,
     observedAt: new Date().toISOString(),
   });
-  await store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
   const lineage = {
     agentSessionId: sql.contextAgentSessionId,
     packageSnapshotId: sql.aepSnapshotId,
