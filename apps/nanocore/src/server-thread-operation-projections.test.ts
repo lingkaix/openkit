@@ -15,11 +15,16 @@ import {
 } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { executeGoalOperation, readGoalView } from './runtime/goal-owner.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
+import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
+import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
 import { openControlStoreProductReadHandle } from './storage/control-store-products.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createThread, updateThread } from './thread-routes.js';
@@ -549,4 +554,350 @@ it('keeps product receipt insertion and pruning off the main writable connection
       .prepare('SELECT * FROM idempotency_requests WHERE request_key=?')
       .get(expired[1]!.key)
   ).toBeUndefined();
+});
+
+it.each([
+  'before',
+  'after',
+  'stale-source',
+  'stale-census',
+  'freeze-abort',
+  'receipt-abort',
+] as const)('admits the exact ready Goal outcome with the complete Plan tuple: %s', async (boundary) => {
+  const held = boundary === 'before' || boundary === 'after';
+  if (held) {
+    commitBoundary.gate = new SharedArrayBuffer(16);
+    commitBoundary.point = boundary;
+  }
+  const f = await productFixture();
+  const context = { actor: { kind: 'local' as const, userId: f.userId } };
+  const services = { coreDb: f.coreDb };
+  const created = await executeGoalOperation(
+    'goal.create',
+    { workspaceId: f.workspace.id, requestId: randomUUID(), intent: 'Review an exact design' },
+    context,
+    f.store,
+    f.db,
+    services
+  );
+  const goal = created.goal!;
+  const scope = { workspaceId: f.workspace.id, threadId: goal.threadId, goalId: goal.goalId };
+  const raising = await f.store.createTurn(
+    scope.workspaceId,
+    scope.threadId,
+    'Propose the design',
+    { kind: 'user', id: f.userId },
+    null,
+    { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+  );
+  const commitment = {
+    intentBasis: { revision: goal.intentRevision, intent: goal.intent },
+    cards: [],
+    permittedAdjustments: 'Clarify the design without deployment',
+    completionEvidence: ['Reviewed design'],
+    boundaries: 'No deployment',
+  };
+  const proposed = await executeGoalOperation(
+    'goal.plan.propose',
+    {
+      ...scope,
+      requestId: randomUUID(),
+      expectedRevision: goal.changeRevision,
+      commitment,
+      goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
+    },
+    { ...context, coordinatorTurnId: raising.id },
+    f.store,
+    f.db,
+    services
+  );
+  const prior = proposed.versions[0]!;
+  await executeGoalOperation(
+    'goal.plan.approve',
+    {
+      ...scope,
+      requestId: randomUUID(),
+      pendingRequestId: prior.pendingRequestId,
+      decision: 'denied',
+    },
+    context,
+    f.store,
+    f.db,
+    services
+  );
+  await f.store.updateTurn(raising.id, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
+  const ready = readPendingRequest(f.db.sqlite, prior.pendingRequestId)!;
+  expect(ready).toMatchObject({
+    requesterKind: 'coordinator',
+    resolution: 'denied',
+    delivery: 'undelivered',
+    publicationTurnId: null,
+    deliveryTurnId: null,
+  });
+  // These are actual retained Goal decisions. Install the ordinary admission hooks before the next command.
+  installPendingRequestAdmission(f.store, {
+    coreDb: f.coreDb,
+    openWorkspace: (id) => openWorkspaceDb(f.dataRoot, id),
+  });
+  const beforeView = readGoalView(f.store, f.db, scope.goalId);
+  const input = {
+    ...scope,
+    requestId: randomUUID(),
+    expectedRevision: beforeView.goal!.changeRevision,
+    commitment: { ...commitment, boundaries: 'No deployment; review the revised design' },
+    goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
+  };
+  const newPendingId = `ap_${input.requestId}`;
+  const newPlanId = `gp_${input.requestId}`;
+  const tables = [
+    'goals',
+    'goal_plan_versions',
+    'pending_requests',
+    'control_workspaces',
+    'control_threads',
+    'control_turns',
+    'control_product_entries',
+    'idempotency_requests',
+  ];
+  const before = Object.fromEntries(
+    tables.map((table) => [
+      table,
+      f.db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    ])
+  );
+  const cached = structuredClone(f.store.getApproval(prior.pendingRequestId));
+  const cacheCreate = vi.spyOn(f.store, 'createApproval');
+  const cacheUpdate = vi.spyOn(f.store, 'updateApproval');
+  const mainWrites: string[] = [];
+  const prepare = Database.prototype.prepare;
+  vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+    this: Database.Database,
+    sql: string
+  ) {
+    const statement = prepare.call(this, sql);
+    if (
+      this.name === f.db.sqlite.name &&
+      !statement.readonly &&
+      /\b(goals|goal_plan_versions|pending_requests|control_\w+|idempotency_requests)\b/.test(sql)
+    ) {
+      const run = statement.run;
+      statement.run = function (...parameters: unknown[]) {
+        mainWrites.push(sql);
+        return Reflect.apply(run, this, parameters);
+      };
+    }
+    return statement;
+  });
+  if (boundary === 'stale-source') {
+    // Change the real source after native preparation, inside the proposal's transaction.
+    f.db.sqlite.exec(`CREATE TRIGGER change_ready_source AFTER INSERT ON control_turns
+      WHEN NEW.thread_id='${scope.threadId}'
+      BEGIN UPDATE pending_requests SET updated_at='2000-01-01T00:00:00.000Z'
+        WHERE request_id='${ready.requestId}'; END`);
+  } else if (boundary === 'stale-census') {
+    const prepareAdmission = f.store.prepareNativeTurnPendingAdmission.bind(f.store);
+    vi.spyOn(f.store, 'prepareNativeTurnPendingAdmission').mockImplementationOnce(
+      async (...args) => {
+        const admission = await prepareAdmission(...args);
+        expect(admission.pending).toEqual([
+          expect.objectContaining({
+            action: 'freeze',
+            expectedSelection: [ready.requestId],
+            expectedThreadCensus: [ready.requestId],
+          }),
+        ]);
+        // Model an older census that missed this real row; native sources, Items and deciding body stay real.
+        return {
+          ...admission,
+          pending: admission.pending.map((command) =>
+            command.action === 'freeze' ? { ...command, expectedThreadCensus: [] } : command
+          ),
+        };
+      }
+    );
+  } else if (boundary === 'freeze-abort') {
+    f.db.sqlite.exec(`CREATE TRIGGER refuse_ready_freeze BEFORE UPDATE OF delivery ON pending_requests
+      WHEN NEW.request_id='${ready.requestId}' AND NEW.delivery='frozen'
+      BEGIN SELECT RAISE(ABORT, 'private freeze fault'); END`);
+  } else if (boundary === 'receipt-abort') {
+    f.db.sqlite.exec(`CREATE TRIGGER refuse_plan_receipt BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name='goal.plan.propose' AND NEW.request_id='${input.requestId}'
+      BEGIN SELECT RAISE(ABORT, 'private final receipt fault'); END`);
+  }
+  const gate = held ? new Int32Array(commitBoundary.gate!) : undefined;
+  if (gate) Atomics.store(gate, 0, 1);
+  let settled = false;
+  let committedItems: unknown;
+  const command = executeGoalOperation('goal.plan.propose', input, context, f.store, f.db, services)
+    .then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error })
+    )
+    .finally(() => {
+      settled = true;
+    });
+  if (gate) {
+    while (!settled && Atomics.load(gate, 1) === 0) await nextTurn();
+    expect(Atomics.load(gate, 1), 'the real Goal tuple must reach the native COMMIT gate').toBe(1);
+    expect(Atomics.load(gate, 3)).toBe(2);
+    expect(settled).toBe(false);
+    expect(mainWrites).toEqual([]);
+    expect(cacheCreate).not.toHaveBeenCalled();
+    expect(cacheUpdate).not.toHaveBeenCalled();
+    expect(f.store.getApproval(prior.pendingRequestId)).toEqual(cached);
+    expect(() => f.store.getApproval(newPendingId)).toThrow();
+    if (boundary === 'before') {
+      expect(
+        Object.fromEntries(
+          tables.map((table) => [
+            table,
+            f.db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+          ])
+        )
+      ).toEqual(before);
+    } else {
+      const committed = readGoalView(f.store, f.db, scope.goalId);
+      expect(committed.goal?.proposedPlanVersionId).toBe(newPlanId);
+      expect(committed.versions).toEqual([
+        prior,
+        expect.objectContaining({
+          planVersionId: newPlanId,
+          pendingRequestId: newPendingId,
+          commitment: input.commitment,
+        }),
+      ]);
+      const carried = readPendingRequest(f.db.sqlite, ready.requestId)!;
+      expect(carried.delivery).toBe('frozen');
+      const admitted = f.store.getTurnById(carried.deliveryTurnId!);
+      expect(admitted.status).toBe('running');
+      expect(admitted.items.map((item) => item.type)).toEqual([
+        'approval-decision',
+        'approval-request',
+      ]);
+      committedItems = structuredClone(admitted.items);
+      expect(readPendingRequest(f.db.sqlite, newPendingId)).toMatchObject({
+        raisingTurnId: admitted.id,
+        state: 'pending',
+        governedIntent: { goalId: goal.goalId, planVersionId: newPlanId },
+      });
+      expect(
+        f.db.sqlite
+          .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
+          .all(input.requestId)
+      ).toEqual([{ request_id: input.requestId }]);
+    }
+    Atomics.store(gate, 0, 0);
+    Atomics.store(gate, 2, 1);
+    Atomics.notify(gate, 2);
+  }
+  const outcome = await command;
+  let accepted = outcome.value;
+  if (!held) {
+    expect(outcome.error).toBeInstanceOf(Error);
+    expect(outcome.error).toMatchObject({ commit: 'not-committed' });
+    if (boundary.endsWith('abort')) expect(outcome.error).toMatchObject({ code: 'constraint' });
+    expect(outcome.value).toBeUndefined();
+    expect(cacheCreate).not.toHaveBeenCalled();
+    expect(cacheUpdate).not.toHaveBeenCalled();
+    expect(mainWrites).toEqual([]);
+    expect(f.store.getApproval(prior.pendingRequestId)).toEqual(cached);
+    expect(() => f.store.getApproval(newPendingId)).toThrow();
+    expect(
+      Object.fromEntries(
+        tables.map((table) => [
+          table,
+          f.db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+        ])
+      )
+    ).toEqual(before);
+    expect(readGoalView(f.store, f.db, scope.goalId)).toEqual(beforeView);
+    await getControlStoreWorkerClient().shutdown();
+    expect(readGoalView(new FsStore({ dataRoot: f.dataRoot }), f.db, scope.goalId)).toEqual(
+      beforeView
+    );
+    f.db.sqlite.exec(
+      'DROP TRIGGER IF EXISTS change_ready_source; DROP TRIGGER IF EXISTS refuse_ready_freeze; DROP TRIGGER IF EXISTS refuse_plan_receipt'
+    );
+    accepted = await executeGoalOperation(
+      'goal.plan.propose',
+      input,
+      context,
+      f.store,
+      f.db,
+      services
+    );
+  } else expect(outcome.error).toBeUndefined();
+  expect(accepted?.goal?.proposedPlanVersionId).toBe(newPlanId);
+  expect(accepted?.versions).toHaveLength(2);
+  expect(accepted?.requests).toHaveLength(2);
+  expect(f.store.getApproval(newPendingId)).toMatchObject({ id: newPendingId });
+  expect(mainWrites).toEqual([]);
+  const frozen = readPendingRequest(f.db.sqlite, ready.requestId)!;
+  const next = readPendingRequest(f.db.sqlite, newPendingId)!;
+  expect(frozen).toMatchObject({
+    ...ready,
+    delivery: 'frozen',
+    deliveryTurnId: expect.any(String),
+    publicationTurnId: expect.any(String),
+    deliveryCause: 'carried',
+    updatedAt: expect.any(String),
+  });
+  expect(frozen.deliveryTurnId).not.toBe(raising.id);
+  expect(frozen.publicationTurnId).toBe(frozen.deliveryTurnId);
+  expect(next).toMatchObject({
+    raisingTurnId: frozen.deliveryTurnId,
+    state: 'pending',
+    governedIntent: { goalId: goal.goalId, planVersionId: newPlanId },
+  });
+  const turn = f.store.getTurnById(frozen.deliveryTurnId!);
+  expect(turn).toMatchObject({
+    threadId: goal.threadId,
+    agentId: 'goal-coordinator',
+    status: 'completed',
+  });
+  expect(turn.items.map((item) => item.type)).toEqual(['approval-decision', 'approval-request']);
+  if (boundary === 'after') expect(turn.items).toEqual(committedItems);
+  expect(turn.items[0]).toEqual({
+    id: pendingRequestItemId(ready.requestId, 'decision'),
+    owner: { kind: 'workspace', workspaceId: scope.workspaceId },
+    threadId: scope.threadId,
+    turnId: turn.id,
+    type: 'approval-decision',
+    actor: { kind: 'user', id: f.userId },
+    causationId: ready.requestItemId,
+    approvalRequestId: ready.requestId,
+    decision: 'denied',
+    decidedAt: ready.decidedAt,
+    status: 'completed',
+    createdAt: frozen.updatedAt,
+    completedAt: frozen.updatedAt,
+  });
+  const receipt = f.db.sqlite
+    .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+    .get(input.requestId) as { scope_json: string };
+  expect(receipt).toMatchObject({
+    command_name: 'goal.plan.propose',
+    request_id: input.requestId,
+    input_hash: commandInputHash(input),
+    response_kind: 'goal',
+    response_id: goal.goalId,
+  });
+  expect(JSON.parse(receipt.scope_json)).toEqual({
+    actorId: f.userId,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+  });
+  await getControlStoreWorkerClient().shutdown();
+  const reopened = new FsStore({ dataRoot: f.dataRoot });
+  expect(reopened.getTurnById(turn.id)).toEqual(turn);
+  expect(readGoalView(reopened, f.db, scope.goalId)).toEqual(accepted);
+  expect(readPendingRequest(f.db.sqlite, ready.requestId)).toEqual(frozen);
+  expect(
+    f.db.sqlite
+      .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+      .all(input.requestId)
+  ).toEqual([receipt]);
 });
