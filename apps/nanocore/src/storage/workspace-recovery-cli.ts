@@ -1,10 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
-import { readReleaseIdentity } from '../diagnostics/release-identity.js';
+import { RELEASE_IDENTITY_PATH, readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { RECURRING_PORTABLE_FEATURE } from './recurring-portable-history.js';
 import type { WorkspaceBackupReport, WorkspaceBackupSource } from './workspace-backup.js';
 import {
   createWorkspaceBackup,
@@ -253,19 +252,12 @@ export function parseWorkspaceRecoveryArgs(argv: readonly string[]): WorkspaceRe
   }
 }
 
-/** Uses image-owned release identity; an untagged development checkout uses its Git commit, never bundle policy. */
-function installedRelease() {
-  const identity = readReleaseIdentity();
-  if (identity.sourceCommit)
-    return { version: identity.releaseTag ?? 'source', buildId: identity.sourceCommit };
+/** Accepts only the installed identity file; an untagged image still carries its exact commit. */
+function installedRelease(path: string) {
   try {
-    const buildId = execFileSync(
-      'git',
-      ['-C', fileURLToPath(new URL('../..', import.meta.url)), 'rev-parse', 'HEAD'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    ).trim();
-    if (!/^[0-9a-f]{40}$/.test(buildId)) throw new Error();
-    return { version: 'source', buildId };
+    const identity = readReleaseIdentity(path);
+    if (!identity.sourceCommit) throw new Error();
+    return { version: identity.releaseTag ?? 'source', buildId: identity.sourceCommit };
   } catch {
     throw new WorkspaceRecoveryError(
       'release-mismatch',
@@ -274,10 +266,16 @@ function installedRelease() {
   }
 }
 
-/** Runs capture or full, read-only verification; decision and boot verbs remain assigned to D0-2/3. */
+/**
+ * Runs capture or full verification without server composition or a release-identity fallback.
+ * @param argv Closed offline command arguments.
+ * @param write Receives one path-free JSON success report.
+ * @param deps Optional private identity path; the binary uses the installed image path.
+ */
 export async function runWorkspaceRecoveryCli(
   argv: readonly string[],
-  write: (line: string) => void = (line) => process.stdout.write(line)
+  write: (line: string) => void = (line) => process.stdout.write(line),
+  deps: { readonly releaseIdentityPath?: string } = {}
 ): Promise<WorkspaceRecoveryCliReport> {
   const args = parseWorkspaceRecoveryArgs(argv);
   if (args.command !== 'capture' && args.command !== 'verify')
@@ -287,13 +285,15 @@ export async function runWorkspaceRecoveryCli(
     );
   let temporary: string | undefined;
   try {
+    const expectedRelease = installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH);
     const parent = dirname(args.bundleRoot);
     temporary = mkdtempSync(join(parent, '.workspace-recovery-'));
     const policy = {
       bundleRoot: args.bundleRoot,
       stagingParent: temporary,
       admission: new FileStorageAdmission(parent, () => 1_000_000_000n),
-      expectedRelease: installedRelease(),
+      expectedRelease,
+      supportedRequiredFeatures: [RECURRING_PORTABLE_FEATURE],
       supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
     };
     let capture: WorkspaceBackupReport;
