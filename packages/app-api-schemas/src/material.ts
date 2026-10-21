@@ -446,7 +446,11 @@ export const SaveWorkspaceMaterialRevisionRequestSchema = z
     requestId: requestIdSchema,
     expectedRevisionId: MaterialRevisionIdSchema.nullable(),
     contentDigest: contentDigestSchema,
-    content: z.string(),
+    content: z
+      .string()
+      .refine((content) => new TextEncoder().encode(content).byteLength <= 16_777_216, {
+        message: 'Material content exceeds 16,777,216 UTF-8 bytes.',
+      }),
   })
   .strict();
 

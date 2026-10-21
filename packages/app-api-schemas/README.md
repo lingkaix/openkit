@@ -263,3 +263,5 @@ Claim and reusable Observation/conflict content use the ordinary Notebook operat
 MCP binding requests, catalog entries and Worker projections expose only allowedTools supply. The retired approvalRequiredTools and deniedTools fields are absent; strict binding requests refuse them. Human Tool conditions use the existing full Policy candidate and confirmation contract.
 
 Native `policy.write` retains the human Policy proposal/outcome and adds a separate closed Coordinator Task-grant input/output. `GoalTaskPolicyWriteInputSchema` names only the Task Thread, expected Policy revision and existing permission fields; native consumers restore authority and lineage. `NativeOperationDefinition.inputSchema` permits an object union for these native variants; public operation inputs remain objects and no HTTP/CLI route is added.
+
+Direct Material revision save validates the exact content against a 16,777,216 UTF-8-byte limit before effects. Multibyte characters count by encoded bytes. Retained revision readers remain unchanged.
