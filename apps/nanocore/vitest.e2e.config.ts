@@ -1,6 +1,9 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+// Reuse the unit runner's held CPU-slot count; Vitest does not read this variable.
+const slotWorkers = Number(process.env.VITEST_MAX_WORKERS);
+
 export default defineConfig({
   test: {
     globalSetup: [
@@ -15,6 +18,7 @@ export default defineConfig({
     exclude: ['e2e/codex-smoke.spec.ts'],
     pool: 'forks',
     testTimeout: 60_000,
+    ...(slotWorkers > 0 ? { maxWorkers: slotWorkers } : {}),
     hookTimeout: 30_000,
   },
 });
