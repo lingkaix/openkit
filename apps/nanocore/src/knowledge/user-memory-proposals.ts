@@ -93,13 +93,13 @@ function notebook(context: UserMemoryProposalContext): KnowledgeNotebook {
 function digest(bytes: string): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
-/** Retains a validated candidate through the existing Proposal ref and Markdown family. */
-export function createUserMemoryProposal(
+/** Retains a validated candidate through the existing Proposal ref and Markdown family after Workspace acknowledgement. */
+export async function createUserMemoryProposal(
   context: UserMemoryProposalContext,
   edit: NotebookEdit,
   producer: ActorRef & { kind: 'agent' },
   sourceReferences: readonly string[]
-): Proposal {
+): Promise<Proposal> {
   admitMemoryContext(context);
   const git = notebook(context);
   if (git.publishedRevision() !== edit.baseRevision)
@@ -173,7 +173,7 @@ export function createUserMemoryProposal(
     proposalPath(context, id),
     serializeKnowledgeProposalRecord({
       ...proposal,
-      workspaceId: context.store.ensureQuickChatWorkspace(context.userDb.userId).id,
+      workspaceId: (await context.store.ensureQuickChatWorkspace(context.userDb.userId)).id,
     })
   );
   return proposal;

@@ -417,7 +417,7 @@ export async function dispatchOpenkitWorkTool(
     throw error;
   }
   if (!input.store.listAllItems().some((item) => item.id === raised.requestItemId)) {
-    input.store.createItem({
+    await input.store.createItem({
       id: raised.requestItemId,
       owner: { kind: 'workspace', workspaceId: raised.workspaceId },
       threadId: raised.threadId,

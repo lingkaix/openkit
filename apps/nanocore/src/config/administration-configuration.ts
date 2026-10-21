@@ -208,8 +208,8 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     };
   }
 
-  /** Stores and presents immutable JSON with existing Artifact and Item authority. */
-  function publish(
+  /** Awaits immutable Artifact and Item publication before returning their acknowledged identity. */
+  async function publish(
     body: unknown,
     threadId: string,
     turnId: string,
@@ -219,7 +219,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
   ) {
     const timestamp = new Date().toISOString();
     const text = JSON.stringify(body);
-    const artifact = store.createArtifact(
+    const artifact = await store.createArtifact(
       {
         id,
         workspaceId,
@@ -301,7 +301,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           fail('configuration_recovery_required');
         return result;
       },
-      execute: () => {
+      execute: async () => {
         requireHome(threadId, turnId);
         const markerId = deriveEntityId('it', [
           'configuration_apply',
@@ -411,7 +411,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           if (decision.effect !== 'allow') fail('configuration_delegation_required');
         }
         const timestamp = new Date().toISOString();
-        store.createItem(
+        await store.createItem(
           {
             id: markerId,
             owner: { kind: 'workspace', workspaceId: workspaceId },
@@ -517,7 +517,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               : 'failed',
           summary: `Candidate ${request.candidate.contentDigest}; base ${body.expectedRevision}; persisted ${persisted}; reload ${reload}; restart required ${restartRequired}.`,
         });
-        publish(
+        await publish(
           result,
           threadId,
           turnId,
@@ -594,7 +594,10 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       };
     },
     /** Proposes an exact catalog patch in an already admitted private administration Turn. */
-    propose(unsafeRequest: unknown, home: { threadId: string; turnId: string; requestId: string }) {
+    async propose(
+      unsafeRequest: unknown,
+      home: { threadId: string; turnId: string; requestId: string }
+    ) {
       requireHome(home.threadId, home.turnId);
       const request = ProposeAdministrationConfigurationRequestSchema.parse(unsafeRequest);
       const prepared = prepare(request);
@@ -616,7 +619,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           ? { warnings: prepared.warnings }
           : {}),
       });
-      const candidate = publish(body, home.threadId, home.turnId, home.requestId);
+      const candidate = await publish(body, home.threadId, home.turnId, home.requestId);
       return {
         candidate,
         preview: body,

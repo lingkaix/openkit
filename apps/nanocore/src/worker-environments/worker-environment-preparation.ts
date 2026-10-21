@@ -360,7 +360,7 @@ export function createWorkerEnvironmentPreparation(
       schemaVersion: 1,
       target: request.target,
     });
-    const turn = resolvePublicationTurn(context, {
+    const turn = await resolvePublicationTurn(context, {
       causationId: null,
       requestId: request.requestId,
       threadId: request.administrationThreadId,
@@ -382,7 +382,7 @@ export function createWorkerEnvironmentPreparation(
       );
       dependencies.requireCurrentAdministrator(context.actor);
       requirePrivateHome(context.actor, workspaceId, authoredArtifact);
-      dependencies.store.createArtifact(authoredArtifact);
+      await dependencies.store.createArtifact(authoredArtifact);
       return prepareAndPublish(
         context,
         request.requestId,
@@ -432,7 +432,7 @@ export function createWorkerEnvironmentPreparation(
 
     requireRecoverableSourceTurn(context, workspaceId, authoredArtifact);
     requireCurrentBaseline(context.actor, authored);
-    const turn = resolvePublicationTurn(context, {
+    const turn = await resolvePublicationTurn(context, {
       causationId: authoredArtifact.origin.requestId,
       requestId: request.requestId,
       threadId: request.administrationThreadId,
@@ -550,9 +550,9 @@ export function createWorkerEnvironmentPreparation(
       workspaceId,
       timestamp: now(),
     });
-    dependencies.store.createArtifact(resolvedArtifact);
+    await dependencies.store.createArtifact(resolvedArtifact);
     if (!context.administrationTurnId && publicationTurn.status === 'running') {
-      dependencies.store.updateTurn(publicationTurn.id, {
+      await dependencies.store.updateTurn(publicationTurn.id, {
         completedAt: resolvedArtifact.createdAt,
         status: 'completed',
       });
@@ -566,7 +566,8 @@ export function createWorkerEnvironmentPreparation(
     );
   }
 
-  function resolvePublicationTurn(
+  /** Resolves the admitted Turn or awaits its new native Turn and initial Item before publication. */
+  async function resolvePublicationTurn(
     context: WorkerEnvironmentPreparationContext,
     input: {
       readonly causationId: string | null;
@@ -574,7 +575,7 @@ export function createWorkerEnvironmentPreparation(
       readonly threadId: string;
       readonly workspaceId: string;
     }
-  ): ReturnType<FsStore['getTurn']> {
+  ): Promise<ReturnType<FsStore['getTurn']>> {
     if (context.administrationTurnId) {
       const turn = requireRunningAdministrationTurn(
         dependencies.store,
@@ -594,7 +595,7 @@ export function createWorkerEnvironmentPreparation(
     }
     requirePrivateTurn(context.actor, input.workspaceId, input.threadId, turnId, false);
     requireNoRunningTurn(dependencies.store, input.workspaceId, input.threadId);
-    const turn = dependencies.store.createTurn(
+    const turn = await dependencies.store.createTurn(
       input.workspaceId,
       input.threadId,
       'Prepare Worker environment',
@@ -602,7 +603,7 @@ export function createWorkerEnvironmentPreparation(
       null,
       { turnId, startedAt: now() }
     );
-    dependencies.store.createItem({
+    await dependencies.store.createItem({
       ...(input.causationId ? { causationId: input.causationId } : {}),
       completedAt: turn.startedAt,
       createdAt: turn.startedAt ?? now(),
@@ -634,7 +635,7 @@ export function createWorkerEnvironmentPreparation(
           turn.id
         );
         if (current.status === 'running') {
-          dependencies.store.updateTurn(current.id, { completedAt: now(), status: 'failed' });
+          await dependencies.store.updateTurn(current.id, { completedAt: now(), status: 'failed' });
         }
       }
       throw error;

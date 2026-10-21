@@ -302,7 +302,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 !selection.logicalModel.capabilities.includes('responses') ||
                 !selection.logicalModel.capabilities.includes('tool-calling')
               ) {
-                return failedAdministrationTurn(
+                return await failedAdministrationTurn(
                   store,
                   turn.id,
                   'administration_execution_failed',
@@ -459,7 +459,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                     : loopResult.kind === 'limit_reached'
                       ? `internal_agent_${loopResult.limit}_limit`
                       : 'internal_agent_aborted';
-                return failedAdministrationTurn(
+                return await failedAdministrationTurn(
                   store,
                   turn.id,
                   code,
@@ -470,7 +470,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               }
               const answer = finalAssistantText(loopResult.messages);
               if (!answer) {
-                return failedAdministrationTurn(
+                return await failedAdministrationTurn(
                   store,
                   turn.id,
                   'internal_agent_empty_answer',
@@ -508,7 +508,7 @@ export function createAdministrationOperationImplementations(input: Administrati
             } catch (error) {
               if (error instanceof AdministrationRecoveryRequiredError) throw error;
               if (controller.signal.aborted)
-                return failedAdministrationTurn(
+                return await failedAdministrationTurn(
                   store,
                   turn.id,
                   'internal_agent_aborted',
@@ -518,7 +518,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               const contextFailure = internalContextFailure(error);
               const answerDeadline =
                 answerStarted && contextFailure?.code === 'internal_agent_context_deadline';
-              return failedAdministrationTurn(
+              return await failedAdministrationTurn(
                 store,
                 turn.id,
                 error instanceof DeploymentAdminRequiredError
@@ -622,18 +622,18 @@ function finalAssistantText(messages: readonly AgentMessage[]): string {
     .trim();
 }
 
-/** Records a failed or explicitly interrupted run through the existing refusal and command-replay shape. */
-function failedAdministrationTurn(
+/** Awaits failed or interrupted publication so its live interruption handle remains owned until acknowledgement. */
+async function failedAdministrationTurn(
   store: FsStore,
   turnId: string,
   code: string,
   explanation: string,
   status: 'failed' | 'interrupted' = 'failed'
-): AdministrationCommandResult {
+): Promise<AdministrationCommandResult> {
   const turn = store.getTurnById(turnId);
   const completedAt = new Date().toISOString();
   try {
-    const item = store.createItem(
+    const item = await store.createItem(
       {
         id: deriveEntityId('it', ['administration_refused', turn.id]),
         owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
@@ -649,7 +649,7 @@ function failedAdministrationTurn(
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    const completedTurn = store.updateTurn(
+    const completedTurn = await store.updateTurn(
       turn.id,
       {
         status,
