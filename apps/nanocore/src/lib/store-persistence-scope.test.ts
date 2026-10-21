@@ -1,4 +1,7 @@
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
 // openkit-test-platform: posix
 
@@ -11,7 +14,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -52,7 +54,9 @@ describe('FsStore workspace persistence scope', () => {
     const firstStore = createTestStore({ dataRoot });
     const workspace = await firstStore.createWorkspace('Owner-independent workspace');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const canonicalRecordPath = join(workspaceRoot, 'workspace-record.json');
+    const canonicalRecord = workspaceSql(dataRoot, workspace.id, (db) =>
+      db.prepare('SELECT record_json FROM control_workspaces WHERE id=?').get(workspace.id)
+    ) as { record_json: string };
     const canonicalConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
     const ownerNestedRecordPath = join(
       dataRoot,
@@ -63,15 +67,13 @@ describe('FsStore workspace persistence scope', () => {
       'workspace-record.json'
     );
 
-    expect.soft(existsSync(canonicalRecordPath)).toBe(true);
+    expect.soft(canonicalRecord).toBeDefined();
     expect.soft(existsSync(canonicalConfigPath)).toBe(true);
     expect.soft(existsSync(join(workspaceRoot, 'workspace.json'))).toBe(false);
     expect.soft(existsSync(ownerNestedRecordPath)).toBe(false);
-    expect.soft(JSON.parse(readFileSync(canonicalRecordPath, 'utf8'))).not.toHaveProperty('name');
-    expect.soft(JSON.parse(readFileSync(canonicalRecordPath, 'utf8'))).not.toHaveProperty('counts');
-    expect
-      .soft(JSON.parse(readFileSync(canonicalRecordPath, 'utf8')))
-      .not.toHaveProperty('defaults');
+    expect.soft(JSON.parse(canonicalRecord.record_json)).not.toHaveProperty('name');
+    expect.soft(JSON.parse(canonicalRecord.record_json)).not.toHaveProperty('counts');
+    expect.soft(JSON.parse(canonicalRecord.record_json)).not.toHaveProperty('defaults');
     expect.soft(JSON.parse(readFileSync(canonicalConfigPath, 'utf8')).workspace).toMatchObject({
       name: 'Owner-independent workspace',
       defaultAgentId: null,
@@ -89,14 +91,14 @@ describe('FsStore workspace persistence scope', () => {
     const healthy = await store.createWorkspace('Healthy layout sibling');
     const retainedThread = await store.createThread(healthy.id, 'Retained sibling history');
 
-    renameSync(join(workspaceRoot, 'workspace-record.json'), join(workspaceRoot, 'workspace.json'));
+    writeFileSync(join(workspaceRoot, 'workspace.json'), JSON.stringify(workspace));
     const bytes = readFileSync(join(workspaceRoot, 'workspace.json'));
     const database = readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'));
     const entries = readdirSync(workspaceRoot, { recursive: true }).sort();
     const reopened = new FsStore({ dataRoot });
     const refusal = expect.objectContaining({ code: 'recovery_required' });
     expect(() => reopened.getWorkspace(workspace.id)).toThrow(refusal);
-    expect(() => reopened.createThread(workspace.id, 'Must not recreate')).toThrow(refusal);
+    await expect(reopened.createThread(workspace.id, 'Must not recreate')).rejects.toThrow(refusal);
     expect(reopened.listWorkspaces().map(({ id }) => id)).not.toContain(workspace.id);
     expect(reopened.getThread(healthy.id, retainedThread.id)).toEqual(retainedThread);
     const added = await reopened.createThread(healthy.id, 'New sibling history');
@@ -196,7 +198,7 @@ describe('FsStore workspace persistence scope', () => {
     };
 
     try {
-      expect(() => store.createArtifact(artifactInput)).toThrow(
+      await expect(store.createArtifact(artifactInput)).rejects.toThrow(
         'Injected ambiguous Artifact reference append failure.'
       );
     } finally {
@@ -263,34 +265,38 @@ describe('FsStore workspace persistence scope', () => {
       createdAt: acceptedAt,
       updatedAt: acceptedAt,
     });
-    const persistence = store as unknown as {
-      persist: (workspaceId: string) => void;
+    const faultDb = new Database(
+      join(dataRoot, 'workspaces', workspace.id, 'db', 'workspace.sqlite'),
+      { fileMustExist: true }
+    );
+    faultDb.exec(`CREATE TRIGGER refuse_introduction BEFORE INSERT ON control_product_entries
+      WHEN NEW.kind='item' BEGIN SELECT RAISE(ABORT,'refuse_introduction'); END`);
+    const introduction = {
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      artifactId: artifact.id,
+      expectedArtifactVersion: 1,
+      requestId: 'artifact-introduction-persistence-failure',
+      acceptedAt: '2026-07-18T00:05:00.000Z',
+      turnId: 'tu_00000000-0000-766e-836f-c2d0eadf5a64',
+      triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
     };
-    const persist = persistence.persist.bind(store);
-    let failed = false;
-    persistence.persist = (workspaceId) => {
-      if (!failed && workspaceId === workspace.id) {
-        failed = true;
-        throw new Error('Injected Artifact introduction persistence failure.');
-      }
-      persist(workspaceId);
-    };
-
     try {
-      expect(() =>
-        store.introduceArtifact({
-          workspaceId: workspace.id,
-          threadId: thread.id,
-          artifactId: artifact.id,
-          expectedArtifactVersion: 1,
-          requestId: 'artifact-introduction-persistence-failure',
-          acceptedAt: '2026-07-18T00:05:00.000Z',
-          turnId: 'tu_00000000-0000-766e-836f-c2d0eadf5a64',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        })
-      ).toThrow('Injected Artifact introduction persistence failure.');
+      await expect(store.introduceArtifact(introduction)).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      expect(
+        faultDb
+          .prepare('SELECT count(*) AS count FROM control_turns WHERE id=?')
+          .get('tu_00000000-0000-766e-836f-c2d0eadf5a64')
+      ).toEqual({ count: 0 });
+      expect(
+        faultDb.prepare('SELECT count(*) AS count FROM control_product_entries').get()
+      ).toEqual({ count: 0 });
     } finally {
-      persistence.persist = persist;
+      faultDb.exec('DROP TRIGGER refuse_introduction');
+      faultDb.close();
     }
 
     expect(store.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
@@ -301,9 +307,16 @@ describe('FsStore workspace persistence scope', () => {
     expect(restarted.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
     expect(restarted.listThreadTurns(workspace.id, thread.id)).toEqual([]);
     expect(restarted.listAllItems()).toEqual([]);
+    const accepted = await store.introduceArtifact(introduction);
+    expect(accepted).toMatchObject({ artifactId: artifact.id, turnId: introduction.turnId });
+    expect(store.listThreadTurns(workspace.id, thread.id)).toHaveLength(1);
+    expect(store.listAllItems()).toHaveLength(1);
+    expect(
+      new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, introduction.turnId).items
+    ).toEqual(store.listAllItems());
   });
 
-  it('does not resurrect deleted knowledge after a later projection write fails', async () => {
+  it('does not resurrect deleted knowledge when a disposable Thread projection is blocked', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-knowledge-delete-failure-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Knowledge deletion workspace');
@@ -371,15 +384,11 @@ describe('FsStore workspace persistence scope', () => {
       thread.id,
       'thread.json'
     );
-    const threadRecord = readFileSync(threadRecordPath);
-
-    rmSync(threadRecordPath);
+    mkdirSync(dirname(threadRecordPath), { recursive: true });
     mkdirSync(threadRecordPath);
-    expect(() => store.updateThread(workspace.id, thread.id, { name: 'Later projection' })).toThrow(
-      /regular file/
-    );
+    await store.updateThread(workspace.id, thread.id, { name: 'Later projection' });
     rmSync(threadRecordPath, { recursive: true });
-    writeFileSync(threadRecordPath, threadRecord);
+    expect(store.getThread(workspace.id, thread.id).name).toBe('Later projection');
 
     const restarted = new FsStore({ dataRoot });
     expect(() => restarted.getKnowledgePage(workspace.id, knowledge.id)).toThrow(
@@ -487,9 +496,9 @@ function fixture() {
 }
 
 describe('Workspace directory publication durability', () => {
-  it('syncs complete nested staged bytes and both renamed parents before successful restart readback', () => {
+  it('syncs complete nested staged bytes and both renamed parents before successful restart readback', async () => {
     const f = fixture();
-    f.publish();
+    await f.publish();
     const renameAt = trace.events.findIndex(
       (event) => event.op === 'rename' && event.path === f.finalRoot
     );
@@ -531,10 +540,10 @@ describe('Workspace directory publication durability', () => {
     );
   });
 
-  it('leaves no published Workspace after a staged descendant synchronization failure', () => {
+  it('leaves no published Workspace after a staged descendant synchronization failure', async () => {
     const f = fixture();
     trace.fail = (path, directory) => !directory && path.endsWith('/opaque/nested/retained.bin');
-    expect(f.publish).toThrow('Injected tree synchronization failure');
+    await expect(f.publish()).rejects.toThrow('Injected tree synchronization failure');
     expect(existsSync(f.finalRoot)).toBe(false);
     expect(new FsStore({ dataRoot: f.dataRoot }).listWorkspaces()).toEqual([]);
   });
@@ -542,7 +551,7 @@ describe('Workspace directory publication durability', () => {
   it.each([
     'destination',
     'source',
-  ] as const)('does not acknowledge publication when the %s parent sync fails after rename', (parent) => {
+  ] as const)('does not acknowledge publication when the %s parent sync fails after rename', async (parent) => {
     const f = fixture();
     trace.fail = (path, directory) => {
       const publication = trace.events.find(
@@ -555,7 +564,7 @@ describe('Workspace directory publication durability', () => {
           (parent === 'destination' ? dirname(f.finalRoot) : dirname(publication.from as string))
       );
     };
-    expect(f.publish).toThrow('Injected tree synchronization failure');
+    await expect(f.publish()).rejects.toThrow('Injected tree synchronization failure');
     trace.fail = undefined;
     expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspaceId).name).toBe(
       'Durable import'
@@ -632,7 +641,7 @@ describe('fresh Workspace database publication', () => {
         return;
       inspected += 1;
       expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
-      expect(existsSync(join(from, 'workspace-record.json'))).toBe(true);
+      expect(existsSync(join(from, 'config', 'workspace.jsonc'))).toBe(true);
       const stagedDatabase = join(from, 'db', 'workspace.sqlite');
       expect(existsSync(stagedDatabase)).toBe(true);
       // Reading only the main file proves schema readiness does not depend on a live WAL sidecar.
@@ -661,7 +670,7 @@ describe('fresh Workspace database publication', () => {
   it.each([
     'general',
     'personal',
-  ] as const)('does not publish %s when a staged Workspace migration fails', (kind) => {
+  ] as const)('does not publish %s when a staged Workspace migration fails', async (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     const originalPrepare = Database.prototype.prepare;
     let faults = 0;
@@ -683,7 +692,9 @@ describe('fresh Workspace database publication', () => {
     } as typeof originalPrepare);
     trace.events.length = 0;
     try {
-      expect(f.create).toThrow(expect.objectContaining({ code: 'migration_failed' }));
+      await expect(f.create()).rejects.toThrow(
+        expect.objectContaining({ code: 'migration_failed' })
+      );
       expect(faults).toBe(1);
       expect(f.store.listWorkspaces()).toEqual([]);
       expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
@@ -698,234 +709,254 @@ describe('fresh Workspace database publication', () => {
   });
 });
 
-/** Creates multiple Threads and settles existing canonical formatting before measuring writes. */
+/** Opens a separate existing fixture connection and always closes it; no schema or authority is synthesized. */
+function workspaceSql<T>(
+  dataRoot: string,
+  workspaceId: string,
+  read: (db: Database.Database) => T
+): T {
+  const db = new Database(join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite'), {
+    fileMustExist: true,
+  });
+  try {
+    return read(db);
+  } finally {
+    db.close();
+  }
+}
+
+/** Builds acknowledged Threads and retains their exact SQL rows for scope comparisons. */
 async function threadPublicationFixture(count = 3) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-publication-count-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Thread publication');
-  const threads = Array.from({ length: count }, (_, index) =>
-    store.createThread(workspace.id, `Thread ${index}`)
-  );
+  const threads = [];
+  for (let index = 0; index < count; index++)
+    threads.push(await store.createThread(workspace.id, `Thread ${index}`));
   await store.updateWorkspace(workspace.id, { name: 'Settled Thread publication' });
   const paths = threads.map((thread) =>
     join(dataRoot, 'workspaces', workspace.id, 'threads', thread.id, 'thread.json')
   );
+  const rows = () =>
+    workspaceSql(dataRoot, workspace.id, (db) =>
+      db.prepare('SELECT * FROM control_threads ORDER BY id').all()
+    );
   trace.events.length = 0;
-  return { dataRoot, store, workspace, threads, paths };
+  return { dataRoot, store, workspace, threads, paths, rows };
 }
 
-/** Lists only canonical Thread file replacements, excluding unrelated record publication. */
+/** Lists disposable Thread projection replacements only. */
 function threadReplacements(): string[] {
   return trace.events
     .filter((event) => event.op === 'rename' && basename(event.path) === 'thread.json')
     .map((event) => event.path);
 }
 
-describe('unchanged canonical Thread publication', () => {
+/** Reads the exact retained SQL metadata independently of Store caches and decoders. */
+function threadRecord(
+  f: Awaited<ReturnType<typeof threadPublicationFixture>>,
+  id: string
+): Record<string, unknown> {
+  const row = workspaceSql(f.dataRoot, f.workspace.id, (db) =>
+    db.prepare('SELECT record_json FROM control_threads WHERE id=?').get(id)
+  ) as { record_json: string };
+  return JSON.parse(row.record_json);
+}
+
+/** Injects retained corruption only after stopping the native writer. */
+async function replaceThreadRecord(
+  f: Awaited<ReturnType<typeof threadPublicationFixture>>,
+  id: string,
+  record: Record<string, unknown>
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  workspaceSql(f.dataRoot, f.workspace.id, (db) =>
+    db
+      .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+      .run(JSON.stringify(record), id)
+  );
+}
+
+describe('native Thread publication', () => {
   it('performs no Thread file writes or file fsyncs for an unrelated mutation across eight Threads', async () => {
     const f = await threadPublicationFixture(8);
-    const before = f.paths.map((path) => readFileSync(path));
+    const before = f.rows();
     await f.store.updateWorkspace(f.workspace.id, { name: 'Workspace-only change' });
     expect(threadReplacements()).toEqual([]);
-    const threadFileOperations = trace.events.filter(
-      (event) =>
-        !event.directory &&
-        (event.op === 'write' || event.op === 'sync') &&
-        (basename(event.path) === 'thread.json' || basename(event.path).startsWith('.thread.json.'))
-    );
-    expect(threadFileOperations).toEqual([]);
-    for (const [index, path] of f.paths.entries())
-      expect(readFileSync(path)).toEqual(before[index]);
+    expect(
+      trace.events.filter(
+        (event) =>
+          !event.directory &&
+          (event.op === 'write' || event.op === 'sync') &&
+          (basename(event.path) === 'thread.json' ||
+            basename(event.path).startsWith('.thread.json.'))
+      )
+    ).toEqual([]);
+    expect(f.rows()).toEqual(before);
     expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspace.id).name).toBe(
       'Workspace-only change'
     );
   });
 
-  it('publishes only the changed Thread and preserves descriptive envelope content through reopen', async () => {
+  it('changes only the selected native Thread and preserves descriptive additions through reopen', async () => {
     const f = await threadPublicationFixture(4);
-    const target = await f.threads[1];
-    const path = f.paths[1];
-    const envelope = JSON.parse(readFileSync(path, 'utf8'));
-    envelope.futureNote = 'retained annotation';
-    envelope.extensions['example.thread-note'] = { description: 'retained open extension' };
-    writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`);
-    const otherBytes = f.paths.map((candidate) => readFileSync(candidate));
-    trace.events.length = 0;
+    const target = f.threads[1];
+    const record = threadRecord(f, target.id);
+    record.futureNote = 'retained annotation';
+    record.extensions = { 'example.thread-note': { description: 'retained open extension' } };
+    await replaceThreadRecord(f, target.id, record);
+    const before = f.rows();
     await f.store.updateThread(f.workspace.id, target.id, { name: 'Changed Thread' });
-    expect(threadReplacements()).toEqual([path]);
-    const renameAt = trace.events.findIndex(
-      (event) => event.op === 'rename' && event.path === path
+    expect(threadReplacements()).toEqual([]);
+    expect(f.rows().filter((row) => (row as { id: string }).id !== target.id)).toEqual(
+      before.filter((row) => (row as { id: string }).id !== target.id)
     );
-    const temporary = trace.events[renameAt].from;
-    expect(
-      trace.events
-        .slice(0, renameAt)
-        .some((event) => event.op === 'sync' && !event.directory && event.path === temporary)
-    ).toBe(true);
-    expect(
-      trace.events
-        .slice(renameAt + 1)
-        .some((event) => event.op === 'sync' && event.directory && event.path === dirname(path))
-    ).toBe(true);
-    for (const [index, candidate] of f.paths.entries())
-      if (index !== 1) expect(readFileSync(candidate)).toEqual(otherBytes[index]);
-    const reopened = new FsStore({ dataRoot: f.dataRoot });
-    const thread = reopened.getThread(f.workspace.id, target.id);
-    expect(thread.name).toBe('Changed Thread');
-    const retained = JSON.parse(readFileSync(path, 'utf8'));
-    expect(retained.futureNote).toBe(envelope.futureNote);
-    expect(retained.extensions).toEqual(envelope.extensions);
-    expect(retained.lineage).toEqual({ workspaceId: f.workspace.id, threadId: target.id });
-    expect(retained.requiredFeatures).toEqual(envelope.requiredFeatures);
-    expect(retained.contentDigest).not.toBe(envelope.contentDigest);
-    expect(retained.contentDigest).toBe(
-      `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`
+    const retained = threadRecord(f, target.id);
+    expect(retained.futureNote).toBe(record.futureNote);
+    expect(retained.extensions).toEqual(record.extensions);
+    expect(new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, target.id).name).toBe(
+      'Changed Thread'
     );
   });
 
-  it('publishes differing canonical bytes even when the known Thread core is unchanged', async () => {
+  it('does not rewrite native Thread authority because a disposable projection has different formatting', async () => {
     const f = await threadPublicationFixture();
     const path = f.paths[1];
-    const canonical = readFileSync(path, 'utf8');
-    const compact = `${JSON.stringify(JSON.parse(canonical))}\n`;
-    expect(compact).not.toBe(canonical);
+    mkdirSync(dirname(path), { recursive: true });
+    const compact = `${JSON.stringify({ ...f.threads[1], name: 'Uncommitted file name' })}\n`;
     writeFileSync(path, compact);
-    trace.events.length = 0;
-    await f.store.updateWorkspace(f.workspace.id, { name: 'Normalize retained bytes' });
-    expect(threadReplacements()).toEqual([path]);
-    expect(readFileSync(path, 'utf8')).toBe(canonical);
-  });
-
-  it('keeps prior readable Thread authority when changed file synchronization fails', async () => {
-    const f = await threadPublicationFixture();
-    const path = f.paths[1];
-    const before = readFileSync(path);
-    trace.fail = (candidate, directory) =>
-      !directory &&
-      dirname(candidate) === dirname(path) &&
-      basename(candidate).startsWith('.thread.json.');
-    expect(() =>
-      f.store.updateThread(f.workspace.id, f.threads[1].id, { name: 'Uncommitted Thread' })
-    ).toThrow('Injected tree synchronization failure');
-    trace.fail = undefined;
-    expect(readFileSync(path)).toEqual(before);
+    const before = f.rows();
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Unrelated mutation' });
+    expect(threadReplacements()).toEqual([]);
+    expect(f.rows()).toEqual(before);
+    expect(readFileSync(path, 'utf8')).toBe(compact);
     expect(
       new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
     ).toBe('Thread 1');
   });
 
-  it('rejects a symlinked Thread file even when its target contains byte-equivalent canonical content', async () => {
+  it('keeps prior native Thread authority when its SQL transaction fails', async () => {
     const f = await threadPublicationFixture();
-    const path = f.paths[1];
-    const before = readFileSync(path);
-    const outside = join(f.dataRoot, 'outside-thread.json');
-    writeFileSync(outside, before);
-    rmSync(path);
-    symlinkSync(outside, path, 'file');
-    expect(() =>
-      f.store.updateWorkspace(f.workspace.id, { name: 'Reject redirected unchanged bytes' })
-    ).toThrow();
-    expect(readFileSync(outside)).toEqual(before);
-    expect(lstatSync(path).isSymbolicLink()).toBe(true);
-  });
-
-  it('does not skip unsupported required semantics on an otherwise unchanged Thread', async () => {
-    const f = await threadPublicationFixture();
-    const path = f.paths[1];
-    const envelope = JSON.parse(readFileSync(path, 'utf8'));
-    envelope.requiredFeatures.push('example.unsupported-thread-feature');
-    const bytes = `${JSON.stringify(envelope, null, 2)}\n`;
-    writeFileSync(path, bytes);
-    expect(() =>
-      f.store.updateWorkspace(f.workspace.id, { name: 'Reject unsupported semantics' })
-    ).toThrow();
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
-  });
-
-  it('refuses the affected Workspace until ordinary reopen after a failed Thread parent commit', async () => {
-    const f = await threadPublicationFixture();
-    const path = f.paths[1];
-    const threadRoot = dirname(path);
-    const other = await f.store.createWorkspace('Unaffected Workspace');
-    trace.events.length = 0;
-    trace.fail = (candidate, directory) =>
-      directory &&
-      candidate === threadRoot &&
-      trace.events.some((event) => event.op === 'rename' && event.path === path);
-    expect(() =>
-      f.store.updateThread(f.workspace.id, f.threads[1].id, { name: 'Visible pending commit' })
-    ).toThrow('Injected tree synchronization failure');
-    const visibleBytes = readFileSync(path);
-    expect(JSON.parse(visibleBytes.toString('utf8')).name).toBe('Visible pending commit');
-    trace.events.length = 0;
-    trace.fail = undefined;
-    for (const read of [
-      () => f.store.getWorkspace(f.workspace.id),
-      () => f.store.getThread(f.workspace.id, f.threads[1].id),
-      () => f.store.listThreads(f.workspace.id),
-      () => f.store.listWorkspaces(),
-      () => f.store.listAllItems(),
-    ]) {
-      expect(read).toThrow('FsStore: directory synchronization failed after rename');
-    }
-    expect(() =>
-      f.store.updateWorkspace(f.workspace.id, { name: 'Retry unchanged Thread commit' })
-    ).toThrow('Ordinary Store reopen is required');
-    expect(trace.events).toEqual([]);
-    expect(readFileSync(path)).toEqual(visibleBytes);
-    await f.store.updateWorkspace(other.id, { name: 'Still available' });
-    expect(f.store.getWorkspace(other.id).name).toBe('Still available');
-    expect(() => f.store.getThread(f.workspace.id, f.threads[1].id)).toThrow(
-      'Ordinary Store reopen is required'
-    );
-    trace.events.length = 0;
-    const reopened = new FsStore({ dataRoot: f.dataRoot });
-    await reopened.updateWorkspace(f.workspace.id, { name: 'Accepted unchanged Thread commit' });
-    expect(threadReplacements()).toEqual([]);
-    expect(
-      trace.events.some(
-        (event) => event.op === 'sync' && event.directory && event.path === threadRoot
+    const before = f.rows();
+    workspaceSql(f.dataRoot, f.workspace.id, (db) =>
+      db.exec(
+        `CREATE TRIGGER refuse_thread BEFORE UPDATE ON control_threads BEGIN SELECT RAISE(ABORT,'refuse_thread'); END`
       )
-    ).toBe(true);
-    expect(readFileSync(path)).toEqual(visibleBytes);
+    );
+    try {
+      await expect(
+        f.store.updateThread(f.workspace.id, f.threads[1].id, { name: 'Uncommitted Thread' })
+      ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+      expect(f.rows()).toEqual(before);
+      expect(f.store.getThread(f.workspace.id, f.threads[1].id).name).toBe('Thread 1');
+    } finally {
+      workspaceSql(f.dataRoot, f.workspace.id, (db) => db.exec('DROP TRIGGER refuse_thread'));
+    }
     expect(
       new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
-    ).toBe('Visible pending commit');
+    ).toBe('Thread 1');
+  });
+
+  it('does not follow a symlinked disposable Thread projection or grant it authority', async () => {
+    const f = await threadPublicationFixture();
+    const path = f.paths[1];
+    mkdirSync(dirname(path), { recursive: true });
+    const outside = join(f.dataRoot, 'outside-thread.json');
+    const before = Buffer.from(JSON.stringify({ ...f.threads[1], name: 'Outside authority' }));
+    writeFileSync(outside, before);
+    symlinkSync(outside, path, 'file');
+    const rows = f.rows();
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Ignore redirected projection' });
+    expect(readFileSync(outside)).toEqual(before);
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+    expect(f.rows()).toEqual(rows);
+    expect(
+      new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
+    ).toBe('Thread 1');
+  });
+
+  it('does not skip unsupported required semantics on an otherwise unchanged native Thread', async () => {
+    const f = await threadPublicationFixture();
+    const record = threadRecord(f, f.threads[1].id);
+    record.requiredFeatures = ['example.unsupported-thread-feature'];
+    await replaceThreadRecord(f, f.threads[1].id, record);
+    const before = f.rows();
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    expect(() => reopened.getThread(f.workspace.id, f.threads[1].id)).toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    await expect(
+      reopened.updateWorkspace(f.workspace.id, { name: 'Reject unsupported semantics' })
+    ).rejects.toThrow();
+    expect(f.rows()).toEqual(before);
+  });
+
+  it('retains committed Thread authority while its native acknowledgement is withheld', async () => {
+    const f = await threadPublicationFixture();
+    const other = await f.store.createWorkspace('Unaffected Workspace');
+    const client = getControlStoreWorkerClient() as unknown as { receive(value: unknown): void };
+    const receive = client.receive.bind(client);
+    let release!: () => void;
+    let committed!: () => void;
+    let failed!: (reason: unknown) => void;
+    const observed = new Promise<void>((resolve, reject) => {
+      committed = resolve;
+      failed = reject;
+    });
+    const hold = vi.spyOn(client, 'receive').mockImplementation((value) => {
+      if (
+        (value as { status?: string; operation?: string }).status === 'ok' &&
+        (value as { operation?: string }).operation === 'products'
+      ) {
+        release = () => receive(value);
+        committed();
+      } else receive(value);
+    });
+    let acknowledged = false;
+    const mutation = f.store
+      .updateThread(f.workspace.id, f.threads[1].id, { name: 'Committed before ACK' })
+      .then((value) => {
+        acknowledged = true;
+        return value;
+      });
+    void mutation.catch(failed);
+    try {
+      await observed;
+      expect(acknowledged).toBe(false);
+      expect(threadRecord(f, f.threads[1].id).name).toBe('Committed before ACK');
+      expect(
+        new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
+      ).toBe('Committed before ACK');
+    } finally {
+      hold.mockRestore();
+      release?.();
+    }
+    await expect(mutation).resolves.toMatchObject({ name: 'Committed before ACK' });
+    await f.store.updateWorkspace(other.id, { name: 'Still available' });
+    expect(f.store.getWorkspace(other.id).name).toBe('Still available');
+    expect(
+      new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id).name
+    ).toBe('Committed before ACK');
   });
 });
 
-describe('canonical Thread byte comparison', () => {
-  it('normalizes raw bytes that decode to unchanged canonical Thread text', async () => {
+describe('native Thread byte authority', () => {
+  it('preserves exact native descriptive bytes while ignoring invalid disposable projection bytes', async () => {
     const f = await threadPublicationFixture();
+    const record = threadRecord(f, f.threads[1].id);
+    record.futureNote = 'Retained \uFFFD annotation';
+    await replaceThreadRecord(f, f.threads[1].id, record);
+    const before = f.rows();
     const path = f.paths[1];
-    const envelope = JSON.parse(readFileSync(path, 'utf8'));
-    envelope.futureNote = 'Retained \uFFFD annotation';
-    writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`);
-    await f.store.updateWorkspace(f.workspace.id, { name: 'Settled annotation bytes' });
-    const canonical = readFileSync(path);
-    const replacementCharacter = Buffer.from('\uFFFD', 'utf8');
-    const offset = canonical.indexOf(replacementCharacter);
-    expect(offset).toBeGreaterThanOrEqual(0);
-    const noncanonical = Buffer.concat([
-      canonical.subarray(0, offset),
-      Buffer.from([0xff]),
-      canonical.subarray(offset + replacementCharacter.length),
-    ]);
-    expect(noncanonical.equals(canonical)).toBe(false);
-    expect(noncanonical.toString('utf8')).toBe(canonical.toString('utf8'));
-    writeFileSync(path, noncanonical);
-    const siblings = f.paths.map((candidate) => readFileSync(candidate));
-    trace.events.length = 0;
-    await f.store.updateWorkspace(f.workspace.id, { name: 'Normalize exact canonical bytes' });
-    expect(threadReplacements()).toEqual([path]);
-    expect(readFileSync(path)).toEqual(canonical);
-    for (const [index, candidate] of f.paths.entries())
-      if (index !== 1) expect(readFileSync(candidate)).toEqual(siblings[index]);
-    const retained = JSON.parse(readFileSync(path, 'utf8'));
-    expect(retained.futureNote).toBe(envelope.futureNote);
-    expect(retained.contentDigest).toBe(envelope.contentDigest);
-    expect(retained.lineage).toEqual(envelope.lineage);
+    mkdirSync(dirname(path), { recursive: true });
+    const bytes = Buffer.from([0xff]);
+    writeFileSync(path, bytes);
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Keep native bytes' });
+    expect(threadReplacements()).toEqual([]);
+    expect(f.rows()).toEqual(before);
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(threadRecord(f, f.threads[1].id).futureNote).toBe(record.futureNote);
     expect(
       new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id)
     ).toEqual(f.store.getThread(f.workspace.id, f.threads[1].id));
