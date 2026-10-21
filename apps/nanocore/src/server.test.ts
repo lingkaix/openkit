@@ -1057,8 +1057,13 @@ class FakeTurnExecutor implements TurnExecutor {
   public get executionBackend() {
     return this.continuity.executionBackend;
   }
-  /** Observes full modeled closeout after a real dispatch tick; queued receipt gaps remain deciding failures. */
-  public async waitForFinished(store: FsStore, count = 1): Promise<void> {
+  /** Joins real modeled work; fault-injection cases must assert their exact closeout outcome. */
+  public async waitForFinished(
+    store: FsStore,
+    count = 1,
+    assertCloseouts: (closeouts: Promise<void>[]) => Promise<unknown> = (closeouts) =>
+      Promise.all(closeouts)
+  ): Promise<void> {
     const coreDb = this.fixtureOptions.coreDb!;
     const config = this.runtimeSnapshot!;
     // Forward both real mode owners and the native display write; a missing result still fails the original assertions.
@@ -1075,7 +1080,7 @@ class FakeTurnExecutor implements TurnExecutor {
         workspaceDataSourceCatalogs: config.workspaceDataSourceCatalogs,
         workspaceMcpServerCatalogs: config.workspaceMcpServerCatalogs,
       });
-      await Promise.all(
+      await assertCloseouts(
         this.closeouts.mock.results
           .filter((result) => result.type === 'return')
           .map((result) => result.value.closeout)
@@ -1554,21 +1559,7 @@ class FakeTurnExecutor implements TurnExecutor {
     turnId: string,
     context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
-    const turn = await store.updateTurn(turnId, {
-      status: 'interrupted',
-      completedAt: new Date().toISOString(),
-    });
-    store.emitTurnEvent(
-      turnId,
-      await store.persistTurnEvent(turnId, {
-        event: 'turn.completed',
-        requestId: context.requestId,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        threadId: turn.threadId,
-        turnId,
-        data: { type: 'turn-completed', stopReason: 'aborted', turn },
-      })
-    );
+    await this.continuity.interruptTurn(store, turnId, context);
   }
 }
 
@@ -6630,7 +6621,17 @@ describe('nanocore server', () => {
           }
         )
       );
-      await executor.waitForFinished(store);
+      // Retain the checkpoint through the real closeout refusal, then test its missing-receipt recovery.
+      const assertRetainedCheckpointCloseout = async (closeouts: Promise<void>[]) => {
+        expect(closeouts).toHaveLength(1);
+        await expect(closeouts[0]).rejects.toMatchObject({
+          code: 'recovery_required',
+          message: 'The Task worker checkpoint is not ready for terminal cleanup.',
+          status: 409,
+        });
+      };
+      await executor.waitForFinished(store, 1, assertRetainedCheckpointCloseout);
+      expect(collector).toHaveBeenCalledTimes(1);
       collector.mockRestore();
       // Deliberately corrupt only the published receipt after the exact execution has closed; retained terminal owners drive recovery.
       const receiptDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
@@ -6722,7 +6723,7 @@ describe('nanocore server', () => {
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
       });
-      await executor.waitForFinished(store, 1);
+      await executor.waitForFinished(store, 1, assertRetainedCheckpointCloseout);
       expect(executor.startContexts).toHaveLength(1);
 
       const replayRes = await app.request(
@@ -6745,7 +6746,7 @@ describe('nanocore server', () => {
         state: 'completed',
         turn: { id: turn.id },
       });
-      await executor.waitForFinished(store, 1);
+      await executor.waitForFinished(store, 1, assertRetainedCheckpointCloseout);
       expect(executor.startContexts).toHaveLength(1);
       expect(
         store.getCommandRequest('task.start', requestId, {
@@ -8164,10 +8165,9 @@ describe('nanocore server', () => {
   });
 
   it('refuses a Task receipt outside the current direct command lineage without new work', async () => {
-    const coreDb = createCoreDb();
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    let coreDb = createCoreDb();
+    let store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const requestId = '0190f4c8-0000-7000-8000-000000000604';
     const input = 'Plan a multi-step release goal for NanoCore.';
     const turn = await store.createTurn(
@@ -8178,7 +8178,7 @@ describe('nanocore server', () => {
     );
     const at = new Date().toISOString();
     await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
-    store.recordCommandRequest({
+    const retainedReceipt = new FsStore().recordCommandRequest({
       command: 'task.start',
       requestId,
       scope: {
@@ -8189,14 +8189,42 @@ describe('nanocore server', () => {
       inputHash: commandInputHash({ input }),
       response: { kind: 'turn', id: turn.id },
     });
-    const retainedTurns = structuredClone(
-      store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    );
-    const retainedCommands = structuredClone(store.listCommandRequests());
+    // Live admission cannot emit this contradictory receipt. Edit only a stopped private corpus.
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    const receiptDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
+      receiptDb.sqlite
+        .prepare(`INSERT INTO idempotency_requests
+        (schema_version, request_key, command_name, request_id, scope_json, input_hash,
+         response_kind, response_id, response_json, created_at, expires_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+        .run(
+          retainedReceipt.key,
+          retainedReceipt.command,
+          retainedReceipt.requestId,
+          JSON.stringify(retainedReceipt.scope),
+          retainedReceipt.inputHash,
+          retainedReceipt.response.kind,
+          retainedReceipt.response.id,
+          retainedReceipt.createdAt,
+          retainedReceipt.expiresAt
+        );
+    } finally {
+      receiptDb.sqlite.close();
+    }
+    coreDb = openCoreDb(coreDb.dataRoot);
+    try {
+      store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const app = await createApp({ coreDb, store, turnExecutor: executor });
+      const retainedTurns = structuredClone(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      );
+      const retainedCommands = structuredClone(store.listCommandRequests());
+      expect(retainedCommands).toEqual([retainedReceipt]);
       const response = await app.request(
         ...operationRequest(
           'task.start',
@@ -11507,15 +11535,26 @@ describe('nanocore server', () => {
       turnInput: 'Interrupt this running turn',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    recordTestExecutionAttempt(coreDb, {
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      coreDb,
+      agentSetup: createTestAgentSetup(),
+      agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
+      backend: { kind: 'openshell' },
+      createdAt: new Date().toISOString(),
+      requestId: entry.requestId,
+      triggerActor: turn.triggerActor,
+      turn,
+      turnInput: entry.turnInput,
+      workspaceRoots: [],
+    });
+    const attempt = recordTestExecutionAttempt(coreDb, {
       entry,
       attemptId: 'attempt_00000000-0000-7cb2-98f2-3a36a5686b98',
       agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
-      inputRef: 'snapshot_interrupt_route',
+      inputRef: environmentPackage.snapshotId,
       bindingRef: 'binding_interrupt_route',
       sessionCompatibilityKey: 'compat_interrupt_route',
       now: () => new Date().toISOString(),
-      operationId: 'original:interrupt_route',
     });
     await store.createAgentSession({
       id: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
@@ -11527,11 +11566,42 @@ describe('nanocore server', () => {
       createdAt: turn.startedAt!,
       updatedAt: turn.startedAt!,
     });
-    await store.updateTurn(turn.id, {
-      agentId: 'agent_codex_host',
-      agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
-      status: 'running',
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
+    try {
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        environmentPackage,
+        createdAt: environmentPackage.createdAt,
+      });
+      const target = recordTestNativeRuntimeTarget(coreDb);
+      // Admit original obligations before the modeled submission; interruption proves no release.
+      const journalIntents = prepareWorkerTurnJournalIntents(
+        workspaceDb,
+        environmentPackage,
+        attempt,
+        {
+          backendKind: 'openshell',
+          targetId: target.targetId,
+          allocationRef: attempt.bindingRef,
+        }
+      );
+      await store.updateTurn(
+        turn.id,
+        {
+          agentId: 'agent_codex_host',
+          agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
+          status: 'running',
+        },
+        { journalIntents }
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    recordSchedulerExecutionOperation(coreDb, {
+      attemptId: attempt.attemptId,
+      operationId: 'original:interrupt_route',
+      submission: true,
     });
+    const interrupt = vi.spyOn(executor, 'interruptTurn');
     const interruptRes = await app.request(
       ...operationRequest(
         'turn.interrupt',
@@ -11553,6 +11623,9 @@ describe('nanocore server', () => {
       )
     );
 
+    expect(interrupt).toHaveBeenCalledExactlyOnceWith(store, turn.id, {
+      requestId: '0190f4c8-0000-7000-8000-000000000206',
+    });
     expect(interruptRes.status).toBe(200);
     expect((await interruptRes.json()) as { status: string }).toMatchObject({
       status: 'interrupted',

@@ -1,7 +1,6 @@
 import type { TURN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { ProductTurnSchema } from '@openkit/protocol';
 import { interruptAdministrationTurn } from './administration/administration-operations.js';
-import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import type { FsStore } from './lib/store.js';
@@ -58,25 +57,7 @@ export function createTurnOperationImplementations(
             interruptInternalChatTurn: async (store, turnId) =>
               (await interruptAdministrationTurn(store, turnId)) ||
               (await dependencies.conversationService!.interrupt(store, turnId)),
-            onInterruptAccepted: () => {
-              const workspaceDb = dependencies.repositoryWorkspaceDb!(input.workspaceId);
-              try {
-                recordWorkspaceAuditEvent({
-                  workspaceDb,
-                  workspaceId: input.workspaceId,
-                  threadId: input.threadId,
-                  turnId: input.turnId,
-                  requestId: input.requestId,
-                  actor: context.actorRef,
-                  action: 'turn.interrupt',
-                  category: 'command',
-                  outcome: 'succeeded',
-                  summary: 'Stop request accepted.',
-                });
-              } finally {
-                workspaceDb.sqlite.close();
-              }
-            },
+            actor: context.actorRef,
           })
         );
       } catch (error) {

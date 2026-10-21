@@ -20,7 +20,13 @@ function owner(path) {
 /** Builds ordinary synthetic User authority without starting a service or using a credential. */
 async function fixture(t, serverUser = false) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-previous-corpus-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(async () => {
+    const { shutdownControlStoreWorkerClient } = await owner(
+      'storage/control-store-worker-client.js'
+    );
+    await shutdownControlStoreWorkerClient();
+    rmSync(root, { recursive: true, force: true });
+  });
   const dataRoot = join(root, 'data');
   const retainedRoot = join(root, 'retained');
   const { ensureLayout } = await owner('storage/fs-layout.js');

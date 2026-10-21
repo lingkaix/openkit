@@ -248,7 +248,13 @@ test('matching Worker activation uses the prepared confirmation and checks the a
 
 test('revision-local corpus helpers join every current retained family before comparison passes', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'openkit-upgrade-joined-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    const { shutdownControlStoreWorkerClient } = await load(
+      'storage/control-store-worker-client.js'
+    );
+    await shutdownControlStoreWorkerClient();
+    await rm(root, { recursive: true, force: true });
+  });
   const appRoot = resolve('apps/nanocore');
   const dataRoot = join(root, 'data');
   const retainedRoot = join(root, 'retained');

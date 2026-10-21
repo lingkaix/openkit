@@ -1314,6 +1314,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         precedingEvents: [sessionEvent],
         requestId: state.requestId,
         stopReason: 'aborted',
+        ...(context.command ? { command: context.command } : {}),
       }
     );
     const retainedSessionEvent = store
