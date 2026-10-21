@@ -944,8 +944,14 @@ describe('Goal-domain Task consumers', () => {
   it('lets an admitted selected Worker reach ordinary Task execution', async () => {
     const f = await fixture();
     const { result, startWorker } = await f.dispatch();
-    expect(JSON.stringify(result)).toContain('SAFE_WORKER_BOUNDARY');
     expect(startWorker).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      code: 'task_admission_failed',
+      message:
+        'Task admission failed without a safe result. Inspect current Task records before a new request.',
+    });
+    expect(JSON.stringify(result)).not.toContain('SAFE_WORKER_BOUNDARY');
   });
 
   it('blocks a linked live effect without current Goal authority before contacting upstream', async () => {
