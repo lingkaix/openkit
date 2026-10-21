@@ -639,6 +639,42 @@ it.each([
   expect(feedback).not.toContain('notebook.submission_refused');
 }, 120_000);
 
+it('makes the actual script path refusal actionable with exact native feedback', async () => {
+  const f = fixture();
+  const observed = observeNotebookTools();
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1)
+      return call('knowledge.notebook-workspace.update', {
+        script: 'printf scratch > scratch.sh',
+      });
+    feedback = latestToolOutput(f);
+    throw new Error('The deterministic path refusal probe is complete.');
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Inspect the admitted notebook.',
+        }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(observed).toHaveLength(1);
+  expect(observed[0]!.result.isError).toBe(true);
+  expect(JSON.parse(feedback)).toEqual({
+    code: 'invalid_request',
+    diagnostics: ['notebook.script_path_refused'],
+    message:
+      'Writable Page files use bundle-relative lowercase .md paths under the Notebook root. Original Sources and omitted base members are read-only. There are no script, scratch or non-Markdown files. mkdir, remove, copy and move use the same path rule. Correct the path, then submit the accepted pages with knowledge.notebook.update once the synthesis is ready.',
+  });
+}, 120_000);
+
 it('keeps exception text and paths out of model and process failure diagnostics', async () => {
   const f = fixture();
   const marker = 'PRIVATE-EXCEPTION-CONTENT';
