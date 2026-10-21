@@ -610,7 +610,7 @@ export function createArtifactOperationImplementations(
               const decisionInput = {
                 actor,
                 actorId,
-                ...contentProof,
+                ...artifactReviewNativeContentProof(artifact),
                 artifactId,
                 artifactVersion,
                 decidedAt: new Date().toISOString(),
@@ -813,11 +813,7 @@ export function createArtifactOperationImplementations(
                 input: {
                   actor,
                   actorId,
-                  ...artifactReviewContentProof(
-                    artifact,
-                    workspaceDb,
-                    input.decision === 'accepted' && review.materialProposal !== null
-                  ),
+                  ...artifactReviewNativeContentProof(artifact),
                   artifactId,
                   artifactVersion,
                   decidedAt: new Date().toISOString(),
@@ -1059,6 +1055,24 @@ function artifactReviewFollowUpPrompt(
     decisionRequestId,
     workerRequestId: deriveArtifactReviewWorkerRequestId(decisionRequestId),
   });
+}
+
+/** Names the retained original for native preparation without copying text into the JSON envelope. */
+function artifactReviewNativeContentProof(artifact: ReturnType<FsStore['getArtifact']>) {
+  return {
+    artifactContent: null,
+    artifactMediaType:
+      artifact.content.format === 'file'
+        ? artifact.content.mediaType
+        : artifactMediaType(artifact.content.format),
+    artifactOriginal: {
+      byteLength:
+        artifact.content.format === 'file'
+          ? artifact.content.byteLength
+          : Buffer.byteLength(artifact.content.body, 'utf8'),
+      contentDigest: artifact.contentDigest,
+    },
+  } as const;
 }
 
 /** Projects verified original identity into Review input without a fabricated text body. */

@@ -22,7 +22,12 @@ import {
   ProjectWorkerBackendCleanupInputSchema,
   projectWorkerBackendCleanupInDb,
 } from '../runtime/worker-backend-cleanup-projection.js';
-import { applyControlMaterialCommand, WorkspaceMaterialError } from '../workspace-materials.js';
+import {
+  applyControlMaterialCommand,
+  type ControlMaterialCommandInput,
+  prepareControlMaterialCommand,
+  WorkspaceMaterialError,
+} from '../workspace-materials.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
@@ -80,6 +85,7 @@ type WriteRequest = Extract<
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
+  readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
 };
@@ -316,8 +322,9 @@ function flush(owner: OwnedDatabase): void {
               result,
             };
           } else if (request.operation === 'material') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            const result = applyControlMaterialCommand(owner.scopeDb, request.input);
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedMaterial)
+              throw new ControlProductPreconditionError();
+            const result = applyControlMaterialCommand(owner.scopeDb, request.preparedMaterial);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -684,8 +691,13 @@ function receive(value: unknown): void {
         }
         let preparedEntries: WriteRequest['preparedEntries'];
         let preparedGoal: PreparedControlGoalCommand | undefined;
+        let preparedMaterial: ControlMaterialCommandInput | undefined;
         let preparedReview: PreparedControlReviewCommand | undefined;
         try {
+          if (value.operation === 'material') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            preparedMaterial = prepareControlMaterialCommand(value.input, value.content);
+          }
           if (value.operation === 'review') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             preparedReview = prepareControlReviewCommand(
@@ -720,7 +732,12 @@ function receive(value: unknown): void {
           );
           return;
         }
-        owner.pending.push({ ...value, preparedEntries, preparedGoal, preparedReview });
+        if (value.operation === 'material') {
+          const { content: _content, ...framing } = value;
+          owner.pending.push({ ...framing, preparedMaterial });
+        } else {
+          owner.pending.push({ ...value, preparedEntries, preparedGoal, preparedReview });
+        }
         schedule(owner);
       }
       return;

@@ -35,6 +35,11 @@ import { z } from 'zod';
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
 import { commandRequestKey } from './lib/store.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import { readArtifactVersionRecord } from './storage/artifacts/artifact-version-records.js';
+import {
+  MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
+  readArtifactFileText,
+} from './storage/artifacts/file-records.js';
 import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
@@ -51,6 +56,7 @@ import {
 } from './storage/control-store-products.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { WorkspaceDb } from './storage/db.js';
+import { resolveDataRootPath } from './storage/fs-layout.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
 import {
   artifactReferenceItemId,
@@ -1243,6 +1249,13 @@ const ControlReviewDecisionSchema = ControlReviewReplaySchema.extend({
   actor: ActorRefSchema,
   decidedAt: TimestampSchema,
   artifactContent: z.string().nullable(),
+  artifactOriginal: z
+    .object({
+      byteLength: z.number().int().nonnegative(),
+      contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    })
+    .strict()
+    .optional(),
   artifactMediaType: z.string().min(1),
   artifactFile: z
     .object({
@@ -1253,10 +1266,12 @@ const ControlReviewDecisionSchema = ControlReviewReplaySchema.extend({
     .optional(),
 }).superRefine((input, context) => {
   if (
-    input.artifactContent === null
-      ? !input.artifactFile
-      : input.artifactFile !== undefined ||
-        !['text/plain', 'text/markdown', 'application/json'].includes(input.artifactMediaType)
+    input.artifactOriginal !== undefined
+      ? input.artifactContent !== null || input.artifactFile !== undefined
+      : input.artifactContent === null
+        ? !input.artifactFile
+        : input.artifactFile !== undefined ||
+          !['text/plain', 'text/markdown', 'application/json'].includes(input.artifactMediaType)
   )
     context.addIssue({ code: 'custom', message: 'Review content proof is contradictory.' });
 });
@@ -1347,6 +1362,7 @@ export type ControlReviewCommandResult = z.infer<typeof ControlReviewCommandResu
 /** Native-only verified bytes; preparation performs file I/O before the SQL savepoint. */
 export interface PreparedControlReviewCommand {
   readonly entries: readonly PreparedControlEntry[];
+  readonly decisionInput?: DecideArtifactReviewInput;
 }
 
 /** Checks a retained publication without inserting or repairing its missing Review. */
@@ -1374,6 +1390,79 @@ export function prepareControlReviewCommand(
   mount: ControlProductContentMount | undefined
 ): PreparedControlReviewCommand {
   const input = ControlReviewCommandInputSchema.parse(value);
+  if (input.mode === 'decide' && input.input.artifactOriginal) {
+    const proof = input.input.artifactOriginal;
+    const workspaceRoot = resolveDataRootPath(db.dataRoot, 'workspaces', db.workspaceId);
+    let artifact: z.infer<typeof ArtifactSchema>;
+    try {
+      artifact = readArtifactVersionRecord(
+        workspaceRoot,
+        input.input.artifactId,
+        input.input.artifactVersion
+      ).artifact;
+    } catch {
+      throw reviewError('recovery_required', 'The reviewed Artifact original is unavailable.');
+    }
+    const mediaType =
+      artifact.content.format === 'file'
+        ? artifact.content.mediaType
+        : artifact.content.format === 'markdown'
+          ? 'text/markdown'
+          : artifact.content.format === 'text'
+            ? 'text/plain'
+            : 'application/json';
+    const byteLength =
+      artifact.content.format === 'file'
+        ? artifact.content.byteLength
+        : Buffer.byteLength(artifact.content.body, 'utf8');
+    if (
+      artifact.workspaceId !== db.workspaceId ||
+      artifact.contentDigest !== proof.contentDigest ||
+      byteLength !== proof.byteLength ||
+      mediaType !== input.input.artifactMediaType ||
+      artifact.status !== 'ready'
+    )
+      throw reviewError('recovery_required', 'The reviewed Artifact original is contradictory.');
+    const review = getArtifactReview(db, artifact.id, artifact.version);
+    if (review.contentDigest !== proof.contentDigest)
+      throw reviewError('recovery_required', 'The reviewed Artifact digest changed.');
+    const materialApply = input.input.decision === 'accepted' && review.materialProposal !== null;
+    let text: string | null;
+    if (artifact.content.format === 'file') {
+      try {
+        text =
+          ['text/plain', 'text/markdown', 'application/json'].includes(mediaType) && byteLength > 0
+            ? readArtifactFileText({
+                workspaceRoot,
+                artifactId: artifact.id,
+                version: artifact.version,
+                byteLength,
+                contentDigest: proof.contentDigest,
+                maximumBytes: materialApply ? MAX_ARTIFACT_MATERIAL_TEXT_BYTES : 2048,
+              })
+            : null;
+      } catch {
+        throw reviewError('recovery_required', 'The reviewed Artifact original is unavailable.');
+      }
+      if (text !== null && !materialApply && text.split('\n').length > 50) text = null;
+    } else text = artifact.content.body;
+    const { artifactOriginal: _original, artifactFile: _file, ...decision } = input.input;
+    const normalizedDecision = { ...decision, rangeFeedback: decision.rangeFeedback ?? null };
+    const decisionInput =
+      text !== null
+        ? {
+            ...normalizedDecision,
+            artifactContent: text,
+            artifactMediaType: mediaType as ArtifactReviewMediaType,
+          }
+        : {
+            ...normalizedDecision,
+            artifactContent: null,
+            artifactMediaType: mediaType,
+            artifactFile: { byteLength, contentDigest: proof.contentDigest },
+          };
+    return { entries: [], decisionInput };
+  }
   if (input.mode !== 'submit') return { entries: [] };
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   const artifact = input.artifact;
@@ -1598,7 +1687,10 @@ export function applyControlReviewCommand(
             ...input.input,
             rangeFeedback: input.input.rangeFeedback ?? null,
           })
-        : decideArtifactReview(db, input.input as DecideArtifactReviewInput);
+        : decideArtifactReview(
+            db,
+            prepared.decisionInput ?? (input.input as DecideArtifactReviewInput)
+          );
     if (input.mode === 'decision-receipt') {
       if (
         !followUp ||

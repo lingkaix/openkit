@@ -24,10 +24,11 @@ import {
   WorkerBackendCleanupProjectionResultSchema,
 } from '../runtime/worker-backend-cleanup-projection.js';
 import {
-  type ControlMaterialCommandInput,
-  ControlMaterialCommandInputSchema,
   type ControlMaterialCommandResult,
   ControlMaterialCommandResultSchema,
+  type ControlMaterialWireInput,
+  ControlMaterialWireInputSchema,
+  controlMaterialTextSpans,
 } from '../workspace-materials.js';
 import {
   type ControlAdmission,
@@ -54,13 +55,15 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 6;
+export const CONTROL_WORKER_VERSION = 7;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
   batchTransitions: 32,
   batchWaitMs: 5,
   pendingTransitions: 1024,
+  /** Process-wide binary input plus echoed range-text capacity, admitted before postMessage. */
+  materialPendingBytes: 64 * 1024 * 1024,
 } as const;
 
 /** SQLite bind values that survive structured cloning without executable content. */
@@ -128,7 +131,11 @@ export type ControlWorkerCommand =
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
-      | { readonly operation: 'material'; readonly input: ControlMaterialCommandInput }
+      | {
+          readonly operation: 'material';
+          readonly input: ControlMaterialWireInput;
+          readonly content?: ArrayBuffer;
+        }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
       | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
@@ -485,6 +492,42 @@ function isSqlStatement(value: unknown): value is ControlSqlStatement {
   );
 }
 
+/** Reads only an ordinary, fixed, attached ArrayBuffer; native getters reject forged or shared backing. */
+export function controlMaterialArrayBufferByteLength(value: unknown): number | undefined {
+  try {
+    if (!(value instanceof ArrayBuffer)) return undefined;
+    const prototype = ArrayBuffer.prototype;
+    const byteLength = Object.getOwnPropertyDescriptor(prototype, 'byteLength')!.get!.call(
+      value
+    ) as number;
+    if (
+      Object.getOwnPropertyDescriptor(prototype, 'resizable')?.get?.call(value) ||
+      Object.getOwnPropertyDescriptor(prototype, 'detached')?.get?.call(value)
+    )
+      return undefined;
+    return byteLength;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bounds contiguous binary fields and reserves the UTF-8 text echoed by range replies until settlement. */
+export function controlMaterialTransferSize(
+  input: ControlMaterialWireInput
+): { byteLength: number; replyByteLength: number } | undefined {
+  let byteLength = 0;
+  for (const span of controlMaterialTextSpans(input)) {
+    if (span.offset !== byteLength || !Number.isSafeInteger(byteLength + span.byteLength))
+      return undefined;
+    byteLength += span.byteLength;
+  }
+  return {
+    byteLength,
+    replyByteLength:
+      input.mode === 'range-correct' || input.mode === 'range-judgement' ? byteLength : 0,
+  };
+}
+
 /**
  * Validates the complete effect-bearing request before posting and again before native admission.
  *
@@ -539,12 +582,28 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'material') {
+    try {
+      const parsed = ControlMaterialWireInputSchema.safeParse(value.input);
+      if (!parsed.success || !exactFields(value, [...scoped, 'input'], ['content'])) return false;
+      const size = controlMaterialTransferSize(parsed.data);
+      if (!size) return false;
+      const hasContent = controlMaterialTextSpans(parsed.data).length > 0;
+      return (
+        (hasContent
+          ? controlMaterialArrayBufferByteLength(value.content) === size.byteLength
+          : value.content === undefined) &&
+        Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      );
+    } catch {
+      return false;
+    }
+  }
   if (
     value.operation === 'project-cleanup' ||
     value.operation === 'observation' ||
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
-    value.operation === 'material' ||
     value.operation === 'review' ||
     value.operation === 'terminal'
   ) {
@@ -556,13 +615,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
             ? ControlGoalCommandInputSchema
             : value.operation === 'review'
               ? ControlReviewCommandInputSchema
-              : value.operation === 'material'
-                ? ControlMaterialCommandInputSchema
-                : value.operation === 'maintenance'
-                  ? ControlMaintenanceAdmissionInputSchema
-                  : value.operation === 'terminal'
-                    ? ControlTerminalTransitionSchema
-                    : ControlWorkObservationInputSchema;
+              : value.operation === 'maintenance'
+                ? ControlMaintenanceAdmissionInputSchema
+                : value.operation === 'terminal'
+                  ? ControlTerminalTransitionSchema
+                  : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

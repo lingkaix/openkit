@@ -328,6 +328,243 @@ export const ControlMaterialCommandInputSchema = z.discriminatedUnion('mode', [
 /** Structured-clone inputs for this single family's existing deciding bodies. */
 export type ControlMaterialCommandInput = z.infer<typeof ControlMaterialCommandInputSchema>;
 
+/** Accepted new Material revision content bound; this does not limit retained-source range text. */
+export const CONTROL_MATERIAL_CONTENT_BYTES = 16_777_216;
+
+/** A lone surrogate has no exact UTF-8 encoding; Node 24's check refuses it instead of substituting U+FFFD. */
+function assertMaterialUtf8Text(content: string): void {
+  if (!(content as string & { isWellFormed(): boolean }).isWellFormed())
+    throw new OperationError(
+      'invalid_request',
+      'Material text must have an exact UTF-8 representation.',
+      400
+    );
+}
+
+/** One exact UTF-8 field in the command's single transferred buffer. */
+const MaterialTextSpanSchema = z
+  .object({
+    offset: z.number().int().nonnegative(),
+    byteLength: z.number().int().nonnegative(),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+type MaterialTextSpan = z.infer<typeof MaterialTextSpanSchema>;
+/** The source range keeps its existing UTF-16 selectors; only its text uses the binary carrier. */
+const MaterialWireRangeSchema = z
+  .object({
+    kind: z.literal('material-range'),
+    materialId: MaterialIdSchema,
+    revisionId: MaterialRevisionIdSchema,
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    originalText: MaterialTextSpanSchema,
+  })
+  .strict();
+const [acceptAssessment, rejectAssessment, , , rateAssessment] = JudgementRecordSchema.options;
+/** Existing assessment variants with exact source text carried outside their JSON framing. */
+const MaterialWireJudgementSchema = z.discriminatedUnion('kind', [
+  acceptAssessment.extend({ target: MaterialWireRangeSchema }),
+  rejectAssessment.extend({ target: MaterialWireRangeSchema }),
+  rateAssessment.extend({ target: MaterialWireRangeSchema }),
+]);
+
+/** Closed Material transport metadata; content strings never enter the JSON envelope or pending correlation map. */
+export const ControlMaterialWireInputSchema = z.discriminatedUnion('mode', [
+  ControlMaterialCommandInputSchema.options[0],
+  z
+    .object({
+      mode: z.literal('save'),
+      input: SaveWorkspaceMaterialRevisionRequestSchema.omit({ content: true }).extend({
+        ...acceptedFields,
+        actor: ActorRefSchema,
+        materialId: MaterialIdSchema,
+        content: MaterialTextSpanSchema,
+      }),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  ControlMaterialCommandInputSchema.options[2],
+  ControlMaterialCommandInputSchema.options[3],
+  ControlMaterialCommandInputSchema.options[4],
+  ControlMaterialCommandInputSchema.options[5],
+  z
+    .object({
+      mode: z.literal('range-judgement'),
+      input: MaterialWireJudgementSchema,
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('range-correct'),
+      input: CorrectMaterialRangeRequestSchema.omit({ target: true, replacementText: true }).extend(
+        {
+          ...acceptedFields,
+          actor: UserActorRefSchema,
+          target: MaterialWireRangeSchema,
+          replacementText: MaterialTextSpanSchema,
+        }
+      ),
+      receipt: MaterialReceiptSchema,
+    })
+    .strict(),
+  ControlMaterialCommandInputSchema.options[8],
+]);
+/** Transient transport projection, never a retained Material shape. */
+export type ControlMaterialWireInput = z.infer<typeof ControlMaterialWireInputSchema>;
+
+/** Lists the exact ordered fields in the one request-owned binary carrier. */
+export function controlMaterialTextSpans(
+  input: ControlMaterialWireInput
+): readonly MaterialTextSpan[] {
+  if (input.mode === 'save') return [input.input.content];
+  if (input.mode === 'range-correct')
+    return [input.input.target.originalText, input.input.replacementText];
+  if (input.mode === 'range-judgement') return [input.input.target.originalText];
+  return [];
+}
+
+/** Creates small framing before the client admits and allocates its single owned buffer. */
+export function prepareControlMaterialTransfer(input: ControlMaterialCommandInput): {
+  readonly input: ControlMaterialWireInput;
+  readonly parts: readonly string[];
+} {
+  const parts: string[] = [];
+  let offset = 0;
+  const span = (text: string): MaterialTextSpan => {
+    assertMaterialUtf8Text(text);
+    const byteLength = Buffer.byteLength(text, 'utf8');
+    const result = { offset, byteLength, digest: contentDigest(text) };
+    offset += byteLength;
+    parts.push(text);
+    return result;
+  };
+  let wire: unknown = input;
+  if (input.mode === 'save') {
+    if (Buffer.byteLength(input.input.content, 'utf8') > CONTROL_MATERIAL_CONTENT_BYTES)
+      throw new OperationError(
+        'invalid_request',
+        'Material content exceeds 16,777,216 UTF-8 bytes.',
+        400
+      );
+    wire = { ...input, input: { ...input.input, content: span(input.input.content) } };
+  } else if (input.mode === 'range-correct') {
+    const originalText = span(input.input.target.originalText);
+    const replacementText = span(input.input.replacementText);
+    wire = {
+      ...input,
+      input: { ...input.input, target: { ...input.input.target, originalText }, replacementText },
+    };
+  } else if (input.mode === 'range-judgement') {
+    if (input.input.target.kind !== 'material-range')
+      throw new OperationError(
+        'invalid_request',
+        'The judgement must target an exact Material range.',
+        400
+      );
+    wire = {
+      ...input,
+      input: {
+        ...input.input,
+        target: { ...input.input.target, originalText: span(input.input.target.originalText) },
+      },
+    };
+  }
+  return { input: ControlMaterialWireInputSchema.parse(wire), parts };
+}
+
+/** Verifies every complete field before SQL, preserving BOM and refusing malformed UTF-8 or changed bytes. */
+export function prepareControlMaterialCommand(
+  value: ControlMaterialWireInput,
+  content?: ArrayBuffer
+): ControlMaterialCommandInput {
+  const wire = ControlMaterialWireInputSchema.parse(value);
+  const spans = controlMaterialTextSpans(wire);
+  if (spans.length === 0) {
+    if (content !== undefined)
+      throw new OperationError(
+        'invalid_request',
+        'The Material command has unexpected binary content.',
+        400
+      );
+    return ControlMaterialCommandInputSchema.parse(wire);
+  }
+  if (!(content instanceof ArrayBuffer))
+    throw new OperationError(
+      'invalid_request',
+      'The Material command requires its exact binary content.',
+      400
+    );
+  const texts: string[] = [];
+  let offset = 0;
+  for (const span of spans) {
+    if (span.offset !== offset || span.byteLength > content.byteLength - offset)
+      throw new OperationError(
+        'invalid_request',
+        'Material binary content length is inconsistent.',
+        400
+      );
+    const bytes = new Uint8Array(content, offset, span.byteLength);
+    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== span.digest)
+      throw new OperationError(
+        'source_digest_mismatch',
+        'Material binary content does not match its digest.',
+        400
+      );
+    try {
+      texts.push(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+    } catch {
+      throw new OperationError(
+        'invalid_request',
+        'Material binary content is not complete UTF-8.',
+        400
+      );
+    }
+    offset += span.byteLength;
+  }
+  if (offset !== content.byteLength)
+    throw new OperationError(
+      'invalid_request',
+      'Material binary content has unclaimed bytes.',
+      400
+    );
+  if (wire.mode === 'save') {
+    if (wire.input.content.byteLength > CONTROL_MATERIAL_CONTENT_BYTES)
+      throw new OperationError(
+        'invalid_request',
+        'Material content exceeds 16,777,216 UTF-8 bytes.',
+        400
+      );
+    if (wire.input.content.digest !== wire.input.contentDigest)
+      throw new OperationError(
+        'source_digest_mismatch',
+        'Material content does not match its admitted digest.',
+        400
+      );
+    return ControlMaterialCommandInputSchema.parse({
+      ...wire,
+      input: { ...wire.input, content: texts[0] },
+    });
+  }
+  if (wire.mode === 'range-correct')
+    return ControlMaterialCommandInputSchema.parse({
+      ...wire,
+      input: {
+        ...wire.input,
+        target: { ...wire.input.target, originalText: texts[0] },
+        replacementText: texts[1],
+      },
+    });
+  if (wire.mode === 'range-judgement')
+    return ControlMaterialCommandInputSchema.parse({
+      ...wire,
+      input: { ...wire.input, target: { ...wire.input.target, originalText: texts[0] } },
+    });
+  throw new OperationError('invalid_request', 'The Material binary command mode is invalid.', 400);
+}
+
 /** Fully materialized results checked before the worker commits and again before resolving a caller. */
 export const ControlMaterialCommandResultSchema = z.discriminatedUnion('mode', [
   z.object({
@@ -1019,6 +1256,13 @@ export function saveWorkspaceMaterialRevision(
     if (findRevision(workspaceDb, input.materialId, revisionId)) {
       throw materialError('recovery_required', 'The request-owned revision has no receipt.');
     }
+    assertMaterialUtf8Text(input.content);
+    if (Buffer.byteLength(input.content, 'utf8') > CONTROL_MATERIAL_CONTENT_BYTES)
+      throw new OperationError(
+        'invalid_request',
+        'Material content exceeds 16,777,216 UTF-8 bytes.',
+        400
+      );
     if (contentDigest(input.content) !== input.contentDigest) {
       throw materialError('source_digest_mismatch', 'Material content does not match its digest.');
     }

@@ -23,9 +23,10 @@ import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,
 } from '../runtime/worker-backend-cleanup-projection.js';
-import type {
-  ControlMaterialCommandInput,
-  ControlMaterialCommandResult,
+import {
+  type ControlMaterialCommandInput,
+  type ControlMaterialCommandResult,
+  prepareControlMaterialTransfer,
 } from '../workspace-materials.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
@@ -44,6 +45,7 @@ import {
   type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
+  controlMaterialTransferSize,
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
@@ -71,6 +73,8 @@ type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly command: ControlWorkerCommand;
+  /** Binary input and echoed range content remain admitted until reply or known disposal. */
+  readonly materialBytes: number;
   readonly resolve: (reply: Success) => void;
   readonly reject: (error: ControlStoreWorkerError) => void;
 }
@@ -105,6 +109,7 @@ class ControlStoreWorkerClient {
     { readonly command: Omit<OpenCommand, 'operation'>; readonly promise: Promise<void> }
   >();
   private nextId = 0;
+  private materialBytes = 0;
   private failed = false;
   private stopping = false;
   private closed = false;
@@ -128,6 +133,8 @@ class ControlStoreWorkerClient {
     this.worker.on('error', () => this.fail());
     this.worker.on('exit', () => {
       if (!this.stopping || this.pending.size > 0) this.fail();
+      // A failed channel alone cannot prove the worker released its queued bytes. Exit can.
+      this.materialBytes = 0;
     });
     this.worker.unref();
   }
@@ -267,7 +274,11 @@ class ControlStoreWorkerClient {
     input: ControlMaterialCommandInput
   ): Promise<ControlMaterialCommandResult> {
     try {
-      const reply = await this.request({ operation: 'material', database, input });
+      const transfer = prepareControlMaterialTransfer(input);
+      const reply = await this.request(
+        { operation: 'material', database, input: transfer.input },
+        transfer.parts
+      );
       return (reply as Extract<Success, { operation: 'material' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'material') {
@@ -343,6 +354,7 @@ class ControlStoreWorkerClient {
         if (!this.failed) await this.request({ operation: 'shutdown' });
       } finally {
         await this.worker.terminate();
+        this.materialBytes = 0;
         this.fail();
         this.closed = true;
       }
@@ -351,7 +363,10 @@ class ControlStoreWorkerClient {
   }
 
   /** Bounds all scoped messages BEFORE cloning/posting, including native-thread stalls. */
-  private request(command: ControlWorkerCommand): Promise<Success> {
+  private request(
+    command: ControlWorkerCommand,
+    materialParts?: readonly string[]
+  ): Promise<Success> {
     if (this.failed || this.closed || (this.stopping && command.operation !== 'shutdown')) {
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
@@ -365,8 +380,36 @@ class ControlStoreWorkerClient {
     if (!Number.isSafeInteger(this.nextId)) {
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
+    let materialBytes = 0;
+    let posted = command;
+    if (command.operation === 'material') {
+      const size = controlMaterialTransferSize(command.input);
+      if (!size)
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      materialBytes = size.byteLength + size.replyByteLength;
+      if (
+        !Number.isSafeInteger(materialBytes) ||
+        materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
+      )
+        return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+      if (materialParts?.length) {
+        // Admission precedes allocation and transfer. No escaped JSON or second payload buffer is made.
+        const content = new ArrayBuffer(size.byteLength);
+        let offset = 0;
+        for (const text of materialParts) {
+          const encoded = new TextEncoder().encodeInto(text, new Uint8Array(content, offset));
+          if (encoded.read !== text.length)
+            return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+          offset += encoded.written;
+        }
+        if (offset !== size.byteLength)
+          return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+        posted = { ...command, content };
+      }
+    } else if (materialParts !== undefined)
+      return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
     const request: ControlWorkerRequest = {
-      ...command,
+      ...posted,
       version: CONTROL_WORKER_VERSION,
       id: this.nextId,
     };
@@ -375,12 +418,17 @@ class ControlStoreWorkerClient {
     }
     const id = this.nextId++;
     return new Promise<Success>((resolve, reject) => {
-      this.pending.set(id, { command, resolve, reject });
+      this.materialBytes += materialBytes;
+      this.pending.set(id, { command: posted, materialBytes, resolve, reject });
       if (database !== undefined)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
       this.worker.ref();
       try {
-        this.worker.postMessage(request);
+        const transferList =
+          request.operation === 'material' && request.content !== undefined
+            ? [request.content]
+            : [];
+        this.worker.postMessage(request, transferList);
       } catch {
         // Structured cloning fails before a message is enqueued; nothing was submitted.
         this.complete(
@@ -393,10 +441,16 @@ class ControlStoreWorkerClient {
   }
 
   /** Completes correlation once and releases the pre-post admission slot. */
-  private complete(id: number, reply?: Success, error?: ControlStoreWorkerError): void {
+  private complete(
+    id: number,
+    reply?: Success,
+    error?: ControlStoreWorkerError,
+    releaseMaterialBytes = true
+  ): void {
     const entry = this.pending.get(id);
     if (entry === undefined) return;
     this.pending.delete(id);
+    if (releaseMaterialBytes) this.materialBytes -= entry.materialBytes;
     if ('database' in entry.command) {
       const database = entry.command.database;
       const remaining = (this.outstanding.get(database) ?? 1) - 1;
@@ -439,7 +493,7 @@ class ControlStoreWorkerClient {
     if (this.failed) return;
     this.failed = true;
     for (const id of this.pending.keys()) {
-      this.complete(id, undefined, new ControlStoreWorkerError('unavailable', 'unknown'));
+      this.complete(id, undefined, new ControlStoreWorkerError('unavailable', 'unknown'), false);
     }
     // A failed channel must not retain a writable connection or continue queued work.
     void this.worker.terminate();
