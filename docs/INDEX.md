@@ -33,7 +33,6 @@ and are not listed here.
 
 - `docs/core/agent-session.md` — This document defines the Core identity and continuity rules for `AgentSession`.
 - `docs/core/agent-supply.md` — This document defines OpenKit agent supply semantics.
-- `docs/core/agent-workflow.md` — This document owns the Core workflow mechanisms used to coordinate worker-agent work.
 - `docs/core/architecture.md` — This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, interna…
 - `docs/core/communication.md` — This document defines OpenKit core communication semantics.
 - `docs/core/contract-evolution.md` — This document owns how OpenKit classifies contract stability, promotes contract surfaces, evolves breaking contracts, and judges implementations against the pr…
