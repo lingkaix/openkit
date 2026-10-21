@@ -19,6 +19,7 @@ import type {
   ExecutionJournalSpan,
 } from '../runtime/execution-step-journal.js';
 import { StoredGoalV1Schema } from '../runtime/goal-retained-v1.js';
+import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
 import type {
   ControlProductContentMount,
   ControlTerminalResult,
@@ -480,6 +481,106 @@ function linkGoal(f: ReturnType<typeof fixture>) {
   return { revision };
 }
 
+/** Prepares a real Worker terminal/release journal without fabricating runtime or teardown evidence. */
+async function emptyEvidenceTerminal(status: 'failed' | 'cancelled' | 'interrupted' | 'completed') {
+  const f = fixture('workspace');
+  if (f.db.scope !== 'workspace' || f.owner.kind !== 'workspace')
+    throw new Error('Workspace fixture required');
+  const db = f.db;
+  const goal = linkGoal(f);
+  const journal = await terminalExecution(f);
+  const inspection = await journal.reader.readInvocation({
+    execution: journal.admission.ref,
+    stepId: 'inspect-cleanup',
+  });
+  f.db.sqlite.transaction(() =>
+    writeExecutionJournalIntent(f.db, {
+      execution: journal.admission,
+      stepId: 'release',
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: {
+        ...inspection.carriage,
+        operation: 'release',
+        requestId: '4'.padStart(64, '0'),
+      },
+      control: { ...inspection.control, kind: 'release', invocationId: 'fixture-release' },
+      span: {
+        ...journal.admission.span,
+        spanId: '4'.padStart(16, '0'),
+        parentSpanId: journal.admission.span.spanId,
+      },
+    })
+  )();
+  const original = await journal.reader.readExecution(journal.admission.ref);
+  const turn = { ...f.turn, status };
+  const stopReason =
+    status === 'completed' ? 'completed' : status === 'failed' ? 'error' : 'aborted';
+  const event = JSON.parse(readFileSync(join(f.mount.root, 'event.json'), 'utf8'));
+  const input: ControlTerminalTransition = {
+    ...withCommand(f),
+    turn: { ...f.input.turn, record: turn },
+    entries: [
+      {
+        ...f.input.entries[0]!,
+        content: content(
+          f,
+          { ...event, data: { ...event.data, stopReason, turn: { ...turn, items: [] } } },
+          `${status}-event.json`
+        ),
+      },
+    ],
+    reap: { ...f.input.reap, reason: status },
+    execution: {
+      ...journal.descriptor,
+      expectedRevision: original.revision,
+      cleanupStepId: 'release',
+    },
+  };
+  const client = getControlStoreWorkerClient();
+  cleanups.push(shutdownControlStoreWorkerClient);
+  const path = workspaceDbPath(f.root, f.owner.workspaceId);
+  const database = `workspace:${path}`;
+  await client.open({
+    database,
+    path,
+    dataRoot: f.root,
+    create: false,
+    initialize: 'workspace',
+    productOwner: f.owner,
+    contentMount: f.mount,
+  });
+  const state = (db = f.db) =>
+    Object.fromEntries(
+      [
+        'control_turns',
+        'control_product_entries',
+        'control_work_observations',
+        'task_turn_terminal_facts',
+        'runtime_evidence',
+        'idempotency_requests',
+        'audit_events',
+        'goals',
+        'control_executions',
+        'control_execution_steps',
+      ].map((table) => [table, db.sqlite.prepare(`SELECT * FROM ${table}`).all()])
+    );
+  expect(input.evidence).toEqual([]);
+  expect(state().runtime_evidence).toEqual([]);
+  return {
+    ...f,
+    db,
+    goal,
+    journal,
+    input,
+    client,
+    database,
+    state,
+    publication: () => workerTurnTerminalPublication(db, f.turnId, status),
+  };
+}
+
 describe('complete native terminal owner', () => {
   for (const kind of ['server', 'workspace'] as const) {
     it(`keeps the complete ${kind} terminal rollback/receipt tuple and ordered close across asynchronous native preparation`, async () => {
@@ -716,6 +817,142 @@ describe('complete native terminal owner', () => {
       cold.sqlite.close();
     }
   }, 30_000);
+
+  it('refuses failed publication with empty evidence when the actual original execution root is missing', async () => {
+    const f = await emptyEvidenceTerminal('failed');
+    await expect(f.publication()).resolves.toEqual({
+      execution: f.input.execution,
+      evidence: [],
+    });
+    // Remove the real retained root, not the submitted descriptor. Keep foreign keys enabled.
+    f.db.sqlite
+      .prepare('DELETE FROM control_execution_steps WHERE execution_id=?')
+      .run(f.journal.admission.ref.executionId);
+    expect(
+      f.db.sqlite
+        .prepare('DELETE FROM control_executions WHERE id=?')
+        .run(f.journal.admission.ref.executionId).changes
+    ).toBe(1);
+    const before = f.state();
+    await expect(f.publication()).rejects.toThrow(
+      'Worker terminal publication requires its original unique execution.'
+    );
+    await expect(f.client.terminal(f.database, f.input)).rejects.toMatchObject({
+      code: 'precondition',
+      commit: 'not-committed',
+    });
+    expect(f.state()).toEqual(before);
+    expect(f.goal.revision()).toBe(0);
+  });
+
+  it.each([
+    'terminal-publication',
+    'release',
+  ])('refuses cancelled publication with empty evidence when the original %s obligation is missing', async (stepId) => {
+    const f = await emptyEvidenceTerminal('cancelled');
+    await expect(f.publication()).resolves.toEqual({
+      execution: f.input.execution,
+      evidence: [],
+    });
+    expect(
+      f.db.sqlite
+        .prepare('DELETE FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+        .run(f.journal.admission.ref.executionId, stepId).changes
+    ).toBe(1);
+    const before = f.state();
+    await expect(f.publication()).rejects.toThrow(
+      'Worker terminal journal requires original terminal and release obligations.'
+    );
+    await expect(f.client.terminal(f.database, f.input)).rejects.toMatchObject({
+      code: 'precondition',
+      commit: 'not-committed',
+    });
+    expect(f.state()).toEqual(before);
+    expect(f.goal.revision()).toBe(0);
+    const root = await f.journal.reader.readExecution(f.journal.admission.ref);
+    expect(root.phase).toBe('open');
+    expect(root.exclusionRefs).toEqual(['fixture:pending-cleanup']);
+  });
+
+  it('publishes interruption with empty evidence and the complete original journal while retaining physical exclusion', async () => {
+    const f = await emptyEvidenceTerminal('interrupted');
+    const publication = await f.publication();
+    expect(publication).toEqual({ execution: f.input.execution, evidence: [] });
+    const releaseBefore = f.db.sqlite
+      .prepare(
+        "SELECT * FROM control_execution_steps WHERE step_id IN ('inspect-cleanup','release')"
+      )
+      .all();
+    const committed = await f.client.terminal(f.database, { ...f.input, ...publication });
+    expect(committed).toMatchObject({
+      turnId: f.turnId,
+      replayed: false,
+      response: { kind: 'turn', id: f.turnId },
+      reap: { id: `turn.reap:${f.turnId}`, sequence: 1 },
+      execution: {
+        executionId: f.journal.admission.ref.executionId,
+        revision: f.input.execution!.expectedRevision + 1,
+        phase: 'closing',
+      },
+    });
+    expect(
+      f.db.sqlite.prepare('SELECT status FROM control_turns WHERE id=?').get(f.turnId)
+    ).toEqual({ status: 'interrupted' });
+    expect(f.goal.revision()).toBe(1);
+    for (const table of [
+      'control_turns',
+      'control_product_entries',
+      'control_work_observations',
+      'task_turn_terminal_facts',
+      'idempotency_requests',
+      'audit_events',
+    ])
+      expect(f.db.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get()).toEqual({ n: 1 });
+    expect(
+      f.db.sqlite
+        .prepare("SELECT state FROM control_execution_steps WHERE step_id='terminal-publication'")
+        .get()
+    ).toEqual({ state: 'completed' });
+    expect(
+      f.db.sqlite
+        .prepare(
+          "SELECT * FROM control_execution_steps WHERE step_id IN ('inspect-cleanup','release')"
+        )
+        .all()
+    ).toEqual(releaseBefore);
+    const root = await f.journal.reader.readExecution(f.journal.admission.ref);
+    expect(root.phase).toBe('closing');
+    expect(root.terminalCause).toBe('interrupted');
+    expect(root.exclusionRefs).toEqual(['fixture:pending-cleanup']);
+    expect(root.span.endTimeUnixNano).toBeNull();
+    // Empty remains empty: terminal publication cannot invent a successful teardown.
+    expect(f.state().runtime_evidence).toEqual([]);
+    const retained = f.state();
+    await f.client.close(f.database);
+    const cold = openWorkspaceDb(f.root, f.db.workspaceId);
+    try {
+      expect(f.state(cold)).toEqual(retained);
+    } finally {
+      cold.sqlite.close();
+    }
+  });
+
+  it('still refuses completed publication with empty evidence and a complete original journal', async () => {
+    const f = await emptyEvidenceTerminal('completed');
+    const before = f.state();
+    await expect(f.publication()).rejects.toThrow(
+      'Worker terminal publication requires actual runtime evidence.'
+    );
+    await expect(f.client.terminal(f.database, f.input)).rejects.toMatchObject({
+      code: 'precondition',
+      commit: 'not-committed',
+    });
+    expect(f.state()).toEqual(before);
+    expect(f.goal.revision()).toBe(0);
+    const root = await f.journal.reader.readExecution(f.journal.admission.ref);
+    expect(root.phase).toBe('open');
+    expect(root.exclusionRefs).toEqual(['fixture:pending-cleanup']);
+  });
 
   it('runs on an actual native thread and commits service terminal, event and first reap in one tuple', async () => {
     const f = fixture();
