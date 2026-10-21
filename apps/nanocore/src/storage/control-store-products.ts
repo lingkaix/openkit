@@ -35,6 +35,7 @@ import {
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import { prepareControlPendingCommands } from './control-store-pending.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
+import { assertWorkspaceWorkOwner } from './fs-layout.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
 import {
   StoredEventV1Schema,
@@ -191,8 +192,11 @@ export function assertControlProductWriter(sqlite: Database.Database): void {
 
 /** Checks exact scope relationships without turning a path or native executor into product authority. */
 export function assertControlProductOwner(owner: ControlProductOwner, actual: unknown): void {
-  if (!isDeepStrictEqual(owner, StoredWorkOwnerV1Schema.parse(actual)))
-    throw new ControlProductPreconditionError();
+  const known = StoredWorkOwnerV1Schema.parse(actual);
+  // Main admission keeps the shared ownership refusal; native mutations retain their precondition error.
+  if (isMainThread && owner.kind === 'workspace')
+    assertWorkspaceWorkOwner({ owner: known }, owner.workspaceId);
+  if (!isDeepStrictEqual(owner, known)) throw new ControlProductPreconditionError();
 }
 
 /** Decodes the frozen family's known view while callers retain the original JSON bytes unchanged. */

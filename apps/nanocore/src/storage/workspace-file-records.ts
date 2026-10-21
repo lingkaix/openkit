@@ -932,6 +932,8 @@ export function readNativeProductEntries(
         const value = readImmutableProductJson(scope.contentMount, scope.owner, row.content);
         if (kind === 'item') {
           const item = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+          if (scope.owner.kind === 'workspace')
+            assertWorkspaceWorkOwner(item, scope.owner.workspaceId);
           if (
             !isDeepStrictEqual(item.owner, scope.owner) ||
             item.id !== row.id ||

@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -33,7 +34,7 @@ import {
 } from '../vault/vault-encrypted-file-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { writeStorageJsonAtomically } from './data-root-backup.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
 const durability = vi.hoisted(() => ({
@@ -86,13 +87,17 @@ vi.mock('node:fs', async (importOriginal) => {
 const timestamp = '2026-07-12T00:00:00.000Z';
 
 /**
- * Creates one file-backed workspace for direct canonical write boundary tests.
+ * Creates one native Workspace with its retained file-owned resources.
  *
  * @param prefix Temporary directory prefix.
  * @returns Store plus its workspace and canonical root.
  */
 async function createFixture(prefix: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Direct canonical write boundary');
 
@@ -190,24 +195,64 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
     await shutdownControlStoreWorkerClient();
     return rmSync(restartRoot, { recursive: true, force: true });
   });
-  const seed = new FsStore({ dataRoot: restartRoot });
+  const seed = createTestStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
+  // Copy only after the actual native writer has closed and checkpointed both roots.
+  await shutdownControlStoreWorkerClient();
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
-  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  /** Preserves native SQL schema/raw values and all other bytes; only its regular WAL/SHM are bookkeeping. */
   function snapshot(root: string): Record<string, Buffer | string> {
     const entries: Record<string, Buffer | string> = {};
     const visit = (directory: string, prefix = '') => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const key = join(prefix, entry.name);
         const path = join(directory, entry.name);
-        if (entry.isDirectory()) {
+        if (entry.isSymbolicLink()) {
+          entries[key] = `link:${readlinkSync(path)}`;
+        } else if (entry.isDirectory()) {
           entries[key] = 'directory';
           visit(path, key);
+        } else if (entry.isFile()) {
+          if (key === join('db', 'workspace.sqlite')) {
+            const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+            try {
+              entries[key] = sqlite.transaction(() => {
+                const schema = sqlite
+                  .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')
+                  .all();
+                const tables = sqlite
+                  .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+                  .all() as { name: string }[];
+                const rows = tables.map(({ name }) => [
+                  name,
+                  sqlite
+                    .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                    .raw(true)
+                    .safeIntegers(true)
+                    .all()
+                    .map((row) =>
+                      JSON.stringify(row, (_key, value) =>
+                        typeof value === 'bigint' ? { integer: value.toString() } : value
+                      )
+                    )
+                    .sort(),
+                ]);
+                return Buffer.from(JSON.stringify({ schema, rows }));
+              })();
+            } finally {
+              sqlite.close();
+            }
+          } else if (
+            key !== join('db', 'workspace.sqlite-wal') &&
+            key !== join('db', 'workspace.sqlite-shm')
+          ) {
+            entries[key] = readFileSync(path);
+          }
         } else {
-          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+          throw new Error('Retained snapshot requires a directory, regular file or symbolic link.');
         }
       }
     };
@@ -224,7 +269,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   expect(() => reopened.getWorkspace(workspaceId)).toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
-  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+  await expect(reopened.createThread(workspaceId, 'Must remain refused')).rejects.toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
@@ -239,7 +284,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 }
 
 describe('direct canonical write boundaries', () => {
-  it('rejects a symlinked import staging parent before staging or publication', () => {
+  it('rejects a symlinked import staging parent before staging or publication', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-staging-symlink-'));
     const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7cc0-bb9d-9038c067cd62';
@@ -248,19 +293,24 @@ describe('direct canonical write boundaries', () => {
       join(workspacesRoot, '.staging'),
       'openkit-import-staging-outside-'
     );
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+      rmSync(outsideRoot, { recursive: true, force: true });
+    });
     const sentinelPath = join(outsideRoot, 'sentinel.txt');
     const stageWorkspace = vi.fn();
 
     writeFileSync(sentinelPath, 'untouched');
 
-    expect
-      .soft(() =>
+    await expect
+      .soft(
         store.importWorkspaceSnapshot({
           ...workspaceImportPayload(workspaceId),
           stageWorkspace,
         })
       )
-      .toThrow();
+      .rejects.toThrow();
     expect.soft(stageWorkspace).not.toHaveBeenCalled();
     expect.soft(readdirSync(outsideRoot).sort()).toEqual(['sentinel.txt']);
     expect.soft(readFileSync(sentinelPath, 'utf8')).toBe('untouched');
@@ -290,6 +340,7 @@ describe('direct canonical write boundaries', () => {
           ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources')
           : join(f.workspaceRoot, 'knowledge', '.source-staging');
     const outsideRoot = installOutsideParent(parent, `openkit-source-outside-${boundary}-`);
+    onTestFinished(() => rmSync(outsideRoot, { recursive: true, force: true }));
     const sentinel = join(outsideRoot, 'sentinel.txt');
     writeFileSync(sentinel, 'untouched');
     const content = 'This original must stay inside the Knowledge Base.';
@@ -310,9 +361,7 @@ describe('direct canonical write boundaries', () => {
     ['starts after sequence 1', [1, 2]],
     ['skips an intermediate sequence', [0, 2]],
   ] as const)('rejects a canonical event log that %s', async (_case, retainedIndexes) => {
-    const { dataRoot, store, workspace, workspaceRoot } = await createFixture(
-      'openkit-event-continuity-'
-    );
+    const { dataRoot, store, workspace } = await createFixture('openkit-event-continuity-');
     const thread = await store.createThread(workspace.id, 'Event continuity thread');
     const turn = await store.createTurn(workspace.id, thread.id, 'Validate event continuity', {
       kind: 'user',
@@ -330,21 +379,21 @@ describe('direct canonical write boundaries', () => {
       completedAt: null,
     });
 
-    store.emitTurnEvent(turn.id, {
+    await store.persistTurnEvent(turn.id, {
       event: 'turn.started',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'turn-started', turnId: turn.id, status: 'running' },
     });
-    store.emitTurnEvent(turn.id, {
+    await store.persistTurnEvent(turn.id, {
       event: 'item.created',
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'item-created', item },
     });
-    store.emitTurnEvent(turn.id, {
+    await store.persistTurnEvent(turn.id, {
       event: 'item.delta',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -358,17 +407,25 @@ describe('direct canonical write boundaries', () => {
       },
     });
 
-    const eventsPath = join(
-      workspaceRoot,
-      'threads',
-      thread.id,
-      'turns',
-      turn.id,
-      'runtime',
-      'events.jsonl'
-    );
-    const events = readFileSync(eventsPath, 'utf8').trim().split('\n');
-    writeFileSync(eventsPath, `${retainedIndexes.map((index) => events[index]).join('\n')}\n`);
+    await shutdownControlStoreWorkerClient();
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      const rows = db.sqlite
+        .prepare(
+          "SELECT sequence FROM control_product_entries WHERE kind='event' AND turn_id=? ORDER BY sequence"
+        )
+        .all(turn.id) as { sequence: number }[];
+      expect(rows.map((row) => row.sequence)).toEqual([1, 2, 3]);
+      const retained = new Set(retainedIndexes.map((index) => rows[index]!.sequence));
+      const remove = db.sqlite.prepare(
+        "DELETE FROM control_product_entries WHERE kind='event' AND turn_id=? AND sequence=?"
+      );
+      db.sqlite.transaction(() => {
+        for (const row of rows) if (!retained.has(row.sequence)) remove.run(turn.id, row.sequence);
+      })();
+    } finally {
+      db.sqlite.close();
+    }
 
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
