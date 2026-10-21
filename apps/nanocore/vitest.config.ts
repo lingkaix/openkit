@@ -8,6 +8,7 @@ export default defineConfig({
   test: {
     globalSetup: [
       fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
+      fileURLToPath(new URL('./vitest-worker-setup.mjs', import.meta.url)),
     ],
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     include: ['src/**/*.test.ts'],

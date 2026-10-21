@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     globalSetup: [
       fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
+      fileURLToPath(new URL('./vitest-worker-setup.mjs', import.meta.url)),
     ],
     include: ['e2e/**/*.spec.ts'],
     // The real Codex smoke drives a worker runtime the test execution image
