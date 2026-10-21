@@ -1083,7 +1083,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             now: () => finalTimestamp,
             toState: 'physical-cleaned',
           });
-          projectWorkerBackendCleanup(workspaceDb, {
+          await projectWorkerBackendCleanup(workspaceDb, {
             agentSessionId,
             backendSessionId,
             backendType: 'openshell',

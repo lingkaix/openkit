@@ -127,6 +127,13 @@ export async function terminalizeGovernedWorkerTurn(
   let terminalSession = input.agentSessionId
     ? readAgentSession(input.store, input.agentSessionId)
     : null;
+  const composeSession = Boolean(
+    input.store.getDataRoot() &&
+      input.agentSessionId &&
+      initialTurn.agentSessionId === input.agentSessionId &&
+      !isSealedTurnTerminal(initialTurn.status)
+  );
+  let terminalSessionPublication: TerminalTurnPublication['agentSession'];
   if (
     input.agentSessionId &&
     terminalSession &&
@@ -134,11 +141,17 @@ export async function terminalizeGovernedWorkerTurn(
       terminalSession.message !== terminalSessionMessage)
   ) {
     try {
-      terminalSession = await input.store.updateAgentSession(input.agentSessionId, {
+      const projection: NonNullable<TerminalTurnPublication['agentSession']> = {
+        id: input.agentSessionId,
         message: terminalSessionMessage,
         status: terminalSessionStatus,
         updatedAt: completedAt,
-      });
+      };
+      if (composeSession) {
+        terminalSessionPublication = projection;
+        terminalSession = { ...terminalSession, ...projection };
+      } else
+        terminalSession = await input.store.updateAgentSession(input.agentSessionId, projection);
     } catch (error) {
       errors.push(error);
       terminalSession = readAgentSession(input.store, input.agentSessionId);
@@ -157,7 +170,7 @@ export async function terminalizeGovernedWorkerTurn(
           event.data.agentSession.status === terminalSessionStatus
       )
   );
-  if (terminalSession?.status === terminalSessionStatus && !sessionEventExists) {
+  if (terminalSession?.status === terminalSessionStatus && !sessionEventExists && !composeSession) {
     try {
       notifications.push(
         await input.store.persistTurnEvent(
@@ -189,9 +202,43 @@ export async function terminalizeGovernedWorkerTurn(
     try {
       terminalTurn = await input.store.completeTurn(input.turnId, turnPatch, {
         ...(await readTerminalPublication(input, terminalTurn)),
+        ...(terminalSessionPublication && terminalSession
+          ? {
+              agentSession: terminalSessionPublication,
+              precedingEvents: [
+                ...(input.publication?.precedingEvents ?? []),
+                {
+                  data: { agentSession: terminalSession, type: 'agent-session-updated' as const },
+                  event: 'agent.session.updated' as const,
+                  requestId: input.requestId,
+                  threadId: terminalTurn.threadId,
+                  turnId: terminalTurn.id,
+                  workspaceId: workspaceIdForOwner(terminalTurn.owner),
+                },
+              ],
+            }
+          : {}),
         requestId: input.requestId,
         stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
       });
+      if (terminalSessionPublication) {
+        const event = input.store
+          .getTurnEvents(input.turnId)
+          .findLast(
+            (entry) =>
+              entry.data.type === 'agent-session-updated' &&
+              entry.data.agentSession.id === terminalSessionPublication.id &&
+              entry.data.agentSession.status === terminalSessionPublication.status
+          );
+        if (event)
+          notifications.push(
+            await input.store.persistTurnEvent(
+              input.turnId,
+              event,
+              ALREADY_DECIDED_PUBLICATION_ADMISSION
+            )
+          );
+      }
       if (!terminalEventExists) {
         const event = input.store
           .getTurnEvents(input.turnId)

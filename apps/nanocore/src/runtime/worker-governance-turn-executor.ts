@@ -3448,7 +3448,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     if (workspaceDb) {
-      const projection = projectWorkerBackendCleanup(workspaceDb, {
+      const projection = await projectWorkerBackendCleanup(workspaceDb, {
         agentSessionId: environmentPackage.scope.agentSessionId,
         backendSessionId: lifecycle.identity.backendSessionId,
         backendType: backendCapabilities.kind,
@@ -3650,8 +3650,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         review: record.review,
       };
       let artifactCreated = false;
-      /** Persists one staged record to artifact and durable workspace storage. */
-      const persistRecord = (stagedItem: typeof item): void => {
+      /** Awaits the immutable Artifact before the existing synchronous review transaction. */
+      const persistRecord = async (stagedItem: typeof item): Promise<void> => {
         const body = JSON.stringify(
           {
             changeSet: stagedItem.changeSet,
@@ -3721,19 +3721,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             if (!isDeepStrictEqual(existingArtifact, artifact)) {
               throw new Error(`Workspace review artifact replay conflict: ${artifactId}`);
             }
-          } else {
-            store.createArtifact(artifact);
-            artifactCreated = true;
           }
         };
 
+        if (!existingArtifact) {
+          await store.createArtifact(artifact);
+          artifactCreated = true;
+        }
         if (workspaceDb) {
           workspaceDb.sqlite.transaction(persist)();
         } else {
           persist();
         }
       };
-      persistRecord(item);
+      await persistRecord(item);
       if (artifactCreated) {
         const artifactItem = store
           .listThreadItems(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)

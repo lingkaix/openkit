@@ -305,6 +305,8 @@ type TurnEventInput = Omit<
 
 /** Actual products and evidence that must commit with a service or Worker Turn outcome. */
 export interface TerminalTurnPublication {
+  /** Exact assigned Session projection decided with this Turn; it supplies no cleanup or release proof. */
+  readonly agentSession?: Pick<AgentSession, 'id' | 'status' | 'message' | 'updatedAt'>;
   /** New or changed Items included in the terminal snapshot, in publication order. */
   readonly items?: readonly Item[];
   /** Existing ordered terminal projections committed before the final completion envelope. */
@@ -5005,6 +5007,26 @@ export class FsStore {
         productOwner: owner,
         contentMount: scope.contentMount,
       });
+      const products: ControlTerminalTransition['products'] = [];
+      if (publication.agentSession) {
+        const candidate = publication.agentSession;
+        const current = readNativeProduct(scope, 'agent-session', candidate.id);
+        if (
+          owner.kind !== 'workspace' ||
+          candidate.id !== turn.agentSessionId ||
+          !current ||
+          current.record.workspaceId !== owner.workspaceId ||
+          current.record.threadId !== turn.threadId
+        )
+          throw new Error('Terminal Session projection requires the exact assigned Turn lineage.');
+        products.push({
+          kind: 'agent-session',
+          expectedRevision: current.revision,
+          record: writeRetainedV1(
+            AgentSessionRecordSchema.parse({ ...current.record, ...candidate })
+          ),
+        });
+      }
       await client.terminal(database, {
         owner,
         turn: {
@@ -5018,7 +5040,7 @@ export class FsStore {
             items: [],
           }),
         },
-        products: [],
+        products,
         entries,
         pending:
           owner.kind === 'workspace'
