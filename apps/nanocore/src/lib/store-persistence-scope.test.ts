@@ -1,3 +1,4 @@
+import { createTestStore } from '../test-support/store.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -47,7 +48,7 @@ function artifactDigest(content: string): string {
 describe('FsStore workspace persistence scope', () => {
   it('persists one owner-independent workspace tree without a user storage scope', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-owner-independent-'));
-    const firstStore = new FsStore({ dataRoot });
+    const firstStore = createTestStore({ dataRoot });
     const workspace = firstStore.createWorkspace('Owner-independent workspace');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const canonicalRecordPath = join(workspaceRoot, 'workspace-record.json');
@@ -81,7 +82,7 @@ describe('FsStore workspace persistence scope', () => {
 
   it('rejects the retired workspace.json layout instead of skipping it', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-retired-workspace-layout-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Retired layout workspace');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const healthy = store.createWorkspace('Healthy layout sibling');
@@ -107,7 +108,7 @@ describe('FsStore workspace persistence scope', () => {
 
   it('persists one workspace when another workspace canonical tree is blocked', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-workspace-scope-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const blockedWorkspace = store.createWorkspace('Blocked workspace');
     const targetWorkspace = store.createWorkspace('Target workspace');
     const blockedArtifactsRoot = join(dataRoot, 'workspaces', blockedWorkspace.id, 'artifacts');
@@ -131,7 +132,7 @@ describe('FsStore workspace persistence scope', () => {
 
   it('does not overwrite an authored Workspace name during unrelated persistence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-authored-workspace-name-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Initial workspace name');
     const configPath = join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc');
     const authored = `{
@@ -148,7 +149,7 @@ describe('FsStore workspace persistence scope', () => {
 
   it('retains Artifact authority when its reference append has an ambiguous outcome', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-lineage-failure-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Artifact lineage failure workspace');
     const thread = store.createThread(workspace.id, 'Artifact lineage failure thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Reject partial Artifact lineage', {
@@ -223,7 +224,7 @@ describe('FsStore workspace persistence scope', () => {
 
   it('restores the prior canonical state when Artifact introduction persistence fails', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-introduction-failure-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Artifact introduction failure workspace');
     const thread = store.createThread(workspace.id, 'Artifact introduction failure thread');
     const acceptedAt = '2026-07-18T00:04:00.000Z';
@@ -297,7 +298,7 @@ describe('FsStore workspace persistence scope', () => {
 
   it('does not resurrect deleted knowledge after a later projection write fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-knowledge-delete-failure-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge deletion workspace');
     const thread = store.createThread(workspace.id, 'Knowledge deletion thread');
     const coreDb = openCoreDb(dataRoot);
@@ -441,7 +442,7 @@ afterEach(() => {
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-tree-durability-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspaceId = testEntityId('ws', 'ws_durable_import');
   const finalRoot = join(dataRoot, 'workspaces', workspaceId);
   const timestamp = '2026-07-12T00:00:00.000Z';
@@ -560,7 +561,7 @@ describe('Workspace directory publication durability', () => {
 function freshWorkspaceDatabaseFixture(kind: 'general' | 'personal') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-fresh-workspace-db-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const create = () =>
     kind === 'general'
       ? store.createWorkspace('Ready for maintenance')
@@ -692,7 +693,7 @@ describe('fresh Workspace database publication', () => {
 function threadPublicationFixture(count = 3) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-publication-count-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Thread publication');
   const threads = Array.from({ length: count }, (_, index) =>
     store.createThread(workspace.id, `Thread ${index}`)

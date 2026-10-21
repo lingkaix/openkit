@@ -8,6 +8,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { initializeWorkspaceNotebook } from './notebook-initialization.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
@@ -56,7 +57,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
   it('seeds no-argument disk-backed Workspace creation with only the exact service-owned index', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-empty-store-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Empty service seed');
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
@@ -198,7 +199,7 @@ User-authored note.
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const source = new FsStore();
     const workspace = source.createWorkspace('Unattributed import');
-    const target = new FsStore({ dataRoot });
+    const target = createTestStore({ dataRoot });
     expect(() =>
       target.importWorkspaceSnapshot({
         workspace,

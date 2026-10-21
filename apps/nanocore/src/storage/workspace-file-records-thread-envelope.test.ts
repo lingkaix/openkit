@@ -19,6 +19,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -107,7 +108,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 describe('Thread canonical record envelope', () => {
   it('writes entryPath behind its required feature and rejects unsupported Thread semantics', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-envelope-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Envelope workspace');
     const thread = store.createThread(
       workspace.id,
@@ -208,7 +209,7 @@ function predecessorRecord(value: Record<string, unknown>) {
 it('refuses predecessor envelopes for both formal and conversation history without publication', () => {
   for (const formal of [true, false]) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-project-cutover-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Cutover');
     const thread = store.createThread(workspace.id, 'Historical conversation');
     const turn = store.createTurn(workspace.id, thread.id, 'Work', {
@@ -251,7 +252,7 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
 
 it('does not infer shared inception when formal and conversation Turns have tied timestamps', () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-ambiguous-order-'));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Ambiguous order');
   const thread = store.createThread(workspace.id, 'Mixed history');
   const formal = store.createTurn(workspace.id, thread.id, 'Formal', {

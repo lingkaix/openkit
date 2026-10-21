@@ -6,6 +6,7 @@ import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   type AgentMessage,
   type AgentTool,
@@ -51,7 +52,7 @@ function fixture(historyTurns = 8, durable = false, failedSource = false) {
   const dataRoot = durable ? mkdtempSync(join(tmpdir(), 'internal-rolling-context-')) : '';
   if (dataRoot) roots.push(dataRoot);
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
-  const store = new FsStore(dataRoot ? { dataRoot } : {});
+  const store = createTestStore(dataRoot ? { dataRoot } : {});
   const workspace = store.createWorkspace('Rolling context');
   const thread = store.createThread(workspace.id, 'Conversation', undefined, 'conversation', {
     visibility: 'private',

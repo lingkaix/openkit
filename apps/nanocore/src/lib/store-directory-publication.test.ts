@@ -4,9 +4,9 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-
 import { afterEach, expect, it } from 'vitest';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
+import { initializeTestCore } from '../test-support/store.js';
 
 const require = createRequire(import.meta.url);
 const nodeFs = require('node:fs') as typeof import('node:fs');
@@ -247,6 +247,7 @@ for (const kind of crashKinds) {
     it(`reloads a ${kind} interrupted at ${point}`, async () => {
       const dataRoot = newDataRoot(`${kind}-${point}`);
       const { FsStore } = await import('./store.js');
+      initializeTestCore(dataRoot);
       const store = new FsStore({ dataRoot });
       const kept = store.createWorkspace('Kept workspace');
       store.createThread(kept.id, 'Kept thread');
@@ -389,6 +390,7 @@ for (const kind of crashKinds) {
 it('drops staging left by a real interrupted Artifact write', async () => {
   const dataRoot = newDataRoot('planted-staging');
   const { FsStore } = await import('./store.js');
+  initializeTestCore(dataRoot);
   const store = new FsStore({ dataRoot });
   const kept = store.createWorkspace('Kept workspace');
   store.createThread(kept.id, 'Kept thread');
@@ -430,6 +432,7 @@ it('drops staging left by a real interrupted Artifact write', async () => {
 it('loads a published Turn beside the Thread preview from before that Turn', async () => {
   const { FsStore } = await import('./store.js');
   const dataRoot = newDataRoot('preview');
+  initializeTestCore(dataRoot);
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Preview workspace');
   const thread = store.createThread(workspace.id, 'Original preview');
@@ -471,6 +474,7 @@ for (const point of ['before-rename', 'after-rename'] as const) {
   it(`retains real binary v1 at initial Artifact directory ${point}`, async () => {
     const dataRoot = newDataRoot(`binary-${point}`);
     const { FsStore } = await import('./store.js');
+    initializeTestCore(dataRoot);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Binary publication');
     const bytes = Buffer.from([0, 255, 128, 13, 10]);

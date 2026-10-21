@@ -1,9 +1,9 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createTestStore } from '../test-support/store.js';
 
 const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false, fullReads: 0 }));
 
@@ -39,7 +39,6 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
@@ -48,7 +47,7 @@ import { appendCanonicalTextFile, appendWorkspaceItemRevision } from './workspac
 describe('canonical append writes', () => {
   it('does not acknowledge a failed observation commit through cached state or replay', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observation-sync-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Durability');
     const thread = store.createThread(workspace.id, 'Durability');
     const turn = store.createTurn(

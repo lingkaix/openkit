@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 const fault = vi.hoisted(() => ({
@@ -78,7 +79,7 @@ afterEach(() => {
 describe('record publication before a later aggregate failure', () => {
   it('preserves an already committed Thread when a later sibling preparation fails', () => {
     dataRoot = mkdtempSync(join(tmpdir(), 'store-late-publication-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Publication boundaries');
     const first = store.createThread(workspace.id, 'Original first Thread');
     const second = store.createThread(workspace.id, 'Second Thread');

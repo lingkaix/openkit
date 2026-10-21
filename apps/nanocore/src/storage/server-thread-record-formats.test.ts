@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   loadServerThreadRecords,
   readServerTurnEvents,
@@ -16,7 +17,7 @@ const families = ['Server Turn', 'Server Item', 'Server transcript event'] as co
 function createServerRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-retained-formats-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const thread = store.createServerThread('Retained Server formats');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   const turn = store.createServerTurn(thread.id, 'Retain Server work', actor);

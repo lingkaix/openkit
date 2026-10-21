@@ -21,6 +21,7 @@ import {
 } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore } from '../test-support/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -42,7 +43,7 @@ afterEach(() => {
 function fixture(value: 'off' | 'on' = 'on') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observations-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Capture');
   const thread = store.createThread(workspace.id, 'Capture');
   const turn = store.createTurn(

@@ -27,6 +27,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVerifiedWorkspaceExport } from '../storage/workspace-transfer-routes.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
@@ -43,7 +44,7 @@ afterEach(() => {
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-owner-boundary-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Workspace-owned history');
   const thread = store.createThread(workspace.id, 'Workspace work');
   const turn = store.createTurn(workspace.id, thread.id, 'Workspace input', actor);

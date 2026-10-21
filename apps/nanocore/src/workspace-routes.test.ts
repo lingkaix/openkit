@@ -6,12 +6,12 @@ import {
   WorkspaceReadResponseSchema,
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ownedDatabases: Array<ReturnType<typeof openCoreDb>> = [];
@@ -31,7 +31,7 @@ const HIDDEN_PRIVATE_TITLE = 'SECRET_OTHER_PRIVATE_THREAD';
  */
 describe('workspace routes', () => {
   it('lists only authorized Workspace ids without physical discovery', async () => {
-    const store = new FsStore({
+    const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-routes-authorized-')),
     });
     const allowedWorkspace = store.createWorkspace('Allowed Workspace');
@@ -65,7 +65,7 @@ describe('workspace routes', () => {
   });
 
   it('keeps authorized collection records intact while direct Workspace reads count only the member audience', async () => {
-    const store = new FsStore({
+    const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-thread-counts-')),
     });
     const workspace = store.createWorkspace('Counted Workspace');

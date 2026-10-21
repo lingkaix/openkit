@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 const fault = vi.hoisted(() => ({
@@ -64,7 +65,7 @@ afterEach(() => {
 describe('unacknowledged canonical Thread publication', () => {
   it('preserves the visible candidate during later unrelated Workspace persistence', () => {
     dataRoot = mkdtempSync(join(tmpdir(), 'store-unacknowledged-publication-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Initial Workspace');
     const previousThread = store.createThread(workspace.id, 'Previous Thread');
     const path = join(

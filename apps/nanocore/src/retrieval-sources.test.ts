@@ -1,3 +1,4 @@
+import { createTestStore } from './test-support/store.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
 import {
   collectProductRetrievalScopes,
@@ -31,7 +32,7 @@ describe('canonical product retrieval adapters', () => {
   it('searches past Item, exact Artifact and Material text through real kernel generations without sidecars', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-product-'));
     testRoots.push(dataRoot);
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval');
     const thread = store.createThread(workspace.id, 'Past conversation');
     const turn = store.createTurn(workspace.id, thread.id, 'old conversation marker', {
@@ -124,7 +125,7 @@ describe('canonical product retrieval adapters', () => {
   it('excludes another private Thread before inventory and source access, and refuses private-to-shared context', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-audience-'));
     testRoots.push(dataRoot);
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Audiences');
     const own = store.createThread(workspace.id, 'Own');
     const other = store.createThread(workspace.id, 'Other');

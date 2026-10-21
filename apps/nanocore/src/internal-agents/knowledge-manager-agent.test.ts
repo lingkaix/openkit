@@ -7,11 +7,12 @@ import {
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { FsStore } from '../lib/store.js';
+import type { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   createKnowledgeManagerTranscript,
   runKnowledgeManagerAgent,
@@ -28,7 +29,7 @@ afterEach(() => {
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-agent-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Knowledge');
   const thread = store.createThread(workspace.id, 'Knowledge', undefined, 'knowledge-manager');
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };

@@ -13,7 +13,6 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
-import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { OpenAICompatibleProviderError } from '../llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
@@ -21,6 +20,7 @@ import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 
 const roots: string[] = [];
@@ -53,7 +53,7 @@ afterEach(() => {
 function captureBinding() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'internal-http-rejection-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('HTTP diagnostic seam');
   const thread = store.createThread(workspace.id, 'HTTP diagnostic seam');
   const turn = store.createTurn(

@@ -19,6 +19,7 @@ import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
@@ -89,7 +90,7 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
  */
 function createCanonicalRecordFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-canonical-record-schema-'));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Canonical record schema workspace');
   const thread = store.createThread(workspace.id, 'Canonical record schema thread');
   const turn = store.createTurn(workspace.id, thread.id, 'Validate canonical record schemas', {

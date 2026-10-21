@@ -2,8 +2,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
+import { createTestStore } from '../test-support/store.js';
 
 const trace = vi.hoisted(() => ({
   events: [] as Array<{ op: 'writeFileSync' | 'fsyncSync' | 'renameSync'; to?: string }>,
@@ -31,8 +31,6 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-import { FsStore } from '../lib/store.js';
-
 /**
  * Requires a file fsync between the temporary write and rename, then a directory fsync.
  *
@@ -56,7 +54,7 @@ function expectDurableRename(
 describe('Current Thread record durable publication', () => {
   it('fsyncs thread.json before and after the atomic rename', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-visibility-durable-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Migration workspace');
     const formal = store.createThread(workspace.id, 'Formal worker history');
     const turn = store.createTurn(workspace.id, formal.id, 'Work', {
