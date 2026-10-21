@@ -3442,28 +3442,18 @@ describe('scheduler restart recovery', () => {
         predecessorFenced: true,
         ready: true,
       });
-      const queued = await f.store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        f.threadId,
-        'Later queued work',
-        { kind: 'user', id: LOCAL_USER_ID },
-        null,
-        {
-          status: 'pending',
-          agentId: 'agent_codex_host',
-          executorKind: 'worker',
-        }
-      );
+      // Keep later work before product admission while the first Turn still owns the Thread.
       const admission = createSchedulerAdmissionEntry(f.coreDb, {
         queueEntryId: `queued_${suffix}`,
         backendId: 'nanohost',
-        workspaceId: workspaceIdForOwner(queued.owner),
-        threadId: queued.threadId,
-        turnId: queued.id,
+        workspaceId: workspaceIdForOwner(f.turn.owner),
+        threadId: f.threadId,
+        turnId: testEntityId('tu', `queued_${suffix}`),
         requestedAgentId: 'agent_codex_host',
-        triggerActor: queued.triggerActor,
+        triggerActor: f.turn.triggerActor,
         turnInput: 'Later queued work',
       });
+      expect(() => f.store.getTurnById(admission.turnId)).toThrow();
       if (partial)
         vi.spyOn(f.store, 'emitTurnEvent').mockImplementationOnce(() => {
           throw new Error('Injected partial terminal publication.');
@@ -3504,7 +3494,7 @@ describe('scheduler restart recovery', () => {
         operationId: null,
         terminalCause: 'turn-start-failed',
       });
-      expect(f.store.getTurnById(queued.id)).toEqual(queued);
+      expect(() => f.store.getTurnById(admission.turnId)).toThrow();
       expect(
         f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
       ).toMatchObject([{ data: { stopReason: 'error' } }]);
@@ -3544,7 +3534,7 @@ describe('scheduler restart recovery', () => {
         expect(
           requireNanoHostExecutionAttempt(restartedCore, testEntityId('attempt', `lease_${suffix}`))
         ).toEqual(originalAttempt);
-        expect(restartedStore.getTurnById(queued.id)).toEqual(queued);
+        expect(() => restartedStore.getTurnById(admission.turnId)).toThrow();
         expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
       } finally {
         restartedCore.sqlite.close();
@@ -6079,7 +6069,11 @@ describe('minimal scheduler reconnect contract', () => {
           fenceRef: null,
         });
       expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
-      if (proved) await assertRecoveryClosedAndNextTurnAdmitted(f);
+      if (proved)
+        await assertRecoveryClosedAndNextTurnAdmitted({
+          ...f,
+          agentSessionId: await createRecoverySuccessor(f),
+        });
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -6091,7 +6085,10 @@ describe('minimal scheduler reconnect contract', () => {
     try {
       await drainTestRecovery(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      await assertRecoveryClosedAndNextTurnAdmitted(f);
+      await assertRecoveryClosedAndNextTurnAdmitted({
+        ...f,
+        agentSessionId: await createRecoverySuccessor(f),
+      });
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -6790,4 +6787,24 @@ async function appendRetainedItemRevision(
   } finally {
     db.sqlite.close();
   }
+}
+
+/** Admits a fresh canonical successor after the failed predecessor is retained as history; it grants no runtime resume proof. */
+async function createRecoverySuccessor(
+  f: Awaited<ReturnType<typeof createFinalReviewRecoveryFixture>>
+): Promise<string> {
+  const predecessor = f.store.getAgentSession(f.agentSessionId);
+  const successor = await f.store.createAgentSession({
+    id: testEntityId('as', `${f.agentSessionId}:successor`),
+    agentId: predecessor.agentId,
+    workspaceId: predecessor.workspaceId,
+    threadId: f.threadId,
+    status: 'created',
+    message: null,
+    createdAt: f.clock.now,
+    updatedAt: f.clock.now,
+  });
+  expect(successor.id).not.toBe(predecessor.id);
+  expect(f.store.getAgentSession(predecessor.id)).toEqual(predecessor);
+  return successor.id;
 }
