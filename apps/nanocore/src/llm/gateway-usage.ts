@@ -347,8 +347,62 @@ export function recordInternalLlmGatewayUsage(
   }
 ): string[] {
   const parsed = parseUsage(input.usage);
-  const tokens = parsed.totalTokens || parsed.inputTokens + parsed.completionTokens;
-  if (!tokens && !input.succeeded) return [];
+  const records = [
+    {
+      quantity: parsed.inputTokens,
+      source: 'llm-gateway-adapter-reported:input',
+      unit: 'tokens' as const,
+    },
+    {
+      quantity: parsed.completionTokens,
+      source: 'llm-gateway-adapter-reported:output',
+      unit: 'tokens' as const,
+    },
+    {
+      quantity: parsed.cacheReadTokens,
+      source: 'llm-gateway-adapter-reported:cache_read',
+      unit: 'tokens' as const,
+    },
+    {
+      quantity: parsed.cacheWriteTokens,
+      source: 'llm-gateway-adapter-reported:cache_write',
+      unit: 'tokens' as const,
+    },
+    {
+      quantity:
+        parsed.inputTokens ||
+        parsed.completionTokens ||
+        (parsed.cacheReadTokens ?? 0) ||
+        (parsed.cacheWriteTokens ?? 0)
+          ? 0
+          : parsed.totalTokens,
+      source: 'llm-gateway-adapter-reported:total',
+      unit: 'tokens' as const,
+    },
+    {
+      quantity: parsed.costEstimateUsd,
+      source: 'llm-gateway-adapter-reported:cost_estimate',
+      unit: 'usd' as const,
+    },
+  ].flatMap((record) =>
+    record.quantity !== undefined &&
+    (record.quantity > 0 ||
+      record.source === 'llm-gateway-adapter-reported:cache_read' ||
+      record.source === 'llm-gateway-adapter-reported:cache_write')
+      ? [
+          {
+            category: 'llm' as const,
+            modelId: input.logicalModelId,
+            providerRef: input.providerId,
+            quantity: record.quantity,
+            source: record.source,
+            unit: record.unit,
+          },
+        ]
+      : []
+  );
+  if (records.length) return recordUsage({ ...input, records });
+  if (!input.succeeded) return [];
   return recordUsage({
     ...input,
     records: [
@@ -356,9 +410,9 @@ export function recordInternalLlmGatewayUsage(
         category: 'llm',
         modelId: input.logicalModelId,
         providerRef: input.providerId,
-        quantity: tokens > 0 ? tokens : 1,
-        source: tokens > 0 ? 'gateway-reported' : 'gateway-observed',
-        unit: tokens > 0 ? 'tokens' : 'requests',
+        quantity: 1,
+        source: 'gateway-observed',
+        unit: 'requests',
       },
     ],
   });
