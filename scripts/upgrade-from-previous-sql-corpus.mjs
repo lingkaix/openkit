@@ -930,6 +930,10 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot);
     return { sql };
   } finally {
+    const { shutdownControlStoreWorkerClient } = await o.load(
+      'storage/control-store-worker-client'
+    );
+    await shutdownControlStoreWorkerClient();
     workspace.sqlite.close();
     user.sqlite.close();
     core.sqlite.close();
@@ -1100,13 +1104,13 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     escalationConditions: [],
     reviewContext: null,
   });
-  const turn = store.createTurn(workspaceId, threadId, workerRequest, actor, null, {
+  const turn = await store.createTurn(workspaceId, threadId, workerRequest, actor, null, {
     captureCoverage: { scope: 'server', value: 'on' },
   });
   sql.contextTurnId = turn.id;
   sql.contextAgentSessionId = id('as', 'context-session');
   const requestItemId = id('it', 'context-request');
-  store.createItem({
+  await store.createItem({
     id: requestItemId,
     owner: turn.owner,
     threadId,
@@ -1175,7 +1179,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   )();
   const secondBody = `${content}Second synthetic candidate.\n`;
   const secondDigest = `sha256:${digest(secondBody)}`;
-  const second = store.createArtifact({
+  const second = await store.createArtifact({
     ...artifact,
     id: id('ar', 'evaluation-candidate'),
     threadId: null,
@@ -1217,7 +1221,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   });
   const pendingFlow = await o.load('runtime/pending-request-flow');
   sql.pendingRequestId = '00000000-0000-4000-8000-000000000901';
-  pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
+  await pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
     requestId: sql.pendingRequestId,
     workspaceId,
     threadId,
@@ -1234,7 +1238,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     },
     now: turn.startedAt,
   });
-  store.createItem({
+  await store.createItem({
     id: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
     owner: turn.owner,
     threadId,
@@ -1286,7 +1290,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     }
   );
   sql.presentationId = presentation.id;
-  store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
+  await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
   const setup = syntheticAgentSetup();
   const image = imagePreparation.materializeRuntimeImage(setup.manifest.runtime.image);
   const inputDigest = hashing.commandInputHash(image);
@@ -1350,7 +1354,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     environmentPackage,
     createdAt: turn.startedAt,
   }).snapshotId;
-  store.createAgentSession({
+  await store.createAgentSession({
     id: sql.contextAgentSessionId,
     workspaceId,
     threadId,
@@ -1515,7 +1519,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     authoritativeGeneration: null,
     observedAt: new Date().toISOString(),
   });
-  store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
+  await store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
   const lineage = {
     agentSessionId: sql.contextAgentSessionId,
     packageSnapshotId: sql.aepSnapshotId,
@@ -1650,7 +1654,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     store,
     workspace
   );
-  pendingFlow.archiveThreadWithCloseout(
+  await pendingFlow.archiveThreadWithCloseout(
     store,
     {
       openWorkspace: (selectedWorkspaceId) =>

@@ -27,7 +27,11 @@ const appRoot = process.env.UPGRADE_CORPUS_APP_ROOT ?? join(repositoryRoot, 'app
 /** Creates real owned prerequisites without an App, provider, Worker, or Host effect. */
 async function fixture(t, existingRuntimeTarget = false) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-upgrade-sql-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(async () => {
+    const { shutdownControlStoreWorkerClient } = await load('storage/control-store-worker-client');
+    await shutdownControlStoreWorkerClient();
+    rmSync(root, { recursive: true, force: true });
+  });
   const load = (name) => import(pathToFileURL(join(appRoot, 'dist', `${name}.js`)).href);
   const { openCoreDb } = await load('storage/db');
   const { applyMigrations } = await load('storage/migrate');
@@ -56,14 +60,19 @@ async function fixture(t, existingRuntimeTarget = false) {
   }
 
   const store = new FsStore({ dataRoot: coreDb.dataRoot });
-  const workspace = store.createWorkspace('B01 upgrade continuity');
+  const workspace = await store.createWorkspace('B01 upgrade continuity');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const thread = store.createThread(workspace.id, 'Upgrade corpus');
-  const turn = store.createTurn(workspace.id, thread.id, 'Keep the synthetic corpus readable.', {
-    kind: 'user',
-    id: userId,
-  });
-  store.createItem({
+  const thread = await store.createThread(workspace.id, 'Upgrade corpus');
+  const turn = await store.createTurn(
+    workspace.id,
+    thread.id,
+    'Keep the synthetic corpus readable.',
+    {
+      kind: 'user',
+      id: userId,
+    }
+  );
+  await store.createItem({
     id: 'it_00000000-0000-7000-8000-000000000901',
     owner: turn.owner,
     threadId: thread.id,
@@ -78,7 +87,7 @@ async function fixture(t, existingRuntimeTarget = false) {
   const inlineArtifactId = 'ar_00000000-0000-7000-8000-000000000901';
   const artifactBody = '# Synthetic retained inline Artifact\n';
   const artifactDigest = `sha256:${createHash('sha256').update(artifactBody).digest('hex')}`;
-  store.createArtifact({
+  await store.createArtifact({
     id: inlineArtifactId,
     workspaceId: workspace.id,
     threadId: null,
@@ -103,7 +112,11 @@ async function fixture(t, existingRuntimeTarget = false) {
     createdAt: turn.startedAt,
     updatedAt: turn.startedAt,
   });
-  store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt, durationMs: 0 });
+  await store.updateTurn(turn.id, {
+    status: 'completed',
+    completedAt: turn.startedAt,
+    durationMs: 0,
+  });
   coreDb.sqlite.close();
   const input = {
     appRoot,
@@ -189,7 +202,7 @@ test('reopens every SQL family and its linked file owners with exact readback', 
   const { FsStore } = await input.load('lib/store');
   const pendingFlow = await input.load('runtime/pending-request-flow');
   const { openWorkspaceDb } = await input.load('storage/db');
-  pendingFlow.recoverPendingRequestsAtBoot(new FsStore({ dataRoot: input.dataRoot }), {
+  await pendingFlow.recoverPendingRequestsAtBoot(new FsStore({ dataRoot: input.dataRoot }), {
     openWorkspace: (workspaceId) => openWorkspaceDb(input.dataRoot, workspaceId),
   });
   assert.deepEqual(await readSqlCorpus(input), original);
@@ -358,9 +371,14 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   const predecessor = store.getAgentSession(sql.contextAgentSessionId);
   const actor = { kind: 'user', id: input.userId };
   const turnInput = 'Synthetic idle native corpus.';
-  const turn = store.createTurn(predecessor.workspaceId, predecessor.threadId, turnInput, actor);
+  const turn = await store.createTurn(
+    predecessor.workspaceId,
+    predecessor.threadId,
+    turnInput,
+    actor
+  );
   const requestItemId = 'it_00000000-0000-7000-8000-000000000902';
-  store.createItem({
+  await store.createItem({
     id: requestItemId,
     owner: turn.owner,
     threadId: turn.threadId,
@@ -372,7 +390,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     createdAt: turn.startedAt,
     completedAt: turn.startedAt,
   });
-  const session = store.createAgentSession({
+  const session = await store.createAgentSession({
     id: 'as_00000000-0000-7000-8000-000000000902',
     workspaceId: turn.owner.workspaceId,
     threadId: turn.threadId,
@@ -383,7 +401,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     updatedAt: turn.startedAt,
     environmentPackageSnapshotId: 'aepsnap_idle-native-corpus',
   });
-  store.updateTurn(turn.id, { agentSessionId: session.id });
+  await store.updateTurn(turn.id, { agentSessionId: session.id });
   const snapshotDb = openWorkspaceDb(input.dataRoot, session.workspaceId);
   try {
     const original = aep.requireAgentEnvironmentPackageSnapshot(
@@ -460,7 +478,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     now,
     targets: reserved.targets.map((entry) => ({ ...entry, initialized: true })),
   });
-  store.updateAgentSession(session.id, {
+  await store.updateAgentSession(session.id, {
     status: 'idle',
     nativeHandleDigest: 'd'.repeat(64),
     retainedStorage: { storageRef: storage.storageRef, workSlotRef: attached.currentWorkSlotRef },
@@ -520,7 +538,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
       },
     },
   });
-  store.updateTurn(turn.id, {
+  await store.updateTurn(turn.id, {
     status: 'completed',
     completedAt: turn.startedAt,
     durationMs: 0,

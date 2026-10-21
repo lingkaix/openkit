@@ -64,6 +64,7 @@ async function owners(appRoot) {
   const load = (path) => import(pathToFileURL(join(resolve(appRoot), 'dist', path)).href);
   const modules = {
     store: 'lib/store.js',
+    controlWorker: 'storage/control-store-worker-client.js',
     db: 'storage/db.js',
     migrate: 'storage/migrate.js',
     layout: 'storage/fs-layout.js',
@@ -233,7 +234,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
   try {
     mkdirSync(r.corpus, { recursive: true, mode: 0o700 });
     const producer = { kind: 'user', id: userId };
-    const workspace = ctx.store.createWorkspace('B01 upgrade continuity', {
+    const workspace = await ctx.store.createWorkspace('B01 upgrade continuity', {
       requestId: randomUUID(),
       producer,
       instructionReference: 'fixture:upgrade-from-previous',
@@ -244,11 +245,11 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       ownerUserId: userId,
       workspaceId: workspace.id,
     });
-    const thread = ctx.store.createThread(workspace.id, 'Retained B01 history');
+    const thread = await ctx.store.createThread(workspace.id, 'Retained B01 history');
     selectors.threadId = thread.id;
     const inputSource = join(r.corpus, 'input-original.bin');
     writeFileSync(inputSource, FIXTURE.original, { flag: 'wx', mode: 0o600 });
-    const turn = ctx.store.createTurn(workspace.id, thread.id, FIXTURE.text, producer, null, {
+    const turn = await ctx.store.createTurn(workspace.id, thread.id, FIXTURE.text, producer, null, {
       captureCoverage: { scope: 'server', value: 'off' },
       startedAt: FIXTURE.at,
       executorKind: 'person',
@@ -277,7 +278,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         durationMs: 1,
       },
     ])
-      ctx.store.createItem({
+      await ctx.store.createItem({
         owner: turn.owner,
         threadId: thread.id,
         turnId: turn.id,
@@ -287,14 +288,15 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         createdAt: FIXTURE.at,
         completedAt: FIXTURE.at,
       });
-    ctx.store.emitTurnEvent(turn.id, {
+    const startedEvent = await ctx.store.persistTurnEvent(turn.id, {
       ...lineage,
       event: 'turn.started',
       requestId: randomUUID(),
       data: { type: 'turn-started', turnId: turn.id, status: 'running' },
     });
+    ctx.store.emitTurnEvent(turn.id, startedEvent);
     selectors.agentSessionId = o.protocol.allocateEntityId('as');
-    ctx.store.createAgentSession({
+    await ctx.store.createAgentSession({
       id: selectors.agentSessionId,
       agentId: 'agent_continuity_fixture',
       workspaceId: workspace.id,
@@ -306,7 +308,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     });
     const inline = artifact(o, selectors, FIXTURE.text);
     selectors.inlineArtifactId = inline.id;
-    ctx.store.createArtifact(inline);
+    await ctx.store.createArtifact(inline);
     const original = artifact(o, selectors, FIXTURE.original, true);
     selectors.fileArtifactId = original.id;
     const workspaceRoot = join(r.data, 'workspaces', workspace.id);
@@ -325,7 +327,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       expectedDigest: original.contentDigest,
     });
     try {
-      ctx.store.createArtifact(original, staged);
+      await ctx.store.createArtifact(original, staged);
     } finally {
       await staged.remove();
       reservation.release();
@@ -545,6 +547,7 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     });
     await seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot);
   } finally {
+    await o.controlWorker.shutdownControlStoreWorkerClient();
     ctx.userDb.sqlite.close();
     ctx.coreDb.sqlite.close();
   }
@@ -634,7 +637,7 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
     complete: true,
     createdAt: FIXTURE.at,
   });
-  ctx.store.updateTurn(selectors.turnId, {
+  await ctx.store.updateTurn(selectors.turnId, {
     status: 'completed',
     completedAt: FIXTURE.at,
     durationMs: 0,
@@ -959,6 +962,7 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       [`${workspacePath}/${o.traces.retrievalTraceRelativePath(selectors.retrievalTraceReference)}`]
     );
   } finally {
+    await o.controlWorker.shutdownControlStoreWorkerClient();
     ctx.userDb.sqlite.close();
     ctx.coreDb.sqlite.close();
   }
