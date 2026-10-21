@@ -109,8 +109,8 @@ export function parseWorkspaceRecoveryArgs(_argv: readonly string[]): WorkspaceR
 
 /**
  * Runs one offline operator command without starting NanoCore or executing packaged content.
- * Capture acquires its source lock; target/source decisions hold their affected root locks.
- * A data-root backup source is independently verified and locked without changing its bytes.
+ * Stopped-root capture and target/source decisions hold their affected root locks.
+ * Backup-parent capture takes no parent lock: read-only verification brackets the copy.
  * @param _argv Arguments accepted by parseWorkspaceRecoveryArgs.
  * @param _write Sink for one path-free JSON report after a durable result or explicit inspection.
  * @returns The same operator report sent to the sink; refusals emit no success report.
