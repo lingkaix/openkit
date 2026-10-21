@@ -26,9 +26,10 @@ export function restoreWorkspaceRecoveryAdmission(core: CoreDb): void {
     .all() as { admission_id: string; workspace_id: string; state: string; proof_json: string }[];
   for (const row of rows) {
     const source = row.admission_id.startsWith('wsbak_');
-    const revokedButNotReopened =
-      row.state === 'abandoned' && JSON.parse(row.proof_json).result?.disposition === 'moved-out';
-    if (row.state === 'prepared' || (source && (row.state === 'finished' || revokedButNotReopened)))
+    const unfinishedAbandon =
+      row.state === 'abandoned' &&
+      ['moved-out', 'quarantined'].includes(JSON.parse(row.proof_json).result?.disposition);
+    if (row.state === 'prepared' || (source && row.state === 'finished') || unfinishedAbandon)
       refuseScope(core.dataRoot, { scope: 'workspace', id: row.workspace_id, check: 'recovery' });
   }
   // Capture protection also survives a failure before complete bundle facts can be recorded in Core.

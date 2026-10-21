@@ -276,7 +276,7 @@ function installedRelease(path: string) {
 }
 
 /**
- * Runs offline capture, verification and source decisions without server composition or a release-identity fallback.
+ * Runs offline Workspace recovery without server composition or a release-identity fallback.
  * @param argv Closed offline command arguments.
  * @param write Receives one path-free JSON success report.
  * @param deps Optional private identity path; the binary uses the installed image path.
@@ -286,7 +286,14 @@ export async function runWorkspaceRecoveryCli(
   write: (line: string) => void = (line) => process.stdout.write(line),
   deps: { readonly releaseIdentityPath?: string } = {}
 ): Promise<WorkspaceRecoveryCliReport> {
-  const args = parseWorkspaceRecoveryArgs(argv);
+  const parsed = parseWorkspaceRecoveryArgs(argv);
+  const args =
+    parsed.command === 'finish'
+      ? {
+          ...parsed,
+          expectedRelease: installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH),
+        }
+      : parsed;
   if (args.command !== 'capture' && args.command !== 'verify') {
     const result =
       args.command === 'move-out'

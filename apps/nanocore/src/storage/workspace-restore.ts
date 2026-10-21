@@ -50,7 +50,10 @@ import {
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
 } from './workspace-backup.js';
-import type { WorkspaceBackupManifest } from './workspace-backup-bundle.js';
+import {
+  WORKSPACE_BACKUP_MANIFEST_FILE,
+  type WorkspaceBackupManifest,
+} from './workspace-backup-bundle.js';
 import { completeCapture } from './workspace-capture-protection.js';
 import {
   loadWorkspaceFileRecords,
@@ -125,12 +128,15 @@ function mapping(core: CoreDb, input: TargetArgs, owned: RecoveryAdmission) {
 async function finishTarget(
   core: CoreDb,
   owned: RecoveryAdmission,
-  deps: WorkspaceRecoveryDependencies
+  deps: WorkspaceRecoveryDependencies,
+  expectedRelease?: WorkspaceBackupManifest['release']
 ): Promise<WorkspaceRecoveryCliReport> {
   const input = owned.proof.input as TargetArgs;
   if (!['restore', 'move-in'].includes(input.command)) refuseRecovery('request-conflict');
   if (owned.state === 'abandoned') refuseRecovery('request-conflict');
   if (owned.state === 'finished') return owned.proof.result;
+  if (expectedRelease && !isDeepStrictEqual(expectedRelease, owned.proof.manifest.release))
+    refuseRecovery('release-mismatch');
   const map = mapping(core, input, owned);
   const workspaceId = owned.workspace_id;
   const final = join(core.dataRoot, 'workspaces', workspaceId);
@@ -237,16 +243,32 @@ export async function admitWorkspaceBackup(
         refuseRecovery('request-conflict');
       // A readable changed identity conflicts; damaged source bytes cannot revoke a committed result.
       let manifest: WorkspaceBackupManifest | undefined;
+      let digest: string | undefined;
       try {
         manifest = readWorkspaceBackupManifest(input.bundleRoot);
+        digest = `sha256:${createHash('sha256')
+          .update(readFileSync(join(input.bundleRoot, WORKSPACE_BACKUP_MANIFEST_FILE)))
+          .digest('hex')}`;
       } catch {}
-      if (manifest && !isDeepStrictEqual(manifest, previous.proof.manifest))
+      if (
+        manifest &&
+        (!isDeepStrictEqual(manifest, previous.proof.manifest) ||
+          (digest !== undefined && digest !== previous.proof.capture.manifestDigest))
+      )
         refuseRecovery('request-conflict');
-      return finishTarget(core, previous, deps);
+      return finishTarget(core, previous, deps, input.expectedRelease);
     }
     const manifest = readWorkspaceBackupManifest(input.bundleRoot);
     const workspaceId = manifest.workspaceId;
     const final = join(input.dataRoot, 'workspaces', workspaceId);
+    if (
+      core.sqlite
+        .prepare(
+          "SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=? AND (state='prepared' OR (state='abandoned' AND json_extract(proof_json,'$.result.disposition')!='abandoned'))"
+        )
+        .get(workspaceId)
+    )
+      refuseRecovery('recovery-required');
     const registered = core.sqlite
       .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
       .get(workspaceId);
@@ -261,7 +283,9 @@ export async function admitWorkspaceBackup(
       registered ||
       existsSync(final) ||
       core.sqlite
-        .prepare('SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=?')
+        .prepare(
+          "SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=? AND NOT (state='abandoned' AND json_extract(proof_json,'$.result.disposition')='abandoned')"
+        )
         .get(workspaceId)
     )
       refuseRecovery('identity-collision');
@@ -307,7 +331,7 @@ export async function finishWorkspaceRecovery(
     if (input.selection.kind !== 'admission') refuseRecovery('request-conflict');
     const owned = selectRecoveryAdmission(core, input);
     return {
-      ...(await finishTarget(core, owned, deps)),
+      ...(await finishTarget(core, owned, deps, input.expectedRelease)),
       command: 'finish',
       selection: input.selection,
     };
@@ -321,33 +345,39 @@ export async function abandonWorkspaceRecovery(
     if (input.selection.kind !== 'admission') refuseRecovery('request-conflict');
     const owned = selectRecoveryAdmission(core, input);
     if (owned.state === 'finished') refuseRecovery('request-conflict');
+    if (owned.state === 'abandoned' && owned.proof.result.disposition === 'abandoned')
+      return owned.proof.result;
     endRecoveryAdmission(core, owned.admission_id, 'abandoned');
     const final = join(input.dataRoot, 'workspaces', input.workspaceId);
     const retired = join(dirname(owned.candidate_ref), 'abandoned');
-    const candidate = existsSync(owned.candidate_ref) ? owned.candidate_ref : final;
-    if (existsSync(candidate)) {
-      if (
-        !owned.proof.candidateDigest ||
-        candidateDigest(candidate) !== owned.proof.candidateDigest
-      )
+    const candidate =
+      existsSync(owned.candidate_ref) || !owned.proof.candidateDigest ? owned.candidate_ref : final;
+    if (!existsSync(retired) && existsSync(candidate)) {
+      if (owned.proof.candidateDigest && candidateDigest(candidate) !== owned.proof.candidateDigest)
         refuseRecovery('recovery-required');
       renameSync(candidate, retired);
-      const predecessor = join(
-        core.dataRoot,
-        'workspaces',
-        deriveEntityId('ws', `workspace-recovery:predecessor:${owned.admission_id}`)
-      );
-      if (existsSync(predecessor)) renameSync(predecessor, final);
-      syncCanonicalDirectory(dirname(final));
-      syncCanonicalDirectory(dirname(retired));
     }
-    return {
+    const predecessor = join(
+      core.dataRoot,
+      'workspaces',
+      deriveEntityId('ws', `workspace-recovery:predecessor:${owned.admission_id}`)
+    );
+    if (existsSync(predecessor)) {
+      if (existsSync(final)) refuseRecovery('recovery-required');
+      renameSync(predecessor, final);
+    }
+    syncCanonicalDirectory(dirname(final));
+    syncCanonicalDirectory(dirname(retired));
+    const report: WorkspaceRecoveryCliReport = {
       ...owned.proof.result,
       command: 'abandon',
       disposition: 'abandoned',
       selection: input.selection,
       nextAction: 'none',
     };
+    // Boot stays fenced until the owned retirement and predecessor restoration are durable.
+    endRecoveryAdmission(core, owned.admission_id, 'abandoned', report);
+    return report;
   });
 }
 
@@ -369,6 +399,7 @@ async function bindTargetCandidate(
   try {
     if (input.command === 'restore') {
       let current: Database.Database | undefined;
+      let currentSafetyRead = false;
       try {
         current = new Database(workspaceDbPath(core.dataRoot, workspaceId), {
           readonly: true,
@@ -388,6 +419,7 @@ async function bindTargetCandidate(
           string,
           unknown
         >[];
+        currentSafetyRead = true;
         sqlite
           .transaction(() => {
             sqlite.prepare('DELETE FROM evidence_bundles').run();
@@ -401,16 +433,19 @@ async function bindTargetCandidate(
             }
           })
           .immediate();
-        for (const relative of ['config/workspace.jsonc', 'catalog/catalog.json']) {
-          const from = join(core.dataRoot, 'workspaces', workspaceId, relative);
-          if (existsSync(from)) {
-            mkdirSync(dirname(join(root, relative)), { recursive: true });
-            writeFileSync(join(root, relative), readFileSync(from));
-          }
-        }
+        writeFileSync(
+          join(root, 'config/workspace.jsonc'),
+          readFileSync(join(core.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc'))
+        );
+        mkdirSync(join(root, 'catalog'), { recursive: true });
+        writeFileSync(
+          join(root, 'catalog/catalog.json'),
+          JSON.stringify(readWorkspaceResourceCatalog(core.dataRoot, workspaceId))
+        );
       } catch (error) {
         if (error instanceof Error && 'code' in error && error.code === 'workspace-moved-out')
           throw error;
+        if (currentSafetyRead) throw error;
         if (!input.acknowledgeLostSafety) refuseRecovery('safety-unproved');
         restricted = {
           backupId: manifest.backupId,

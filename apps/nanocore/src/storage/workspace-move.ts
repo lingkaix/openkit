@@ -61,6 +61,8 @@ export interface WorkspaceRecoverySelectedInput {
   readonly dataRoot: string;
   readonly workspaceId: string;
   readonly selection: WorkspaceRecoverySelection;
+  /** CLI supplies the current installed release when completing an unfinished decision. */
+  readonly expectedRelease?: WorkspaceMoveOutInput['expectedRelease'];
 }
 /** Reads native Workspace lifecycle without creating or recovering a missing database. */
 function source(dataRoot: string, workspaceId: string) {
@@ -309,6 +311,7 @@ export async function finishWorkspaceMove(
       backupId: owned.backup_id,
       bundleRoot: owned.candidate_ref,
       expectedRevision: owned.proof.manifest.capturedRevision,
+      ...(input.expectedRelease ? { expectedRelease: input.expectedRelease } : {}),
     },
     deps
   );
