@@ -1187,3 +1187,207 @@ describe('descriptive reader extensions', () => {
     ).toBe(false);
   });
 });
+
+// RET §Native Transcripts And Runtime Logs; WCP §Incremental Work Observations native member table.
+describe('RET-2 native observation grammar', () => {
+  /** A captured unit starts after the pre-launch watermark; transport still starts at zero. */
+  function native(kind: 'runtime-log' | 'native-transcript' = 'runtime-log') {
+    return {
+      observationId: 'native-unit',
+      sourceRef: 'native-source',
+      sourceSequence: 0,
+      observedAt: '2026-10-20T00:00:00.000Z',
+      fact: {
+        kind,
+        runtimeOriginRef: 'native-origin',
+        coverage: 'collecting',
+        native: {
+          harness: 'codex',
+          authoredVersion: 'test',
+          measuredVersion: null,
+          imageDigest: null,
+          format: kind === 'runtime-log' ? 'application/octet-stream' : 'codex-session-jsonl',
+          preLaunchWatermark: 32,
+          range: { start: 32, end: 36 },
+          observedBytes: 4,
+          retainedBytes: 4,
+          omittedBytes: null,
+          sourceEnded: false,
+          ...(kind === 'runtime-log' ? { logSource: 'stderr' } : {}),
+        },
+      },
+      content: {
+        state: 'expected',
+        mediaType: 'application/octet-stream',
+        boundary: 'native-content-v1',
+        bytes: 4,
+        sha256: `sha256:${'a'.repeat(64)}`,
+        chunkCount: 2,
+      },
+    };
+  }
+
+  it.each([
+    'native-transcript',
+    'runtime-log',
+  ] as const)('admits %s through emitter and retained reader without changing source coordinates', (kind) => {
+    const value = native(kind);
+    expect(WorkerObservationDataSchema.safeParse(value).success).toBe(true);
+    expect(WorkerObservationDataReaderSchema.parse(value)).toEqual(value);
+    const event = {
+      schemaVersion: 1,
+      kind: 'event',
+      lineage,
+      sequence: 1,
+      event: { type: 'observation.recorded', data: value },
+    };
+    expect(WorkerCanonicalEventRecordSchema.safeParse(event).success).toBe(true);
+    expect(WorkerCanonicalEventRecordReaderSchema.parse(event)).toEqual(event);
+    expect(
+      WorkerObservationDataReaderSchema.parse({
+        ...value,
+        futureNote: true,
+        fact: { ...value.fact, futureNote: true },
+      })
+    ).toEqual(value);
+    expect(
+      WorkerObservationContentChunkDataSchema.parse({
+        observationId: value.observationId,
+        chunkIndex: 0,
+        byteOffset: 0,
+        encoding: 'base64',
+        data: '/wA=',
+      }).byteOffset
+    ).toBe(0);
+  });
+
+  it('requires native codec, actual log source, MIME, watermark and consistent measured ranges', () => {
+    const value = native();
+    expect(WorkerObservationDataSchema.safeParse(value).success).toBe(true);
+    for (const change of [
+      { logSource: 'stdout-rpc' },
+      { logSource: undefined },
+      { preLaunchWatermark: 33 },
+      { range: { start: 32, end: 35 } },
+      { range: { start: 36, end: 32 } },
+      { range: { start: 32.5, end: 36.5 } },
+      { observedBytes: 3 },
+      { retainedBytes: 3 },
+      { omittedBytes: -1 },
+      { omittedBytes: 1 },
+      { sourceEnded: 'yes' },
+      { format: null },
+      { measuredVersion: undefined },
+      { imageDigest: 'image:tag' },
+    ]) {
+      for (const schema of [WorkerObservationDataSchema, WorkerObservationDataReaderSchema]) {
+        expect(
+          schema.safeParse({
+            ...value,
+            fact: { ...value.fact, native: { ...value.fact.native, ...change } },
+          }).success
+        ).toBe(false);
+      }
+    }
+    for (const change of [
+      { mediaType: 'text/html' },
+      { boundary: 'unknown-native-codec' },
+      { bytes: 3 },
+    ]) {
+      expect(
+        WorkerObservationDataSchema.safeParse({
+          ...value,
+          content: { ...value.content, ...change },
+        }).success
+      ).toBe(false);
+    }
+    expect(
+      WorkerObservationDataSchema.safeParse({
+        ...value,
+        fact: { ...value.fact, native: undefined },
+      }).success
+    ).toBe(false);
+    for (const mediaType of ['text/plain', 'application/json']) {
+      expect(
+        WorkerObservationDataSchema.safeParse({
+          ...value,
+          content: { ...value.content, mediaType },
+        }).success
+      ).toBe(true);
+    }
+    expect(
+      WorkerObservationDataSchema.safeParse({
+        ...value,
+        fact: { ...value.fact, native: { ...value.fact.native, logSource: 'stdout-log' } },
+      }).success
+    ).toBe(true);
+    const transcript = native('native-transcript');
+    expect(
+      WorkerObservationDataSchema.safeParse({
+        ...transcript,
+        fact: { ...transcript.fact, native: { ...transcript.fact.native, logSource: 'stderr' } },
+      }).success
+    ).toBe(false);
+  });
+
+  it('distinguishes silence, OFF, missing source, failure and measured or unknown truncation', () => {
+    const value = native();
+    const states = [
+      { coverage: 'ended', reason: undefined, observedBytes: 0, omittedBytes: 0 },
+      { coverage: 'off', reason: undefined, observedBytes: null, omittedBytes: null },
+      {
+        coverage: 'unavailable',
+        reason: 'source-missing',
+        observedBytes: null,
+        omittedBytes: null,
+      },
+      {
+        coverage: 'unavailable',
+        reason: 'collector-failed',
+        observedBytes: null,
+        omittedBytes: null,
+      },
+      {
+        coverage: 'unavailable',
+        reason: 'limit-exceeded',
+        observedBytes: null,
+        omittedBytes: null,
+      },
+      { coverage: 'unavailable', reason: 'limit-exceeded', observedBytes: 5, omittedBytes: 5 },
+    ];
+    const contents = [
+      {
+        ...value.content,
+        bytes: 0,
+        chunkCount: 0,
+        sha256: `sha256:${createHash('sha256').update('').digest('hex')}`,
+      },
+      { state: 'off' },
+      { state: 'unavailable', reason: 'unsupported' },
+      { state: 'unavailable', reason: 'capture-failed' },
+      { state: 'unavailable', reason: 'truncated' },
+      { state: 'unavailable', reason: 'truncated' },
+    ];
+    for (const [index, state] of states.entries()) {
+      const candidate = {
+        ...value,
+        fact: {
+          ...value.fact,
+          coverage: state.coverage,
+          ...(state.reason ? { reason: state.reason } : {}),
+          native: {
+            ...value.fact.native,
+            range: index === 0 ? { start: 32, end: 32 } : null,
+            retainedBytes: 0,
+            observedBytes: state.observedBytes,
+            omittedBytes: state.omittedBytes,
+            sourceEnded: index === 0,
+          },
+        },
+        content: contents[index],
+      };
+      expect(WorkerObservationDataSchema.safeParse(candidate).success).toBe(true);
+      expect(WorkerObservationDataReaderSchema.parse(candidate)).toEqual(candidate);
+    }
+  });
+});

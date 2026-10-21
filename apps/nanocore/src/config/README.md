@@ -32,7 +32,7 @@ The administration schema advertises only editable fields and omits excluded cre
 
 The inert `server.jsonc.policy.workspaceApprovalModes` field is removed and refused. Workspace Assistant inspection settings remain inert after host retirement. Policy statements use their current owner and cannot reactivate host publication.
 
-`server.jsonc.policy.workDataCapture` is the default-off work-data capture switch. Its resolved value is fixed at Turn admission, so a change is applied at the next Turn and never interrupts a running Turn; it does not require restart.
+`server.jsonc.policy.workDataCapture` is the default-off work-data capture switch. Its resolved value is fixed at Turn admission, so a change is applied at the next Turn and never interrupts a running Turn; it does not require restart. Its positive-safe-integer `nativeLogMaxBytes` defaults to a combined 16 MiB per Turn for actual stderr/log sources. The AEP constructor selects that bound into `observability.evidence.nativeLogMaxBytes`; reload changes later selection, not an existing package. Native admission reads the exact named AEP, never live configuration or an invented historical default. No budget is added to the Turn capture binding, and transcript bytes are not charged to the log bound. The receiver/contract prerequisite leaves capture OFF and activates no producer.
 
 ## Public Native Environment
 

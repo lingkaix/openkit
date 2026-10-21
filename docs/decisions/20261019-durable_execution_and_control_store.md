@@ -27,6 +27,10 @@ Ablate surviving-Worker adoption after Core restart, each nested clock, and each
 
 This replacement must land before `v0.1.0` because it is the system's base mechanism. The engineer initially permitted backup/move operations after `v0.1.0`, then confirmed on the same day that minimal Workspace backup, restore and move also belong in `v0.1.0`. The later confirmation controls; the separate backup/move owner defines that minimal operation scope, and the complete enabling layout is mandatory. The pre-stable data cutover uses one explicitly authorized reset, with no converters, legacy readers or dual writes. This decision does not execute or independently authorize a deployment reset.
 
+### Workspace Journal Control-State Clarification
+
+Source: the engineer's 2026-10-20 implementation ruling. Workspace `control_executions` and `control_execution_steps` are non-portable control state. Analytical Workspace export excludes both tables through its explicit classification list. Full operational backup and MOVE carry them only as Workspace database bytes; no new analytical history family or export format is introduced. This preserves the separation between analytical export and complete operational transfer without treating retained invocation or fence state as portable authority.
+
 ## Reason
 
 Source: the engineer's 2026-10-19 direction to the coordinator, translated from Chinese, with the same day's clarifications of Storage reuse, scheduling, configuration, human waits, journal span fields, retention completeness, Workspace snapshot coverage and rollout. Split commits leave contradictory accepted records and require separate recovery classifiers. A single local commit point removes those windows. The remaining physical and external effect boundaries cannot become atomic with Core storage and must retain truthful uncertainty.

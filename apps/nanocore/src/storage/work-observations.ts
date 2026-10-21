@@ -1538,9 +1538,15 @@ export function readThreadRuntimeActivity(
       }
       let partial = false;
       let unavailable = runtime.length === 0;
+      let nativeCollected = false;
       const displayedChildren = new Set<string>();
       for (const row of runtime) {
         const { fact, content } = WorkerObservationDataSchema.parse(row.payload);
+        const native = fact.kind === 'native-transcript' || fact.kind === 'runtime-log';
+        if (native && content.state !== 'expected') {
+          unavailable = true;
+          continue;
+        }
         if (fact.kind === 'coverage') {
           if (fact.coverage === 'unsupported' || fact.coverage === 'unavailable')
             unavailable = true;
@@ -1552,6 +1558,18 @@ export function readThreadRuntimeActivity(
         );
         if (content.state === 'unavailable' || (content.state === 'expected' && !publication))
           partial = true;
+        if (native) {
+          // Native bytes establish collection evidence, never Worker execution progress.
+          nativeCollected ||= publication !== undefined;
+          if (
+            fact.coverage === 'off' ||
+            fact.coverage === 'unavailable' ||
+            fact.coverage === 'unsupported'
+          )
+            unavailable = true;
+          if (fact.coverage === 'ended' || fact.reason) partial = true;
+          continue;
+        }
         const ordinal = fact.runtimeOriginRef ? children.get(fact.runtimeOriginRef) : undefined;
         const subject = ordinal ? `Child ${ordinal}` : 'Worker';
         const phase = fact.phase ?? 'observed';
@@ -1589,7 +1607,7 @@ export function readThreadRuntimeActivity(
       }
       // Ordinary Item availability must not improve collector coverage.
       coverage =
-        unavailable && entries.length === 0
+        unavailable && entries.length === 0 && !nativeCollected
           ? 'unavailable'
           : partial || unavailable
             ? 'partial'

@@ -22,6 +22,7 @@ import {
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
+import { NativeLogMaxBytesSchema } from './server.js';
 
 const RAW_SECRET_FIELD_NAMES = new Set(['apiKey', 'clientSecret', 'secret', 'token', 'password']);
 const BACKEND_PRIVATE_FIELD_NAMES = new Set([
@@ -1100,7 +1101,14 @@ export const AgentEnvironmentObservabilitySchema = z
         formats: z.record(z.string(), z.unknown()).optional(),
       })
       .passthrough(),
-    evidence: z.record(z.string(), z.unknown()).optional(),
+    evidence: z
+      .object({
+        nativeLogMaxBytes: NativeLogMaxBytesSchema.optional(),
+        // This authority has no required extensions; descriptive additions remain open.
+        requiredFeatures: z.array(z.never()).optional(),
+      })
+      .catchall(z.unknown())
+      .optional(),
   })
   .strict();
 

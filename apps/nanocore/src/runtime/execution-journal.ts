@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { ActorRefSchema, type WorkOwner } from '@openkit/protocol';
+import { ActorRefSchema, type WorkOwner, WorkOwnerSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type {
@@ -18,6 +18,25 @@ import type {
 
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
 export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
+
+/** Release-authored interpretation for the existing Workspace Worker-Turn producers. */
+export const WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION = 'workspace-worker-turn/v1';
+
+/** Actual Workspace producers; admission, reservation and observations keep their existing owners. */
+const workspaceStepKinds = new Set([
+  'resolve-setup',
+  'validate-setup',
+  'materialize',
+  'open-session',
+  'inspect-session',
+  'deliver-start',
+  'collect',
+  'terminal-publication',
+  'cancel',
+  'consume-receipt',
+  'inspect-cleanup',
+  'release',
+]);
 
 // A witness is process-local evidence, not a clock registry or a restart allowance.
 const processWitness = randomUUID();
@@ -134,10 +153,13 @@ const spanSchema: z.ZodType<ExecutionJournalSpan> = z
   .refine(
     (span) => span.endTimeUnixNano === null || span.endTimeUnixNano >= span.startTimeUnixNano
   );
-const ownerSchema = z.object({ kind: z.literal('server') });
+const ownerSchema = WorkOwnerSchema;
 const refSchema = z.object({ owner: ownerSchema, executionId: text });
 const stepRefSchema = z.object({ execution: refSchema, stepId: text });
-const definition = z.literal(CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION);
+const definition = z.enum([
+  CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+]);
 const controlSchema = z.object({
   definitionVersion: definition,
   kind: z.enum([
@@ -243,30 +265,47 @@ function decode<T>(schema: z.ZodType<T>, bytes: string): T {
   return schema.parse(JSON.parse(bytes));
 }
 
-/** Enforces the first cut's owner and prevents a primitive from opening its own transaction. */
-function requireWriter(db: CoreDb, ref: ExecutionJournalRef): void {
+/** Enforces the physical owner and prevents a primitive from opening its own transaction. */
+function requireWriter(db: CoreDb | WorkspaceDb, ref: ExecutionJournalRef): void {
   requireScope(db, ref.owner);
   refSchema.parse(ref);
   if (!db.sqlite.inTransaction)
     throw new Error('Execution journal requires the owning transaction.');
 }
 
-/** Rejects unsupported authority instead of manufacturing an empty Workspace history. */
-function requireScope(db: CoreDb | WorkspaceDb, owner: WorkOwner): asserts db is CoreDb {
-  if (db.scope !== 'core' || owner.kind !== 'server') {
-    throw new Error('Execution journal supports only Core Server scope.');
-  }
+/** Requires the caller's physical database and disclosure owner to name the same authority. */
+function requireScope(db: CoreDb | WorkspaceDb, owner: WorkOwner): void {
   ownerSchema.parse(owner);
+  if (
+    db.scope === 'core'
+      ? owner.kind !== 'server'
+      : owner.kind !== 'workspace' || owner.workspaceId !== db.workspaceId
+  ) {
+    throw new Error('Execution journal scope or owner conflicts.');
+  }
+}
+
+/** Refuses a known definition used in the wrong physical scope, not just unknown versions. */
+function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
+  if (
+    value !==
+    (db.scope === 'core'
+      ? CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION
+      : WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION)
+  ) {
+    throw new Error('Execution definition conflicts with its physical owner.');
+  }
 }
 
 /** Reads an exact root; absence, invalid metadata and unknown definitions fail closed. */
-function readRoot(db: CoreDb, ref: ExecutionJournalRef): ExecutionJournalExecution {
+function readRoot(db: CoreDb | WorkspaceDb, ref: ExecutionJournalRef): ExecutionJournalExecution {
   requireScope(db, ref.owner);
   refSchema.parse(ref);
   const row = rootRowSchema.parse(
     db.sqlite.prepare('SELECT * FROM control_executions WHERE id = ?').get(ref.executionId)
   );
   const owner = decode(ownerSchema, row.owner_json);
+  requireDefinition(db, row.definition_version);
   if (!isDeepStrictEqual(owner, ref.owner)) throw new Error('Execution owner conflicts.');
   const span = decode(spanSchema, row.span_json);
   if ((row.phase === 'closed') !== (span.endTimeUnixNano !== null)) {
@@ -292,7 +331,7 @@ function readRoot(db: CoreDb, ref: ExecutionJournalRef): ExecutionJournalExecuti
 }
 
 /** Decodes retained step facts without interpreting diagnostic values as control authority. */
-function storedStep(db: CoreDb, ref: ExecutionStepRef) {
+function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
   stepRefSchema.parse(ref);
   const root = readRoot(db, ref.execution);
   const row = stepRowSchema.parse(
@@ -301,6 +340,9 @@ function storedStep(db: CoreDb, ref: ExecutionStepRef) {
       .get(ref.execution.executionId, ref.stepId)
   );
   const control = decode(controlSchema, row.control_json);
+  if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
+    throw new Error('Workspace execution step has no admitted producer.');
+  }
   const invocation = decode(invocationSchema, row.invocation_json);
   const span = decode(spanSchema, row.span_json);
   if (
@@ -320,7 +362,7 @@ function storedStep(db: CoreDb, ref: ExecutionStepRef) {
 
 /** Computes a conservative allowance from this live process's original anchor, never from reopening. */
 function invocationView(
-  db: CoreDb,
+  db: CoreDb | WorkspaceDb,
   ref: ExecutionStepRef,
   ancestors = new Set<string>()
 ): ExecutionInvocation {
@@ -362,7 +404,7 @@ function invocationView(
 }
 
 /** Reads an ended step with its original root span identity; open intents are not exportable. */
-function endedStep(db: CoreDb, ref: ExecutionStepRef): EndedExecutionStep {
+function endedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef): EndedExecutionStep {
   const stored = storedStep(db, ref);
   if (stored.row.state === 'intent' || stored.span.endTimeUnixNano === null)
     throw new Error('Execution step has not ended.');
@@ -376,7 +418,7 @@ function endedStep(db: CoreDb, ref: ExecutionStepRef): EndedExecutionStep {
 }
 
 /**
- * Creates a read-only view over the caller's existing Core connection; it opens no database or timer.
+ * Creates a read-only view over the caller's existing owning connection; it opens no database or timer.
  * @param db Existing connection selected under current scope admission.
  * @param owner Current disclosure owner, never inferred from correlation or a path.
  * @returns Lossless history readers; retained facts grant no execution authority.
@@ -387,7 +429,6 @@ export function createExecutionStepJournalReader(
   owner: WorkOwner
 ): ExecutionStepJournalReader {
   requireScope(db, owner);
-  const coreDb = db;
   /** Checks each supplied reference against the construction owner before SQL. */
   const check = (ref: ExecutionJournalRef): void => {
     if (!isDeepStrictEqual(ref.owner, owner)) throw new Error('Execution reader owner conflicts.');
@@ -395,35 +436,33 @@ export function createExecutionStepJournalReader(
   return {
     async readExecution(ref) {
       check(ref);
-      return readRoot(coreDb, ref);
+      return readRoot(db, ref);
     },
     async readInvocation(ref) {
       check(ref.execution);
-      return invocationView(coreDb, ref);
+      return invocationView(db, ref);
     },
     async readEndedSteps(ref) {
       check(ref);
-      readRoot(coreDb, ref);
-      const rows = coreDb.sqlite
+      readRoot(db, ref);
+      const rows = db.sqlite
         .prepare(
           "SELECT step_id FROM control_execution_steps WHERE execution_id = ? AND state <> 'intent' ORDER BY ordinal"
         )
         .all(ref.executionId) as { step_id: string }[];
-      return rows.map((row) =>
-        endedStep(coreDb, { execution: ref, stepId: text.parse(row.step_id) })
-      );
+      return rows.map((row) => endedStep(db, { execution: ref, stepId: text.parse(row.step_id) }));
     },
     async readLinkedInspections(ref) {
       check(ref.execution);
-      storedStep(coreDb, ref);
-      const rows = coreDb.sqlite
+      storedStep(db, ref);
+      const rows = db.sqlite
         .prepare(
           "SELECT execution_id, step_id FROM control_execution_steps WHERE inspected_execution_id = ? AND inspected_step_id = ? AND state <> 'intent' ORDER BY execution_id, ordinal"
         )
         .all(ref.execution.executionId, ref.stepId) as { execution_id: string; step_id: string }[];
       return rows.map((row) => ({
         inspectedStep: ref,
-        inspection: endedStep(coreDb, {
+        inspection: endedStep(db, {
           execution: { owner, executionId: row.execution_id },
           stepId: row.step_id,
         }),
@@ -434,13 +473,13 @@ export function createExecutionStepJournalReader(
 
 /**
  * Persists one immutable intent before any queue or external wait in the caller's owning transaction.
- * @param db Existing Core connection inside controlStoreFor.write.
+ * @param db Existing owning Core or Workspace connection inside its write transaction.
  * @param input Exact root, original authority and separate stable invocation identity.
  * @returns Retained invocation; an identical repeat does not renew its clock or revision.
  * @throws For changed identity/input, closed authority, malformed values or absent transaction.
  */
 export function writeExecutionJournalIntent(
-  db: CoreDb,
+  db: CoreDb | WorkspaceDb,
   input: ExecutionJournalIntent
 ): ExecutionInvocation {
   requireWriter(db, input.execution.ref);
@@ -449,6 +488,10 @@ export function writeExecutionJournalIntent(
   const span = spanSchema.parse(input.span);
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);
+  requireDefinition(db, admission.definitionVersion);
+  if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
+    throw new Error('Workspace execution step has no admitted producer.');
+  }
   text.parse(admission.workId);
   text.parse(admission.fingerprint);
   text.parse(input.stepId);
@@ -499,7 +542,12 @@ export function writeExecutionJournalIntent(
   const root = readRoot(db, admission.ref);
   if (
     root.phase === 'closed' ||
-    (root.phase === 'closing' && !['inspect-cleanup', 'consume-receipt'].includes(control.kind)) ||
+    (root.phase === 'closing' &&
+      ![
+        'inspect-cleanup',
+        'consume-receipt',
+        ...(db.scope === 'workspace' ? ['release'] : []),
+      ].includes(control.kind)) ||
     root.workId !== admission.workId ||
     root.fingerprint !== admission.fingerprint ||
     root.definitionVersion !== admission.definitionVersion ||
@@ -574,13 +622,13 @@ export function writeExecutionJournalIntent(
 
 /**
  * Ends exactly one intent and advances its root inside the existing receipt-owning transaction.
- * @param db Existing Core connection inside controlStoreFor.write.
+ * @param db Existing owning Core or Workspace connection inside its write transaction.
  * @param input Conditional outcome and explicit next local transition.
  * @returns Immutable ended step; this function emits no samples and releases no physical fence.
  * @throws For stale revision, ended identity, changed span, open children or absent transaction.
  */
 export function settleExecutionJournalStep(
-  db: CoreDb,
+  db: CoreDb | WorkspaceDb,
   input: ExecutionJournalSettlement
 ): EndedExecutionStep {
   requireWriter(db, input.ref.execution);

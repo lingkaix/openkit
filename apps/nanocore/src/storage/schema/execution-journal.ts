@@ -10,7 +10,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
-/** Core-owned execution identity and root span; placement belongs to each step, never this row. */
+/** Scope-owned execution identity and root span; native Core/Workspace SQL guards each owner and definition. */
 export const controlExecutions = sqliteTable(
   'control_executions',
   {
@@ -49,7 +49,7 @@ export const controlExecutions = sqliteTable(
   ]
 );
 
-/** Original intent/outcome with independent parent and inspection links; native SQL guards immutable identities and ended rows. */
+/** Original intent/outcome with independent parent and inspection links; Workspace SQL admits only its twelve producer-backed kinds. */
 export const controlExecutionSteps = sqliteTable(
   'control_execution_steps',
   {

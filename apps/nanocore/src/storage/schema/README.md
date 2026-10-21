@@ -13,6 +13,8 @@ This directory defines the Drizzle table schemas for NanoCore's Core, User, and 
 - NanoHost-private execution attempt columns retain only the three nullable worker-control, inference, and capability SHA-256 projections needed for restart authentication; raw route tokens and sandbox-binding-derived credentials are outside durable schema scope.
 - Update the matching `apps/nanocore/drizzle/<scope>/` SQL journal and its setup tests whenever a persisted schema changes. Do not run Drizzle Kit generate against this mixed TypeScript schema tree.
 
+`execution-journal.ts` projects the same `control_executions` and `control_execution_steps` shapes in Core0014 and Workspace0012. Workspace rows retain the qualified Workspace owner and `workspace-worker-turn/v1`; native Workspace SQL admits only the twelve producer-backed step kinds. Both scopes preserve original invocation clocks, step-local targets, immutable ended outcomes and independent parent/inspection links. Readers check the actual physical scope and never derive a new allowance from retained history. The runtime guide distinguishes persisted readers from producer activation.
+
 ## Verification
 
 Run the focused repository tests for the changed record family, then the storage setup tests and NanoCore package gates described in the [NanoCore source guide](../../README.md).

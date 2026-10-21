@@ -208,7 +208,10 @@ export const WORKER_OBSERVATION_CHUNK_MAX_BYTES = 48 * 1024;
 /** Per-Turn raw model UTF-8 ceiling shared by primary, children and provider attempts; file and observation transport bounds are separate. */
 export const MAX_WORKER_RAW_OUTPUT_BYTES = 16_777_216;
 
-/** Maximum admitted bytes in one semantic observation body. */
+/** Single interpretation boundary for native content; raw transcript/log bytes stay unchanged. */
+export const NATIVE_CONTENT_CODEC = 'native-content-v1' as const;
+
+/** Maximum admitted bytes in one observation body, independent from the per-Turn log policy. */
 export const WORKER_OBSERVATION_CONTENT_MAX_BYTES = 16 * 1024 * 1024;
 
 const ObservationRefSchema = z
@@ -222,10 +225,59 @@ const ObservationIdentifierSchema = z
   .max(128)
   .regex(/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/);
 
+/** Native source facts, not execution authority or proof that Core published expected bytes. */
+const nativeObservationSourceSchema = z
+  .object({
+    requiredFeatures: z.never().optional(),
+    codec: z.never().optional(),
+    schemaVersion: z.never().optional(),
+    nativeLogMaxBytes: z.never().optional(),
+    harness: ObservationIdentifierSchema,
+    authoredVersion: z.string().min(1),
+    measuredVersion: z.string().min(1).nullable(),
+    imageDigest: WorkerRuntimeSha256Schema.nullable(),
+    format: z.string().min(1).nullable(),
+    preLaunchWatermark: z.number().int().nonnegative().nullable(),
+    range: z
+      .object({
+        requiredFeatures: z.never().optional(),
+        kind: z.never().optional(),
+        coordinateSpace: z.never().optional(),
+        start: z.number().int().nonnegative(),
+        end: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    observedBytes: z.number().int().nonnegative().nullable(),
+    retainedBytes: z.number().int().nonnegative(),
+    omittedBytes: z.number().int().nonnegative().nullable(),
+    sourceEnded: z.boolean(),
+    logSource: z.enum(['stderr', 'stdout-log']).optional(),
+  })
+  .strict()
+  .superRefine((source, ctx) => {
+    if (
+      source.range
+        ? source.range.end < source.range.start ||
+          source.range.end - source.range.start !== source.retainedBytes ||
+          (source.preLaunchWatermark !== null && source.range.start < source.preLaunchWatermark)
+        : source.retainedBytes !== 0
+    )
+      ctx.addIssue({ code: 'custom', path: ['range'], message: 'Invalid native byte interval.' });
+    if (
+      source.observedBytes !== null &&
+      (source.retainedBytes > source.observedBytes ||
+        (source.omittedBytes !== null &&
+          source.omittedBytes > source.observedBytes - source.retainedBytes))
+    )
+      ctx.addIssue({ code: 'custom', message: 'Native measured byte counts disagree.' });
+  });
+
 /** Strict source-reported facts; opaque refs carry evidence, never execution authority. */
 export const WorkerObservationFactEmissionSchema = z
   .object({
-    kind: z.enum(['origin', 'tool', 'assistant', 'coverage']),
+    kind: z.enum(['origin', 'tool', 'assistant', 'coverage', 'native-transcript', 'runtime-log']),
+    native: nativeObservationSourceSchema.optional(),
     runtimeOriginRef: ObservationRefSchema.nullable(),
     parentRuntimeOriginRef: ObservationRefSchema.optional(),
     phase: z
@@ -268,12 +320,16 @@ export const WorkerObservationFactEmissionSchema = z
       tool: ['phase', 'callRef'],
       assistant: ['phase', 'messageRef'],
       coverage: ['family', 'coverage'],
+      'native-transcript': ['coverage', 'native'],
+      'runtime-log': ['coverage', 'native'],
     } as const;
     const allowed: Record<typeof fact.kind, readonly string[]> = {
       origin: ['phase', 'parentRuntimeOriginRef'],
       tool: ['phase', 'callRef', 'toolName', 'exitCode'],
       assistant: ['phase', 'messageRef', 'representation'],
       coverage: ['family', 'coverage', 'reason'],
+      'native-transcript': ['coverage', 'reason', 'native'],
+      'runtime-log': ['coverage', 'reason', 'native'],
     };
     for (const field of required[fact.kind]) {
       if (fact[field] === undefined) {
@@ -293,6 +349,17 @@ export const WorkerObservationFactEmissionSchema = z
         });
       }
     }
+    if (
+      fact.native &&
+      (fact.kind === 'runtime-log'
+        ? fact.native.logSource === undefined
+        : fact.native.logSource !== undefined)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path: ['native', 'logSource'],
+        message: 'Only runtime-log facts require an actual log source class.',
+      });
     if (
       fact.parentRuntimeOriginRef !== undefined &&
       (fact.runtimeOriginRef === null || fact.parentRuntimeOriginRef === fact.runtimeOriginRef)
@@ -346,7 +413,7 @@ export const WorkerObservationContentSchema = z.discriminatedUnion('state', [
   z
     .object({
       state: z.literal('expected'),
-      mediaType: z.enum(['text/plain', 'application/json']),
+      mediaType: z.enum(['text/plain', 'application/json', 'application/octet-stream']),
       boundary: ObservationIdentifierSchema,
       bytes: z.number().int().nonnegative().max(WORKER_OBSERVATION_CONTENT_MAX_BYTES),
       sha256: WorkerRuntimeSha256Schema,
@@ -380,6 +447,33 @@ export const WorkerObservationDataEmissionSchema = z
   })
   .strict()
   .superRefine((observation, ctx) => {
+    const native =
+      observation.fact.kind === 'native-transcript' || observation.fact.kind === 'runtime-log';
+    if (observation.content.state === 'expected') {
+      if (
+        native
+          ? observation.content.boundary !== NATIVE_CONTENT_CODEC ||
+            !observation.fact.native ||
+            observation.fact.native.format === null ||
+            observation.fact.native.preLaunchWatermark === null ||
+            observation.fact.native.range === null ||
+            observation.fact.native.observedBytes === null ||
+            observation.fact.native.retainedBytes !== observation.content.bytes
+          : observation.content.boundary === NATIVE_CONTENT_CODEC ||
+            observation.content.mediaType === 'application/octet-stream'
+      )
+        ctx.addIssue({
+          code: 'custom',
+          path: ['content'],
+          message: 'Content must match its native boundary and measured source interval.',
+        });
+    }
+    if (native && observation.fact.coverage === 'off' && observation.content.state !== 'off')
+      ctx.addIssue({
+        code: 'custom',
+        path: ['content'],
+        message: 'Disabled native capture cannot declare retained content.',
+      });
     if (
       (observation.fact.kind === 'origin' || observation.fact.kind === 'coverage') &&
       observation.content.state !== 'off' &&
@@ -565,6 +659,12 @@ export const WorkerDiagnosticReaderSchema = WorkerDiagnosticSchema.safeExtend({
 /** Descriptive observation facts keep their closed combinations after stripping additions. */
 export const WorkerObservationFactReaderSchema = WorkerObservationFactEmissionSchema.safeExtend({
   requiredFeatures: z.never().optional(),
+  native: nativeObservationSourceSchema
+    .safeExtend({
+      range: nativeObservationSourceSchema.shape.range.unwrap().strip().nullable(),
+    })
+    .strip()
+    .optional(),
 }).strip();
 
 /** Descriptive WorkerObservationFact admission; producers use the exact emission schema. */

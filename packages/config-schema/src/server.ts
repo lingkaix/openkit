@@ -12,6 +12,12 @@ import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { KnowledgeMountsSchema, validateKnowledgeMountBinding } from './knowledge-mounts.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
+/** Combined native stderr/log bytes selected once per admitted Turn package. */
+export const DEFAULT_NATIVE_LOG_MAX_BYTES = 16 * 1024 * 1024;
+
+/** Native log policy and selected AEP bound; historical absence is not defaulted here. */
+export const NativeLogMaxBytesSchema = z.number().int().positive();
+
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
 const HttpOriginSchema = z
   .string()
@@ -272,6 +278,7 @@ export const OpenKitConfigSchema = z
         workDataCapture: z
           .object({
             value: z.enum(['off', 'on']).default('off'),
+            nativeLogMaxBytes: NativeLogMaxBytesSchema.default(DEFAULT_NATIVE_LOG_MAX_BYTES),
           })
           .strict()
           .optional(),
