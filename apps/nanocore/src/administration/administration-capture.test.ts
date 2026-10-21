@@ -234,7 +234,27 @@ it('binds the actual Administration prompt and ordered tools before model access
       expect(
         readWorkObservationTurnBinding(db, { threadId: thread.id, turnId: turn.id }).coverage
       ).toEqual({ scope: 'server', value: 'off' });
-      expect(readWorkObservations(db, { threadId: thread.id, turnId: turn.id })).toHaveLength(1);
+      expect(turn.status).toBe('completed');
+      expect(turn.completedAt).toEqual(expect.any(String));
+      const observations = readWorkObservations(db, { threadId: thread.id, turnId: turn.id });
+      expect(observations.filter(({ type }) => type === 'env.bound')).toEqual(rowsAtModelAccess);
+      // Capture OFF excludes originals; native terminal publication still retains bounded metadata.
+      expect(observations.filter(({ type }) => type === 'turn.reap')).toMatchObject([
+        {
+          obs: 'nanocore',
+          ret: 'turn-evidence',
+          turnId: turn.id,
+          ts: turn.completedAt,
+          payload: {
+            reason: 'completed',
+            lastObservedTs: rowsAtModelAccess[0]!.ts,
+            unresolvedCalls: [],
+            inferredBy: expect.any(String),
+          },
+        },
+      ]);
+      expect(JSON.stringify(observations)).not.toContain('PRIVATE_TOOL_DESCRIPTION');
+      expect(JSON.stringify(observations)).not.toContain(request.instructions);
       expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()).toEqual({
         count: 0,
       });
@@ -242,6 +262,7 @@ it('binds the actual Administration prompt and ordered tools before model access
       db.sqlite.close();
     }
   } finally {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
