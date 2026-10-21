@@ -690,7 +690,6 @@ describe('quick chat app API', () => {
       },
     ]);
     const terminal = vi.spyOn(client, 'terminal');
-    const admission = vi.spyOn(client, 'transition');
     try {
       const stop = () =>
         app.request(
@@ -715,15 +714,15 @@ describe('quick chat app API', () => {
         );
       const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
       const [stopped, concurrent] = await Promise.all(requests);
-      const write = failure === 'interrupt receipt' ? admission : terminal;
-      expect(write).toHaveBeenCalledTimes(1);
+      // Both original commands settle in the same terminal transaction.
+      expect(terminal).toHaveBeenCalledTimes(1);
       // Observe the real native rejection, not a Promise treated as proof of a write.
-      await expect(write.mock.results[0]!.value).rejects.toMatchObject({
+      await expect(terminal.mock.results[0]!.value).rejects.toMatchObject({
         code: 'constraint',
         commit: 'not-committed',
       });
       expect(store.getTurnById(turn.id).status).toBe('running');
-      expect(signal.aborted).toBe(failure !== 'interrupt receipt');
+      expect(signal.aborted).toBe(true);
       expect(stopped.status).toBe(409);
       const stopBody = await stopped.json();
       expect(stopBody).toMatchObject({ code: 'recovery_required' });
@@ -735,10 +734,10 @@ describe('quick chat app API', () => {
         expect(JSON.stringify(concurrentBody)).not.toContain('private');
       }
       const response = await pending;
-      expect(response.status).toBe(failure === 'interrupt receipt' ? 499 : 409);
+      expect(response.status).toBe(409);
       const body = await response.json();
       expect(body).toMatchObject({
-        code: failure === 'interrupt receipt' ? 'provider_call_aborted' : 'recovery_required',
+        code: 'recovery_required',
       });
       expect(JSON.stringify(body)).not.toContain('private');
       expect(
@@ -749,7 +748,6 @@ describe('quick chat app API', () => {
         })
       ).toBeNull();
       terminal.mockRestore();
-      admission.mockRestore();
       await client.write(database, [
         {
           mode: 'run',
@@ -758,65 +756,63 @@ describe('quick chat app API', () => {
         },
       ]);
       const replay = await submit();
-      expect(replay.status).toBe(failure === 'interrupt receipt' ? 499 : 409);
+      expect(replay.status).toBe(409);
       await expect(replay.json()).resolves.toMatchObject({
-        code: failure === 'interrupt receipt' ? 'provider_call_aborted' : 'recovery_required',
+        code: 'recovery_required',
       });
-      if (failure !== 'interrupt receipt') {
-        const retainedTurns = store.listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        );
-        const retainedItems = store.listThreadItems(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        );
-        for (const change of [
-          { input: 'Search the web for updates' },
-          { targetRef: 'internal-role:knowledge-manager' },
-        ]) {
-          const changed = await app.request(
-            ...operationRequest(
-              'conversation.submit',
-              {
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                threadId: 'th_00000000-0000-7000-8000-000000000001',
-              },
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  ...conversationRequest(
-                    'Explain a short concept.',
-                    '00000000-0000-4000-8000-000000144003'
-                  ),
-                  ...change,
-                }),
-              }
-            )
-          );
-          expect(changed.status, await changed.clone().text()).toBe(409);
-          await expect(changed.json()).resolves.toMatchObject({ code: 'recovery_required' });
-          expect(
-            store.listThreadTurns(
-              'ws_00000000-0000-7000-8000-000000000001',
-              'th_00000000-0000-7000-8000-000000000001'
-            )
-          ).toEqual(retainedTurns);
-          expect(
-            store.listThreadItems(
-              'ws_00000000-0000-7000-8000-000000000001',
-              'th_00000000-0000-7000-8000-000000000001'
-            )
-          ).toEqual(retainedItems);
-          expect(
-            store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000144003', {
-              actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      const retainedTurns = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
+      const retainedItems = store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      );
+      for (const change of [
+        { input: 'Search the web for updates' },
+        { targetRef: 'internal-role:knowledge-manager' },
+      ]) {
+        const changed = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            {
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: 'th_00000000-0000-7000-8000-000000000001',
-            })
-          ).toBeNull();
-        }
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                ...conversationRequest(
+                  'Explain a short concept.',
+                  '00000000-0000-4000-8000-000000144003'
+                ),
+                ...change,
+              }),
+            }
+          )
+        );
+        expect(changed.status, await changed.clone().text()).toBe(409);
+        await expect(changed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        expect(
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(retainedTurns);
+        expect(
+          store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(retainedItems);
+        expect(
+          store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000144003', {
+            actorId: 'usr_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          })
+        ).toBeNull();
       }
       if (failure === 'interrupt receipt') {
         const stopReplay = await app.request(
@@ -853,7 +849,6 @@ describe('quick chat app API', () => {
       ).toBe(true);
     } finally {
       terminal.mockRestore();
-      admission.mockRestore();
       await client.write(database, [
         {
           mode: 'run',
