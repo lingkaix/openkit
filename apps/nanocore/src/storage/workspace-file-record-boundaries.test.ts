@@ -2,7 +2,6 @@
 // The refusal helper preserves raw symbolic-link targets under the POSIX contract.
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -17,6 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { ItemSchema, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -27,10 +27,11 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb } from './db.js';
-import { ensureLayout } from './fs-layout.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import { ensureLayout, workspaceDbPath } from './fs-layout.js';
+import { publishImmutableProductJson } from './immutable-content.js';
 import { applyMigrations } from './migrate.js';
-import { parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
+import { nativeProductScope, parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -165,9 +166,11 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
+  // Exclude the live native writer before copying its SQLite authority.
+  await shutdownControlStoreWorkerClient();
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
-  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  /** Preserves raw native SQL schema/values and exact other bytes; WAL/SHM are bookkeeping. */
   function snapshot(root: string): Record<string, Buffer | string> {
     const entries: Record<string, Buffer | string> = {};
     const visit = (directory: string, prefix = '') => {
@@ -177,8 +180,42 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
         if (entry.isDirectory()) {
           entries[key] = 'directory';
           visit(path, key);
-        } else {
-          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        } else if (entry.isSymbolicLink()) {
+          entries[key] = `link:${readlinkSync(path)}`;
+        } else if (key === join('db', 'workspace.sqlite')) {
+          const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+          try {
+            entries[key] = sqlite.transaction(() => {
+              const schema = sqlite
+                .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')
+                .all();
+              const tables = sqlite
+                .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+                .all() as { name: string }[];
+              const rows = tables.map(({ name }) => [
+                name,
+                sqlite
+                  .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                  .raw(true)
+                  .safeIntegers(true)
+                  .all()
+                  .map((row) =>
+                    JSON.stringify(row, (_key, value) =>
+                      typeof value === 'bigint' ? { integer: value.toString() } : value
+                    )
+                  )
+                  .sort(),
+              ]);
+              return Buffer.from(JSON.stringify({ schema, rows }));
+            })();
+          } finally {
+            sqlite.close();
+          }
+        } else if (
+          key !== join('db', 'workspace.sqlite-wal') &&
+          key !== join('db', 'workspace.sqlite-shm')
+        ) {
+          entries[key] = readFileSync(path);
         }
       }
     };
@@ -195,7 +232,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   expect(() => reopened.getWorkspace(workspaceId)).toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
-  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+  await expect(reopened.createThread(workspaceId, 'Must remain refused')).rejects.toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
@@ -209,12 +246,100 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   return { store: reopened, dataRoot: restartRoot };
 }
 
+/** Adds deliberate retained corruption through the real immutable byte/reference boundary while its writer is stopped. */
+async function appendRetainedEntry(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  kind: 'item' | 'event',
+  value: Record<string, unknown>
+) {
+  await shutdownControlStoreWorkerClient();
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+  const db = openWorkspaceDb(dataRoot, workspaceId);
+  try {
+    const { sequence } = db.sqlite
+      .prepare(
+        'SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM control_product_entries WHERE kind=? AND turn_id=?'
+      )
+      .get(kind, turnId) as { sequence: number };
+    const retained = writeRetainedV1(kind === 'event' ? { ...value, sequence } : value);
+    const id = kind === 'event' ? `${turnId}:${sequence}` : String(value.id);
+    const { revision } = db.sqlite
+      .prepare(
+        'SELECT COALESCE(MAX(revision),0)+1 AS revision FROM control_product_entries WHERE kind=? AND id=?'
+      )
+      .get(kind, id) as { revision: number };
+    const content = await publishImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      join(dataRoot, 'workspaces', workspaceId, 'runtime', 'staging'),
+      retained
+    );
+    db.sqlite
+      .prepare(
+        'INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES (?,?,?,?,?,1,?,?)'
+      )
+      .run(
+        kind,
+        turnId,
+        sequence,
+        id,
+        revision,
+        JSON.stringify(content),
+        JSON.stringify(
+          kind === 'event'
+            ? { threadId: value.threadId, turnId }
+            : {
+                id: value.id,
+                type: value.type,
+                owner: value.owner,
+                threadId: value.threadId,
+                turnId,
+                actor: value.actor ?? null,
+                responsibleUserId: value.responsibleUserId ?? null,
+                causationId: value.causationId ?? null,
+              }
+        )
+      );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Inspects exact existing native rows after refusal without admitting, initializing or migrating the scope. */
+function nativeRows(
+  dataRoot: string,
+  workspaceId: string,
+  table: 'control_agent_sessions' | 'control_product_entries',
+  id: string
+) {
+  const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return JSON.stringify(
+      sqlite
+        .prepare(
+          `SELECT * FROM ${table} WHERE ${table === 'control_product_entries' ? 'turn_id' : 'id'}=? ORDER BY ${table === 'control_product_entries' ? 'kind,sequence' : 'id'}`
+        )
+        .raw(true)
+        .safeIntegers(true)
+        .all(id),
+      (_key, value) => (typeof value === 'bigint' ? { integer: value.toString() } : value)
+    );
+  } finally {
+    sqlite.close();
+  }
+}
+
 describe('workspace file-record write and load boundaries', () => {
   // Fresh navigation and body-only normalization belong to notebook-initialization.test.ts, under the Notebook owner's Content, Revisions And History section.
   it('preserves the authored Git index during Thread writes without adopting materialized bytes', async () => {
     const f = await createNotebookBoundaryFixture();
     const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
-    f.initialize({ 'index.md': authored });
+    await f.initialize({ 'index.md': authored });
     const revision = f.notebook.publishedRevision();
     const pagesRoot = join(f.workspaceRoot, 'knowledge', 'pages');
     const indexPath = join(pagesRoot, 'index.md');
@@ -244,7 +369,7 @@ describe('workspace file-record write and load boundaries', () => {
   it('does not repair corrupt published Git from materialized pages during Thread writes', async () => {
     const f = await createNotebookBoundaryFixture();
     const authored = '---\nokf_version: "0.2"\n---\n# Retained navigation\n';
-    f.initialize({ 'index.md': authored });
+    await f.initialize({ 'index.md': authored });
     const indexPath = join(f.workspaceRoot, 'knowledge', 'pages', 'index.md');
     mkdirSync(join(f.workspaceRoot, 'knowledge', 'pages'), { recursive: true });
     writeFileSync(indexPath, authored);
@@ -252,9 +377,8 @@ describe('workspace file-record write and load boundaries', () => {
     const corruptRef = `${'0'.repeat(40)}\n`;
     writeFileSync(publishedPath, corruptRef);
 
-    expect(() => f.store.createThread(f.workspace.id, 'Do not repair the Notebook')).toThrow(
-      'Notebook recovery required.'
-    );
+    const thread = await f.store.createThread(f.workspace.id, 'Do not repair the Notebook');
+    expect(f.store.getThread(f.workspace.id, thread.id)).toEqual(thread);
 
     expect(() => f.notebook.publishedRevision()).toThrow('Notebook recovery required.');
     await expectLocalWorkspaceRefusal(f.dataRoot, f.workspace.id);
@@ -271,7 +395,7 @@ describe('workspace file-record write and load boundaries', () => {
     const originalWorkspaces = f.store.listWorkspaces();
     const files = { 'index.md': content };
 
-    expect(() => f.initialize(files)).toThrow('Notebook invalid request.');
+    await expect(f.initialize(files)).rejects.toThrow('Notebook invalid request.');
     expect(files['index.md']).toBe(content);
     expect(existsSync(f.workspaceRoot)).toBe(false);
     expect(f.store.listWorkspaces()).toEqual(originalWorkspaces);
@@ -293,10 +417,11 @@ describe('workspace file-record write and load boundaries', () => {
     mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7000-8000-000000000001', 'workspaces'), {
       recursive: true,
     });
+    await shutdownControlStoreWorkerClient();
     renameSync(canonicalRoot, ownerNestedRoot);
 
     expect(existsSync(canonicalRoot)).toBe(false);
-    expect(existsSync(join(ownerNestedRoot, 'workspace-record.json'))).toBe(true);
+    expect(existsSync(join(ownerNestedRoot, 'db', 'workspace.sqlite'))).toBe(true);
 
     expect(() => ensureLayout(dataRoot)).toThrow(/owner-nested Workspace tree/);
     expect(
@@ -328,8 +453,8 @@ describe('workspace file-record write and load boundaries', () => {
           updatedAt: firstTimestamp,
         });
 
-        expect
-          .soft(() =>
+        await expect
+          .soft(
             store.createAgentSession({
               id,
               agentId: 'agent_codex_host',
@@ -341,17 +466,17 @@ describe('workspace file-record write and load boundaries', () => {
               updatedAt: secondTimestamp,
             })
           )
-          .toThrow();
+          .rejects.toThrow();
         expect.soft(store.getAgentSession(id)).toEqual(original);
-        expect
-          .soft(existsSync(join(first.root, 'runtime', 'agent-sessions', id, 'session.json')))
-          .toBe(true);
+        expect(
+          JSON.parse(nativeRows(f.dataRoot, first.workspace.id, 'control_agent_sessions', id))
+        ).toHaveLength(1);
         break;
       }
 
       case 'artifact': {
         const id = 'ar_00000000-0000-7466-96a2-e0274de2cc84';
-        const original = store.createArtifact({
+        const original = await store.createArtifact({
           id,
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
@@ -528,7 +653,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
     };
 
-    expect.soft(operation).toThrow();
+    await expect.soft(operation()).rejects.toThrow();
     expect.soft(store.listThreadItems(first.workspace.id, first.thread.id)).toEqual([original]);
     expect.soft(() => new FsStore({ dataRoot })).not.toThrow();
   });
@@ -688,19 +813,14 @@ describe('workspace file-record write and load boundaries', () => {
       })
     ).toThrow(/attribution cannot change/);
 
-    appendFileSync(
-      join(
+    for (const revision of itemRevisions)
+      await appendRetainedEntry(
         dataRoot,
-        'workspaces',
         workspace.id,
-        'threads',
-        thread.id,
-        'turns',
         turn.id,
-        'items.jsonl'
-      ),
-      `${supportingRequest ? `${JSON.stringify(writeRetainedV1(supportingRequest))}\n` : ''}${JSON.stringify(writeRetainedV1(item))}\n${JSON.stringify(writeRetainedV1(changedItem))}\n`
-    );
+        'item',
+        revision as unknown as Record<string, unknown>
+      );
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
@@ -746,9 +866,12 @@ describe('workspace file-record write and load boundaries', () => {
       completedAt: timestamp,
     });
 
-    appendFileSync(
-      join(first.root, 'threads', first.thread.id, 'turns', first.turn.id, 'items.jsonl'),
-      `${JSON.stringify(writeRetainedV1(response))}\n`
+    await appendRetainedEntry(
+      dataRoot,
+      first.workspace.id,
+      first.turn.id,
+      'item',
+      response as unknown as Record<string, unknown>
     );
 
     await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
@@ -768,25 +891,36 @@ describe('workspace file-record write and load boundaries', () => {
       createdAt: timestamp,
       completedAt: null,
     });
-    const itemsPath = join(
-      first.root,
-      'threads',
-      first.thread.id,
-      'turns',
-      first.turn.id,
-      'items.jsonl'
+    const db = openWorkspaceDb(store.getDataRoot()!, first.workspace.id);
+    const before = nativeRows(
+      store.getDataRoot()!,
+      first.workspace.id,
+      'control_product_entries',
+      first.turn.id
     );
-
-    rmSync(itemsPath);
-    mkdirSync(itemsPath);
-
-    expect(() =>
-      store.updateItem(original.id, {
-        status: 'completed',
-        text: 'This failed append must not enter memory.',
-        completedAt: timestamp,
-      })
-    ).toThrow();
+    try {
+      db.sqlite.exec(
+        "CREATE TRIGGER refuse_item_revision BEFORE INSERT ON control_product_entries WHEN NEW.kind='item' BEGIN SELECT RAISE(ABORT, 'injected native item failure'); END"
+      );
+      await expect(
+        store.updateItem(original.id, {
+          status: 'completed',
+          text: 'This failed append must not enter memory.',
+          completedAt: timestamp,
+        })
+      ).rejects.toThrow();
+      expect(
+        nativeRows(
+          store.getDataRoot()!,
+          first.workspace.id,
+          'control_product_entries',
+          first.turn.id
+        )
+      ).toBe(before);
+    } finally {
+      db.sqlite.exec('DROP TRIGGER refuse_item_revision');
+      db.sqlite.close();
+    }
     expect.soft(store.listThreadItems(first.workspace.id, first.thread.id)).toEqual([original]);
     expect
       .soft(store.getTurn(first.workspace.id, first.thread.id, first.turn.id).items)
@@ -809,7 +943,7 @@ describe('workspace file-record write and load boundaries', () => {
             ? { threadId: second.thread.id }
             : { startedAt: '2030-01-01T00:00:00.000Z' };
 
-    expect.soft(() => store.updateTurn(first.turn.id, patch)).toThrow();
+    await expect.soft(store.updateTurn(first.turn.id, patch)).rejects.toThrow();
     expect
       .soft(store.getTurn(first.workspace.id, first.thread.id, first.turn.id))
       .toEqual(first.turn);
@@ -854,7 +988,7 @@ describe('workspace file-record write and load boundaries', () => {
             ? { threadId: second.thread.id }
             : { createdAt: '2030-01-01T00:00:00.000Z' };
 
-    expect.soft(() => store.updateAgentSession(session.id, patch)).toThrow();
+    await expect.soft(store.updateAgentSession(session.id, patch)).rejects.toThrow();
     expect.soft(store.getAgentSession(session.id)).toEqual(session);
     expect(() => {
       const reloaded = new FsStore({ dataRoot });
@@ -865,7 +999,7 @@ describe('workspace file-record write and load boundaries', () => {
   it('rejects a second current AgentSession for the same Thread without a projection', async () => {
     const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const firstSession = store.createAgentSession({
+    const firstSession = await store.createAgentSession({
       id: 'as_00000000-0000-747a-8276-9839920addd4',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
@@ -877,8 +1011,8 @@ describe('workspace file-record write and load boundaries', () => {
     });
     const secondSessionId = 'as_00000000-0000-70e6-a30a-3a20e4fcde16';
 
-    expect
-      .soft(() =>
+    await expect
+      .soft(
         store.createAgentSession({
           id: secondSessionId,
           agentId: 'agent_codex_host',
@@ -890,16 +1024,16 @@ describe('workspace file-record write and load boundaries', () => {
           updatedAt: timestamp,
         })
       )
-      .toThrow();
+      .rejects.toThrow();
     expect
       .soft(store.listThreadAgentSessions(first.workspace.id, first.thread.id))
       .toEqual([firstSession]);
     expect.soft(() => store.getAgentSession(secondSessionId)).toThrow();
-    expect
-      .soft(
-        existsSync(join(first.root, 'runtime', 'agent-sessions', secondSessionId, 'session.json'))
+    expect(
+      JSON.parse(
+        nativeRows(dataRoot, first.workspace.id, 'control_agent_sessions', secondSessionId)
       )
-      .toBe(false);
+    ).toEqual([]);
     expect
       .soft(new FsStore({ dataRoot }).listThreadAgentSessions(first.workspace.id, first.thread.id))
       .toEqual([firstSession]);
@@ -918,8 +1052,8 @@ describe('workspace file-record write and load boundaries', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const closedPredecessor = store.updateAgentSession(predecessor.id, { status: 'closed' });
-    const successor = store.createAgentSession({
+    const closedPredecessor = await store.updateAgentSession(predecessor.id, { status: 'closed' });
+    const successor = await store.createAgentSession({
       id: 'as_00000000-0000-7e61-83f5-32cd2f5b5f35',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
@@ -949,9 +1083,9 @@ describe('workspace file-record write and load boundaries', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const terminal = store.updateAgentSession(session.id, { status: 'interrupted' });
+    const terminal = await store.updateAgentSession(session.id, { status: 'interrupted' });
 
-    expect.soft(() => store.updateAgentSession(session.id, { status: 'ready' })).toThrow();
+    await expect.soft(store.updateAgentSession(session.id, { status: 'ready' })).rejects.toThrow();
     expect.soft(store.getAgentSession(session.id)).toEqual(terminal);
     expect.soft(new FsStore({ dataRoot }).getAgentSession(session.id)).toEqual(terminal);
   });
@@ -1052,7 +1186,7 @@ describe('workspace file-record write and load boundaries', () => {
       expect(response?.status).toBe(violation === 'missing turn' ? 404 : 403);
       expect(store.listKnowledgeSources(first.workspace.id)).toEqual([]);
       expect(existsSync(join(first.root, 'knowledge', 'raw', 'sources'))).toBe(false);
-    } else expect.soft(operation).toThrow();
+    } else await expect.soft(operation()).rejects.toThrow();
     expect.soft(() => store.getAgentSession(id)).toThrow();
     expect
       .soft(store.listArtifacts(first.workspace.id))
@@ -1070,13 +1204,13 @@ describe('workspace file-record write and load boundaries', () => {
   ] as const)('rejects a persisted %s event whose nested payload lineage differs from its envelope', async (family) => {
     const { dataRoot, first, second, store } = await createBoundaryFixture();
     const timestamp = second.turn.startedAt ?? new Date().toISOString();
-    let event: Parameters<FsStore['emitTurnEvent']>[1];
-    let ownRecordPath: string;
+    let event: Parameters<FsStore['persistTurnEvent']>[1];
+    let readOwnBytes: (root: string) => string | Buffer;
     let readSecond: (candidate: FsStore) => unknown;
 
     switch (family) {
       case 'item': {
-        const item = store.createItem({
+        const item = await store.createItem({
           id: 'it_00000000-0000-78f6-9e01-ea1ec12708fe',
           owner: { kind: 'workspace', workspaceId: second.workspace.id },
           threadId: second.thread.id,
@@ -1094,14 +1228,8 @@ describe('workspace file-record write and load boundaries', () => {
           turnId: first.turn.id,
           data: { type: 'item-created', item: { ...item, text: 'Non-owning foreign snapshot.' } },
         };
-        ownRecordPath = join(
-          second.root,
-          'threads',
-          second.thread.id,
-          'turns',
-          second.turn.id,
-          'items.jsonl'
-        );
+        readOwnBytes = (root) =>
+          nativeRows(root, second.workspace.id, 'control_product_entries', second.turn.id);
         readSecond = (candidate) =>
           candidate.listThreadItems(second.workspace.id, second.thread.id);
         break;
@@ -1140,7 +1268,10 @@ describe('workspace file-record write and load boundaries', () => {
             artifact: { ...artifact, title: 'Non-owning foreign snapshot' },
           },
         };
-        ownRecordPath = join(second.root, 'artifacts', artifact.id, 'artifact.json');
+        readOwnBytes = (root) =>
+          readFileSync(
+            join(root, 'workspaces', second.workspace.id, 'artifacts', artifact.id, 'artifact.json')
+          );
         readSecond = (candidate) => candidate.getArtifact(second.workspace.id, artifact.id);
         break;
       }
@@ -1166,51 +1297,34 @@ describe('workspace file-record write and load boundaries', () => {
             agentSession: { ...agentSession, message: 'Non-owning foreign snapshot.' },
           },
         };
-        ownRecordPath = join(
-          second.root,
-          'runtime',
-          'agent-sessions',
-          agentSession.id,
-          'session.json'
-        );
+        readOwnBytes = (root) =>
+          nativeRows(root, second.workspace.id, 'control_agent_sessions', agentSession.id);
         readSecond = (candidate) => candidate.getAgentSession(agentSession.id);
         break;
       }
     }
 
-    const ownBytes = readFileSync(ownRecordPath);
+    const ownBytes = readOwnBytes(dataRoot);
     const expectedSecond = readSecond(store);
     expect(readSecond(new FsStore({ dataRoot }))).toEqual(expectedSecond);
-    expect(relative(second.root, ownRecordPath)).not.toMatch(/^\.\./);
-    expect.soft(() => store.emitTurnEvent(first.turn.id, event)).toThrow();
+    await expect.soft(store.persistTurnEvent(first.turn.id, event)).rejects.toThrow();
     expect.soft(store.getTurnEvents(first.turn.id)).toEqual([]);
 
-    const eventLogPath = join(
-      first.root,
-      'threads',
-      first.thread.id,
-      'turns',
-      first.turn.id,
-      'runtime',
-      'events.jsonl'
-    );
-    writeFileSync(
-      eventLogPath,
-      `${JSON.stringify(
-        writeRetainedV1({
-          ...event,
-          protocolVersion: PROTOCOL_VERSION,
-          requestId: event.requestId ?? null,
-          sequence: 1,
-          timestamp: new Date().toISOString(),
-        })
-      )}\n`
+    await appendRetainedEntry(dataRoot, first.workspace.id, first.turn.id, 'event', {
+      ...event,
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: event.requestId ?? null,
+      timestamp: new Date().toISOString(),
+    });
+    const eventBytes = nativeRows(
+      dataRoot,
+      first.workspace.id,
+      'control_product_entries',
+      first.turn.id
     );
     const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
     expect(readSecond(refused.store)).toEqual(expectedSecond);
-    expect(readFileSync(join(refused.dataRoot, relative(dataRoot, ownRecordPath)))).toEqual(
-      ownBytes
-    );
+    expect(readOwnBytes(refused.dataRoot)).toEqual(ownBytes);
     const progress = await refused.store.createThread(
       second.workspace.id,
       'Second owner remains writable'
@@ -1218,12 +1332,10 @@ describe('workspace file-record write and load boundaries', () => {
     const reopened = new FsStore({ dataRoot: refused.dataRoot });
     expect(reopened.getThread(second.workspace.id, progress.id)).toEqual(progress);
     expect(readSecond(reopened)).toEqual(expectedSecond);
-    expect(readFileSync(join(refused.dataRoot, relative(dataRoot, ownRecordPath)))).toEqual(
-      ownBytes
-    );
-    expect(readFileSync(join(refused.dataRoot, relative(dataRoot, eventLogPath)))).toEqual(
-      readFileSync(eventLogPath)
-    );
+    expect(readOwnBytes(refused.dataRoot)).toEqual(ownBytes);
+    expect(
+      nativeRows(refused.dataRoot, first.workspace.id, 'control_product_entries', first.turn.id)
+    ).toBe(eventBytes);
   });
 
   it.each([
@@ -1232,8 +1344,9 @@ describe('workspace file-record write and load boundaries', () => {
   ] as const)('rejects a persisted event that references a missing %s record', async (family) => {
     const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    let event: Parameters<FsStore['emitTurnEvent']>[1];
-    let recordRoot: string;
+    let event: Parameters<FsStore['persistTurnEvent']>[1];
+    let recordRoot: string | undefined;
+    let missingSessionId: string | undefined;
 
     if (family === 'artifact') {
       const artifact = await store.createArtifact({
@@ -1284,15 +1397,39 @@ describe('workspace file-record write and load boundaries', () => {
         turnId: first.turn.id,
         data: { type: 'agent-session-updated', agentSession },
       };
-      recordRoot = join(first.root, 'runtime', 'agent-sessions', agentSession.id);
+      missingSessionId = agentSession.id;
     }
 
-    store.emitTurnEvent(first.turn.id, event);
-    rmSync(recordRoot, { recursive: true });
+    const acknowledged = await store.persistTurnEvent(first.turn.id, event);
+    store.emitTurnEvent(first.turn.id, acknowledged);
+    await shutdownControlStoreWorkerClient();
+    if (recordRoot) rmSync(recordRoot, { recursive: true });
+    else {
+      const db = openWorkspaceDb(dataRoot, first.workspace.id);
+      try {
+        db.sqlite.prepare('DELETE FROM control_agent_sessions WHERE id=?').run(missingSessionId);
+      } finally {
+        db.sqlite.close();
+      }
+    }
 
     const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
-    expect(existsSync(recordRoot)).toBe(false);
-    expect(existsSync(join(refused.dataRoot, relative(dataRoot, recordRoot)))).toBe(false);
+    if (recordRoot) {
+      expect(existsSync(recordRoot)).toBe(false);
+      expect(existsSync(join(refused.dataRoot, relative(dataRoot, recordRoot)))).toBe(false);
+    } else {
+      expect(
+        nativeRows(dataRoot, first.workspace.id, 'control_agent_sessions', missingSessionId!)
+      ).toBe('[]');
+      expect(
+        nativeRows(
+          refused.dataRoot,
+          first.workspace.id,
+          'control_agent_sessions',
+          missingSessionId!
+        )
+      ).toBe('[]');
+    }
   });
 
   it.each([
@@ -1303,28 +1440,31 @@ describe('workspace file-record write and load boundaries', () => {
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
 
     if (duplicateAuthority === 'turn items') {
-      const item = store.createItem({
+      const item = await store.createItem({
         id: 'it_00000000-0000-7456-9649-697d49ec361e',
         owner: { kind: 'workspace', workspaceId: first.workspace.id },
         threadId: first.thread.id,
         turnId: first.turn.id,
         type: 'assistant-message',
         status: 'completed',
-        text: 'This item belongs only in items.jsonl.',
+        text: 'This item belongs only in immutable native history.',
         createdAt: timestamp,
         completedAt: timestamp,
       });
-      const turnPath = join(
-        first.root,
-        'threads',
-        first.thread.id,
-        'turns',
-        first.turn.id,
-        'turn.json'
-      );
-      const turnRecord = JSON.parse(readFileSync(turnPath, 'utf8')) as { items?: unknown[] };
-      turnRecord.items = [item];
-      writeFileSync(turnPath, `${JSON.stringify(turnRecord, null, 2)}\n`);
+      await shutdownControlStoreWorkerClient();
+      const db = openWorkspaceDb(dataRoot, first.workspace.id);
+      try {
+        const row = db.sqlite
+          .prepare('SELECT record_json FROM control_turns WHERE id=?')
+          .get(first.turn.id) as { record_json: string };
+        const turnRecord = JSON.parse(row.record_json);
+        turnRecord.items = [item];
+        db.sqlite
+          .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+          .run(JSON.stringify(turnRecord), first.turn.id);
+      } finally {
+        db.sqlite.close();
+      }
     } else {
       const artifact = await store.createArtifact({
         id: 'ar_00000000-0000-78bf-b0ac-55525ed5cf3c',

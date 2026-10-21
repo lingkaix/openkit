@@ -163,7 +163,8 @@ async function updateWorkspace(
       scope: { workspaceId },
       input: { ...body, workspaceId },
       responseKind: 'workspace',
-      execute: async () => WorkspaceRecordSchema.parse(await store.updateWorkspace(workspaceId, body)),
+      execute: async () =>
+        WorkspaceRecordSchema.parse(await store.updateWorkspace(workspaceId, body)),
       replay: (record) => WorkspaceRecordSchema.parse(store.getWorkspace(record.response.id)),
       responseId: (result) => result.id,
     });
