@@ -54,7 +54,17 @@ describe('Server-owned canonical history', () => {
       expect(reopened.listServerThreadItems(thread.id)).toEqual([
         expect.objectContaining({ text: 'Retained' }),
       ]);
-      expect(reopened.getServerTurnEvents(turn.id)).toHaveLength(1);
+      expect(reopened.getServerTurnEvents(turn.id)).toEqual([
+        event,
+        expect.objectContaining({
+          event: 'turn.completed',
+          data: {
+            type: 'turn-completed',
+            stopReason: 'completed',
+            turn: reopened.getServerTurnById(turn.id),
+          },
+        }),
+      ]);
       expect(reopened.listThreads(workspace.id)).toEqual([workspaceThread]);
       expect(reopened.listWorkspaceItemRevisions(workspace.id)).toEqual([]);
       expect(reopened.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'off' });
@@ -117,7 +127,13 @@ describe('Server-owned canonical history', () => {
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
       reopened.emitServerTurnEvent(skipped.id, skipEvent);
-      expect(reopened.getServerTurnTranscript(skipped.id)).toHaveLength(1);
+      expect(reopened.getServerTurnTranscript(skipped.id)).toEqual([
+        expect.objectContaining({
+          event: 'turn.completed',
+          data: { type: 'turn-completed', stopReason: 'completed', turn: skipped },
+        }),
+        skipEvent,
+      ]);
       expect(skipped.durationMs).toBe(0);
       expect(reopened.getServerItemById(skipItem.id).type).toBe('status');
       expect(new FsStore({ dataRoot }).listServerThreadTurns(thread.id)).toHaveLength(2);
@@ -208,6 +224,14 @@ describe('Server-owned canonical history', () => {
           ).record_json
         ).triggerActor.note
       ).toBe('retained actor description');
+      // Completion owns the terminal event; later persistence must replay its original envelope.
+      const committedEvents = reopened.getServerTurnTranscript(turn.id);
+      expect(committedEvents).toHaveLength(1);
+      expect(committedEvents[0]?.data).toEqual({
+        type: 'turn-completed',
+        stopReason: 'completed',
+        turn: reopened.getServerTurnById(turn.id),
+      });
       const terminalEvent = await reopened.persistServerTurnEvent(turn.id, {
         event: 'turn.completed',
         threadId: thread.id,
@@ -218,8 +242,9 @@ describe('Server-owned canonical history', () => {
           turn: reopened.getServerTurnById(turn.id),
         },
       });
+      expect(terminalEvent).toEqual(committedEvents[0]);
       reopened.emitServerTurnEvent(turn.id, terminalEvent);
-      expect(new FsStore({ dataRoot }).getServerTurnTranscript(turn.id)).toHaveLength(1);
+      expect(new FsStore({ dataRoot }).getServerTurnTranscript(turn.id)).toEqual(committedEvents);
       await expect(
         reopened.persistServerTurnEvent(turn.id, {
           event: 'turn.completed',
