@@ -20,10 +20,10 @@ function retainedTurn(startedAt: string): KnowledgeMaintenanceScheduleTurn {
 }
 
 describe('daily Knowledge Manager scheduling', () => {
-  it('keeps omitted and disabled schedules off independently of publication delegation', () => {
+  it('keeps omitted and disabled schedules off independently of publication delegation', async () => {
     const listTurns = vi.fn(() => []);
     const prepare = vi.fn();
-    scanDailyKnowledgeMaintenance({
+    await scanDailyKnowledgeMaintenance({
       now: instant,
       scopes: [
         { ownerScope, enabled: true },
@@ -72,24 +72,24 @@ describe('daily Knowledge Manager scheduling', () => {
       prepare,
       onError: vi.fn(),
     };
-    expect(scanDailyKnowledgeMaintenance(input)).toBeUndefined();
-    scanDailyKnowledgeMaintenance({ ...input });
+    expect(await scanDailyKnowledgeMaintenance(input)).toBeUndefined();
+    await scanDailyKnowledgeMaintenance({ ...input });
     await Promise.resolve();
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledTimes(1);
     rejectRun(failure);
     await vi.waitFor(() => expect(fail).toHaveBeenCalledTimes(1));
     expect(fail).toHaveBeenCalledWith(failure);
-    scanDailyKnowledgeMaintenance({ ...input });
+    await scanDailyKnowledgeMaintenance({ ...input });
     expect(prepare).toHaveBeenCalledTimes(1);
     // A later UTC day is a new invocation, not a retry of the failed source range.
-    scanDailyKnowledgeMaintenance({ ...input, now: '2026-10-17T23:30:00-02:00' });
+    await scanDailyKnowledgeMaintenance({ ...input, now: '2026-10-17T23:30:00-02:00' });
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(turns.at(-1)?.startedAt).toBe('2026-10-18T01:30:00.000Z');
     expect(input.onError).not.toHaveBeenCalled();
   });
 
-  it('does not prepare another daily run after native admission retains a skipped Turn', () => {
+  it('does not prepare another daily run after native admission retains a skipped Turn', async () => {
     const turns: KnowledgeMaintenanceScheduleTurn[] = [];
     const prepare = vi.fn((_scope: unknown, startedAt: string) => {
       turns.push(retainedTurn(startedAt));
@@ -102,8 +102,8 @@ describe('daily Knowledge Manager scheduling', () => {
       prepare,
       onError: vi.fn(),
     };
-    scanDailyKnowledgeMaintenance(input);
-    scanDailyKnowledgeMaintenance({ ...input });
+    await scanDailyKnowledgeMaintenance(input);
+    await scanDailyKnowledgeMaintenance({ ...input });
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(input.onError).not.toHaveBeenCalled();
   });

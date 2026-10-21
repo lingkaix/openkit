@@ -6,12 +6,13 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { scanUserMemoryMaintenance } from './user-memory-schedule.js';
 
-it('keeps User scheduling off by default and never inherits an unpresented administrator credential', () => {
+it('keeps User scheduling off by default and never inherits an unpresented administrator credential', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-daily-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -47,14 +48,15 @@ it('keeps User scheduling off by default and never inherits an unpresented admin
           .listThreads(workspace.id)
           .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id))
       );
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  scan('2026-10-18T00:00:00.000Z');
+  await scan('2026-10-18T00:00:00.000Z');
   expect(turns()).toEqual([]);
   schedule = { enabled: true };
-  scan('2026-10-18T00:00:00.000Z');
+  await scan('2026-10-18T00:00:00.000Z');
   expect(dependencies).not.toHaveBeenCalled();
   expect(turns()).toHaveLength(1);
   expect(turns()[0]).toMatchObject({
@@ -72,6 +74,6 @@ it('keeps User scheduling off by default and never inherits an unpresented admin
       (item) => item.type === 'status' && item.summary.includes('Current User authority')
     )
   ).toBe(true);
-  scan('2026-10-18T23:59:59.000Z');
+  await scan('2026-10-18T23:59:59.000Z');
   expect(turns()).toHaveLength(1);
 });
