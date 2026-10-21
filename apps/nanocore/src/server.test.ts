@@ -180,7 +180,11 @@ import {
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { readDataRootLayoutMarker, recordDataRootDeploymentMove } from './storage/fs-layout.js';
+import {
+  coreDbPath,
+  readDataRootLayoutMarker,
+  recordDataRootDeploymentMove,
+} from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -454,6 +458,15 @@ const demoStoreRoots = new WeakMap<FsStore, string>();
 
 async function createDemoStore(options: FsStoreOptions = {}): Promise<FsStore> {
   const dataRoot = options.dataRoot ?? mkdtempSync(join(tmpdir(), 'openkit-server-store-'));
+  // Native Store readers require the actual Core schema before Quick Chat fixture publication.
+  if (!existsSync(coreDbPath(dataRoot))) {
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  }
   const store = new FsStore({ ...options, dataRoot });
   demoStoreRoots.set(store, dataRoot);
   await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
@@ -1300,7 +1313,7 @@ class FakeTurnExecutor implements TurnExecutor {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: new Date().toISOString(),
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'turn.started',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1308,7 +1321,7 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'turn-started', turnId, status: 'running' },
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'item.created',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1316,7 +1329,7 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'item-created', item: userItem },
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'item.completed',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1324,7 +1337,7 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'item-completed', itemId: userItem.id, item: userItem },
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'agent.session.updated',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1332,7 +1345,7 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'agent-session-updated', agentSession },
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'item.created',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1340,7 +1353,7 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'item-created', item: assistantItem },
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'item.completed',
       requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1356,7 +1369,7 @@ class FakeTurnExecutor implements TurnExecutor {
       status: 'idle',
       updatedAt: assistantItem.completedAt ?? timestamp,
     });
-    store.emitTurnEvent(
+    await store.emitTurnEvent(
       turnId,
       {
         event: 'turn.completed',
@@ -1383,7 +1396,7 @@ class FakeTurnExecutor implements TurnExecutor {
       status: 'interrupted',
       completedAt: new Date().toISOString(),
     });
-    store.emitTurnEvent(turnId, {
+    await store.emitTurnEvent(turnId, {
       event: 'turn.completed',
       requestId: context.requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -6090,7 +6103,7 @@ describe('nanocore server', () => {
           status: 'failed',
           updatedAt: completedAt,
         });
-        runtimeStore.emitTurnEvent(
+        await runtimeStore.emitTurnEvent(
           turnId,
           {
             event: 'turn.completed',
@@ -6296,7 +6309,7 @@ describe('nanocore server', () => {
           status: 'failed',
           updatedAt: completedAt,
         });
-        runtimeStore.emitTurnEvent(
+        await runtimeStore.emitTurnEvent(
           turnId,
           {
             event: 'turn.completed',
@@ -6641,7 +6654,7 @@ describe('nanocore server', () => {
       completedAt,
       status: failed ? 'failed' : 'completed',
     });
-    store.emitTurnEvent(turn.id, {
+    await store.emitTurnEvent(turn.id, {
       data: { stopReason, turn: closedTurn, type: 'turn-completed' },
       event: 'turn.completed',
       requestId,
@@ -7139,7 +7152,10 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    await store.updateTurn(turn.id, { status });
+    await store.updateTurn(turn.id, {
+      status,
+      ...(status === 'interrupted' ? { completedAt: new Date().toISOString() } : {}),
+    });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
