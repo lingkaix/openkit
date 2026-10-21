@@ -43,6 +43,8 @@ export interface TerminalizeGovernedWorkerTurnInput {
   readonly store: FsStore;
   /** Existing native terminal facts supplied by the execution owner; omission creates no proof. */
   readonly publication?: TerminalTurnPublication;
+  /** Original interruption command committed with this first terminal tuple. */
+  readonly command?: TerminalTurnPublication['command'];
   /** Governed worker turn id. */
   readonly turnId: string;
 }
@@ -204,6 +206,7 @@ export async function terminalizeGovernedWorkerTurn(
     try {
       terminalTurn = await input.store.completeTurn(input.turnId, turnPatch, {
         ...(await readTerminalPublication(input, terminalTurn)),
+        ...(input.command ? { command: input.command } : {}),
         ...(terminalSessionPublication && terminalSession
           ? {
               agentSession: terminalSessionPublication,

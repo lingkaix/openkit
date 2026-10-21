@@ -147,7 +147,7 @@ DATA_ROOT/
       logs/
   workspaces/
     <workspaceId>/
-      workspace-record.json
+      workspace-record.json # optional readable projection; not authority
       db/workspace.sqlite
       config/workspace.jsonc
       config/data-sources.jsonc
@@ -173,13 +173,11 @@ DATA_ROOT/
 
 General Server Threads, Turns, Items and events use the existing canonical record families under `server/threads/<threadId>/`. Their immutable Server owner has no Workspace anchor. Workspace listing, portability and deletion do not traverse this root. Current Server administration authority governs history and effects; placement grants no permission. Only Knowledge Manager work uses this general owner in the current increment.
 
+The [Control Store owner](20261019-durable_execution_and_control_store.md) owns mutable Workspace, Thread, Turn, Item and AgentSession records in scoped SQLite. Any readable record files, including `workspace-record.json`, are projections only. Readers, index rebuild and boot use the control-store authority; a projection cannot restore or replace missing authority.
+
 File-backed source-of-truth records:
 
-- system-owned Workspace identity, ownership, lifecycle, revision, and timestamp facts in `workspace-record.json`
 - editable Workspace `name`, shared `defaultAgentId`, and other accepted Workspace composition in `config/workspace.jsonc`
-- thread records
-- turn records
-- append-only item logs
 - turn input attachments under `turns/<turnId>/inputs/`, which are work-history records whose lifecycle follows thread retention; they become Knowledge Sources only through the explicit registration contract in `docs/specs/20260703-knowledge_store_implementation.md`
 - artifacts and artifact metadata
 - knowledge pages, sources, derived representations, proposals, and Knowledge reviews
@@ -192,6 +190,7 @@ File-backed source-of-truth records:
 
 SQLite source-of-truth records:
 
+- mutable Workspace, Thread, Turn, Item and AgentSession records under the Control Store owner; readable record files and item logs are projections only
 - auth session records delegated to the auth implementation
 - User-owned conversation read receipts in `users/<userId>/db/user.sqlite`, keyed by Workspace and Thread, under the [Web projection receipt contract](20260628-web_product_surface_projection.md#user-owned-read-receipts); portable Workspace copies exclude this User state
 - idempotency ledger rows
@@ -359,7 +358,7 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 - `POST /api/app/operations/storage.layout-report` with an empty JSON object exposes the same report through the definition-derived public App API with `@openkit/app-api-schemas` validation, `@openkit/core-client` exposes `client.operations['storage.layout-report']({})` for first-party consumers, and remote MCP and the administrator CLI separately project the shared `storage.layout-report` operation for AI-native operator inspection. Because the report covers deployment-wide storage topology and quarantine inventory, this is a deployment-wide administration route governed by `docs/specs/20260704-remote_auth_credential_bootstrap.md`, not a workspace diagnostic.
 - A verified full-data-root backup preserves same-deployment Core identity, membership, invitation, session, token, and Workspace authority for restore. Portable Workspace export/import deliberately excludes those deployment-local authorities; target import creates one target registry owner and membership for the importing user, while source users and access relationships do not authorize the imported Workspace.
 - `rebuildWorkspaceDerivedIndexes` rebuilds `indexes/knowledge-links.json`, `indexes/knowledge-validation.json`, and `indexes/knowledge-source-refs.json` from canonical Workspace records. It removes stale derived files, including the old lexical projections, while preserving the separately owned `indexes/retrieval/` directory. Its returned `indexPath` names `indexes/knowledge-validation.json`.
-- `rebuildExistingWorkspaceDerivedIndexes` runs the derived-index rebuild at boot only for existing Workspace directories with a canonical `workspace-record.json` projection and skips genuinely incomplete directories without it. The removed `workspace.json` name is rejected by layout validation and is never treated as an authoritative or compatibility input.
+- `rebuildExistingWorkspaceDerivedIndexes` runs the derived-index rebuild at boot only for admitted Workspace directories with a canonical control-store Workspace record and skips unpublished directories. Missing or unreadable admitted authority is quarantined under the Control Store owner. The removed `workspace.json` name is rejected by layout validation and is never treated as an authoritative or compatibility input.
 - The server-scope database currently holds Better Auth or auth implementation rows, server settings, users, scheduler coordination, worker-control ledgers, and durable backend-session lifecycle rows. Restart closeout reuses those owners and adds no settlement table.
 - Worker-turn checkpoints, workspace synchronization owners, workspace filesystem staging roots, and workspace-scoped permission decisions now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers. The predecessor Goal tables, `PendingUserTurnRecord`, and `SteeringTerminalOutcome` are removed under [Goal](20261002-goal.md); they are not portable families. Current Goal records, cards, immutable Plan versions, Goal Task links, and their Task terminal facts are portable work data under [Workspace Backup, Export, and Import](20260704-workspace_backup_export_import.md) and the [current Goal portability decision](../decisions/20261003-current_goal_records_are_portable.md). Import restores no approval authority; unresolved Task references remain evidence, not authority.
 - `TURN_STREAM_EVENT_WINDOW_SIZE` in `apps/nanocore/src/storage/workspace-file-records.ts` is 100. `FsStore` applies that same limit on live append and reload, `turn-event-routes.ts` returns `core.stream.cursor_expired` for an older cursor, and focused reload and route tests prove the retained-window behavior.
@@ -374,19 +373,19 @@ The workspace physical `memory/` directory has been replaced by `knowledge/`. Op
 
 The current file projection materializes turn items as file-backed JSONL under per-thread and per-turn storage paths, knowledge page Markdown under `knowledge/pages/<knowledgeEntryId>.md`, app-local knowledge proposal Markdown under `knowledge/proposals/<proposalId>.md`, app-local knowledge proposal review decisions under `knowledge/reviews/<proposalId>.json`, source identity records under `sources/registry/<sourceId>.json`, registered text source material under `sources/materials/<sourceId>/content.txt`, Artifact current-version metadata under `artifacts/<artifactId>/artifact.json` with immutable descriptors and original bytes under `artifacts/<artifactId>/versions/<version>/`, and AgentSession records under `runtime/agent-sessions/<agentSessionId>/session.json`. The target layout keeps item logs, knowledge pages, proposal summaries and review decisions, source identity records, source material evidence, Artifact metadata and immutable version originals, and AgentSession runtime records file-backed, but moves ownership and recovery rules into the workspace tree defined in this spec.
 
-The canonical Workspace record is `workspace-record.json` and carries no editable `name` or execution defaults. `name` and `defaultAgentId` live only in `config/workspace.jsonc`; `defaultModelId` and `defaultSkillIds` are absent. Direct readers, index rebuild, backup, export, import, protocol, API, Core Client, fixtures, and Web consume the split owners without a compatibility path.
+The canonical Workspace record belongs to the scoped control store; any readable `workspace-record.json` is a projection. The record carries no editable `name` or execution defaults. `name` and `defaultAgentId` live only in `config/workspace.jsonc`; `defaultModelId` and `defaultSkillIds` are absent. Direct readers, index rebuild, backup, export, import, protocol, API, Core Client, fixtures, and Web consume the split owners without a compatibility path.
 
 ## Workspace Record And Configuration Split
 
-`workspace-record.json` is a system-authored canonical record. It carries stable Workspace identity, owner relationship reference, lifecycle status, revision, creation time, and update time only. It carries no editable display name, Agent default, model default, Skill default, Agent binding, policy, Secret binding, Workspace root, or runtime preference.
+The scoped control store owns the system-authored Workspace record. A readable `workspace-record.json` has no authority. The canonical record carries stable Workspace identity, owner relationship reference, lifecycle status, revision, creation time, and update time only. It carries no editable display name, Agent default, model default, Skill default, Agent binding, policy, Secret binding, Workspace root, or runtime preference.
 
 `config/workspace.jsonc` is the Workspace-shared editable configuration owner. Workspace creation writes the initial accepted `name` and any selected `defaultAgentId` there while creating the system record; later renames update only the revision-aware JSONC owner. Missing or invalid required `name` fails Workspace creation or configuration load, and no reader falls back to a historical record field.
 
 The optional `assistant.resources` selection owned by `20260909-internal_agent_resource_integration.md` also lives in this file and uses the same revision-aware configuration API. Its first slice retains only existing Skill IDs; catalog version/pin remains with the Skill owner. Any later MCP capability binding is admitted with its concrete adapter consumer and refers to the existing MCP catalog, which retains enablement, policy and Vault authority. No per-user Tool selection, additional resource file, internal-run record, persisted prompt or Tool-array record is added. Existing Workspace configuration backup/import carries these references and resolves or leaves unavailable their catalog dependencies without automatic activation.
 
-The protocol `WorkspaceRecordSchema` remains a product projection rather than the serialized `workspace-record.json` shape. The clean protocol cutover deletes `WorkspaceDefaultsSchema` and the `defaults` member, retains `name` only as a required value joined from the accepted `workspace.jsonc` snapshot, and derives counts from their existing owners. It exposes neither `defaultAgentId` nor the removed model and Skill defaults; Agent and model choices come from their configuration and target-catalog owners. Workspace creation publishes neither file until both the system record and valid configuration can be committed through the existing creation boundary. A revision-protected invalid edit is rejected while the last-known-good snapshot remains readable, and missing or invalid configuration at boot fails Workspace configuration load before any partial `WorkspaceRecordSchema` projection is served.
+The protocol `WorkspaceRecordSchema` remains a product projection rather than the serialized `workspace-record.json` shape. The clean protocol cutover deletes `WorkspaceDefaultsSchema` and the `defaults` member, retains `name` only as a required value joined from the accepted `workspace.jsonc` snapshot, and derives counts from their existing owners. It exposes neither `defaultAgentId` nor the removed model and Skill defaults; Agent and model choices come from their configuration and target-catalog owners. Workspace creation acknowledges publication only after its canonical system record and valid configuration satisfy the existing creation boundary. A revision-protected invalid edit is rejected while the last-known-good snapshot remains readable, and missing or invalid configuration at boot fails Workspace configuration load before any partial `WorkspaceRecordSchema` projection is served.
 
-Boot, direct access, derived-index rebuild, backup, export, and import accept only the new pair. Presence of the removed `workspace.json` name is an explicit unsupported-layout error even when `workspace-record.json` is absent; it is never a compatibility input and never evidence that the directory is merely half-built. A genuinely interrupted Workspace creation follows its existing creation cleanup or incomplete-record failure semantics and must not be inferred from the removed filename.
+Boot, direct access, derived-index rebuild, backup, export, and import use the canonical control-store record and accepted configuration. Presence of the removed `workspace.json` name is an explicit unsupported-layout error even when `workspace-record.json` is absent; it is never a compatibility input and never evidence that the directory is merely half-built. A genuinely interrupted Workspace creation follows its existing creation cleanup or incomplete-record failure semantics and must not be inferred from the removed filename.
 
 ## Workspace Storage Layout
 
@@ -629,7 +628,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 ## Resolved Decisions
 
 - The target layout uses one database per ownership scope under a `db/` directory: `server/db/core.sqlite`, `users/<userId>/db/user.sqlite`, and `workspaces/<workspaceId>/db/workspace.sqlite`.
-- The canonical Workspace system record is `workspace-record.json`; editable `name`, shared `defaultAgentId`, and other accepted Workspace composition live only in `config/workspace.jsonc`, and the removed `workspace.json` name fails loudly without a compatibility reader.
+- The canonical Workspace system record belongs to the scoped control store and any readable `workspace-record.json` is a projection only; editable `name`, shared `defaultAgentId`, and other accepted Workspace composition live only in `config/workspace.jsonc`, and the removed `workspace.json` name fails loudly without a compatibility reader.
 - Workspace ownership is a Core identity relationship and never determines the canonical Workspace path.
 - The legacy root-level `core.sqlite` path is implementation debt, not the target location.
 - The retired workspace `memory/` directory is not restored. User-owned `users/<userId>/memory/` is the intentional scoped Memory root, not an alias or compatibility path for Workspace Knowledge.

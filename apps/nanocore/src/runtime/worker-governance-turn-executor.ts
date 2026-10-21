@@ -75,7 +75,14 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import {
+  bindWorkspaceSqlite,
+  type CoreDb,
+  openWorkspaceDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
@@ -2563,16 +2570,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw primaryError;
     }
     const errors: unknown[] = primaryFailed ? [primaryError] : [];
-    const failedAttempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
+    let failedAttempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
     if (primaryFailed && failedAttempt.operationId === null)
-      closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
+      failedAttempt = closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
         attemptId: failedAttempt.attemptId,
         noOutstandingEffects: true,
         cause: 'turn-start-failed',
         now: this.now,
       });
     else if (primaryFailed)
-      markSchedulerExecutionAttemptClosing(this.coreDb!, {
+      failedAttempt = markSchedulerExecutionAttemptClosing(this.coreDb!, {
         attemptId: failedAttempt.attemptId,
         cause: 'execution-failed',
         now: this.now,
@@ -2680,6 +2687,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       // Cleanup after a possibly accepted submit cannot prove unread output or evidence.
       if (
         primaryFailed &&
+        // Definite pre-submission closure already settled the Core attempt without a fence.
+        // It supplies no native release result; keep that journal obligation for inspection.
+        failedAttempt.phase !== 'closed' &&
         errors.length === 1 &&
         (!submissionInvoked || failedAttempt.disposition === 'not_accepted') &&
         !backendCleanupRequired &&
@@ -3016,6 +3026,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             : 'turn-cancelled',
       now: this.now,
     });
+    if (context.command) {
+      if (context.command.receipt.command !== 'turn.interrupt')
+        throw new Error('Worker interruption requires its original interrupt command.');
+      // Accept the exact cancellation tuple before external contact; acceptance proves no stop.
+      await store.updateTurn(
+        turnId,
+        {},
+        {
+          commandAdmission: {
+            ...context.command,
+            receipt: { ...context.command.receipt, command: 'turn.interrupt' },
+          },
+        }
+      );
+    }
     acceptSchedulerExecutionObservation(
       this.coreDb!,
       await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))
@@ -4044,31 +4069,51 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     stopReason: Extract<StopReason, 'budget_exhausted' | 'completed' | 'length'> = 'completed'
   ): Promise<void> {
     const completedAt = this.now();
-    const agentSession = await store.updateAgentSession(agentSessionId, {
+    const projection = {
+      id: agentSessionId,
       message: null,
-      status: 'idle',
+      status: 'idle' as const,
       updatedAt: completedAt,
-    });
-    const agentSessionUpdatedEvent = await store.persistTurnEvent(
-      turnScope.id,
-      {
-        data: { agentSession, type: 'agent-session-updated' },
-        event: 'agent.session.updated',
-        requestId,
-        threadId: turnScope.threadId,
-        turnId: turnScope.id,
-        workspaceId: workspaceIdForOwner(turnScope.owner),
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    };
+    const composeSession = Boolean(store.getDataRoot());
+    const { id: _id, ...sessionPatch } = projection;
+    const agentSession = composeSession
+      ? { ...store.getAgentSession(agentSessionId), ...projection }
+      : await store.updateAgentSession(agentSessionId, sessionPatch);
+    const sessionEvent = {
+      data: { agentSession, type: 'agent-session-updated' as const },
+      event: 'agent.session.updated' as const,
+      requestId,
+      threadId: turnScope.threadId,
+      turnId: turnScope.id,
+      workspaceId: workspaceIdForOwner(turnScope.owner),
+    };
+    // The Session, preceding event and outcome share one timestamp and native commit.
     const turn = await store.completeTurn(
       turnScope.id,
+      { completedAt, error: null, status: 'completed' },
       {
-        completedAt,
-        error: null,
-        status: 'completed',
-      },
-      { ...(await this.readTerminalPublication(store, turnScope.id)), requestId, stopReason }
+        ...(await this.readTerminalPublication(store, turnScope.id)),
+        ...(composeSession ? { agentSession: projection } : {}),
+        precedingEvents: [sessionEvent],
+        requestId,
+        stopReason,
+      }
+    );
+    const retainedSessionEvent = store
+      .getTurnEvents(turnScope.id)
+      .findLast(
+        (event) =>
+          event.data.type === 'agent-session-updated' &&
+          event.data.agentSession.id === agentSessionId &&
+          event.data.agentSession.updatedAt === completedAt
+      );
+    if (!retainedSessionEvent)
+      throw new Error('Worker terminal Session event was not acknowledged.');
+    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+      turnScope.id,
+      retainedSessionEvent,
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
     const turnCompletedEvent = await store.persistTurnEvent(
       turnScope.id,
@@ -4095,12 +4140,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): Promise<TerminalTurnPublication> {
     if (!this.coreDb) throw new Error('Worker terminal journal requires Core lineage.');
     const turn = store.getTurnById(turnId);
-    const workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(turn.owner));
-    if (!workspaceDb) throw new Error('Worker terminal journal owner is unavailable.');
+    const workspaceId = workspaceIdForOwner(turn.owner);
+    // Preparing a terminal tuple reads authority; only its worker commit can write it.
+    const reader = openControlStoreProductReadHandle(
+      workspaceDbPath(this.coreDb.dataRoot, workspaceId),
+      turn.owner
+    );
+    const workspaceDb = bindWorkspaceSqlite(reader.sqlite, this.coreDb.dataRoot, workspaceId);
     try {
       return await workerTurnTerminalPublication(workspaceDb, turnId, outcome);
     } finally {
-      workspaceDb.sqlite.close();
+      reader.close();
     }
   }
 

@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -65,6 +66,7 @@ import {
 } from '../auth/access-token-store.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
@@ -84,14 +86,24 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  verifyAndMigrateExistingScopedDatabases,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -161,11 +173,11 @@ import {
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import { raiseRecordedPendingRequest } from './pending-request-flow.js';
 import {
-  answerPendingRequest,
-  freezeReadyOutcomes,
   frozenPendingOutcomeInput,
-  raisePendingRequest,
+  readPendingRequest,
+  renderPendingOutcomeItems,
 } from './pending-requests.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
@@ -533,6 +545,8 @@ function expectedTaskModeTurnId(
 async function createWorkerContextExecutorFixture(
   name: string,
   options: {
+    /** Publishes the preceding question through its native owner before this receiving Turn exists. */
+    readonly prepareThread?: (store: FsStore, threadId: string) => Promise<void>;
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
@@ -591,6 +605,7 @@ async function createWorkerContextExecutorFixture(
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   }
+  await options.prepareThread?.(store, threadId);
   const turn = await createAssignedTurn(
     store,
     'ws_00000000-0000-7000-8000-000000000001',
@@ -1671,8 +1686,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const continuity = vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
       if (input.reuseAllowed) return 'replacement-required' as const;
-      if (proof === 'assigned-missing')
-        await store.updateTurn(turn.id, { agentSessionId: plannedId });
+      if (proof === 'assigned-missing') {
+        await expect(
+          store.updateTurn(turn.id, { agentSessionId: plannedId })
+        ).rejects.toMatchObject({
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+        expect(store.getTurnById(turn.id).agentSessionId).toBe(turn.agentSessionId);
+        expect(() => store.getAgentSession(plannedId)).toThrow();
+      }
       throw new Error('/private/planned-successor-canary native-secret-canary');
     });
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
@@ -1726,7 +1749,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'failed',
         error: { code: 'worker_preparation_failed' },
       });
-      expect(original.agentSessionId).toBe(proof === 'assigned-missing' ? plannedId : undefined);
+      expect(original.agentSessionId).toBe(undefined);
       expect(originalEvents.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
       expect(() => store.getAgentSession(plannedId)).toThrow();
       const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
@@ -1845,7 +1868,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const publish = vi.spyOn(store, 'emitTurnEvent');
       const createSession = vi.spyOn(store, 'createAgentSession');
       for (let pass = 0; pass < 2; pass += 1) {
-        if (proof === 'proved') {
+        if (proof === 'proved' || proof === 'assigned-missing') {
           await expect(
             runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)
           ).resolves.toBeUndefined();
@@ -1875,7 +1898,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(recovery.restoreBackendSession).not.toHaveBeenCalled();
       expect(recovery.reconcileAcceptedFinalStatus).not.toHaveBeenCalled();
       expect(recovery.projectRecoveredTurn).not.toHaveBeenCalled();
-      expect(log.mock.calls).toHaveLength(proof === 'proved' ? 0 : 2);
+      expect(log.mock.calls).toHaveLength(
+        proof === 'proved' || proof === 'assigned-missing' ? 0 : 2
+      );
       for (const [line] of log.mock.calls)
         expect(JSON.parse(line)).toEqual({
           severityText: 'WARN',
@@ -2676,7 +2701,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it.each([
     {
       name: 'active Turn',
-      expected: 'The current AgentSession still owns an active Turn.',
+      expected: 'constraint',
       setup: 'active' as const,
     },
     {
@@ -2711,6 +2736,40 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Foreign thread',
       testEntityId('th', 'th_00000000-0000-78ce-b458-8347d12d1da2')
     );
+    // These rows inspect a historical binding; its preceding Turn has already ended.
+    // The active row deliberately retains its conflicting live setup for owner adjudication.
+    if (setup !== 'active')
+      await store.completeTurn(predecessorTurn.id, {
+        status: 'completed',
+        completedAt: '2026-08-21T00:00:00.000Z',
+      });
+    if (setup === 'active') {
+      const refusedTurnId = testEntityId('tu', 'tu_active_barrier_refused');
+      try {
+        await expect(
+          createAssignedTurn(
+            store,
+            workspaceIdForOwner(predecessorTurn.owner),
+            predecessorTurn.threadId,
+            'Keep predecessor barrier',
+            refusedTurnId
+          )
+        ).rejects.toMatchObject({
+          code: expected,
+          commit: 'not-committed',
+        });
+        expect(() => store.getTurnById(refusedTurnId)).toThrow();
+        expect(
+          store.listThreadTurns(
+            workspaceIdForOwner(predecessorTurn.owner),
+            predecessorTurn.threadId
+          )
+        ).toEqual([predecessorTurn]);
+      } finally {
+        coreDb.sqlite.close();
+      }
+      return;
+    }
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2747,12 +2806,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       updatedAt: '2026-08-21T00:00:00.000Z',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    if (setup === 'active') {
-      await store.updateTurn(predecessorTurn.id, {
-        agentSessionId: 'as_00000000-0000-7c02-b5f7-4874fb86e258',
-        status: 'running',
-      });
-    }
     const inspected = new Set<string>();
     const continuity = vi.fn(
       async (input: { readonly agentSessionId: string; readonly reuseAllowed: boolean }) => {
@@ -5607,16 +5660,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const cleanupSession = vi.spyOn(backend, 'cleanupSession');
       const projectionFailure =
         'terminalProjectionFailure' in testCase ? testCase.terminalProjectionFailure : null;
-      const projectionSpy =
-        projectionFailure === 'turn'
-          ? vi.spyOn(store, 'updateTurn').mockImplementationOnce(() => {
-              throw new Error('injected restart Turn persistence failure');
-            })
-          : projectionFailure === 'session'
-            ? vi.spyOn(store, 'updateAgentSession').mockImplementationOnce(() => {
-                throw new Error('injected restart Session persistence failure');
-              })
-            : null;
+      // Both projections now commit in the same native tuple. Refuse that actual publication.
+      const projectionSpy = projectionFailure
+        ? vi
+            .spyOn(getControlStoreWorkerClient(), 'terminal')
+            .mockRejectedValueOnce(
+              new Error(
+                projectionFailure === 'turn'
+                  ? 'injected restart Turn persistence failure'
+                  : 'injected restart Session persistence failure'
+              )
+            )
+        : null;
       const recovery = restartedExecutor.resumeAcceptedFinalStatus(
         store,
         awaitedEnvironmentPackage,
@@ -5738,19 +5793,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
           text: 'Echo [redacted] [redacted] [redacted].',
         })
       );
-      const history = readFileSync(
-        join(
-          coreDb.dataRoot,
-          'workspaces',
-          workspaceIdForOwner(turn.owner),
-          'threads',
-          turn.threadId,
-          'turns',
-          turn.id,
-          'items.jsonl'
-        ),
-        'utf8'
-      );
+      const historyDb = openTestWorkspaceDb(coreDb);
+      const scope = nativeProductScope(coreDb.dataRoot, turn.owner);
+      const history = (
+        historyDb.sqlite
+          .prepare(
+            "SELECT content_json FROM control_product_entries WHERE kind='item' AND turn_id=? ORDER BY sequence"
+          )
+          .all(turn.id) as { content_json: string }[]
+      )
+        .map((row) =>
+          readFileSync(
+            join(scope.contentMount.root, JSON.parse(row.content_json).reference.locator.path),
+            'utf8'
+          )
+        )
+        .join('\n');
+      historyDb.sqlite.close();
       for (const byte of [17, 34, 51])
         expect(history).not.toContain(Buffer.alloc(32, byte).toString('base64url'));
     }
@@ -7571,18 +7630,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
       close: typeof setupDb.sqlite.close;
       prepare: typeof setupDb.sqlite.prepare;
     };
-    const prepare = sqlitePrototype.prepare;
-    const prepareSpy = vi.spyOn(sqlitePrototype, 'prepare').mockImplementation(function (sql) {
-      if (sql.includes('UPDATE backend_workspace_handles')) {
-        return {
-          run: () => {
-            throw new Error('cleanup status persistence failed');
-          },
-        } as ReturnType<typeof setupDb.sqlite.prepare>;
-      }
-      return prepare.call(this, sql);
+    const prepareSpy = vi
+      .spyOn(getControlStoreWorkerClient(), 'projectCleanup')
+      .mockRejectedValue(new Error('cleanup status persistence failed'));
+    // Observe the runtime's writable Workspace handles; native read projections open separately.
+    const close = sqlitePrototype.close;
+    const closeSpy = vi.fn();
+    const closeObserver = vi.spyOn(sqlitePrototype, 'close').mockImplementation(function () {
+      if (!this.readonly && this.name.endsWith('workspace.sqlite')) closeSpy();
+      return close.call(this);
     });
-    const closeSpy = vi.spyOn(sqlitePrototype, 'close');
     setupDb.sqlite.close();
     closeSpy.mockClear();
 
@@ -7626,7 +7683,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(closeSpy).toHaveBeenCalledTimes(2);
     } finally {
-      closeSpy.mockRestore();
+      closeObserver.mockRestore();
       prepareSpy.mockRestore();
     }
 
@@ -7662,11 +7719,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       threadId: turn.threadId,
       turnId: turn.id,
     });
+    const healthy = await store.createWorkspace('Healthy quarantine control');
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: healthy.id });
     await shutdownControlStoreWorkerClient();
     rmSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), { force: true });
     mkdirSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), {
       recursive: true,
     });
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    const reopenedStore = new FsStore({ dataRoot });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
@@ -7690,14 +7751,47 @@ describe('WorkerGovernanceTurnExecutor', () => {
         })
       ).rejects.toThrow();
 
-      expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
+      expect(scopeAdmissionFailures(dataRoot)).toContainEqual({
+        scope: 'workspace',
+        id: workspaceIdForOwner(turn.owner),
+        check: 'database',
+      });
+      const app = createAppWithWorkspaceAuthority({
+        coreDb,
+        dataRoot,
+        store: reopenedStore,
+        turnExecutor: executor,
+      });
+      const refused = await app.request(
+        ...operationRequest('workspace.read', {
+          workspaceId: workspaceIdForOwner(turn.owner),
+        })
+      );
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({
+        code: 'recovery_required',
+        message: expect.stringContaining('quarantined'),
+      });
+      const available = await app.request(
+        ...operationRequest('workspace.read', { workspaceId: healthy.id })
+      );
+      expect(available.status).toBe(200);
+      expect(await available.json()).toMatchObject({ id: healthy.id });
       expect(
-        store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
-      ).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({ stopReason: 'error' }),
-        }),
-      ]);
+        lstatSync(workspaceDbPath(dataRoot, workspaceIdForOwner(turn.owner))).isDirectory()
+      ).toBe(true);
+      expect(readdirSync(workspaceDbPath(dataRoot, workspaceIdForOwner(turn.owner)))).toEqual([]);
+      // Quarantine must also permit new work in an independently healthy Workspace.
+      const progress = await app.request(
+        ...operationRequest(
+          'thread.create',
+          { workspaceId: healthy.id },
+          {
+            body: JSON.stringify({ name: 'Healthy progress', requestId: randomUUID() }),
+          }
+        )
+      );
+      expect(progress.status).toBe(200);
     } finally {
       coreDb.sqlite.close();
     }
@@ -7794,16 +7888,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
       close: typeof setupDb.sqlite.close;
     };
     setupDb.sqlite.close();
-    const closeSpy = vi.spyOn(sqlitePrototype, 'close').mockImplementationOnce(() => {
-      throw new Error('workspace storage close failed');
-    });
-
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Fail workspace storage close'
     );
+    const close = sqlitePrototype.close;
+    let injected = false;
+    const closeSpy = vi.spyOn(sqlitePrototype, 'close').mockImplementation(function () {
+      if (!injected && !this.readonly && this.name.endsWith('workspace.sqlite')) {
+        injected = true;
+        throw new Error('workspace storage close failed');
+      }
+      return close.call(this);
+    });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
@@ -7857,14 +7956,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_00000000-0000-7000-8000-000000000001',
       'Fail completed turn persistence'
     );
-    const updateTurn = store.updateTurn.bind(store);
+    const client = getControlStoreWorkerClient();
+    const terminal = client.terminal.bind(client);
     const updateTurnSpy = vi
-      .spyOn(store, 'updateTurn')
-      .mockImplementation(async (turnId, patch) => {
-        if (patch.status === 'completed') {
+      .spyOn(client, 'terminal')
+      .mockImplementation(async (database, input) => {
+        if (input.turn.record.status === 'completed') {
           throw new Error('completed turn persistence failed');
         }
-        return await updateTurn(turnId, patch);
+        return await terminal(database, input);
       });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
@@ -8066,26 +8166,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let restoreFailure = (): void => {};
     let injected = false;
 
-    if (failurePoint === 'agent-session') {
-      const updateAgentSession = store.updateAgentSession.bind(store);
-      const spy = vi.spyOn(store, 'updateAgentSession').mockImplementation(async (id, patch) => {
-        const updated = await updateAgentSession(id, patch);
-        if (!injected && patch.status === 'failed') {
+    if (failurePoint === 'agent-session' || failurePoint === 'turn') {
+      const client = getControlStoreWorkerClient();
+      const terminal = client.terminal.bind(client);
+      const spy = vi.spyOn(client, 'terminal').mockImplementation(async (database, input) => {
+        const committed = await terminal(database, input);
+        if (!injected && input.turn.record.status === 'failed') {
           injected = true;
-          throw new Error('failed AgentSession persistence reported failure after write');
+          throw new Error(
+            failurePoint === 'agent-session'
+              ? 'failed AgentSession persistence reported failure after write'
+              : 'failed turn persistence reported failure after write'
+          );
         }
-        return updated;
-      });
-      restoreFailure = () => spy.mockRestore();
-    } else if (failurePoint === 'turn') {
-      const updateTurn = store.updateTurn.bind(store);
-      const spy = vi.spyOn(store, 'updateTurn').mockImplementation(async (id, patch) => {
-        const updated = await updateTurn(id, patch);
-        if (!injected && patch.status === 'failed') {
-          injected = true;
-          throw new Error('failed turn persistence reported failure after write');
-        }
-        return updated;
+        return committed;
       });
       restoreFailure = () => spy.mockRestore();
     } else {
@@ -8580,40 +8674,41 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const fixture = await createWorkerContextExecutorFixture('artifact-follow-up', {
       workerRequest,
+      prepareThread: async (store, threadId) => {
+        const source = await createAssignedTurn(
+          store,
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          'Produce the reviewed Artifact.',
+          testEntityId('tu', 'tu_source_review')
+        );
+        const createdAt = source.startedAt ?? '2026-07-14T00:00:00.000Z';
+        await store.createArtifact({
+          id: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: source.threadId,
+          turnId: source.id,
+          kind: 'report',
+          title: 'Reviewed Artifact',
+          status: 'ready',
+          summary: null,
+          version: 1,
+          content: { format: 'text', body: artifactContent },
+          contentDigest: turnRuntimeSha256(Buffer.from(artifactContent, 'utf8')),
+          lastMutationRequestId: 'source_artifact_review',
+          origin: {
+            kind: 'turn-output',
+            threadId: source.threadId,
+            turnId: source.id,
+            requestId: 'source_artifact_review',
+          },
+          createdAt,
+          updatedAt: createdAt,
+        });
+        await store.updateTurn(source.id, { status: 'completed', completedAt: source.startedAt! });
+      },
     });
     const fileAdmission = new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n);
-    const sourceTurn = await createAssignedTurn(
-      fixture.store,
-      workspaceIdForOwner(fixture.turn.owner),
-      fixture.turn.threadId,
-      'Produce the reviewed Artifact.',
-      testEntityId('tu', 'tu_source_review')
-    );
-    const createdAt = sourceTurn.startedAt ?? '2026-07-14T00:00:00.000Z';
-    await fixture.store.createArtifact({
-      id: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
-      workspaceId: workspaceIdForOwner(fixture.turn.owner),
-      threadId: sourceTurn.threadId,
-      turnId: sourceTurn.id,
-      kind: 'report',
-      title: 'Reviewed Artifact',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: artifactContent },
-      contentDigest: turnRuntimeSha256(Buffer.from(artifactContent, 'utf8')),
-      lastMutationRequestId: 'source_artifact_review',
-      origin: {
-        kind: 'turn-output',
-        threadId: sourceTurn.threadId,
-        turnId: sourceTurn.id,
-        requestId: 'source_artifact_review',
-      },
-      createdAt,
-      updatedAt: createdAt,
-    });
-    await fixture.store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: createdAt });
-
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission,
@@ -8649,51 +8744,117 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'carried',
   ] as const)('preserves checkpoint-free %s delivery before native launch', async (cause) => {
     const triggerInput = 'Receive pending request outcomes.';
+    const pendingRequestId = 'pending_context_question';
+    const now = '2026-07-15T00:00:03.000Z';
+    const questions = [
+      {
+        id: 'tone',
+        header: 'Tone',
+        question: 'Which tone?',
+        options: [],
+        isOther: true,
+        isSecret: false,
+      },
+    ];
     const fixture = await createWorkerContextExecutorFixture(`pending-${cause}`, {
       workerRequest: triggerInput,
       ...(cause === 'carried'
         ? { turnStartReceipt: { input: triggerInput, profileId: 'profile_worker' } }
         : {}),
+      prepareThread: async (store, threadId) => {
+        const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+        const raising = await createAssignedTurn(
+          store,
+          workspaceId,
+          threadId,
+          'Ask the preceding question.',
+          testEntityId('tu', 'tu_previous_question')
+        );
+        const requestItem = await store.createItem({
+          id: 'it_00000000-0000-726a-90f0-84fe3c95037f',
+          owner: { kind: 'workspace', workspaceId },
+          threadId,
+          turnId: raising.id,
+          type: 'user-input-request',
+          responsibleUserId: LOCAL_USER_ID,
+          userInputRequestId: pendingRequestId,
+          prompt: 'Which tone?',
+          questions,
+          status: 'completed',
+          createdAt: now,
+          completedAt: now,
+        });
+        const db = openWorkspaceDb(store.getDataRoot()!, workspaceId);
+        try {
+          await raiseRecordedPendingRequest(
+            store,
+            db.sqlite,
+            {
+              requestId: pendingRequestId,
+              workspaceId,
+              threadId,
+              raisingTurnId: raising.id,
+              requestItemId: requestItem.id,
+              kind: 'user-input',
+              requesterKind: 'worker',
+              agentId: raising.agentId,
+              responsibleUserId: LOCAL_USER_ID,
+              questions,
+              now,
+            },
+            requestItem
+          );
+          await store.completeTurn(raising.id, { status: 'completed', completedAt: now });
+        } finally {
+          db.sqlite.close();
+        }
+      },
     });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
-    const pendingRequestId = 'pending_context_question';
-    const now = '2026-07-15T00:00:03.000Z';
     clearWorkerCheckpoint(
       workspaceDb,
       workspaceIdForOwner(fixture.turn.owner),
       fixture.turn.threadId,
       fixture.turn.id
     );
-    raisePendingRequest(workspaceDb.sqlite, {
-      requestId: pendingRequestId,
+    await fixture.store.applyPendingRequestCommand(workspaceIdForOwner(fixture.turn.owner), {
+      action: 'answer',
       workspaceId: workspaceIdForOwner(fixture.turn.owner),
       threadId: fixture.turn.threadId,
-      raisingTurnId: testEntityId('tu', 'tu_previous_question'),
-      requestItemId: 'it_00000000-0000-726a-90f0-84fe3c95037f',
-      kind: 'user-input',
-      requesterKind: 'worker',
-      agentId: fixture.turn.agentId,
-      responsibleUserId: LOCAL_USER_ID,
-      questions: [{ id: 'tone', header: 'Tone', question: 'Which tone?', options: [] }],
+      requestId: pendingRequestId,
+      actor: { kind: 'user', id: LOCAL_USER_ID },
+      answers: { tone: ['Detailed'] },
       now,
     });
-    answerPendingRequest(
-      workspaceDb.sqlite,
-      pendingRequestId,
-      { kind: 'user', id: LOCAL_USER_ID },
-      { tone: ['Detailed'] },
-      now
-    );
+    const answered = readPendingRequest(workspaceDb.sqlite, pendingRequestId)!;
+    const frozen = {
+      ...answered,
+      delivery: 'frozen' as const,
+      deliveryTurnId: fixture.turn.id,
+      deliveryCause: cause,
+      publicationTurnId: fixture.turn.id,
+      updatedAt: now,
+    };
     expect(
-      freezeReadyOutcomes(workspaceDb.sqlite, {
-        workspaceId: workspaceIdForOwner(fixture.turn.owner),
-        threadId: fixture.turn.threadId,
-        turnId: fixture.turn.id,
-        executor: 'worker',
-        agentId: fixture.turn.agentId,
-        cause,
-        now,
-      })
+      (
+        await fixture.store.applyPendingRequestCommand(
+          workspaceIdForOwner(fixture.turn.owner),
+          {
+            action: 'freeze',
+            workspaceId: workspaceIdForOwner(fixture.turn.owner),
+            threadId: fixture.turn.threadId,
+            turnId: fixture.turn.id,
+            executor: 'worker',
+            agentId: fixture.turn.agentId,
+            cause,
+            now,
+            expected: [{ requestId: pendingRequestId, sourceHash: commandInputHash(answered) }],
+            expectedSelection: [pendingRequestId],
+            expectedThreadCensus: [pendingRequestId],
+          },
+          { items: renderPendingOutcomeItems([frozen], fixture.turn.id, now) }
+        )
+      ).requestIds
     ).toHaveLength(1);
     const frozenInput = frozenPendingOutcomeInput(
       workspaceDb.sqlite,

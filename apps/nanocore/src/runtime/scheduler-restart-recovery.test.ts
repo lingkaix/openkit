@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -35,19 +35,23 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from '../storage/db.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { StoredEventPayloadV1Schema } from '../storage/retained-work-events-v1.js';
 import { StoredItemV1Schema } from '../storage/retained-work-items-v1.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
-  recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage,
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -100,9 +104,9 @@ import {
   recoverPendingRequestsAtBoot,
 } from './pending-request-flow.js';
 import {
-  answerPendingRequest,
-  freezeReadyOutcomes,
+  listThreadPendingRequests,
   readPendingRequest,
+  renderPendingOutcomeItems,
 } from './pending-requests.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
@@ -127,10 +131,14 @@ import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
+  prepareWorkerTurnJournalIntents,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
 import * as workerTurnFailure from './worker-turn-failure.js';
-import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
+import {
+  terminalizeGovernedWorkerTurn,
+  workerTurnTerminalPublication,
+} from './worker-turn-failure.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -278,25 +286,29 @@ async function createFailedStartFixture(
       status: 'completed',
       completedAt: '2026-07-05T00:00:00.000Z',
     });
-    answerPendingRequest(
-      workspaceDb.sqlite,
-      `input_${suffix}`,
-      { kind: 'user', id: LOCAL_USER_ID },
-      { path: ['src'] },
-      '2026-07-05T00:00:00.000Z'
-    );
+    await store.applyPendingRequestCommand(workspaceDb.workspaceId, {
+      action: 'answer',
+      workspaceId: workspaceDb.workspaceId,
+      threadId,
+      requestId: `input_${suffix}`,
+      actor: { kind: 'user', id: LOCAL_USER_ID },
+      answers: { path: ['src'] },
+      now: '2026-07-05T00:00:00.000Z',
+    });
   }
-  await store.createAgentSession({
-    id: agentSessionId,
-    agentId: 'agent_codex_host',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    threadId,
-    status: 'busy',
-    message: null,
-    ...(finalized || anchored ? { environmentPackageSnapshotId: packageSnapshotId } : {}),
-    createdAt: '2026-07-05T00:00:01.000Z',
-    updatedAt: '2026-07-05T00:00:01.000Z',
-  });
+  if (finalized || anchored) {
+    await store.createAgentSession({
+      id: agentSessionId,
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId,
+      status: 'busy',
+      message: null,
+      ...(finalized || anchored ? { environmentPackageSnapshotId: packageSnapshotId } : {}),
+      createdAt: '2026-07-05T00:00:01.000Z',
+      updatedAt: '2026-07-05T00:00:01.000Z',
+    });
+  }
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     threadId,
@@ -307,22 +319,47 @@ async function createFailedStartFixture(
       turnId,
       startedAt: '2026-07-05T00:00:01.000Z',
       agentId: 'agent_codex_host',
-      agentSessionId,
       status: 'pending',
       executorKind: 'worker',
       commandReceipt: prepareTestReceipt(suffix, new Date().toISOString()),
     }
   );
-  if (outcome)
-    freezeReadyOutcomes(workspaceDb.sqlite, {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId,
-      turnId,
-      executor: 'worker',
-      agentId: 'agent_codex_host',
-      cause: 'outcome',
-      now: '2026-07-05T00:00:01.000Z',
-    });
+  if (outcome) {
+    const now = '2026-07-05T00:00:01.000Z';
+    const sources = listThreadPendingRequests(
+      workspaceDb.sqlite,
+      workspaceDb.workspaceId,
+      threadId
+    );
+    const frozen = sources.map((record) => ({
+      ...record,
+      delivery: 'frozen' as const,
+      deliveryTurnId: turnId,
+      deliveryCause: 'outcome' as const,
+      publicationTurnId: turnId,
+      updatedAt: now,
+    }));
+    await store.applyPendingRequestCommand(
+      workspaceDb.workspaceId,
+      {
+        action: 'freeze',
+        workspaceId: workspaceDb.workspaceId,
+        threadId,
+        turnId,
+        executor: 'worker',
+        agentId: 'agent_codex_host',
+        cause: 'outcome',
+        now,
+        expected: sources.map((record) => ({
+          requestId: record.requestId,
+          sourceHash: commandInputHash(record),
+        })),
+        expectedSelection: sources.map((record) => record.requestId),
+        expectedThreadCensus: sources.map((record) => record.requestId),
+      },
+      { items: renderPendingOutcomeItems(frozen, turnId, now) }
+    );
+  }
   await store.updateTurn(turnId, { status: 'running' });
   dispatchLease(
     coreDb,
@@ -331,6 +368,24 @@ async function createFailedStartFixture(
     anchored,
     finalized || anchored
   );
+  if (finalized || anchored) {
+    const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      suffix,
+      workspaceInputIds,
+    });
+    const attempt = attempts.requireSchedulerExecutionAttempt(
+      coreDb,
+      testEntityId('attempt', `lease_${suffix}`)
+    );
+    const journalIntents = prepareWorkerTurnJournalIntents(
+      workspaceDb,
+      environmentPackage,
+      attempt,
+      null
+    );
+    await store.updateTurn(turnId, { agentSessionId }, { journalIntents });
+  }
+  // Before binding, a refused planned Session has no product Session or native execution to invent.
   if (anchored) {
     recordBackendSession(coreDb, suffix, 'cleaned');
     const anchor = getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))!;
@@ -360,8 +415,7 @@ async function createFailedStartFixture(
       attemptId: anchor.attemptId,
       now: () => anchor.physicalCleanedAt!,
     });
-  } else if (finalized)
-    recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds });
+  }
   if (anchored) {
     const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
       attemptId: testEntityId('attempt', `lease_${suffix}`),
@@ -1184,38 +1238,30 @@ describe('terminal failed-start product recovery', () => {
       } finally {
         db.sqlite.close();
       }
-      const decided = await f.store.updateTurn(f.turnId, {
+      const decided = await publishFixtureTerminal(f, {
         status: 'failed',
         completedAt,
         error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
       });
-      await f.store.emitTurnEvent(
+      const terminalEvent = f.store
+        .getTurnEventsForExport(f.turnId)
+        .find((event) => event.event === 'turn.completed')!;
+      f.store.emitTurnEvent(
         f.turnId,
-        {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: f.threadId,
-          turnId: f.turnId,
-          requestId: fixtureRequestId(`request_${suffix}`),
-          event: 'turn.completed',
-          data: { type: 'turn-completed', stopReason: 'error', turn: decided },
-        },
+        await f.store.persistTurnEvent(
+          f.turnId,
+          terminalEvent,
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        ),
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
-      const eventsPath = join(
-        f.store.workspaceRootPath('ws_00000000-0000-7000-8000-000000000001'),
-        'threads',
-        f.threadId,
-        'turns',
-        f.turnId,
-        'runtime',
-        'events.jsonl'
-      );
+      const eventsSource = f;
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      const eventsBefore = readFileSync(eventsPath, 'utf8');
+      const eventsBefore = readNativeEventBytes(eventsSource);
       verifyAndMigrateExistingScopedDatabases(f.dataRoot);
       const store = new FsStore({ dataRoot: f.dataRoot });
-      expect(reconcileWorkerMcpItems(f.dataRoot, store)).toBe(1);
-      expect(reconcileWorkerMcpItems(f.dataRoot, store)).toBe(0);
+      expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(1);
+      expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(0);
       expect(store.getTurnById(f.turnId).items).toHaveLength(5);
       expect(store.getTurnById(f.turnId).items[4]).toMatchObject({
         id: itemId,
@@ -1254,20 +1300,9 @@ describe('terminal failed-start product recovery', () => {
         changed.sqlite.close();
       }
       if (proof === 'changed-prior-item' || proof === 'changed-extra-item') {
-        // Model contradictory retained bytes; live Store admission correctly forbids this rewrite.
-        const itemsPath = join(
-          f.store.workspaceRootPath('ws_00000000-0000-7000-8000-000000000001'),
-          'threads',
-          f.threadId,
-          'turns',
-          f.turnId,
-          'items.jsonl'
-        );
+        // A stopped retained-data snapshot carries the deliberate extra immutable revision.
         const item = store.getTurnById(f.turnId).items[proof === 'changed-prior-item' ? 0 : 4]!;
-        appendFileSync(
-          itemsPath,
-          `${JSON.stringify(StoredItemV1Schema.parse(writeRetainedV1({ ...item, status: 'failed' })))}\n`
-        );
+        await appendRetainedItemRevision(f, writeRetainedV1({ ...item, status: 'failed' }));
       }
       const currentStore = new FsStore({ dataRoot: f.dataRoot });
       const before = currentStore.getTurnById(f.turnId);
@@ -1343,24 +1378,16 @@ describe('terminal failed-start product recovery', () => {
           store: f.store,
           turnId: f.turnId,
           agentSessionId: f.agentSessionId,
-          requestId: `request_repeat_${owner}`,
+          requestId: fixtureRequestId(`request_repeat_${owner}`),
           completedAt: f.input.now(),
           errorCode: 'worker_governance_turn_failed',
           message: 'Worker turn ended without success.',
           outcome: 'failed',
         });
       }
-      const eventsPath = join(
-        f.store.workspaceRootPath('ws_00000000-0000-7000-8000-000000000001'),
-        'threads',
-        f.threadId,
-        'turns',
-        f.turnId,
-        'runtime',
-        'events.jsonl'
-      );
+      const eventsSource = f;
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      const eventsBefore = readFileSync(eventsPath, 'utf8');
+      const eventsBefore = readNativeEventBytes(eventsSource);
       const published = f.store
         .getTurnEvents(f.turnId)
         .find((event) => event.event === 'turn.completed');
@@ -1379,7 +1406,7 @@ describe('terminal failed-start product recovery', () => {
       await drainTestRecovery(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId)).toEqual(decided);
       expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
-      expect(readFileSync(eventsPath, 'utf8')).toBe(eventsBefore);
+      expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
 
       // Core Protocol admits only these named display fields after the terminal snapshot.
       await f.store.updateItem(
@@ -1441,7 +1468,7 @@ describe('terminal failed-start product recovery', () => {
         const durable = new FsStore({ dataRoot: f.dataRoot });
         expect(durable.getTurnById(f.turnId)).toEqual(current);
         expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
-        expect(readFileSync(eventsPath, 'utf8')).toBe(eventsBefore);
+        expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
         expect(requireNanoHostExecutionAttempt(f.coreDb, lease.attemptId)).toEqual(lease);
         expect(getWorkerBackendSession(f.coreDb, lease.attemptId)).toEqual(backend);
         const after = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -1478,40 +1505,43 @@ describe('terminal failed-start product recovery', () => {
           : running.durationMs,
         error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
       };
-      // Publish before the terminal row so the real store can represent conflicting history.
-      await f.store.emitTurnEvent(f.turnId, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: f.threadId,
-        turnId: f.turnId,
-        requestId: fixtureRequestId(`request_${suffix}`),
-        event: 'turn.completed',
-        data: {
-          type: 'turn-completed',
-          stopReason: contradiction === 'stop-reason' ? 'aborted' : 'error',
-          turn: {
-            ...decided,
-            ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
-            ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
-            ...(contradiction === 'session'
-              ? { agentSessionId: testEntityId('as', 'as_foreign') }
-              : {}),
-            ...(contradiction === 'error-code'
-              ? { error: { ...decided.error, code: 'delivery_unknown' } }
-              : {}),
-            ...(contradiction === 'error-message'
-              ? { error: { ...decided.error, message: 'A different failure.' } }
-              : {}),
-            ...(contradiction === 'completion-time'
-              ? { completedAt: '2026-10-02T23:59:00.000Z' }
-              : {}),
-          },
-        },
-      });
-      await f.store.updateTurn(f.turnId, {
+      await publishFixtureTerminal(f, {
         status: decided.status,
         completedAt: decided.completedAt,
         error: decided.error,
       });
+      const originalEvent = f.store
+        .getTurnEventsForExport(f.turnId)
+        .find((event) => event.event === 'turn.completed')!;
+      await replaceRetainedEntry(
+        f,
+        'event',
+        `${f.turnId}:${originalEvent.sequence}`,
+        writeRetainedV1({
+          ...originalEvent,
+          data: {
+            type: 'turn-completed',
+            stopReason: contradiction === 'stop-reason' ? 'aborted' : 'error',
+            turn: {
+              ...decided,
+              ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
+              ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
+              ...(contradiction === 'session'
+                ? { agentSessionId: testEntityId('as', 'as_foreign') }
+                : {}),
+              ...(contradiction === 'error-code'
+                ? { error: { ...decided.error, code: 'delivery_unknown' } }
+                : {}),
+              ...(contradiction === 'error-message'
+                ? { error: { ...decided.error, message: 'A different failure.' } }
+                : {}),
+              ...(contradiction === 'completion-time'
+                ? { completedAt: '2026-10-02T23:59:00.000Z' }
+                : {}),
+            },
+          },
+        })
+      );
       const sibling = `z_after_publication_${contradiction}`;
       await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -1544,6 +1574,19 @@ describe('terminal failed-start product recovery', () => {
         }
       );
       dispatchLease(f.coreDb, sibling);
+      const siblingWorkspace = openWorkspaceDb(
+        f.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      try {
+        recordTestAgentEnvironmentPackage(siblingWorkspace, {
+          suffix: sibling,
+          workspaceInputIds: [],
+        });
+      } finally {
+        siblingWorkspace.sqlite.close();
+      }
+      await admitFixtureJournal(f.coreDb, f.store, sibling);
       recordBackendSession(f.coreDb, sibling, 'cleaned');
       beginOwnedAttemptCloseout(f.coreDb, {
         attemptId: testEntityId('attempt', `lease_${sibling}`),
@@ -1826,7 +1869,7 @@ describe('terminal failed-start product recovery', () => {
       }),
       prepareAgentSessionContinuity: vi.fn(async () => 'absent' as const),
       materialize: vi.fn(async (pkg, context) => {
-        context?.beforeMaterialization?.();
+        await context?.beforeMaterialization?.();
         return {
           backendKind: 'openshell',
           backendStatus: {
@@ -2096,7 +2139,7 @@ describe('terminal failed-start product recovery', () => {
 
   it('finishes a crash after the decided delivery failure without replacing its bytes or duplicating publications', async () => {
     const f = await createFailedStartFixture('partial_delivery', true);
-    await f.store.updateTurn(f.turnId, {
+    await publishFixtureTerminal(f, {
       status: 'failed',
       completedAt: '2026-10-02T23:59:00.000Z',
       error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
@@ -2211,16 +2254,24 @@ describe('terminal failed-start product recovery', () => {
     'terminal-event',
   ] as const)('retries a real failed %s write after the Turn decision survives a product-store reload', async (missing) => {
     const f = await createFailedStartFixture(`write_failure_${missing}`, true);
-    const emit = f.store.emitTurnEvent.bind(f.store);
+    if (missing === 'session') {
+      // The crash retained the decided Turn before its Session publication; recovery owns that remaining write.
+      await publishFixtureTerminal(f, {
+        status: 'failed',
+        completedAt: f.input.now(),
+        error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+      });
+    }
+    const client = getControlStoreWorkerClient();
+    const terminal = client.terminal.bind(client);
     const fault =
       missing === 'session'
-        ? vi.spyOn(f.store, 'updateAgentSession').mockImplementationOnce(() => {
-            throw new Error('Injected session write failure.');
-          })
-        : vi.spyOn(f.store, 'emitTurnEvent').mockImplementation((...args) => {
-            if (args[1].event === 'turn.completed')
-              throw new Error('Injected terminal event failure.');
-            return emit(...args);
+        ? vi
+            .spyOn(client, 'products')
+            .mockRejectedValueOnce(new Error('Injected session write failure.'))
+        : vi.spyOn(client, 'terminal').mockImplementationOnce(async (...args) => {
+            await terminal(...args);
+            throw new Error('Injected terminal event failure.');
           });
     try {
       await recoverTestStartup(f.coreDb, f.input);
@@ -2262,7 +2313,7 @@ describe('terminal failed-start product recovery', () => {
       .run(f.turnId);
     const proved = readPendingRequest(db.sqlite, 'input_typed_refusal');
     db.sqlite.close();
-    await f.store.updateTurn(f.turnId, {
+    await publishFixtureTerminal(f, {
       status: 'failed',
       completedAt: '2026-10-02T23:59:00.000Z',
       error: { code: 'native_admission_refused', message: 'An authoritative native refusal.' },
@@ -2435,13 +2486,65 @@ function recordTestAgentEnvironmentPackage(
 ): AgentEnvironmentPackage {
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   try {
-    return recordBaseTestAgentEnvironmentPackage(workspaceDb, {
+    const setup = createTestAgentSetup();
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const sourceCommit = 'a'.repeat(40);
+    const triggerActor = input.triggerActor ?? { kind: 'user' as const, id: LOCAL_USER_ID };
+    const environmentPackage = resolveAgentEnvironmentPackage({
       coreDb,
-      suffix: input.suffix,
-      threadId: testEntityId('th', `th_${input.suffix}`),
-      triggerActor: input.triggerActor ?? { kind: 'user', id: LOCAL_USER_ID },
-      workspaceInputIds: input.workspaceInputIds,
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSetup: setup,
+      agentSessionId: testEntityId('as', `as_${input.suffix}`),
+      triggerActor,
+      backend: { kind: 'openshell' },
+      requestId: fixtureRequestId(`request_${input.suffix}`),
+      turn: {
+        id: testEntityId('tu', `turn_${input.suffix}`),
+        owner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
+        threadId: testEntityId('th', `th_${input.suffix}`),
+        triggerActor,
+        items: [],
+        status: 'running',
+        error: null,
+        configVersion: null,
+        startedAt: '2026-07-05T00:00:01.000Z',
+        completedAt: null,
+        durationMs: null,
+      },
+      turnInput: `Run ${input.suffix}`,
+      workspaceCwd: '/workspace',
+      workspaceRoots: input.workspaceInputIds.map((id) => ({
+        access: 'read-write' as const,
+        id,
+        sourceKind: 'remote-git' as const,
+        sourceCommit,
+        workerPath: `/workspace/${id}`,
+      })),
+      workspaceSourceRefs: Object.fromEntries(input.workspaceInputIds.map((id) => [id, id])),
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        requiredFeatures: [],
+        extensions: {},
+        sources: input.workspaceInputIds.map((id) => ({
+          id,
+          displayName: id,
+          kind: 'git' as const,
+          locator: { commit: sourceCommit, url: 'https://example.invalid/recovery.git' },
+          access: 'read-write' as const,
+          allowedSlotKinds: ['worktree' as const],
+          sensitivity: 'internal' as const,
+          status: 'active' as const,
+          syncHints: {},
+          requiredFeatures: [],
+          extensions: {},
+        })),
+      },
     });
+    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      createdAt: '2026-07-05T00:00:01.000Z',
+      environmentPackage,
+    });
+    return environmentPackage;
   } finally {
     coreDb.sqlite.close();
   }
@@ -3339,28 +3442,18 @@ describe('scheduler restart recovery', () => {
         predecessorFenced: true,
         ready: true,
       });
-      const queued = await f.store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        f.threadId,
-        'Later queued work',
-        { kind: 'user', id: LOCAL_USER_ID },
-        null,
-        {
-          status: 'pending',
-          agentId: 'agent_codex_host',
-          executorKind: 'worker',
-        }
-      );
+      // Keep later work before product admission while the first Turn still owns the Thread.
       const admission = createSchedulerAdmissionEntry(f.coreDb, {
         queueEntryId: `queued_${suffix}`,
         backendId: 'nanohost',
-        workspaceId: workspaceIdForOwner(queued.owner),
-        threadId: queued.threadId,
-        turnId: queued.id,
+        workspaceId: workspaceIdForOwner(f.turn.owner),
+        threadId: f.threadId,
+        turnId: testEntityId('tu', `queued_${suffix}`),
         requestedAgentId: 'agent_codex_host',
-        triggerActor: queued.triggerActor,
+        triggerActor: f.turn.triggerActor,
         turnInput: 'Later queued work',
       });
+      expect(() => f.store.getTurnById(admission.turnId)).toThrow();
       if (partial)
         vi.spyOn(f.store, 'emitTurnEvent').mockImplementationOnce(() => {
           throw new Error('Injected partial terminal publication.');
@@ -3401,7 +3494,7 @@ describe('scheduler restart recovery', () => {
         operationId: null,
         terminalCause: 'turn-start-failed',
       });
-      expect(f.store.getTurnById(queued.id)).toEqual(queued);
+      expect(() => f.store.getTurnById(admission.turnId)).toThrow();
       expect(
         f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
       ).toMatchObject([{ data: { stopReason: 'error' } }]);
@@ -3441,7 +3534,7 @@ describe('scheduler restart recovery', () => {
         expect(
           requireNanoHostExecutionAttempt(restartedCore, testEntityId('attempt', `lease_${suffix}`))
         ).toEqual(originalAttempt);
-        expect(restartedStore.getTurnById(queued.id)).toEqual(queued);
+        expect(() => restartedStore.getTurnById(admission.turnId)).toThrow();
         expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
       } finally {
         restartedCore.sqlite.close();
@@ -5976,7 +6069,11 @@ describe('minimal scheduler reconnect contract', () => {
           fenceRef: null,
         });
       expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
-      if (proved) await assertRecoveryClosedAndNextTurnAdmitted(f);
+      if (proved)
+        await assertRecoveryClosedAndNextTurnAdmitted({
+          ...f,
+          agentSessionId: await createRecoverySuccessor(f),
+        });
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -5988,7 +6085,10 @@ describe('minimal scheduler reconnect contract', () => {
     try {
       await drainTestRecovery(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      await assertRecoveryClosedAndNextTurnAdmitted(f);
+      await assertRecoveryClosedAndNextTurnAdmitted({
+        ...f,
+        agentSessionId: await createRecoverySuccessor(f),
+      });
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -6317,6 +6417,7 @@ async function createFinalReviewRecoveryFixture(
       boundary === 'failed-preparation' || boundary === 'completed' ? 'cleaned' : 'physical-cleaned'
     );
   }
+  await admitFixtureJournal(coreDb, store, suffix);
   const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   try {
     applyScopedMigrations(db);
@@ -6354,11 +6455,42 @@ async function createFinalReviewRecoveryFixture(
   )
     markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
   if (boundary === 'completed') {
-    // Retained canonical product completion predates the crash; recovery must preserve it and finish exclusion release.
-    await store.updateTurn(turnId, {
-      status: 'completed',
-      completedAt: '2026-07-05T00:00:08.000Z',
-    });
+    // Retained completion consumes the original native journal and exact modeled backend cleanup.
+    const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+      const pkg = requireAgentEnvironmentPackageSnapshot(
+        workspace,
+        workspace.workspaceId,
+        packageSnapshotId
+      ).snapshot;
+      await projectWorkerBackendCleanup(workspace, {
+        agentSessionId,
+        backendType: 'openshell',
+        backendVersion: anchor.backendVersion,
+        backendSessionId: anchor.backendSessionId,
+        completedAt: anchor.physicalCleanedAt!,
+        environmentPackage: pkg,
+        outcome: 'succeeded',
+        packageSnapshotId,
+        placement: 'local',
+        threadId,
+        turnId,
+        workerImage: workerBackendImageIdentity(anchor.backendLineage),
+        workspaceHandoffState: anchor.workspaceHandoffState,
+        workspaceId: workspace.workspaceId,
+      });
+      await store.completeTurn(
+        turnId,
+        { status: 'completed', completedAt: '2026-07-05T00:00:08.000Z' },
+        {
+          ...(await workerTurnTerminalPublication(workspace, turnId)),
+          requestId: fixtureRequestId(`request_${suffix}`),
+        }
+      );
+    } finally {
+      workspace.sqlite.close();
+    }
     await terminalizeGovernedWorkerTurn({
       store,
       turnId,
@@ -6507,4 +6639,172 @@ async function assertRecoveryClosedAndNextTurnAdmitted(
     agentSessionId: f.agentSessionId,
     turnId: nextTurnId,
   });
+}
+
+/** Publishes a fixture's decided outcome through the original native terminal owner without changing its Session. */
+async function publishFixtureTerminal(
+  f: Pick<FailedStartFixture, 'store' | 'dataRoot' | 'turnId' | 'requestId'>,
+  patch: Parameters<FsStore['updateTurn']>[1]
+) {
+  const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  try {
+    return await f.store.completeTurn(f.turnId, patch, {
+      ...(await workerTurnTerminalPublication(db, f.turnId, patch.status as 'failed')),
+      requestId: f.requestId,
+    });
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Admits original journal obligations through their existing producer before modeled recovery effects. */
+async function admitFixtureJournal(
+  coreDb: ReturnType<typeof openCoreDb>,
+  store: FsStore,
+  suffix: string
+): Promise<void> {
+  const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  try {
+    const turnId = testEntityId('tu', `turn_${suffix}`);
+    if (db.sqlite.prepare('SELECT 1 FROM control_executions WHERE work_id=?').get(turnId)) return;
+    const attempt = attempts.requireSchedulerExecutionAttempt(
+      coreDb,
+      testEntityId('attempt', `lease_${suffix}`)
+    );
+    const pkg = requireAgentEnvironmentPackageSnapshot(
+      db,
+      db.workspaceId,
+      attempt.inputRef!
+    ).snapshot;
+    const journalIntents = prepareWorkerTurnJournalIntents(db, pkg, attempt, null);
+    await store.updateTurn(turnId, { agentSessionId: attempt.agentSessionId! }, { journalIntents });
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Reads the exact immutable native event bytes in order, retaining the historical line-oriented byte oracle. */
+function readNativeEventBytes(f: Pick<FailedStartFixture, 'dataRoot' | 'turnId'>): string {
+  const scope = nativeProductScope(f.dataRoot, {
+    kind: 'workspace',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const db = openWorkspaceDb(
+    f.dataRoot,
+    scope.owner.kind === 'workspace' ? scope.owner.workspaceId : ''
+  );
+  try {
+    const rows = db.sqlite
+      .prepare(
+        "SELECT content_json FROM control_product_entries WHERE kind='event' AND turn_id=? ORDER BY sequence"
+      )
+      .all(f.turnId) as { content_json: string }[];
+    return rows
+      .map(
+        (row) =>
+          `${readFileSync(
+            join(scope.contentMount.root, JSON.parse(row.content_json).reference.locator.path),
+            'utf8'
+          )}\n`
+      )
+      .join('');
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Replaces only one deliberately contradictory retained reference under stopped-writer phase exclusion. */
+async function replaceRetainedEntry(
+  f: Pick<FailedStartFixture, 'dataRoot' | 'turnId'>,
+  kind: 'event',
+  id: string,
+  value: unknown
+): Promise<void> {
+  const scope = nativeProductScope(f.dataRoot, {
+    kind: 'workspace',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const content = await publishImmutableProductJson(
+    scope.contentMount,
+    scope.owner,
+    join(f.dataRoot, 'staging'),
+    value
+  );
+  await shutdownControlStoreWorkerClient();
+  const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  try {
+    db.sqlite
+      .prepare(
+        'UPDATE control_product_entries SET content_json=? WHERE kind=? AND turn_id=? AND id=?'
+      )
+      .run(JSON.stringify(content), kind, f.turnId, id);
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Adds the intended invalid retained Item revision without permitting a live sealed-Turn write. */
+async function appendRetainedItemRevision(
+  f: Pick<FailedStartFixture, 'dataRoot' | 'turnId'>,
+  value: unknown
+): Promise<void> {
+  const item = StoredItemV1Schema.parse(value);
+  const scope = nativeProductScope(f.dataRoot, {
+    kind: 'workspace',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const content = await publishImmutableProductJson(
+    scope.contentMount,
+    scope.owner,
+    join(f.dataRoot, 'staging'),
+    value
+  );
+  await shutdownControlStoreWorkerClient();
+  const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  try {
+    const prior = db.sqlite
+      .prepare(
+        "SELECT revision,identity_json FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(f.turnId, item.id) as { revision: number; identity_json: string };
+    const next = db.sqlite
+      .prepare(
+        "SELECT max(sequence)+1 AS sequence FROM control_product_entries WHERE kind='item' AND turn_id=?"
+      )
+      .get(f.turnId) as { sequence: number };
+    db.sqlite
+      .prepare(
+        "INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES ('item',?,?,?,?,1,?,?)"
+      )
+      .run(
+        f.turnId,
+        next.sequence,
+        item.id,
+        prior.revision + 1,
+        JSON.stringify(content),
+        prior.identity_json
+      );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Admits a fresh canonical successor after the failed predecessor is retained as history; it grants no runtime resume proof. */
+async function createRecoverySuccessor(
+  f: Awaited<ReturnType<typeof createFinalReviewRecoveryFixture>>
+): Promise<string> {
+  const predecessor = f.store.getAgentSession(f.agentSessionId);
+  const successor = await f.store.createAgentSession({
+    id: testEntityId('as', `${f.agentSessionId}:successor`),
+    agentId: predecessor.agentId,
+    workspaceId: predecessor.workspaceId,
+    threadId: f.threadId,
+    status: 'created',
+    message: null,
+    createdAt: f.clock.now,
+    updatedAt: f.clock.now,
+  });
+  expect(successor.id).not.toBe(predecessor.id);
+  expect(f.store.getAgentSession(predecessor.id)).toEqual(predecessor);
+  return successor.id;
 }
