@@ -56,6 +56,11 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { parse as parseJsonc } from 'jsonc-parser';
+import {
+  ArtifactReviewError,
+  type ControlReviewCommandInput,
+  type CreateArtifactReviewInput,
+} from '../artifact-reviews.js';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import {
@@ -100,7 +105,10 @@ import {
   rollbackArtifactVersionRecord,
 } from '../storage/artifacts/artifact-version-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
+import {
+  ArtifactPayloadCleanupError,
+  type StagedArtifactPayload,
+} from '../storage/artifacts/file-payload.js';
 import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
 import { CanonicalPublicationError } from '../storage/canonical-publication-error.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
@@ -121,7 +129,10 @@ import {
   decode as decodeControlProduct,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-products.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openWorkspaceDbAtRoot,
@@ -719,6 +730,13 @@ export type ServerTurnEventInput = Omit<
   ServerTurnEventEnvelope,
   'owner' | 'protocolVersion' | 'requestId' | 'sequence' | 'timestamp'
 > & { requestId?: string | null };
+
+/** Original Worker submission facts joined to Artifact files, its native reference, Review, events and receipt. */
+export interface ArtifactSubmissionPublication {
+  readonly review: CreateArtifactReviewInput;
+  readonly receipt: Extract<ControlReviewCommandInput, { mode: 'submit' }>['receipt'];
+  readonly fileAdmission: FileStorageAdmission;
+}
 
 /** Hooks invoked when a Turn is admitted or first becomes terminal. */
 export interface TurnAdmissionHooks {
@@ -4883,28 +4901,33 @@ export class FsStore {
    * @param input Complete Artifact authority.
    * @param filePayload Exact privately staged original for file-backed content.
    * @param admission Declared post-terminal category for the producing Turn artifact-reference Item.
-   * @returns Imported Artifact synchronously, or turn output after native Item acknowledgement.
+   * @param submission Complete original Worker command joined on the native writer; absent for other existing producers.
+   * @returns Imported Artifact synchronously, or turn output after its native tuple acknowledgement.
    * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
    */
   public createArtifact(
     input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'imported' }> },
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission
+    admission?: TerminalTurnWriteAdmission,
+    submission?: ArtifactSubmissionPublication
   ): Artifact;
   public createArtifact(
     input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'turn-output' }> },
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission
+    admission?: TerminalTurnWriteAdmission,
+    submission?: ArtifactSubmissionPublication
   ): Promise<Artifact>;
   public createArtifact(
     input: Artifact,
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission
+    admission?: TerminalTurnWriteAdmission,
+    submission?: ArtifactSubmissionPublication
   ): Artifact | Promise<Artifact>;
   public createArtifact(
     input: Artifact,
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission
+    admission?: TerminalTurnWriteAdmission,
+    submission?: ArtifactSubmissionPublication
   ): Artifact | Promise<Artifact> {
     const parsed = ArtifactSchema.safeParse(input);
     if (!parsed.success) {
@@ -4995,24 +5018,162 @@ export class FsStore {
       },
     });
 
-    this.artifacts.set(artifact.id, artifact);
-    this.refreshWorkspaceCounts(artifact.workspaceId);
-    try {
-      this.persist(artifact.workspaceId, false, {
-        record: versionRecord,
-        ...(filePayload ? { payloadPath: filePayload.path } : {}),
-      });
-      this.artifactVersions.set(artifact.id, [versionRecord]);
-    } catch (error) {
-      this.artifacts.delete(artifact.id);
+    if (
+      submission &&
+      (!this.dataRoot || !reference || !producingTurn?.agentId || !producingTurn.agentSessionId)
+    )
+      throw new ArtifactAuthorityError(
+        'invalid_request',
+        'Worker Artifact submission requires its actual native producing session.'
+      );
+    const publishFiles = () => {
+      this.artifacts.set(artifact.id, artifact);
       this.refreshWorkspaceCounts(artifact.workspaceId);
-      this.persist(artifact.workspaceId);
-      throw error;
-    }
+      try {
+        this.persist(artifact.workspaceId, false, {
+          record: versionRecord,
+          ...(filePayload ? { payloadPath: filePayload.path } : {}),
+        });
+        this.artifactVersions.set(artifact.id, [versionRecord]);
+      } catch (error) {
+        this.artifacts.delete(artifact.id);
+        this.refreshWorkspaceCounts(artifact.workspaceId);
+        this.persist(artifact.workspaceId);
+        throw error;
+      }
+    };
+    if (submission) withCanonicalFileWriteAdmission(submission.fileAdmission, publishFiles);
+    else publishFiles();
+    if (submission && reference)
+      return this.publishArtifactSubmission(artifact, versionRecord, reference, submission);
     if (reference) {
       return this.createItem(reference, admission).then(() => artifact);
     }
     return artifact;
+  }
+
+  /** Publishes no process-local Artifact or event before the complete native submission acknowledges. */
+  private async publishArtifactSubmission(
+    artifact: Artifact,
+    version: ArtifactVersionRecord,
+    reference: Extract<Item, { type: 'artifact-reference' }>,
+    submission: ArtifactSubmissionPublication
+  ): Promise<Artifact> {
+    // The common file owner has published durable bytes. Keep the unacknowledged head out of caches.
+    this.artifacts.delete(artifact.id);
+    this.artifactVersions.delete(artifact.id);
+    this.refreshWorkspaceCounts(artifact.workspaceId);
+    let submitted = false;
+    let acknowledged = false;
+    try {
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId: artifact.workspaceId });
+      const turn = this.getTurnById(reference.turnId);
+      const stagingRoot = join(dirname(dirname(scope.path)), 'runtime', 'staging');
+      const items = readNativeProductEntries(scope, turn.id, 'item');
+      const history = this.getTurnEventsForExport(turn.id);
+      const timestamp = submission.receipt.createdAt;
+      const eventScope = {
+        requestId: projectTurnEventRequestId(
+          submission.receipt.requestId,
+          artifact.workspaceId,
+          turn.threadId
+        ),
+        workspaceId: artifact.workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+      };
+      const events = [
+        { event: 'item.created', data: { type: 'item-created', item: reference } },
+        {
+          event: 'item.completed',
+          data: { type: 'item-completed', item: reference, itemId: reference.id },
+        },
+        { event: 'artifact.created', data: { type: 'artifact-created', artifact } },
+      ].map((event, index) =>
+        SseEventEnvelopeSchema.parse({
+          ...event,
+          ...eventScope,
+          protocolVersion: PROTOCOL_VERSION,
+          timestamp,
+          sequence: (history.at(-1)?.sequence ?? 0) + index + 1,
+        })
+      );
+      const entries: ControlProductEntry[] = [
+        {
+          kind: 'item',
+          turnId: turn.id,
+          sequence: items.length + 1,
+          expectedRevision: 0,
+          content: await publishImmutableProductJson(
+            scope.contentMount,
+            scope.owner,
+            stagingRoot,
+            writeRetainedV1(reference)
+          ),
+        },
+      ];
+      for (const event of events)
+        entries.push({
+          kind: 'event',
+          turnId: turn.id,
+          sequence: event.sequence,
+          expectedRevision: 0,
+          content: await publishImmutableProductJson(
+            scope.contentMount,
+            scope.owner,
+            stagingRoot,
+            writeRetainedV1(event)
+          ),
+        });
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot!,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      submitted = true;
+      await client.review(database, {
+        mode: 'submit',
+        artifact,
+        review: submission.review,
+        receipt: submission.receipt,
+        agentId: turn.agentId!,
+        agentSessionId: turn.agentSessionId!,
+        transition: { products: [], entries },
+      });
+      acknowledged = true;
+      this.artifacts.set(artifact.id, artifact);
+      this.artifactVersions.set(artifact.id, [version]);
+      this.refreshWorkspaceCounts(artifact.workspaceId);
+      for (const event of events) {
+        this.acknowledgedTurnEvents.set(event, structuredClone(event));
+        this.emitTurnEvent(turn.id, event);
+      }
+      return artifact;
+    } catch (error) {
+      const rolledBack =
+        !submitted ||
+        (error instanceof ControlStoreWorkerError && error.commit === 'not-committed') ||
+        error instanceof ArtifactReviewError;
+      if (!acknowledged && rolledBack) {
+        // Only a proved refusal may remove this request's file authority. Unknown COMMIT keeps its truthful gap.
+        this.artifacts.set(artifact.id, artifact);
+        this.artifactVersions.set(artifact.id, [version]);
+        try {
+          withCanonicalFileWriteAdmission(submission.fileAdmission, () =>
+            this.rollbackArtifactCreation(artifact.id)
+          );
+        } catch (cleanupError) {
+          throw new ArtifactPayloadCleanupError([error, cleanupError]);
+        }
+      }
+      throw error;
+    }
   }
 
   /** Rolls back only a newly created request-owned Artifact after handled publication failure. @param artifactId Initial Artifact identity, preflighted absent by the command. */

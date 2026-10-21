@@ -16,7 +16,6 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
-import { createArtifactReview } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { searchPdfSourceSnapshot } from '../context/pdf-source-representation.js';
@@ -34,8 +33,9 @@ import type {
   NotebookUpdate,
 } from '../knowledge/notebook-publication.js';
 import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
+  commandRequestExpiresAt,
+  commandRequestKey,
   type FsStore,
 } from '../lib/store.js';
 import {
@@ -52,7 +52,6 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
-import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import {
@@ -810,65 +809,24 @@ async function submitArtifact(
     const completedDuringCapture = replay();
     if (completedDuringCapture) response = completedDuringCapture;
     else {
-      // No await in the final admission/publication segment: a terminalizer or another publisher cannot interleave.
+      // Durable files precede one native Item/Review/receipt commit. Notifications follow its acknowledgement.
       admit();
       reservation.assertAvailable();
-      withCanonicalFileWriteAdmission(input.fileAdmission, () => {
-        try {
-          store.createArtifact(prepared.artifact, staged);
-          workspaceDb.sqlite.transaction(() => {
-            createArtifactReview(workspaceDb, prepared.reviewInput);
-            store.recordCommandRequest(
-              {
-                command: 'artifact.submit',
-                requestId: metadata.requestId,
-                scope: commandScope,
-                inputHash,
-                response: { kind: 'artifact', id: artifactId },
-                createdAt: recordedAt,
-              },
-              workspaceDb
-            );
-          })();
-        } catch (error) {
-          store.rollbackArtifactCreation(artifactId);
-          throw error;
-        }
-        // Project only already committed authority; a listener may seal the Turn during delivery.
-        const reference = store
-          .listThreadItems(scope.workspaceId, scope.threadId)
-          .find((item) => item.type === 'artifact-reference' && item.artifactId === artifactId)!;
-        const eventScope = {
+      await store.createArtifact(prepared.artifact, staged, undefined, {
+        review: prepared.reviewInput,
+        fileAdmission: input.fileAdmission,
+        receipt: {
+          key: commandRequestKey('artifact.submit', metadata.requestId, commandScope),
+          command: 'artifact.submit',
           requestId: metadata.requestId,
-          threadId: scope.threadId,
-          turnId: scope.turnId,
-          workspaceId: scope.workspaceId,
-        };
-        store.emitTurnEvent(
-          scope.turnId,
-          { ...eventScope, event: 'item.created', data: { type: 'item-created', item: reference } },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        );
-        store.emitTurnEvent(
-          scope.turnId,
-          {
-            ...eventScope,
-            event: 'item.completed',
-            data: { type: 'item-completed', item: reference, itemId: reference.id },
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        );
-        store.emitTurnEvent(
-          scope.turnId,
-          {
-            ...eventScope,
-            event: 'artifact.created',
-            data: { type: 'artifact-created', artifact: prepared.artifact },
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        );
-        response = artifactResult(artifactId);
+          scope: commandScope,
+          inputHash,
+          responseKind: 'artifact',
+          createdAt: recordedAt,
+          expiresAt: commandRequestExpiresAt(recordedAt),
+        },
       });
+      response = artifactResult(artifactId);
     }
   } catch (error) {
     cleanupUnproved = error instanceof ArtifactPayloadCleanupError;

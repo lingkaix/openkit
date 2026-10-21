@@ -2,11 +2,17 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import {
+  ArtifactReviewError,
+  type ControlReviewCommandInput,
+  type ControlReviewCommandResult,
+} from '../artifact-reviews.js';
 import type {
   ControlMaintenanceAdmissionInput,
   ControlMaintenanceAdmissionResult,
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
+import { OperationError } from '../operation-error.js';
 import {
   type ControlGoalCommandInput,
   type ControlGoalCommandResult,
@@ -17,6 +23,10 @@ import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import type {
+  ControlMaterialCommandInput,
+  ControlMaterialCommandResult,
+} from '../workspace-materials.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import type {
@@ -246,6 +256,45 @@ class ControlStoreWorkerClient {
           throw new IdempotencyKeyConflictError();
         if (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
           throw new NotebookError(error.domain.code);
+      }
+      throw error;
+    }
+  }
+
+  /** Executes one complete Material-family body; only its outer FULL commit acknowledges the result. */
+  async material(
+    database: string,
+    input: ControlMaterialCommandInput
+  ): Promise<ControlMaterialCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'material', database, input });
+      return (reply as Extract<Success, { operation: 'material' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'material') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
+  /** Commits the complete scoped Review or Artifact submission tuple and its original receipt. */
+  async review(
+    database: string,
+    input: ControlReviewCommandInput
+  ): Promise<ControlReviewCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'review', database, input });
+      return (reply as Extract<Success, { operation: 'review' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'review') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new ArtifactReviewError(
+          error.domain.code as ConstructorParameters<typeof ArtifactReviewError>[0],
+          error.domain.message
+        );
       }
       throw error;
     }

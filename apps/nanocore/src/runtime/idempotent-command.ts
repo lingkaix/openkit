@@ -254,7 +254,19 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   const key = commandRequestKey(options.command, options.requestId, options.scope);
   const workerOwned =
     options.store.getDataRoot() !== null &&
-    CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === options.command) &&
+    (CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === options.command) ||
+      (options.command === 'evaluation.judgement-add' &&
+        options.input !== null &&
+        typeof options.input === 'object' &&
+        'judgement' in options.input &&
+        options.input.judgement !== null &&
+        typeof options.input.judgement === 'object' &&
+        'target' in options.input.judgement &&
+        options.input.judgement.target !== null &&
+        typeof options.input.judgement.target === 'object' &&
+        'kind' in options.input.judgement.target &&
+        (options.input.judgement.target.kind === 'artifact-version' ||
+          options.input.judgement.target.kind === 'material-range'))) &&
     (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
     options.scope.userId === undefined &&
     options.scope.appId === undefined;

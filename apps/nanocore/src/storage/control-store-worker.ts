@@ -2,8 +2,15 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
+import {
+  ArtifactReviewError,
+  applyControlReviewCommand,
+  type PreparedControlReviewCommand,
+  prepareControlReviewCommand,
+} from '../artifact-reviews.js';
 import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
+import { OperationError } from '../operation-error.js';
 import {
   applyControlGoalCommand,
   GoalCommandError,
@@ -15,6 +22,7 @@ import {
   ProjectWorkerBackendCleanupInputSchema,
   projectWorkerBackendCleanupInDb,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import { applyControlMaterialCommand, WorkspaceMaterialError } from '../workspace-materials.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
@@ -65,11 +73,14 @@ type WriteRequest = Extract<
       | 'observation'
       | 'goal'
       | 'maintenance'
+      | 'material'
+      | 'review'
       | 'terminal';
   }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
+  readonly preparedReview?: PreparedControlReviewCommand | undefined;
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
 };
 
@@ -122,6 +133,18 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
   if (
     operation === 'goal' &&
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
+  ) {
+    domain = { operation, code: error.code, message: error.message, status: error.status };
+  } else if (
+    operation === 'material' &&
+    (error instanceof WorkspaceMaterialError ||
+      error instanceof OperationError ||
+      error instanceof IdempotencyKeyConflictError)
+  ) {
+    domain = { operation, code: error.code, message: error.message, status: error.status };
+  } else if (
+    operation === 'review' &&
+    (error instanceof ArtifactReviewError || error instanceof IdempotencyKeyConflictError)
   ) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
   } else if (operation === 'maintenance') {
@@ -275,6 +298,31 @@ function flush(owner: OwnedDatabase): void {
               id: request.id,
               status: 'ok',
               operation: 'terminal',
+              result,
+            };
+          } else if (request.operation === 'review') {
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedReview)
+              throw new ControlProductPreconditionError();
+            const result = applyControlReviewCommand(
+              owner.scopeDb,
+              request.input,
+              request.preparedReview
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'review',
+              result,
+            };
+          } else if (request.operation === 'material') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            const result = applyControlMaterialCommand(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'material',
               result,
             };
           } else if (request.operation === 'maintenance') {
@@ -602,6 +650,8 @@ function receive(value: unknown): void {
       value.operation === 'observation' ||
       value.operation === 'goal' ||
       value.operation === 'maintenance' ||
+      value.operation === 'material' ||
+      value.operation === 'review' ||
       value.operation === 'terminal'
     ) {
       if (
@@ -634,7 +684,16 @@ function receive(value: unknown): void {
         }
         let preparedEntries: WriteRequest['preparedEntries'];
         let preparedGoal: PreparedControlGoalCommand | undefined;
+        let preparedReview: PreparedControlReviewCommand | undefined;
         try {
+          if (value.operation === 'review') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            preparedReview = prepareControlReviewCommand(
+              owner.scopeDb,
+              value.input,
+              owner.contentMount
+            );
+          }
           if (value.operation === 'goal') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             preparedGoal = prepareControlGoalCommand(
@@ -661,7 +720,7 @@ function receive(value: unknown): void {
           );
           return;
         }
-        owner.pending.push({ ...value, preparedEntries, preparedGoal });
+        owner.pending.push({ ...value, preparedEntries, preparedGoal, preparedReview });
         schedule(owner);
       }
       return;

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   type ArtifactMaterialProposal,
   ArtifactMaterialProposalSchema,
@@ -12,11 +13,15 @@ import {
   SelectArtifactReviewCandidateRequestSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
+  SubmitArtifactReviewDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import {
+  ActorRefSchema,
+  AgentSessionIdSchema,
   ArtifactIdSchema,
   ArtifactReviewIdSchema,
+  ArtifactSchema,
   deriveEntityId,
   readRetainedV1,
   ThreadIdSchema,
@@ -28,8 +33,30 @@ import {
 import { z } from 'zod';
 
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
+import { commandRequestKey } from './lib/store.js';
+import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import {
+  getCommandRequestRecordFromDb,
+  recordControlCommandRequestRecordInDb,
+} from './storage/command-request-records.js';
+import {
+  applyControlProducts,
+  assertControlProductWriter,
+  type ControlProductContentMount,
+  ControlProductTransitionSchema,
+  type PreparedControlEntry,
+  prepareControlEntries,
+  readPreparedControlEntry,
+  readProduct,
+} from './storage/control-store-products.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { WorkspaceDb } from './storage/db.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
+import {
+  artifactReferenceItemId,
+  ensureCanonicalDirectoryAsync,
+  nativeProductScope,
+} from './storage/workspace-file-records.js';
 import {
   assertWorkspaceMaterialRange,
   getWorkspaceMaterial,
@@ -1165,4 +1192,457 @@ function reviewError(
   message: string
 ): Error & { readonly code: ArtifactReviewErrorCode; readonly status: 400 | 409 } {
   return new ArtifactReviewError(code, message);
+}
+
+/** Original Review and submission receipt facts; the response comes only from the complete native body. */
+const ControlReviewReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum([
+      'artifact.submit',
+      'artifact.review.select',
+      'artifact.review.decide',
+      'evaluation.judgement-add',
+    ]),
+    requestId: z.string().min(1),
+    scope: z.record(z.string(), z.string()),
+    inputHash: z.string().min(1),
+    responseKind: z.enum(['artifact', 'artifact_review', 'evaluation_judgement']),
+    createdAt: TimestampSchema,
+    expiresAt: TimestampSchema,
+  })
+  .strict();
+
+/** Existing exact version Review publication facts, independent of its file owner. */
+const ControlReviewPublicationSchema = z
+  .object({
+    artifactId: ArtifactIdSchema,
+    artifactVersion: z.number().int().positive(),
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    sourceThreadId: ThreadIdSchema.nullable(),
+    sourceTurnId: TurnIdSchema.nullable(),
+    sourceAgentId: z.string().min(1).nullable(),
+    materialProposal: ArtifactMaterialProposalSchema.nullable(),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+
+const ControlReviewReplaySchema = z
+  .object({
+    actorId: z.string().min(1),
+    artifactId: ArtifactIdSchema,
+    artifactVersion: z.number().int().positive(),
+    decision: SubmitArtifactReviewDecisionRequestSchema.shape.decision,
+    feedback: z.string().nullable(),
+    rangeFeedback: ArtifactReviewRangeFeedbackSchema.nullable().optional(),
+    requestId: z.string().min(1),
+  })
+  .strict();
+
+const ControlReviewDecisionSchema = ControlReviewReplaySchema.extend({
+  actor: ActorRefSchema,
+  decidedAt: TimestampSchema,
+  artifactContent: z.string().nullable(),
+  artifactMediaType: z.string().min(1),
+  artifactFile: z
+    .object({
+      byteLength: z.number().int().nonnegative(),
+      contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    })
+    .strict()
+    .optional(),
+}).superRefine((input, context) => {
+  if (
+    input.artifactContent === null
+      ? !input.artifactFile
+      : input.artifactFile !== undefined ||
+        !['text/plain', 'text/markdown', 'application/json'].includes(input.artifactMediaType)
+  )
+    context.addIssue({ code: 'custom', message: 'Review content proof is contradictory.' });
+});
+
+/** Closed commands for the accepted Review family; files and follow-up admission retain their existing owners. */
+export const ControlReviewCommandInputSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      mode: z.literal('submit'),
+      artifact: ArtifactSchema,
+      review: ControlReviewPublicationSchema,
+      agentSessionId: AgentSessionIdSchema,
+      agentId: z.string().min(1),
+      receipt: ControlReviewReceiptSchema,
+      transition: ControlProductTransitionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('judgement'),
+      publication: ControlReviewPublicationSchema.nullable(),
+      judgement: JudgementRecordSchema,
+      receipt: ControlReviewReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('select'),
+      input: SelectArtifactReviewCandidateRequestSchema.extend({
+        actorId: z.string().min(1),
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+        selectedAt: TimestampSchema,
+      }).strict(),
+      receipt: ControlReviewReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('decide'),
+      input: ControlReviewDecisionSchema,
+      receipt: ControlReviewReceiptSchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('decision-receipt'),
+      input: ControlReviewReplaySchema,
+      receipt: ControlReviewReceiptSchema,
+    })
+    .strict(),
+]);
+/** Cloneable, bounded input to the existing database worker. */
+export type ControlReviewCommandInput = z.infer<typeof ControlReviewCommandInputSchema>;
+
+/** The existing exact command result, returned only after the worker's outer FULL commit. */
+export const ControlReviewCommandResultSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      mode: z.literal('submit'),
+      value: z.object({ artifactId: ArtifactIdSchema }).strict(),
+      replayed: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({ mode: z.literal('judgement'), value: JudgementRecordSchema, replayed: z.boolean() })
+    .strict(),
+  z
+    .object({ mode: z.literal('select'), value: ArtifactReviewViewSchema, replayed: z.boolean() })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('decide'),
+      value: SubmitArtifactReviewDecisionResponseSchema,
+      replayed: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('decision-receipt'),
+      value: SubmitArtifactReviewDecisionResponseSchema,
+      replayed: z.boolean(),
+    })
+    .strict(),
+]);
+/** Materialized Review result, with no cursor or mutable Store cache. */
+export type ControlReviewCommandResult = z.infer<typeof ControlReviewCommandResultSchema>;
+/** Native-only verified bytes; preparation performs file I/O before the SQL savepoint. */
+export interface PreparedControlReviewCommand {
+  readonly entries: readonly PreparedControlEntry[];
+}
+
+/** Checks a retained publication without inserting or repairing its missing Review. */
+export function assertArtifactReviewPublication(
+  db: WorkspaceDb,
+  input: CreateArtifactReviewInput
+): ArtifactReviewView {
+  const row = requireReview(db, input.artifactId, input.artifactVersion);
+  assertImmutableReview(
+    row,
+    parseInputView(
+      db.workspaceId,
+      deriveArtifactReviewId(db.workspaceId, input.artifactId, input.artifactVersion),
+      input
+    )
+  );
+  assertStoredReview(db, row);
+  return toView(row);
+}
+
+/** Synchronizes and verifies the complete submitted reference and event payloads before SQL starts. */
+export function prepareControlReviewCommand(
+  db: WorkspaceDb,
+  value: ControlReviewCommandInput,
+  mount: ControlProductContentMount | undefined
+): PreparedControlReviewCommand {
+  const input = ControlReviewCommandInputSchema.parse(value);
+  if (input.mode !== 'submit') return { entries: [] };
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  const artifact = input.artifact;
+  if (
+    artifact.workspaceId !== db.workspaceId ||
+    artifact.origin.kind !== 'turn-output' ||
+    artifact.version !== 1 ||
+    artifact.status !== 'ready' ||
+    artifact.summary !== null ||
+    artifact.content.format !== 'file' ||
+    input.transition.products.length !== 0
+  )
+    throw reviewError('invalid_request', 'Artifact submission authority is invalid.');
+  const entries = prepareControlEntries(owner, mount, input.transition.entries);
+  const items = entries.filter((entry) => entry.input.kind === 'item');
+  const events = entries.filter((entry) => entry.input.kind === 'event');
+  if (items.length !== 1 || events.length !== 3 || entries.length !== 4)
+    throw reviewError('invalid_request', 'Artifact submission publication is incomplete.');
+  const reference = {
+    id: artifactReferenceItemId(artifact.id, artifact.origin.turnId),
+    owner,
+    threadId: artifact.origin.threadId,
+    turnId: artifact.origin.turnId,
+    type: 'artifact-reference',
+    status: 'completed',
+    artifactId: artifact.id,
+    artifactVersion: 1,
+    title: artifact.title,
+    summary: null,
+    lastMutationRequestId: artifact.lastMutationRequestId,
+    createdAt: artifact.createdAt,
+    completedAt: artifact.updatedAt,
+  };
+  if (!isDeepStrictEqual(readPreparedControlEntry(items[0]!), { schemaVersion: 1, ...reference }))
+    throw reviewError('invalid_request', 'Artifact submission reference is contradictory.');
+  const names = ['item.created', 'item.completed', 'artifact.created'];
+  for (const [index, entry] of events.entries()) {
+    const event = readPreparedControlEntry(entry) as {
+      event: string;
+      requestId: string;
+      threadId: string;
+      turnId: string;
+      workspaceId: string;
+      data: { type: string; item?: unknown; itemId?: string; artifact?: unknown };
+    };
+    if (
+      event.event !== names[index] ||
+      event.requestId !== input.receipt.requestId ||
+      event.threadId !== artifact.origin.threadId ||
+      event.turnId !== artifact.origin.turnId ||
+      event.workspaceId !== db.workspaceId ||
+      (index < 2
+        ? !isDeepStrictEqual(event.data.item, reference)
+        : !isDeepStrictEqual(event.data.artifact, artifact))
+    )
+      throw reviewError('invalid_request', 'Artifact submission event is contradictory.');
+  }
+  return { entries };
+}
+
+/** Executes the whole Review transition and original receipt on the worker's one supplied handle/savepoint. */
+export function applyControlReviewCommand(
+  db: WorkspaceDb,
+  value: ControlReviewCommandInput,
+  prepared: PreparedControlReviewCommand = { entries: [] }
+): ControlReviewCommandResult {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlReviewCommandInputSchema.parse(value);
+  const receipt = input.receipt;
+  if (
+    receipt &&
+    (receipt.scope.workspaceId !== db.workspaceId ||
+      receipt.scope.coreId !== undefined ||
+      receipt.scope.userId !== undefined ||
+      receipt.scope.appId !== undefined ||
+      receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+      receipt.expiresAt <= receipt.createdAt)
+  )
+    throw reviewError('invalid_request', 'Review receipt authority is invalid.');
+  const prior = receipt ? getCommandRequestRecordFromDb(db, receipt.key, receipt.createdAt) : null;
+  if (
+    prior &&
+    (prior.inputHash !== receipt!.inputHash ||
+      prior.command !== receipt!.command ||
+      !isDeepStrictEqual(prior.scope, receipt!.scope))
+  )
+    throw new IdempotencyKeyConflictError();
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  const workspace = readProduct(db.sqlite, owner, 'workspace', db.workspaceId);
+  if (workspace?.record.status !== 'active')
+    throw reviewError('stale', 'Review Workspace is unavailable.');
+  let responseId: string;
+  let result: ControlReviewCommandResult;
+  if (input.mode === 'submit') {
+    const artifact = input.artifact;
+    if (
+      artifact.origin.kind !== 'turn-output' ||
+      receipt!.command !== 'artifact.submit' ||
+      receipt!.responseKind !== 'artifact' ||
+      receipt!.requestId !== artifact.origin.requestId ||
+      artifact.lastMutationRequestId !== receipt!.requestId ||
+      artifact.createdAt !== receipt!.createdAt ||
+      artifact.updatedAt !== receipt!.createdAt ||
+      artifact.workspaceId !== db.workspaceId
+    )
+      throw reviewError('invalid_request', 'Artifact submission receipt is contradictory.');
+    const publication = input.review;
+    if (
+      publication.artifactId !== artifact.id ||
+      publication.artifactVersion !== 1 ||
+      publication.contentDigest !== artifact.contentDigest ||
+      publication.sourceThreadId !== artifact.threadId ||
+      publication.sourceTurnId !== artifact.turnId ||
+      publication.sourceAgentId !== input.agentId ||
+      publication.createdAt !== artifact.createdAt
+    )
+      throw reviewError('invalid_request', 'Artifact submission Review is contradictory.');
+    const turn = readProduct(db.sqlite, owner, 'turn', artifact.origin.turnId);
+    if (
+      !turn ||
+      turn.record.threadId !== artifact.origin.threadId ||
+      turn.record.agentSessionId !== input.agentSessionId ||
+      turn.record.agentId !== input.agentId
+    )
+      throw reviewError('stale', 'The producing Turn authority is unavailable.');
+    if (prior) {
+      assertArtifactReviewPublication(db, publication);
+      const referenceId = artifactReferenceItemId(artifact.id, artifact.origin.turnId);
+      if (
+        !db.sqlite
+          .prepare("SELECT 1 FROM control_product_entries WHERE kind='item' AND id=? AND turn_id=?")
+          .get(referenceId, artifact.origin.turnId)
+      )
+        throw reviewError('recovery_required', 'The Artifact receipt has no reference.');
+    } else {
+      if (turn.record.status !== 'running')
+        throw reviewError('stale', 'The Turn no longer admits publication.');
+      if (
+        findReview(db, artifact.id, 1) ||
+        db.sqlite
+          .prepare("SELECT 1 FROM control_product_entries WHERE kind='item' AND id=?")
+          .get(artifactReferenceItemId(artifact.id, artifact.origin.turnId))
+      )
+        throw reviewError('recovery_required', 'Submission authority exists without its receipt.');
+      applyControlProducts(db.sqlite, owner, input.transition.products, prepared.entries);
+      createArtifactReview(db, publication);
+    }
+    responseId = artifact.id;
+    result = { mode: 'submit', value: { artifactId: artifact.id }, replayed: !!prior };
+  } else if (input.mode === 'judgement') {
+    const judgement = input.judgement;
+    if (
+      receipt!.command !== 'evaluation.judgement-add' ||
+      receipt!.responseKind !== 'evaluation_judgement' ||
+      judgement.workspaceId !== db.workspaceId ||
+      judgement.requestId !== receipt!.requestId ||
+      judgement.target.kind !== 'artifact-version'
+    )
+      throw reviewError('invalid_request', 'Review judgement receipt is contradictory.');
+    const target = judgement.target;
+    if (input.publication) {
+      if (
+        input.publication.artifactId !== target.artifactId ||
+        input.publication.artifactVersion !== target.artifactVersion ||
+        input.publication.contentDigest !== target.contentDigest ||
+        input.publication.materialProposal !== null ||
+        input.publication.sourceAgentId !== null
+      )
+        throw reviewError('invalid_request', 'Review judgement publication is contradictory.');
+      if (input.publication.sourceTurnId) {
+        const turn = readProduct(db.sqlite, owner, 'turn', input.publication.sourceTurnId);
+        if (
+          !turn ||
+          turn.record.status !== 'completed' ||
+          turn.record.agentId ||
+          turn.record.threadId !== input.publication.sourceThreadId
+        )
+          throw reviewError('recovery_required', 'The Artifact judgement source is incomplete.');
+      }
+      if (!prior) createArtifactReview(db, input.publication);
+    }
+    const review = getArtifactReview(db, target.artifactId, target.artifactVersion);
+    const existing = review.judgements.find((entry) => entry.requestId === judgement.requestId);
+    if (prior) {
+      if (!existing || !isDeepStrictEqual(existing, judgement))
+        throw reviewError('recovery_required', 'The judgement receipt has no exact annotation.');
+    } else appendArtifactReviewJudgement(db, judgement);
+    responseId = judgement.requestId;
+    result = { mode: 'judgement', value: existing ?? judgement, replayed: !!prior };
+  } else if (input.mode === 'select') {
+    if (
+      receipt!.command !== 'artifact.review.select' ||
+      receipt!.responseKind !== 'artifact_review' ||
+      receipt!.requestId !== input.input.requestId
+    )
+      throw reviewError('invalid_request', 'Review selection receipt is contradictory.');
+    const { reason, ...selection } = input.input;
+    const review = selectArtifactReviewCandidate(
+      db,
+      { ...selection, ...(reason === undefined ? {} : { reason }) },
+      !!prior
+    );
+    responseId = review.reviewId;
+    result = { mode: 'select', value: review, replayed: !!prior };
+  } else {
+    if (
+      receipt &&
+      (receipt.command !== 'artifact.review.decide' ||
+        receipt.responseKind !== 'artifact_review' ||
+        receipt.requestId !== input.input.requestId)
+    )
+      throw reviewError('invalid_request', 'Review decision receipt is contradictory.');
+    const followUp = input.input.decision === 'needs_refinement' || input.input.decision === 'redo';
+    if (!receipt && !followUp)
+      throw reviewError(
+        'invalid_request',
+        'A local Review decision requires its original receipt.'
+      );
+    const decision =
+      input.mode === 'decision-receipt' || prior
+        ? replayArtifactReviewDecision(db, {
+            ...input.input,
+            rangeFeedback: input.input.rangeFeedback ?? null,
+          })
+        : decideArtifactReview(db, input.input as DecideArtifactReviewInput);
+    if (input.mode === 'decision-receipt') {
+      if (
+        !followUp ||
+        !decision.followUpTurnId ||
+        !readProduct(db.sqlite, owner, 'turn', decision.followUpTurnId)
+      )
+        throw reviewError('recovery_required', 'The Review follow-up has no retained Turn proof.');
+    }
+    responseId = decision.reviewId;
+    result = { mode: input.mode, value: decision, replayed: !!prior };
+  }
+  if (receipt) {
+    if (prior) {
+      if (prior.response.kind !== receipt.responseKind || prior.response.id !== responseId)
+        throw reviewError('recovery_required', 'Review receipt response is contradictory.');
+    } else
+      recordControlCommandRequestRecordInDb(db, {
+        ...receipt,
+        response: { kind: receipt.responseKind, id: responseId },
+      });
+  }
+  return ControlReviewCommandResultSchema.parse(result);
+}
+
+/** Sends only complete Review commands to the existing scoped writer and awaits its durable acknowledgement. */
+export async function executeControlReviewCommand<T extends ControlReviewCommandInput>(
+  db: WorkspaceDb,
+  input: T
+): Promise<Extract<ControlReviewCommandResult, { mode: T['mode'] }>> {
+  const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId });
+  await ensureCanonicalDirectoryAsync(scope.contentMount.root);
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: db.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  return (await client.review(database, input)) as Extract<
+    ControlReviewCommandResult,
+    { mode: T['mode'] }
+  >;
 }

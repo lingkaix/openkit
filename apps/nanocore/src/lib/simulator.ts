@@ -15,7 +15,6 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
-import { createArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -97,13 +96,17 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
-import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  commandRequestExpiresAt,
+  commandRequestKey,
+  type FsStore,
+} from './store.js';
 
 type RuntimeItem = z.infer<typeof ItemSchema>;
 
@@ -936,7 +939,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           now: () => timestamp,
         });
         if (preparedContext) {
-          const acceptedTrace = acceptPreparedWorkerTurnContextPackage({
+          const acceptedTrace = await acceptPreparedWorkerTurnContextPackage({
             coreDb: this.coreDb,
             environmentPackage,
             preparedContext,
@@ -1486,14 +1489,25 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         throw error;
       });
       try {
-        withCanonicalFileWriteAdmission(admission, () => {
-          try {
-            store.createArtifact(prepared.artifact, staged);
-            createArtifactReview(workspaceDb, prepared.reviewInput);
-          } catch (error) {
-            store.rollbackArtifactCreation(artifactId);
-            throw error;
-          }
+        const scope = {
+          workspaceId: environmentPackage.scope.workspaceId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          packageSnapshotId: environmentPackage.snapshotId,
+        };
+        await store.createArtifact(prepared.artifact, staged, undefined, {
+          review: prepared.reviewInput,
+          fileAdmission: admission,
+          receipt: {
+            key: commandRequestKey('artifact.submit', requestId, scope),
+            command: 'artifact.submit',
+            requestId,
+            scope,
+            inputHash: commandInputHash({ artifactId, materialProposal: proposal }),
+            responseKind: 'artifact',
+            createdAt: recordedAt,
+            expiresAt: commandRequestExpiresAt(recordedAt),
+          },
         });
       } finally {
         await staged.remove();

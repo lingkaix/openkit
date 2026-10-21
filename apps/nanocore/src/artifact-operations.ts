@@ -20,9 +20,10 @@ import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   ArtifactReviewError,
-  decideArtifactReview,
+  ControlReviewCommandInputSchema,
   deriveArtifactReviewFollowUpTurnId,
   deriveArtifactReviewWorkerRequestId,
+  executeControlReviewCommand,
   getArtifactReview,
   listArtifactReviews,
   replayArtifactReviewDecision,
@@ -465,11 +466,16 @@ export function createArtifactOperationImplementations(
           input: { contentDigest: input.contentDigest, reason: input.reason ?? null },
           responseKind: 'artifact_review',
           workspaceDb,
-          workspaceTransaction: true,
           responseId: (result) => result.review.reviewId,
-          execute: () => {
+          execute: async (receipt) => {
             requireCandidate();
-            return { review: selectArtifactReviewCandidate(workspaceDb, choiceInput) };
+            const result = await executeControlReviewCommand(
+              workspaceDb,
+              ControlReviewCommandInputSchema.parse({ mode: 'select', input: choiceInput, receipt })
+            );
+            if (result.mode !== 'select')
+              throw recoveryRequired('Review selection returned the wrong native result.');
+            return { review: result.value };
           },
           replay: (record) => {
             requireCandidate();
@@ -581,7 +587,7 @@ export function createArtifactOperationImplementations(
           }
           response = await runIdempotentCommand({
             ...common,
-            execute: async () => {
+            execute: async (receipt) => {
               if (!coreDb) {
                 throw recoveryRequired(
                   'Artifact Review follow-up scheduler authority is unavailable.'
@@ -614,7 +620,15 @@ export function createArtifactOperationImplementations(
                 requestId: input.requestId,
               } as const;
               const claimedResponse =
-                review.decision === null ? null : decideArtifactReview(workspaceDb, decisionInput);
+                review.decision === null
+                  ? null
+                  : (
+                      await executeControlReviewCommand(workspaceDb, {
+                        mode: 'decide',
+                        input: decisionInput,
+                        receipt: null,
+                      })
+                    ).value;
               const followUpTurnId =
                 claimedResponse?.followUpTurnId ??
                 deriveArtifactReviewFollowUpTurnId(
@@ -668,7 +682,15 @@ export function createArtifactOperationImplementations(
                   'The source Thread has a non-terminal Turn.'
                 );
               }
-              const result = claimedResponse ?? decideArtifactReview(workspaceDb, decisionInput);
+              const result =
+                claimedResponse ??
+                (
+                  await executeControlReviewCommand(workspaceDb, {
+                    mode: 'decide',
+                    input: decisionInput,
+                    receipt: null,
+                  })
+                ).value;
               if (result.followUpTurnId !== followUpTurnId) {
                 throw recoveryRequired('The Artifact Review follow-up identity is contradictory.');
               }
@@ -755,36 +777,61 @@ export function createArtifactOperationImplementations(
                 review,
                 store,
               });
-              return result;
+              const committed = await executeControlReviewCommand(
+                workspaceDb,
+                ControlReviewCommandInputSchema.parse({
+                  mode: 'decision-receipt',
+                  input: {
+                    actorId,
+                    artifactId,
+                    artifactVersion,
+                    decision,
+                    feedback,
+                    rangeFeedback,
+                    requestId: input.requestId,
+                  },
+                  receipt,
+                })
+              );
+              if (committed.mode !== 'decision-receipt')
+                throw recoveryRequired('Review decision returned the wrong native result.');
+              return committed.value;
             },
           });
         } else {
           response = await runIdempotentCommand({
             ...common,
-            execute: () => {
+            execute: async (receipt) => {
               const review = getArtifactReview(workspaceDb, artifactId, artifactVersion);
               const artifact = requireCurrentReviewedArtifact(store, review);
               if (input.decision === 'accepted' && review.materialProposal !== null) {
                 assertArtifactReviewProposalTrace(coreDb, store, workspaceDb, review);
               }
-              return decideArtifactReview(workspaceDb, {
-                actor,
-                actorId,
-                ...artifactReviewContentProof(
-                  artifact,
-                  workspaceDb,
-                  input.decision === 'accepted' && review.materialProposal !== null
-                ),
-                artifactId,
-                artifactVersion,
-                decidedAt: new Date().toISOString(),
-                decision: input.decision,
-                feedback,
-                rangeFeedback,
-                requestId: input.requestId,
+              const command = ControlReviewCommandInputSchema.parse({
+                mode: 'decide',
+                receipt,
+                input: {
+                  actor,
+                  actorId,
+                  ...artifactReviewContentProof(
+                    artifact,
+                    workspaceDb,
+                    input.decision === 'accepted' && review.materialProposal !== null
+                  ),
+                  artifactId,
+                  artifactVersion,
+                  decidedAt: new Date().toISOString(),
+                  decision: input.decision,
+                  feedback,
+                  rangeFeedback,
+                  requestId: input.requestId,
+                },
               });
+              const committed = await executeControlReviewCommand(workspaceDb, command);
+              if (committed.mode !== 'decide')
+                throw recoveryRequired('Review decision returned the wrong native result.');
+              return committed.value;
             },
-            workspaceTransaction: true,
           });
         }
 

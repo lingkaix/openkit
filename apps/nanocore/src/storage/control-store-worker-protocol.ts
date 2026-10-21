@@ -1,6 +1,12 @@
 import { isAbsolute } from 'node:path';
 import { GoalViewSchema } from '@openkit/app-api-schemas';
 import {
+  type ControlReviewCommandInput,
+  ControlReviewCommandInputSchema,
+  type ControlReviewCommandResult,
+  ControlReviewCommandResultSchema,
+} from '../artifact-reviews.js';
+import {
   type ControlMaintenanceAdmissionInput,
   ControlMaintenanceAdmissionInputSchema,
   type ControlMaintenanceAdmissionResult,
@@ -17,6 +23,12 @@ import {
   type WorkerBackendCleanupProjectionResult,
   WorkerBackendCleanupProjectionResultSchema,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import {
+  type ControlMaterialCommandInput,
+  ControlMaterialCommandInputSchema,
+  type ControlMaterialCommandResult,
+  ControlMaterialCommandResultSchema,
+} from '../workspace-materials.js';
 import {
   type ControlAdmission,
   type ControlAdmissionResult,
@@ -42,7 +54,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 5;
+export const CONTROL_WORKER_VERSION = 6;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -116,6 +128,8 @@ export type ControlWorkerCommand =
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
+      | { readonly operation: 'material'; readonly input: ControlMaterialCommandInput }
+      | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
       | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
@@ -146,7 +160,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 
 /** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
 export interface ControlWorkerDomainRefusal {
-  readonly operation: 'goal' | 'maintenance';
+  readonly operation: 'goal' | 'maintenance' | 'material' | 'review';
   readonly code: string;
   readonly message: string;
   readonly status: number;
@@ -191,6 +205,16 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'maintenance';
       readonly result: ControlMaintenanceAdmissionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'material';
+      readonly result: ControlMaterialCommandResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'review';
+      readonly result: ControlReviewCommandResult;
     }
   | {
       readonly status: 'ok';
@@ -259,6 +283,14 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     isRecord(value) &&
     exactFields(value, ['operation', 'code', 'message', 'status']) &&
     (value.operation === 'goal' ||
+      ((value.operation === 'material' || value.operation === 'review') &&
+        ((['stale', 'conflict', 'recovery_required', 'idempotency_key_conflict'].includes(
+          String(value.code)
+        ) &&
+          value.status === 409) ||
+          (['source_digest_mismatch', 'invalid_request'].includes(String(value.code)) &&
+            value.status === 400) ||
+          (value.code === 'not_found' && value.status === 404))) ||
       (value.operation === 'maintenance' &&
         ((value.code === 'invalid_request' && value.status === 400) ||
           ((value.code === 'recovery_required' || value.code === 'idempotency_key_conflict') &&
@@ -354,6 +386,10 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
           (result.execution.phase === 'closing' || result.execution.phase === 'closed')))
     );
   }
+  if (reply.operation === 'review')
+    return ControlReviewCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'material')
+    return ControlMaterialCommandResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'maintenance')
     return ControlMaintenanceAdmissionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'goal') {
@@ -508,6 +544,8 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'observation' ||
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
+    value.operation === 'material' ||
+    value.operation === 'review' ||
     value.operation === 'terminal'
   ) {
     try {
@@ -516,11 +554,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
           ? ProjectWorkerBackendCleanupInputSchema
           : value.operation === 'goal'
             ? ControlGoalCommandInputSchema
-            : value.operation === 'maintenance'
-              ? ControlMaintenanceAdmissionInputSchema
-              : value.operation === 'terminal'
-                ? ControlTerminalTransitionSchema
-                : ControlWorkObservationInputSchema;
+            : value.operation === 'review'
+              ? ControlReviewCommandInputSchema
+              : value.operation === 'material'
+                ? ControlMaterialCommandInputSchema
+                : value.operation === 'maintenance'
+                  ? ControlMaintenanceAdmissionInputSchema
+                  : value.operation === 'terminal'
+                    ? ControlTerminalTransitionSchema
+                    : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

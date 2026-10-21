@@ -13,17 +13,15 @@ import {
   readCandidateSet,
 } from './evaluation-candidates.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
-import {
-  appendMaterialJudgement,
-  correctMaterialRange,
-  readMaterialJudgement,
-} from './material-range-corrections.js';
+import { readMaterialJudgement } from './material-range-corrections.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { AdmittedOperationContext, FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import {
   assertWorkspaceMaterialRange,
+  ControlMaterialCommandInputSchema,
+  executeControlMaterialCommand,
   readWorkspaceMaterialSensitivity,
 } from './workspace-materials.js';
 
@@ -57,39 +55,20 @@ function admitTarget(access: CandidateSetCommands, assessment: Assessment, reque
   }
 }
 
-/** Writes an assessment to its existing exact target owner in the caller's Workspace transaction. */
-function appendAssessment(access: CandidateSetCommands, input: RecordEvaluationJudgementRequest) {
+/** Appends only a candidate-set annotation inside its unchanged Main-owned command transaction. */
+function appendCandidateAssessment(
+  access: CandidateSetCommands,
+  input: RecordEvaluationJudgementRequest
+) {
   const assessment = input.judgement;
-  switch (assessment.target.kind) {
-    case 'artifact-version':
-      return appendArtifactJudgement(access, {
-        ...assessment.target,
-        ...assessment,
-        requestId: input.requestId,
-      });
-    case 'candidate-set': {
-      const updated = appendCandidateSetJudgement(access, {
-        ...assessment,
-        candidateSetId: assessment.target.candidateSetId,
-        requestId: input.requestId,
-      });
-      return (
-        updated.judgements.find((entry) => entry.requestId === input.requestId) ?? missingResult()
-      );
-    }
-    case 'material-range': {
-      const judgement = JudgementRecordSchema.parse(
-        writeRetainedV1({
-          ...assessment,
-          workspaceId: input.workspaceId,
-          requestId: input.requestId,
-          actor: { kind: 'user', id: access.actor.userId },
-          recordedAt: new Date().toISOString(),
-        })
-      );
-      return appendMaterialJudgement(access.workspaceDb, judgement);
-    }
-  }
+  if (assessment.target.kind !== 'candidate-set')
+    throw new OperationError('invalid_request', 'Candidate-set target is required.', 400);
+  const updated = appendCandidateSetJudgement(access, {
+    ...assessment,
+    candidateSetId: assessment.target.candidateSetId,
+    requestId: input.requestId,
+  });
+  return updated.judgements.find((entry) => entry.requestId === input.requestId) ?? missingResult();
 }
 
 /** Joins human judgements and exact corrections to the existing Workspace command transaction. */
@@ -189,19 +168,17 @@ export function createEvaluationJudgementOperationImplementations(
             409
           );
         admitTarget(access, input.judgement, input.requestId);
-        return runIdempotentCommand({
+        const common = {
           store: access.store,
           inflightCommands: access.inflightCommands,
           workspaceDb: access.workspaceDb,
-          workspaceTransaction: true,
-          command: 'evaluation.judgement-add',
+          command: 'evaluation.judgement-add' as const,
           requestId: input.requestId,
           scope: { workspaceId: input.workspaceId },
           input: { actor: context.actorRef, judgement: input.judgement },
-          responseKind: 'evaluation_judgement',
+          responseKind: 'evaluation_judgement' as const,
           responseId: () => input.requestId,
-          execute: () => ({ judgement: appendAssessment(access, input) }),
-          replay: (receipt) => {
+          replay: (receipt: import('./lib/store.js').CommandRequestRecord) => {
             if (
               receipt.response.kind !== 'evaluation_judgement' ||
               receipt.response.id !== input.requestId
@@ -228,6 +205,46 @@ export function createEvaluationJudgementOperationImplementations(
               if (!isDeepStrictEqual(judgement[key], expected[key])) missingResult();
             return { judgement };
           },
+        };
+        if (input.judgement.target.kind === 'candidate-set')
+          return runIdempotentCommand({
+            ...common,
+            workspaceTransaction: true,
+            execute: () => ({ judgement: appendCandidateAssessment(access, input) }),
+          });
+        return runIdempotentCommand({
+          ...common,
+          execute: async (receipt) => {
+            const assessment = input.judgement;
+            if (assessment.target.kind === 'artifact-version')
+              return {
+                judgement: await appendArtifactJudgement(
+                  access,
+                  { ...assessment.target, ...assessment, requestId: input.requestId },
+                  receipt
+                ),
+              };
+            const judgement = JudgementRecordSchema.parse(
+              writeRetainedV1({
+                ...assessment,
+                workspaceId: input.workspaceId,
+                requestId: input.requestId,
+                actor: { kind: 'user', id: access.actor.userId },
+                recordedAt: receipt.createdAt,
+              })
+            );
+            const result = await executeControlMaterialCommand(
+              access.workspaceDb,
+              ControlMaterialCommandInputSchema.parse({
+                mode: 'range-judgement',
+                input: judgement,
+                receipt,
+              })
+            );
+            if (result.mode !== 'range-judgement')
+              throw new Error('Material judgement returned the wrong native result.');
+            return result.value;
+          },
         });
       }),
     'material.range-correct': (input, context) =>
@@ -247,20 +264,29 @@ export function createEvaluationJudgementOperationImplementations(
           store: access.store,
           inflightCommands: access.inflightCommands,
           workspaceDb: access.workspaceDb,
-          workspaceTransaction: true,
           command: 'material.range-correct',
           requestId: input.requestId,
           scope: { workspaceId: input.workspaceId },
           input: { ...input, actor: context.actorRef },
           responseKind: 'evaluation_judgement',
           responseId: () => input.requestId,
-          execute: () => ({
-            judgement: correctMaterialRange(access.workspaceDb, {
-              ...input,
-              actor: UserActorRefSchema.parse(context.actorRef),
-              acceptedAt: new Date().toISOString(),
-            }),
-          }),
+          execute: async (receipt) => {
+            const result = await executeControlMaterialCommand(
+              access.workspaceDb,
+              ControlMaterialCommandInputSchema.parse({
+                mode: 'range-correct',
+                receipt,
+                input: {
+                  ...input,
+                  actor: UserActorRefSchema.parse(context.actorRef),
+                  acceptedAt: receipt.createdAt,
+                },
+              })
+            );
+            if (result.mode !== 'range-correct')
+              throw new Error('Material correction returned the wrong native result.');
+            return result.value;
+          },
           replay: (receipt) => {
             if (
               receipt.response.kind !== 'evaluation_judgement' ||

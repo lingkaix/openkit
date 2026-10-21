@@ -8,8 +8,7 @@ import {
 import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
 import {
   ArtifactReviewError,
-  appendArtifactReviewJudgement,
-  createArtifactReview,
+  executeControlReviewCommand,
   getArtifactReview,
 } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
@@ -20,6 +19,7 @@ import {
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { ArtifactAuthorityError, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
+import type { IdempotentCommandReceipt } from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Current native identity, source files and existing Workspace transaction authority. */
@@ -154,33 +154,44 @@ export function readArtifactJudgement(
   return previous;
 }
 
-/** Appends only an annotation in the caller's existing Workspace receipt transaction. */
-export function appendArtifactJudgement(
+/** Commits one admitted annotation and its original receipt through the Review family's single native writer. */
+export async function appendArtifactJudgement(
   access: ArtifactJudgementAccess,
-  input: ArtifactJudgementInput
-): JudgementRecord {
+  input: ArtifactJudgementInput,
+  receipt: IdempotentCommandReceipt
+): Promise<JudgementRecord> {
   const admitted = admit(access, input);
-  if (!access.workspaceDb.sqlite.inTransaction)
-    throw new Error('Artifact judgement requires the existing Workspace transaction.');
-  let retained = review(access, admitted);
-  if (retained === null) {
-    retained = createArtifactReview(access.workspaceDb, {
-      artifactId: admitted.version.artifactId,
-      artifactVersion: admitted.version.artifactVersion,
-      contentDigest: admitted.version.contentDigest,
-      sourceThreadId: admitted.version.threadId,
-      sourceTurnId: admitted.version.turnId,
-      sourceAgentId: null,
-      materialProposal: null,
-      createdAt: admitted.version.recordedAt,
-    });
-  }
-  const previous = retained.judgements.find((entry) => entry.requestId === input.requestId);
-  if (previous) {
-    assertSameAssessment(previous, admitted.judgement);
-    throw recovery('The Artifact judgement exists without its command receipt.');
-  }
-  return appendArtifactReviewJudgement(access.workspaceDb, admitted.judgement);
+  const retained = review(access, admitted);
+  if (
+    receipt.command !== 'evaluation.judgement-add' ||
+    receipt.responseKind !== 'evaluation_judgement'
+  )
+    throw recovery('Artifact judgement has no matching original command.');
+  const publication =
+    retained === null
+      ? {
+          artifactId: admitted.version.artifactId,
+          artifactVersion: admitted.version.artifactVersion,
+          contentDigest: admitted.version.contentDigest,
+          sourceThreadId: admitted.version.threadId,
+          sourceTurnId: admitted.version.turnId,
+          sourceAgentId: null,
+          materialProposal: null,
+          createdAt: admitted.version.recordedAt,
+        }
+      : null;
+  return (
+    await executeControlReviewCommand(access.workspaceDb, {
+      mode: 'judgement',
+      publication,
+      judgement: admitted.judgement,
+      receipt: {
+        ...receipt,
+        command: 'evaluation.judgement-add',
+        responseKind: 'evaluation_judgement',
+      },
+    })
+  ).value;
 }
 
 /** Request identity binds the authenticated author and every caller-authored assessment field. */

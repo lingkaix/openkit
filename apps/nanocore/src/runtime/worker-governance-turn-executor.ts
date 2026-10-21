@@ -89,7 +89,7 @@ import {
   createVaultInjectionReceipt,
 } from '../vault-injection-receipts.js';
 import {
-  consumeQueuedThreadMaterialRevision,
+  executeControlMaterialCommand,
   type QueuedThreadMaterialSelection,
   readWorkspaceMaterialSensitivity,
   selectQueuedThreadMaterialRevision,
@@ -847,13 +847,13 @@ export async function prepareWorkerTurnContextPackage(
  * @returns Strictly accepted immutable worker Context Package trace.
  * @throws Error when any delivery owner, package byte, handoff, or queue proof is contradictory.
  */
-export function acceptPreparedWorkerTurnContextPackage(input: {
+export async function acceptPreparedWorkerTurnContextPackage(input: {
   readonly coreDb: CoreDb;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly preparedContext: PreparedWorkerTurnContext;
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
-}): WorkerContextPackageTrace {
+}): Promise<WorkerContextPackageTrace> {
   const { environmentPackage, preparedContext, workspaceDb } = input;
   const authorities = createWorkerContextPackageAuthorityReader({
     coreDb: input.coreDb,
@@ -885,18 +885,18 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
     workspaceRoot: preparedContext.workspaceRoot,
   });
 
-  workspaceDb.sqlite.transaction(() => {
-    const queuedMaterial = preparedContext.queuedMaterialSelection;
-    if (queuedMaterial) {
-      consumeQueuedThreadMaterialRevision(
-        workspaceDb,
-        environmentPackage.scope.threadId,
-        queuedMaterial.materialId,
-        queuedMaterial.revisionId,
-        queuedMaterial.bindingMutationRequestId
-      );
-    }
-  })();
+  const queuedMaterial = preparedContext.queuedMaterialSelection;
+  if (queuedMaterial) {
+    await executeControlMaterialCommand(workspaceDb, {
+      mode: 'consume',
+      input: {
+        threadId: environmentPackage.scope.threadId,
+        materialId: queuedMaterial.materialId,
+        revisionId: queuedMaterial.revisionId,
+        bindingMutationRequestId: queuedMaterial.bindingMutationRequestId,
+      },
+    });
+  }
 
   preparedContext.markMaterialSelectionAccepted();
   return acceptedTrace;
@@ -2388,7 +2388,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             409
           );
         }
-        acceptPreparedWorkerTurnContextPackage({
+        await acceptPreparedWorkerTurnContextPackage({
           coreDb: this.coreDb,
           environmentPackage,
           preparedContext: preparedWorkerContext,

@@ -11,18 +11,14 @@ import {
 } from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import {
-  bindThreadMaterial,
-  createWorkspaceMaterial,
-  excludeThreadMaterial,
+  ControlMaterialCommandInputSchema,
+  executeControlMaterialCommand,
   getThreadMaterial,
   getWorkspaceMaterial,
   getWorkspaceMaterialRevision,
   listWorkspaceMaterialRevisions,
   listWorkspaceMaterials,
   readWorkspaceMaterialSensitivity,
-  restoreThreadMaterial,
-  saveWorkspaceMaterialRevision,
-  unbindThreadMaterial,
 } from './workspace-materials.js';
 
 /** Stable success identities returned by Thread Material binding commands. */
@@ -90,13 +86,10 @@ export function createMaterialOperationImplementations({
     input: { workspaceId: string; threadId: string; materialId: string; requestId: string },
     command: 'material.bind' | 'material.unbind' | 'material.exclude' | 'material.restore',
     expected: object,
-    outcome: Outcome,
-    execute: (
-      db: WorkspaceDb,
-      acceptedAt: string
-    ) => { materialId: string; threadId: string; outcome: Outcome }
+    outcome: Outcome
   ) {
     const { workspaceId, threadId, materialId } = input;
+    const mode = command.slice('material.'.length);
     return withWorkspace(workspaceId, (workspaceDb) =>
       runIdempotentCommand({
         store,
@@ -107,10 +100,32 @@ export function createMaterialOperationImplementations({
         input: expected,
         responseKind: 'thread_material_binding',
         workspaceDb,
-        workspaceTransaction: true,
-        execute: () => {
+        execute: async (receipt) => {
           requireThreadTarget(store, workspaceId, threadId);
-          return execute(workspaceDb, new Date().toISOString());
+          const result = await executeControlMaterialCommand(
+            workspaceDb,
+            ControlMaterialCommandInputSchema.parse({
+              mode,
+              input: {
+                ...expected,
+                requestId: input.requestId,
+                threadId,
+                materialId,
+                acceptedAt: receipt.createdAt,
+              },
+              receipt,
+            })
+          );
+          if (
+            !('outcome' in result.value) ||
+            !('materialId' in result.value) ||
+            !('threadId' in result.value) ||
+            result.value.outcome !== outcome ||
+            result.value.materialId !== materialId ||
+            result.value.threadId !== threadId
+          )
+            throw recoveryRequired('The Material binding acknowledgement has invalid lineage.');
+          return { materialId, threadId, outcome };
         },
         replay: (record) =>
           replayMaterialBinding(
@@ -150,13 +165,21 @@ export function createMaterialOperationImplementations({
           },
           responseKind: 'material',
           workspaceDb,
-          workspaceTransaction: true,
-          execute: () =>
-            createWorkspaceMaterial(workspaceDb, {
-              ...input,
-              acceptedAt: new Date().toISOString(),
-              actor: context.actorRef,
-            }),
+          execute: async (receipt) =>
+            (
+              await executeControlMaterialCommand(workspaceDb, {
+                mode: 'create',
+                input: {
+                  requestId: input.requestId,
+                  title: input.title,
+                  kind: input.kind,
+                  sensitivity: input.sensitivity,
+                  acceptedAt: receipt.createdAt,
+                  actor: context.actorRef,
+                },
+                receipt: { ...receipt, command: 'material.create', responseKind: 'material' },
+              })
+            ).value,
           replay: (record) => replayMaterialCreate(workspaceDb, record),
           responseId: (result) => result.materialId,
         });
@@ -195,15 +218,26 @@ export function createMaterialOperationImplementations({
           },
           responseKind: 'material_revision',
           workspaceDb,
-          workspaceTransaction: true,
-          execute: () => {
-            return saveWorkspaceMaterialRevision(workspaceDb, {
-              ...input,
-              acceptedAt: new Date().toISOString(),
-              actor: context.actorRef,
-              materialId,
-            });
-          },
+          execute: async (receipt) =>
+            (
+              await executeControlMaterialCommand(workspaceDb, {
+                mode: 'save',
+                input: {
+                  requestId: input.requestId,
+                  expectedRevisionId: input.expectedRevisionId,
+                  contentDigest: input.contentDigest,
+                  content: input.content,
+                  materialId,
+                  acceptedAt: receipt.createdAt,
+                  actor: context.actorRef,
+                },
+                receipt: {
+                  ...receipt,
+                  command: 'material.save',
+                  responseKind: 'material_revision',
+                },
+              })
+            ).value,
           replay: (record) => replayMaterialSave(workspaceDb, materialId, record),
           responseId: (result) => result.revisionId,
         });
@@ -244,16 +278,14 @@ export function createMaterialOperationImplementations({
         input,
         'material.bind',
         { expectedBindingState: input.expectedBindingState },
-        'bound',
-        (db, acceptedAt) => bindThreadMaterial(db, { ...input, acceptedAt })
+        'bound'
       ),
     'material.unbind': (input) =>
       binding(
         input,
         'material.unbind',
         { expectedBindingState: input.expectedBindingState },
-        'unbound',
-        (db, acceptedAt) => unbindThreadMaterial(db, { ...input, acceptedAt })
+        'unbound'
       ),
     'material.exclude': (input) =>
       binding(
@@ -264,8 +296,7 @@ export function createMaterialOperationImplementations({
           expectedInclusionState: input.expectedInclusionState,
           expectedQueuedRevisionId: input.expectedQueuedRevisionId,
         },
-        'excluded',
-        (db, acceptedAt) => excludeThreadMaterial(db, { ...input, acceptedAt })
+        'excluded'
       ),
     'material.restore': (input) =>
       binding(
@@ -275,8 +306,7 @@ export function createMaterialOperationImplementations({
           expectedBindingState: input.expectedBindingState,
           expectedInclusionState: input.expectedInclusionState,
         },
-        'included',
-        (db, acceptedAt) => restoreThreadMaterial(db, { ...input, acceptedAt })
+        'included'
       ),
   } satisfies FamilyImplementations<typeof MATERIAL_OPERATION_DEFINITIONS>;
 }

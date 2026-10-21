@@ -8,7 +8,11 @@ import {
   WorkerTranscriptItemRecordSchema,
 } from '@openkit/worker-protocol';
 import type { z } from 'zod';
-import { createArtifactReview, getArtifactReview } from '../artifact-reviews.js';
+import {
+  assertArtifactReviewPublication,
+  type createArtifactReview,
+  getArtifactReview,
+} from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -460,7 +464,7 @@ export function preflightArtifactTuple(
   ) {
     throw transcriptError('recovery_required', 'The deterministic Artifact tuple is incomplete.');
   }
-  createArtifactReview(workspaceDb, reviewInput);
+  assertArtifactReviewPublication(workspaceDb, reviewInput);
   return true;
 }
 

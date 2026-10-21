@@ -38,6 +38,9 @@ export const CONTROL_ADMISSION_COMMANDS = [
 export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   ...CONTROL_ADMISSION_COMMANDS,
   'task.start',
+  'artifact.submit',
+  'artifact.review.select',
+  'artifact.review.decide',
   'turn.interrupt',
   'goal.create',
   'goal.intent.revise',
@@ -52,7 +55,24 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'knowledge.tell',
   'knowledge.server.maintain',
   'knowledge.server.tell',
+  'material.create',
+  'material.save',
+  'material.bind',
+  'material.unbind',
+  'material.exclude',
+  'material.restore',
+  'material.range-correct',
 ] as const satisfies readonly CommandRequestName[];
+
+/** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
+export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
+  AND response_kind='evaluation_judgement' AND response_id=request_id
+  AND (EXISTS (SELECT 1 FROM artifact_reviews AS review, json_each(review.judgements) AS annotation
+    WHERE review.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
+      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)
+    OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision, json_each(revision.judgements) AS annotation
+    WHERE revision.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
+      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)))`;
 
 /** Original receipt facts; expiry policy remains with the existing command producer, not another ledger. */
 const ReceiptSchema = z
@@ -118,7 +138,7 @@ export function pruneControlAdmissionReceipts(
       : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
   sqlite
     .prepare(
-      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_NATIVE_RECEIPT_COMMANDS.map(() => '?').join(',')}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${CONTROL_NATIVE_RECEIPT_COMMANDS.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
     )
     .run(
       referenceTime,

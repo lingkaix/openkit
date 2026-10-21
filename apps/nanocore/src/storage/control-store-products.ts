@@ -128,6 +128,12 @@ export class ControlProductPreconditionError extends Error {
 // Prepared values are native-local capabilities, not trusted descriptors supplied over transport.
 const preparedPayloads = new WeakMap<PreparedControlEntry, unknown>();
 
+/** Reads only an actual native-prepared payload so dependent SQL owners can validate its exact tuple before writing. */
+export function readPreparedControlEntry(entry: PreparedControlEntry): unknown {
+  if (isMainThread || !preparedPayloads.has(entry)) throw new ControlProductPreconditionError();
+  return preparedPayloads.get(entry);
+}
+
 const tables = {
   workspace: 'control_workspaces',
   thread: 'control_threads',
