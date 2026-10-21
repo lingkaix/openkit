@@ -192,6 +192,17 @@ async function fixture(typed = true, linked = true) {
   const turnInput = serializeStructuredWorkerDelegationRequest(request);
   const agentId = 'application-worker';
   const agentSessionId = testEntityId('as', root);
+  const sessionStartedAt = new Date().toISOString();
+  await store.createAgentSession({
+    id: agentSessionId,
+    agentId: agentId,
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    status: 'busy',
+    message: null,
+    createdAt: sessionStartedAt,
+    updatedAt: sessionStartedAt,
+  });
   const turn = await store.createTurn(
     workspace.id,
     thread.id,
@@ -199,6 +210,7 @@ async function fixture(typed = true, linked = true) {
     { kind: 'user', id: actor.userId },
     undefined,
     {
+      startedAt: sessionStartedAt,
       agentId,
       agentSessionId,
       executorKind: 'worker',
@@ -285,53 +297,58 @@ async function fixture(typed = true, linked = true) {
       const requestId = randomUUID();
       const requestItemId = testEntityId('it', requestId);
       const args = { applicationId: '123' };
-      const captured = raiseRecordedPendingRequest(store, db.sqlite, {
-        requestId,
-        requestItemId,
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        raisingTurnId: turn.id,
-        kind: 'approval',
-        requesterKind: 'worker',
-        agentId,
-        agentSessionId,
-        responsibleUserId: actor.userId,
-        call: {
-          serverId: 'sis',
-          toolName: 'application.read',
-          catalogRevision: 'catalog-current',
-          schemaSnapshotId: 'schema-current',
-          canonicalArgumentsJson: JSON.stringify(args),
-          argumentsDigest: mcpToolArgumentsContentDigest(args),
-          packageDigest: lineage.packageSnapshotId,
-          policyDecisionId: null,
-          authorizationContext: {
-            threadId: thread.id,
-            turnId: turn.id,
-            agentId,
-            agentSessionId,
-            responsibleUserId: actor.userId,
+      const captured = await raiseRecordedPendingRequest(
+        store,
+        db.sqlite,
+        {
+          requestId,
+          requestItemId,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          raisingTurnId: turn.id,
+          kind: 'approval',
+          requesterKind: 'worker',
+          agentId,
+          agentSessionId,
+          responsibleUserId: actor.userId,
+          call: {
+            serverId: 'sis',
+            toolName: 'application.read',
+            catalogRevision: 'catalog-current',
+            schemaSnapshotId: 'schema-current',
+            canonicalArgumentsJson: JSON.stringify(args),
+            argumentsDigest: mcpToolArgumentsContentDigest(args),
             packageDigest: lineage.packageSnapshotId,
             policyDecisionId: null,
+            authorizationContext: {
+              threadId: thread.id,
+              turnId: turn.id,
+              agentId,
+              agentSessionId,
+              responsibleUserId: actor.userId,
+              packageDigest: lineage.packageSnapshotId,
+              policyDecisionId: null,
+            },
           },
+          approval: { kind: 'permission', title: 'Read application', description: 'Exact read' },
+          now: new Date().toISOString(),
         },
-        approval: { kind: 'permission', title: 'Read application', description: 'Exact read' },
-        now: new Date().toISOString(),
-      });
-      await store.createItem({
-        id: requestItemId,
-        owner: { kind: 'workspace', workspaceId: workspace.id },
-        threadId: thread.id,
-        turnId: turn.id,
-        type: 'approval-request',
-        approvalRequestId: requestId,
-        kind: 'permission',
-        title: 'Read application',
-        description: 'Exact read',
-        status: 'completed',
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-      });
+        {
+          id: requestItemId,
+          owner: { kind: 'workspace', workspaceId: workspace.id },
+          threadId: thread.id,
+          turnId: turn.id,
+          type: 'approval-request',
+          approvalRequestId: requestId,
+          kind: 'permission',
+          title: 'Read application',
+          description: 'Exact read',
+          status: 'completed',
+          createdAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+        }
+      );
+
       return captured;
     },
     closeSource: async () => {
@@ -370,6 +387,10 @@ async function fixture(typed = true, linked = true) {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
+      await store.updateAgentSession(agentSessionId, {
+        status: 'closed',
+        updatedAt: new Date().toISOString(),
+      });
     },
     outcome: async (pendingRequestId: string, administrator = false) => {
       const now = new Date().toISOString();
@@ -393,6 +414,17 @@ async function fixture(typed = true, linked = true) {
       ).not.toBeNull();
       const outcomeSessionId = testEntityId('as', `${root}:outcome`);
       const outcomeInput = 'Receive pending request outcomes.';
+      const sessionStartedAt = new Date().toISOString();
+      await store.createAgentSession({
+        id: outcomeSessionId,
+        agentId: agentId,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: sessionStartedAt,
+        updatedAt: sessionStartedAt,
+      });
       const outcomeTurn = await store.createTurn(
         workspace.id,
         thread.id,
@@ -400,6 +432,7 @@ async function fixture(typed = true, linked = true) {
         { kind: 'user', id: decidingUserId },
         null,
         {
+          startedAt: sessionStartedAt,
           agentId,
           agentSessionId: outcomeSessionId,
           executorKind: 'worker',
@@ -491,7 +524,7 @@ it.each([
   const f = await fixture();
   const original = f.read()!;
   const captured = await f.capture();
-  f.closeSource();
+  await f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   const lineage = await f.outcome(captured.requestId, administrator);
   f.reopen();
@@ -506,11 +539,22 @@ it.each([
 it('retains original Task bounds for an ordinary checkpoint-free user follow-up', async () => {
   const f = await fixture();
   const original = f.read()!;
-  f.closeSource();
+  await f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   const agentId = 'followup-worker';
   const agentSessionId = testEntityId('as', 'ordinary-followup');
   const input = 'Review the next result.';
+  const sessionStartedAt = new Date().toISOString();
+  await f.store.createAgentSession({
+    id: agentSessionId,
+    agentId: agentId,
+    workspaceId: f.lineage.workspaceId,
+    threadId: f.lineage.threadId,
+    status: 'busy',
+    message: null,
+    createdAt: sessionStartedAt,
+    updatedAt: sessionStartedAt,
+  });
   const turn = await f.store.createTurn(
     f.lineage.workspaceId,
     f.lineage.threadId,
@@ -518,6 +562,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
     { kind: 'user', id: f.actor.userId },
     null,
     {
+      startedAt: sessionStartedAt,
       agentId,
       agentSessionId,
       executorKind: 'worker',
@@ -583,7 +628,7 @@ it.each([
 ] as const)('refuses later outcome context with %s', async (corruption) => {
   const f = await fixture();
   const captured = await f.capture();
-  f.closeSource();
+  await f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   const lineage = await f.outcome(captured.requestId, true);
   if (corruption === 'changed-original-input')
@@ -634,7 +679,7 @@ it('keeps identical retained context for a real captured request after source cl
   const f = await fixture();
   const original = f.read();
   const captured = await f.capture();
-  f.closeSource();
+  await f.closeSource();
   expect(f.read()).toEqual(original);
   expect(
     clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId)
@@ -672,7 +717,7 @@ it.each([
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
-  } else f.closeSource();
+  } else await f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   if (corruption === 'missing-attempt')
     f.coreDb.sqlite

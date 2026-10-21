@@ -2402,6 +2402,16 @@ describe('worker MCP routes', () => {
         workspaceRoots: [],
         workspaceMcpServerCatalog: catalog,
       });
+      await store.createAgentSession({
+        id: pkg.scope.agentSessionId,
+        agentId: pkg.agent.agentId,
+        workspaceId,
+        threadId,
+        status: 'busy',
+        message: null,
+        createdAt: pkg.createdAt,
+        updatedAt: pkg.createdAt,
+      });
       await store.updateTurn(turn.id, {
         agentId: pkg.agent.agentId,
         agentSessionId: pkg.scope.agentSessionId,
@@ -2568,6 +2578,10 @@ describe('worker MCP routes', () => {
         correlation,
         proof,
         fenceRef: release.fenceRef!,
+      });
+      await store.updateAgentSession(environmentPackage.scope.agentSessionId, {
+        status: 'closed',
+        updatedAt: new Date().toISOString(),
       });
       environmentPackage = await makePackage('req_schema_second');
       expect(await request('tools/list')).toMatchObject({ result: { tools: changed } });

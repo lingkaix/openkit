@@ -245,6 +245,17 @@ async function fixture() {
   });
   const turnInput = serializeStructuredWorkerDelegationRequest(request);
   const agentSessionId = allocateEntityId('as');
+  const fixtureSessionStartedAt247 = new Date().toISOString();
+  await store.createAgentSession({
+    id: agentSessionId,
+    agentId: 'issue-worker',
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    status: 'busy',
+    message: null,
+    createdAt: fixtureSessionStartedAt247,
+    updatedAt: fixtureSessionStartedAt247,
+  });
   const turn = await store.createTurn(
     workspace.id,
     thread.id,
@@ -252,6 +263,7 @@ async function fixture() {
     { kind: 'user', id: userId },
     null,
     {
+      startedAt: fixtureSessionStartedAt247,
       executorKind: 'worker',
       agentId: 'issue-worker',
       agentSessionId,

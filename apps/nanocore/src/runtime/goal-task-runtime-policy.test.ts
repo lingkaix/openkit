@@ -324,6 +324,17 @@ async function fixture(
     )();
     const prompt = serializeStructuredWorkerDelegationRequest(request);
     const agentSessionId = testEntityId('as', requestId);
+    const sessionStartedAt = new Date().toISOString();
+    await store.createAgentSession({
+      id: agentSessionId,
+      agentId,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: sessionStartedAt,
+      updatedAt: sessionStartedAt,
+    });
     let turn = await store.createTurn(
       workspace.id,
       thread.id,
@@ -331,6 +342,7 @@ async function fixture(
       { kind: 'user', id: userId },
       null,
       {
+        startedAt: sessionStartedAt,
         executorKind: 'worker',
         agentId,
         agentSessionId,
@@ -355,16 +367,7 @@ async function fixture(
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt!,
     });
-    await store.createAgentSession({
-      id: agentSessionId,
-      agentId,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      status: 'busy',
-      message: null,
-      createdAt: turn.startedAt!,
-      updatedAt: turn.startedAt!,
-    });
+
     const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1 as const,
       servers: [
@@ -501,6 +504,17 @@ async function fixture(
       };
       const followupInput = 'Continue the same bounded issue review.';
       const followupSessionId = testEntityId('as', `${requestId}:continuation`);
+      const followupStartedAt = new Date().toISOString();
+      await store.createAgentSession({
+        id: followupSessionId,
+        agentId,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: followupStartedAt,
+        updatedAt: followupStartedAt,
+      });
       turn = await store.createTurn(
         workspace.id,
         thread.id,
@@ -508,6 +522,7 @@ async function fixture(
         { kind: 'user', id: administratorId },
         null,
         {
+          startedAt: followupStartedAt,
           agentId,
           agentSessionId: followupSessionId,
           executorKind: 'worker',
@@ -526,16 +541,7 @@ async function fixture(
         createdAt: turn.startedAt!,
         completedAt: turn.startedAt!,
       });
-      await store.createAgentSession({
-        id: followupSessionId,
-        agentId,
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        status: 'busy',
-        message: null,
-        createdAt: turn.startedAt!,
-        updatedAt: turn.startedAt!,
-      });
+
       const followupRequestId = randomUUID();
       environmentPackage = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
@@ -1510,29 +1516,31 @@ it.each([
       services
     );
     historicalIds.push(
-      store.createItem({
-        id: allocateEntityId('it'),
-        owner: f.coordinator.owner,
-        threadId: scope.threadId,
-        turnId: f.coordinator.id,
-        type: 'tool-call',
-        tool: 'goal.read',
-        server: null,
-        causationId: 'previous-goal-read',
-        arguments: {},
-        result: JSON.stringify([{ type: 'text', text: JSON.stringify(historical) }]),
-        error: null,
-        status: 'completed',
-        durationMs: null,
-        createdAt: f.coordinator.startedAt!,
-        completedAt: f.coordinator.startedAt!,
-      }).id
+      (
+        await store.createItem({
+          id: allocateEntityId('it'),
+          owner: f.coordinator.owner,
+          threadId: scope.threadId,
+          turnId: f.coordinator.id,
+          type: 'tool-call',
+          tool: 'goal.read',
+          server: null,
+          causationId: 'previous-goal-read',
+          arguments: {},
+          result: JSON.stringify([{ type: 'text', text: JSON.stringify(historical) }]),
+          error: null,
+          status: 'completed',
+          durationMs: null,
+          createdAt: f.coordinator.startedAt!,
+          completedAt: f.coordinator.startedAt!,
+        })
+      ).id
     );
-    store.updateTurn(f.coordinator.id, {
+    await store.updateTurn(f.coordinator.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
-    f.coordinator = store.createTurn(
+    f.coordinator = await store.createTurn(
       scope.workspaceId,
       scope.threadId,
       'Continue',
