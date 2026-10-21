@@ -23,9 +23,17 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
-import { type AgentTool, runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
+import {
+  type AgentTool,
+  InternalAgentProviderError,
+  runInternalAgentLoop,
+} from '../internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
+import {
+  redactInternalAgentDiagnosticValue,
+  redactInternalAgentText,
+} from '../internal-agents/redaction.js';
 import {
   internalContextFailure,
   prepareInternalAgentContext,
@@ -780,11 +788,63 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
               return provider(request);
             }
           );
-          window.assertCurrent();
-          if (exit.kind !== 'quiescent')
-            throw new Error(
-              `Coordinator Turn did not finish: ${exit.kind}${'code' in exit ? ` (${exit.code})` : ''}.`
+          // Retain only this run's new calls, including refusals and calls without an accepted result.
+          const generated = exit.messages.slice(window.messages.length);
+          for (const [index, message] of generated.entries()) {
+            if (message.role !== 'assistant') continue;
+            for (const call of message.content) {
+              if (call.type !== 'toolCall') continue;
+              const result = generated
+                .slice(index + 1)
+                .find((entry) => entry.role === 'tool' && entry.callId === call.callId);
+              const timestamp = new Date().toISOString();
+              await store.createItem({
+                id: allocateEntityId('it'),
+                owner: turn.owner,
+                threadId: turn.threadId,
+                turnId,
+                type: 'tool-call',
+                causationId: call.callId,
+                status:
+                  result?.role === 'tool'
+                    ? result.isError
+                      ? 'failed'
+                      : 'completed'
+                    : 'in_progress',
+                tool: call.name,
+                server: null,
+                arguments:
+                  typeof call.arguments === 'object' &&
+                  call.arguments !== null &&
+                  !Array.isArray(call.arguments)
+                    ? (redactInternalAgentDiagnosticValue(call.arguments) as Record<
+                        string,
+                        unknown
+                      >)
+                    : null,
+                result:
+                  result?.role === 'tool'
+                    ? redactInternalAgentText(JSON.stringify(result.content))
+                    : null,
+                error: result?.role === 'tool' && result.isError ? 'Tool failed.' : null,
+                durationMs: null,
+                createdAt: timestamp,
+                completedAt: result?.role === 'tool' ? timestamp : null,
+              });
+            }
+          }
+          if (exit.kind === 'failed')
+            throw new InternalAgentProviderError(
+              exit.code,
+              `Coordinator Turn did not finish: failed (${exit.code}).`
             );
+          if (exit.kind !== 'quiescent') {
+            if (exit.kind === 'aborted') window.assertCurrent();
+            throw new Error(
+              `Coordinator Turn did not finish: ${exit.kind}${'limit' in exit ? ` (${exit.limit})` : ''}.`
+            );
+          }
+          window.assertCurrent();
           const text = exit.messages
             .filter((message) => message.role === 'assistant')
             .flatMap((message) =>
