@@ -9,6 +9,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import * as capabilityUsage from './capability/usage-ledger.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import {
   parseOkfDocument,
   stringListFrontmatterField,
@@ -52,11 +53,77 @@ async function sourceFixture() {
     dataRoot,
     store,
     client,
-    close: () => {
+    close: async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     },
   };
+}
+
+/** Restricts the exact retained Source Thread through the real request, grant and apply owners. */
+async function restrictSourceThread(
+  f: { dataRoot: string; coreDb: ReturnType<typeof openCoreDb>; store: FsStore },
+  threadId: string
+) {
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const app = createApp({
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: f.store,
+    runtimeConfigManager: manager,
+  });
+  const client = createCoreClient({
+    baseUrl: 'http://test.invalid',
+    fetch: (input, init) => app.fetch(new Request(input, init)),
+  });
+  const decision = await f.store.createThread(DEMO_WORKSPACE_ID, 'Source policy decision');
+  const owner = { kind: 'workspace' as const, workspaceId: DEMO_WORKSPACE_ID };
+  const requested = await client.operations['workspace.resource-access-request']({
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: decision.id,
+    requestId: crypto.randomUUID(),
+    change: {
+      resource: { family: 'thread', id: threadId },
+      replacement: {
+        schemaVersion: 1,
+        statements: [
+          {
+            id: 'source-current-audience',
+            kind: 'managed-boundary',
+            author: { kind: 'human', id: LOCAL_USER_ID },
+            authority: { kind: 'human', userId: LOCAL_USER_ID },
+            authoredAt: new Date().toISOString(),
+            state: 'active',
+            lifetime: { anchor: { owner, kind: 'workspace', id: DEMO_WORKSPACE_ID } },
+            scope: {
+              subjects: [],
+              actions: [],
+              resources: [
+                { kind: 'container', container: { owner, kind: 'thread', id: threadId } },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  });
+  await f.store.applyPendingRequestCommand(DEMO_WORKSPACE_ID, {
+    action: 'grant-command',
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: decision.id,
+    requestId: requested.id,
+    actor: { kind: 'user', id: LOCAL_USER_ID },
+    now: new Date().toISOString(),
+    decisionContext: { kind: 'local', userId: LOCAL_USER_ID },
+  });
+  const applied = await client.operations['workspace.resource-access-apply']({
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: decision.id,
+    approvalRequestId: requested.id,
+    confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+  });
+  if (applied.reloadStatus !== 'applied') throw new Error('Source restriction was not applied.');
 }
 
 /** Keeps explicit registered-source selection distinct from coincidentally equal page bytes. */
@@ -119,11 +186,8 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(before.pages.map((entry) => entry.id)).toContain(page.id);
-      // Change the real current audience; immutable notebook bytes and their revision stay intact.
-      Object.assign(origin, {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
-      });
+      // Current policy narrows the Source audience without changing retained Notebook bytes.
+      await restrictSourceThread(f, origin.id);
       const after = await client.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
@@ -137,7 +201,7 @@ describe('direct Knowledge saved-source lineage', () => {
       ])
         expect(JSON.stringify(after.pages)).not.toContain(denied);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -204,7 +268,7 @@ describe('direct Knowledge saved-source lineage', () => {
         usageCalls.mockRestore();
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -255,7 +319,7 @@ describe('direct Knowledge saved-source lineage', () => {
         usageCalls.mockRestore();
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -311,7 +375,7 @@ describe('direct Knowledge saved-source lineage', () => {
       ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
       expect(f.store.listKnowledgeSources(DEMO_WORKSPACE_ID)).toEqual([registered.source]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -433,7 +497,7 @@ describe('direct Knowledge saved-source lineage', () => {
         stringListFrontmatterField(parseOkfDocument(updatedPage).document!, 'source_refs')
       ).toEqual([`source:${personalSource.id}@${personalSource.contentDigest}`]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -509,7 +573,7 @@ describe('direct Knowledge saved-source lineage', () => {
         ).pages.filter((item) => item.id === page.id)
       ).toHaveLength(1);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -580,7 +644,7 @@ describe('direct Knowledge saved-source lineage', () => {
         false
       );
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -660,7 +724,7 @@ describe('direct Knowledge saved-source lineage', () => {
         expect.objectContaining({ conceptId: page.id, reference, resolved: true })
       );
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -728,7 +792,7 @@ describe('direct Knowledge saved-source lineage', () => {
         ).pages.filter((item) => item.id === page.id)
       ).toHaveLength(1);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 });

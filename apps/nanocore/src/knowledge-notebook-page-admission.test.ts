@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -12,6 +13,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const fixtures: Array<Awaited<ReturnType<typeof fixture>>> = [];
@@ -145,6 +147,78 @@ function removal(created: Awaited<ReturnType<typeof createPage>>) {
   };
 }
 
+/** Applies an exact Source Thread audience through the current request, decision and configuration owners. */
+async function restrictSourceThread(
+  f: {
+    dataRoot: string;
+    coreDb: ReturnType<typeof openCoreDb>;
+    store: FsStore;
+    workspaceId: string;
+    userId: string;
+  },
+  sourceThreadId: string
+) {
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const app = createApp({
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: f.store,
+    runtimeConfigManager: manager,
+  });
+  const decisionThread = await f.store.createThread(f.workspaceId, 'Source policy decision');
+  const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
+  const scope = {
+    subjects: [],
+    actions: [],
+    resources: [{ kind: 'container', container: { owner, kind: 'thread', id: sourceThreadId } }],
+  };
+  const common = {
+    author: { kind: 'human', id: f.userId },
+    authority: { kind: 'human', userId: f.userId },
+    authoredAt: new Date().toISOString(),
+    state: 'active',
+    lifetime: { anchor: { owner, kind: 'workspace', id: f.workspaceId } },
+  };
+  const statements = [
+    { ...common, id: 'source-current-audience', kind: 'managed-boundary', scope },
+  ];
+  const requested = await app.request(
+    ...operationRequest(
+      'workspace.resource-access-request',
+      {
+        workspaceId: f.workspaceId,
+        threadId: decisionThread.id,
+        change: {
+          resource: { family: 'thread', id: sourceThreadId },
+          replacement: { schemaVersion: 1, statements },
+        },
+      },
+      { body: JSON.stringify({ requestId: randomUUID() }) }
+    )
+  );
+  expect(requested.status, await requested.clone().text()).toBe(200);
+  const request = (await requested.json()) as { id: string };
+  await f.store.applyPendingRequestCommand(f.workspaceId, {
+    action: 'grant-command',
+    workspaceId: f.workspaceId,
+    threadId: decisionThread.id,
+    requestId: request.id,
+    actor: { kind: 'user', id: f.userId },
+    now: new Date().toISOString(),
+    decisionContext: { kind: 'local', userId: f.userId },
+  });
+  const applied = await app.request(
+    ...operationRequest('workspace.resource-access-apply', {
+      workspaceId: f.workspaceId,
+      threadId: decisionThread.id,
+      approvalRequestId: request.id,
+      confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+    })
+  );
+  expect(applied.status, await applied.clone().text()).toBe(200);
+  expect(await applied.json()).toMatchObject({ reloadStatus: 'applied' });
+}
+
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   for (const f of fixtures.splice(0)) {
@@ -196,9 +270,8 @@ describe('Notebook page commands retain current Source and request identity admi
         git(f, 'ls-tree', '-r', '--name-only', expectedRevision, 'pages/notes/admission.md')
       ).toBe('');
     }
-    // This is the actual current Thread record; metadata-only updateThread does not change its audience.
-    Object.assign(origin, { visibility: 'private', privateOwnerUserId: f.userId });
-    expect(f.store.getThread(f.workspaceId, origin.id).visibility).toBe('private');
+    await restrictSourceThread(f, origin.id);
+    expect(f.store.getThread(f.workspaceId, origin.id).visibility).toBe('workspace');
     const denied = await call(f, 'knowledge.notebook.delete', request);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
     expect(denied.body).toMatchObject({ code: 'workspace_access_denied' });

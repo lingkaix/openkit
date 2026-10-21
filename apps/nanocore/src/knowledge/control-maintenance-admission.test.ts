@@ -23,6 +23,7 @@ import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import type { ControlMaintenanceAdmissionInput } from './knowledge-agent-maintenance.js';
+import { scanDailyKnowledgeMaintenance } from './knowledge-maintenance-schedule.js';
 import { NotebookError } from './notebook.js';
 import { runUserMemoryMaintenanceCommand } from './user-memory-agent-maintenance.js';
 
@@ -402,7 +403,7 @@ describe('native Knowledge maintenance admission', () => {
     expect(userDb.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(receipt);
   });
 
-  it('creates fresh private query identities and deduplicates scheduled days inside SQL', async () => {
+  it('creates fresh private query identities and deduplicates scheduled days from retained SQL', async () => {
     const f = fixture();
     const first = { ...f.input(false), purpose: 'query' as const };
     const second = { ...f.input(false), purpose: 'query' as const };
@@ -415,12 +416,57 @@ describe('native Knowledge maintenance admission', () => {
       )
     ).toEqual([{ visibility: 'private' }]);
     const daily = { ...f.input(false), trigger: 'schedule' as const };
-    await f.apply(daily);
-    await expect(f.apply({ ...f.input(false), trigger: 'schedule' })).resolves.toMatchObject({
-      threadId: daily.threadId,
-      turnId: daily.turnId,
-      replayed: true,
-    });
+    let preparations = 0;
+    const errors: unknown[] = [];
+    const scan = async () => {
+      const rows = (await f.sql('SELECT record_json FROM control_turns')) as {
+        record_json: string;
+      }[];
+      await scanDailyKnowledgeMaintenance({
+        now: timestamp,
+        scopes: [{ ownerScope: daily.ownerScope, schedule: { enabled: true } }],
+        // The app projects this exact retained pre-pin lineage into the daily scanner.
+        listTurns: () =>
+          rows.map(({ record_json }) => {
+            const turn = JSON.parse(record_json);
+            return {
+              startedAt: turn.startedAt,
+              ...(turn.agentId === 'knowledge-manager' &&
+              turn.triggerSource?.kind === 'automation' &&
+              turn.triggerSource.summary === 'Knowledge Manager scheduled maintenance.'
+                ? {
+                    internalExecution: {
+                      roleId: 'knowledge-manager',
+                      knowledge: {
+                        purpose: 'maintenance' as const,
+                        ownerScope: daily.ownerScope,
+                        trigger: 'schedule' as const,
+                      },
+                    },
+                  }
+                : {}),
+            };
+          }),
+        prepare: async () => {
+          preparations += 1;
+          await f.apply(daily);
+          return null;
+        },
+        onError: (error) => errors.push(error),
+      });
+    };
+    await scan();
+    // Stop the direct owner and reopen retained native SQL before the same-day scan.
+    await f.transport();
+    await scan();
+    expect(preparations).toBe(1);
+    expect(errors).toEqual([]);
+    expect(
+      await f.sql(
+        `SELECT id AS turnId, thread_id AS threadId FROM control_turns
+       WHERE json_extract(record_json,'$.triggerSource.kind') = 'automation'`
+      )
+    ).toEqual([{ threadId: daily.threadId, turnId: daily.turnId }]);
     expect(await f.sql('SELECT count(*) AS count FROM control_turns')).toEqual([{ count: 3 }]);
   }, 30_000);
 });

@@ -3,7 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createCoreClient } from '@openkit/core-client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -19,6 +21,71 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const OWNER_SCOPE = { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID } as const;
 const OPERATION = 'knowledge.notebook.update';
+
+/** Restricts the exact retained Source Thread through the real request, grant and apply owners. */
+async function restrictSourceThread(
+  f: { dataRoot: string; coreDb: ReturnType<typeof openCoreDb>; store: FsStore },
+  threadId: string
+) {
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const app = createApp({
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: f.store,
+    runtimeConfigManager: manager,
+  });
+  const client = createCoreClient({
+    baseUrl: 'http://test.invalid',
+    fetch: (input, init) => app.fetch(new Request(input, init)),
+  });
+  const decision = await f.store.createThread(DEMO_WORKSPACE_ID, 'Source policy decision');
+  const owner = { kind: 'workspace' as const, workspaceId: DEMO_WORKSPACE_ID };
+  const requested = await client.operations['workspace.resource-access-request']({
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: decision.id,
+    requestId: crypto.randomUUID(),
+    change: {
+      resource: { family: 'thread', id: threadId },
+      replacement: {
+        schemaVersion: 1,
+        statements: [
+          {
+            id: 'source-current-audience',
+            kind: 'managed-boundary',
+            author: { kind: 'human', id: LOCAL_USER_ID },
+            authority: { kind: 'human', userId: LOCAL_USER_ID },
+            authoredAt: new Date().toISOString(),
+            state: 'active',
+            lifetime: { anchor: { owner, kind: 'workspace', id: DEMO_WORKSPACE_ID } },
+            scope: {
+              subjects: [],
+              actions: [],
+              resources: [
+                { kind: 'container', container: { owner, kind: 'thread', id: threadId } },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  });
+  await f.store.applyPendingRequestCommand(DEMO_WORKSPACE_ID, {
+    action: 'grant-command',
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: decision.id,
+    requestId: requested.id,
+    actor: { kind: 'user', id: LOCAL_USER_ID },
+    now: new Date().toISOString(),
+    decisionContext: { kind: 'local', userId: LOCAL_USER_ID },
+  });
+  const applied = await client.operations['workspace.resource-access-apply']({
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: decision.id,
+    approvalRequestId: requested.id,
+    confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+  });
+  if (applied.reloadStatus !== 'applied') throw new Error('Source restriction was not applied.');
+}
 
 /** Exact public result facts; the receipt points to this immutable commit rather than current pages. */
 interface Published {
@@ -67,6 +134,7 @@ async function fixture() {
     return f;
   } catch (error) {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
     throw error;
   }
@@ -357,11 +425,8 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect((await listing(f)).pages.some((entry) => entry.id === id)).toBe(false);
     expect(git(f, ['show', `${revision}:pages/${id}.md`])).toBe(content);
 
-    // Change the fixture's actual current audience; metadata-only updateThread does not alter it.
-    Object.assign(f.store.getThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID), {
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    });
+    // Current Source policy also governs replay after the page has been removed.
+    await restrictSourceThread(f, DEMO_THREAD_ID);
     const denied = await command(f, 'knowledge.notebook.update', requestId, input);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
     expect(JSON.stringify(denied.body)).not.toContain('Updated historical bytes.');

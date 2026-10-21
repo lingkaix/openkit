@@ -111,6 +111,16 @@ describe('worker Context Package read projection', () => {
       sensitivity: 'internal' as const,
     };
     try {
+      await store.createAgentSession({
+        id: agentSessionId,
+        agentId: 'agent_codex_host',
+        workspaceId,
+        threadId: thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: turn.startedAt!,
+        updatedAt: turn.startedAt!,
+      });
       await store.updateTurn(turn.id, { agentSessionId });
       const files = createWorkerContextPackageFiles({
         workspaceId,
@@ -299,6 +309,7 @@ describe('worker Context Package read projection', () => {
       vi.mocked(createWorkerContextPackageAuthorityReader).mockRestore();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -400,6 +411,16 @@ describe('worker Context Package read projection', () => {
 
     try {
       if (authority === 'accepted-turn') {
+        await store.createAgentSession({
+          id: 'as_00000000-0000-7b9a-ba85-578bca58899d',
+          agentId: 'agent_codex_host',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          status: 'busy',
+          message: null,
+          createdAt: turn.startedAt!,
+          updatedAt: turn.startedAt!,
+        });
         await store.updateTurn(turn.id, {
           agentSessionId: 'as_00000000-0000-7b9a-ba85-578bca58899d',
         });
