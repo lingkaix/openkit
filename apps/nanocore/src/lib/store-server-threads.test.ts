@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -11,15 +11,17 @@ import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 describe('Server-owned canonical history', () => {
-  it('retains Server Thread, Turn, Item revisions and transcript without Workspace placement', () => {
+  it('retains Server Thread, Turn, Item revisions and transcript without Workspace placement', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     try {
       const store = new FsStore({ dataRoot });
-      const workspace = store.createWorkspace('Workspace');
-      const workspaceThread = store.createThread(workspace.id, 'Workspace work');
-      const thread = store.createServerThread('Server maintenance');
-      const turn = store.createServerTurn(thread.id, 'Maintain', actor);
-      const item = store.createServerItem({
+      const workspace = await store.createWorkspace('Workspace');
+      const workspaceThread = await store.createThread(workspace.id, 'Workspace work');
+      const thread = await store.createServerThread('Server maintenance');
+      const turn = await store.createServerTurn(thread.id, 'Maintain', actor);
+      const item = await store.createServerItem({
         id: allocateEntityId('it'),
         owner: { kind: 'server' },
         threadId: thread.id,
@@ -30,14 +32,15 @@ describe('Server-owned canonical history', () => {
         createdAt: turn.startedAt!,
         completedAt: null,
       });
-      store.updateServerItem(item.id, { text: 'Retained', status: 'completed' });
-      store.emitServerTurnEvent(turn.id, {
+      await store.updateServerItem(item.id, { text: 'Retained', status: 'completed' });
+      const event = await store.persistServerTurnEvent(turn.id, {
         event: 'item.completed',
         threadId: thread.id,
         turnId: turn.id,
         data: { type: 'item-completed', itemId: item.id, item: store.getServerItemById(item.id) },
       });
-      store.updateServerTurn(turn.id, {
+      store.emitServerTurnEvent(turn.id, event);
+      await store.updateServerTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -56,30 +59,38 @@ describe('Server-owned canonical history', () => {
       expect(reopened.listWorkspaceItemRevisions(workspace.id)).toEqual([]);
       expect(reopened.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'off' });
       expect(() => reopened.getTurnById(turn.id)).toThrow('Turn not found');
-      const root = join(dataRoot, 'server', 'threads', thread.id);
-      expect(readFileSync(join(root, 'thread.json'), 'utf8')).not.toContain('workspaceId');
+      const retained = coreDb.sqlite
+        .prepare('SELECT record_json FROM control_threads WHERE id=?')
+        .get(thread.id) as { record_json: string };
+      expect(retained.record_json).not.toContain('workspaceId');
       expect(
-        readFileSync(join(root, 'turns', turn.id, 'items.jsonl'), 'utf8')
-          .trim()
-          .split('\n')
-      ).toHaveLength(2);
+        coreDb.sqlite
+          .prepare(
+            "SELECT revision FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision"
+          )
+          .all(item.id)
+      ).toEqual([{ revision: 1 }, { revision: 2 }]);
     } finally {
+      await getControlStoreWorkerClient().shutdown();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('keeps ownership immutable and refuses overlapping or archived work after reload', () => {
+  it('keeps ownership immutable and refuses overlapping or archived work after reload', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     try {
       const store = new FsStore({ dataRoot });
-      const thread = store.createServerThread('Server');
-      const turn = store.createServerTurn(thread.id, 'Work', actor);
+      const thread = await store.createServerThread('Server');
+      const turn = await store.createServerTurn(thread.id, 'Work', actor);
       const reopened = new FsStore({ dataRoot });
       expect(reopened.getServerTurnById(turn.id).status).toBe('running');
-      const skipped = reopened.createServerTurn(thread.id, 'Skipped: busy', actor, null, {
+      const skipped = await reopened.createServerTurn(thread.id, 'Skipped: busy', actor, null, {
         status: 'completed',
       });
-      const skipItem = reopened.createServerItem(
+      const skipItem = await reopened.createServerItem(
         {
           id: allocateEntityId('it'),
           owner: { kind: 'server' },
@@ -95,7 +106,7 @@ describe('Server-owned canonical history', () => {
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
-      reopened.emitServerTurnEvent(
+      const skipEvent = await reopened.persistServerTurnEvent(
         skipped.id,
         {
           event: 'item.completed',
@@ -105,67 +116,99 @@ describe('Server-owned canonical history', () => {
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
+      reopened.emitServerTurnEvent(skipped.id, skipEvent);
       expect(reopened.getServerTurnTranscript(skipped.id)).toHaveLength(1);
       expect(skipped.durationMs).toBe(0);
       expect(reopened.getServerItemById(skipItem.id).type).toBe('status');
       expect(new FsStore({ dataRoot }).listServerThreadTurns(thread.id)).toHaveLength(2);
 
-      expect(() => reopened.createServerTurn(thread.id, 'Overlap', actor)).toThrow('in flight');
-      expect(() =>
+      await expect(reopened.createServerTurn(thread.id, 'Overlap', actor)).rejects.toThrow(
+        'in flight'
+      );
+      await expect(
         reopened.updateServerTurn(turn.id, { workspaceId: allocateEntityId('ws') } as never)
-      ).toThrow('cannot change');
-      expect(() =>
+      ).rejects.toThrow('cannot change');
+      await expect(
         reopened.updateServerThread(thread.id, { owner: { kind: 'workspace' } } as never)
-      ).toThrow('cannot change');
-      reopened.updateServerTurn(turn.id, {
+      ).rejects.toThrow('cannot change');
+      await reopened.updateServerTurn(turn.id, {
         status: 'interrupted',
         completedAt: new Date().toISOString(),
       });
-      reopened.updateServerThread(thread.id, { status: 'archived' });
-      expect(() => reopened.createServerTurn(thread.id, 'After archive', actor)).toThrow(
+      await reopened.updateServerThread(thread.id, { status: 'archived' });
+      await expect(reopened.createServerTurn(thread.id, 'After archive', actor)).rejects.toThrow(
         'archived'
       );
     } finally {
+      await getControlStoreWorkerClient().shutdown();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
-  it('preserves retained additions and refuses corrupt owner or terminal facts', () => {
+  it('preserves retained additions and refuses corrupt owner or terminal facts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'server-threads-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     try {
       const store = new FsStore({ dataRoot });
-      const thread = store.createServerThread('Server');
-      const turn = store.createServerTurn(thread.id, 'Work', actor);
-      const threadPath = join(dataRoot, 'server', 'threads', thread.id, 'thread.json');
-      const turnPath = join(
-        dataRoot,
-        'server',
-        'threads',
-        thread.id,
-        'turns',
-        turn.id,
-        'turn.json'
+      const thread = await store.createServerThread('Server');
+      const turn = await store.createServerTurn(thread.id, 'Work', actor);
+      // Add descriptive fields to the actual native authority, not retired JSON files.
+      const rawThread = JSON.parse(
+        (
+          coreDb.sqlite
+            .prepare('SELECT record_json FROM control_threads WHERE id=?')
+            .get(thread.id) as { record_json: string }
+        ).record_json
       );
-      const rawThread = JSON.parse(readFileSync(threadPath, 'utf8'));
       rawThread.note = 'retained';
       rawThread.owner.note = 'retained owner description';
-      writeFileSync(threadPath, JSON.stringify(rawThread));
-      const rawTurn = JSON.parse(readFileSync(turnPath, 'utf8'));
+      expect(
+        coreDb.sqlite
+          .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+          .run(JSON.stringify(rawThread), thread.id).changes
+      ).toBe(1);
+      const rawTurn = JSON.parse(
+        (
+          coreDb.sqlite
+            .prepare('SELECT record_json FROM control_turns WHERE id=?')
+            .get(turn.id) as { record_json: string }
+        ).record_json
+      );
       rawTurn.triggerActor.note = 'retained actor description';
-      writeFileSync(turnPath, JSON.stringify(rawTurn));
+      expect(
+        coreDb.sqlite
+          .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+          .run(JSON.stringify(rawTurn), turn.id).changes
+      ).toBe(1);
       const reopened = new FsStore({ dataRoot });
-      reopened.updateServerThread(thread.id, { name: 'Renamed' });
-      reopened.updateServerTurn(turn.id, {
+      await reopened.updateServerThread(thread.id, { name: 'Renamed' });
+      await reopened.updateServerTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
-      expect(JSON.parse(readFileSync(threadPath, 'utf8'))).toMatchObject({
+      expect(
+        JSON.parse(
+          (
+            coreDb.sqlite
+              .prepare('SELECT record_json FROM control_threads WHERE id=?')
+              .get(thread.id) as { record_json: string }
+          ).record_json
+        )
+      ).toMatchObject({
         note: 'retained',
         owner: { note: 'retained owner description' },
       });
-      expect(JSON.parse(readFileSync(turnPath, 'utf8')).triggerActor.note).toBe(
-        'retained actor description'
-      );
-      reopened.emitServerTurnEvent(turn.id, {
+      expect(
+        JSON.parse(
+          (
+            coreDb.sqlite
+              .prepare('SELECT record_json FROM control_turns WHERE id=?')
+              .get(turn.id) as { record_json: string }
+          ).record_json
+        ).triggerActor.note
+      ).toBe('retained actor description');
+      const terminalEvent = await reopened.persistServerTurnEvent(turn.id, {
         event: 'turn.completed',
         threadId: thread.id,
         turnId: turn.id,
@@ -175,9 +218,10 @@ describe('Server-owned canonical history', () => {
           turn: reopened.getServerTurnById(turn.id),
         },
       });
+      reopened.emitServerTurnEvent(turn.id, terminalEvent);
       expect(new FsStore({ dataRoot }).getServerTurnTranscript(turn.id)).toHaveLength(1);
-      expect(() =>
-        reopened.emitServerTurnEvent(turn.id, {
+      await expect(
+        reopened.persistServerTurnEvent(turn.id, {
           event: 'turn.completed',
           threadId: thread.id,
           turnId: turn.id,
@@ -187,11 +231,17 @@ describe('Server-owned canonical history', () => {
             turn: reopened.getServerTurnById(turn.id),
           },
         })
-      ).toThrow('is terminal and does not admit this write');
+      ).rejects.toThrow('is terminal and does not admit this write');
       rawThread.owner.kind = 'workspace';
-      writeFileSync(threadPath, JSON.stringify(rawThread));
+      expect(
+        coreDb.sqlite
+          .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+          .run(JSON.stringify(rawThread), thread.id).changes
+      ).toBe(1);
       expect(() => new FsStore({ dataRoot })).toThrow();
     } finally {
+      await getControlStoreWorkerClient().shutdown();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
