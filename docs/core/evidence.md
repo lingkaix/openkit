@@ -283,7 +283,7 @@ Runtime-private task graphs, retries, and telemetry remain private unless an own
 - `docs/core/fault-tolerance.md`
 - `docs/core/runtime-model.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`

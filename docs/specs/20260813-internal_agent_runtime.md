@@ -16,7 +16,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 - `docs/core/mediation.md` owns canonical Tool identity, capability projection, exact Tool admission, per-call authorization, and final publication admission.
 - `docs/core/architecture.md` owns the definitions and stable responsibilities of Core Assistant, Workflow Coordinator, Knowledge Manager, and other internal Core roles.
-- `docs/core/agent-workflow.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
+- `docs/core/work-model.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
 - The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
 - This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
 - This specification owns no Sandbox pin. Ordinary Sandbox selection stays with runtime scheduling.
@@ -26,7 +26,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 - `docs/core/architecture.md`
 - `docs/core/mediation.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/foundation.md`
 - `docs/core/policy.md`
 

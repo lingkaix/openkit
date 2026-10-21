@@ -30,7 +30,6 @@ Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordi
 ## Core References
 
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/work-model.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
@@ -63,7 +62,7 @@ It is not a worker runtime. It does not execute shell commands, edit files, push
 
 ## Background
 
-`docs/core/architecture.md` defines Workflow Coordinator as the semantic decision role for non-trivial worker-agent work. `docs/core/agent-workflow.md` separates its bounded routing, selection, and worker-context decisions from the durable state and effects owned by workflow boundaries.
+`docs/core/architecture.md` defines Workflow Coordinator as the semantic decision role for non-trivial worker-agent work. `docs/core/work-model.md` separates its bounded routing, selection, and worker-context decisions from the durable state and effects owned by workflow boundaries.
 
 This specification fixes the implementation-facing deterministic interface shared by Chat Mode and Task Mode. Goal progression is outside it.
 
@@ -182,7 +181,7 @@ Previously open questions are resolved by accepted V1 defaults: the Coordinator 
 ## Links
 
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20260704-task_mode_worker_delegation.md`
 - `docs/specs/20261002-goal.md`

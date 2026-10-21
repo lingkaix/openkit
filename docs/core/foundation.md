@@ -82,11 +82,11 @@ Foundation does not promise compatibility with obsolete internal contracts. Cont
 
 `core-concepts.md` owns the shared objects and naming boundaries used to express durable product truth.
 
-`work-model.md` owns the user-facing projection of human authority, work state, review, and intervention.
+`work-model.md` owns the user-facing projection of human authority, work state, review, and intervention, together with workflow, gates, checkpoints, and stop semantics.
 
 `architecture.md` owns the stable App, Core, Agent, service, and projection boundaries that realize this doctrine.
 
-`runtime-model.md`, `agent-session.md`, and `agent-workflow.md` own bounded execution, continuity, workflow, gates, checkpoints, and stop semantics.
+`runtime-model.md` and `agent-session.md` own bounded execution and continuity.
 
 `protocol.md`, `communication.md`, and `storage.md` own the contracts that carry and persist Core truth.
 

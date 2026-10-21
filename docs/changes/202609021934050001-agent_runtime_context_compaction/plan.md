@@ -14,7 +14,7 @@ The engineer accepted a server-managed compaction path expressed through the Res
 
 ## Accepted Owners
 
-- `docs/core/agent-workflow.md` owns the canonical Context Compaction concept and its traceability requirement.
+- [docs/core/agent-workflow.md](../../core/work-model.md) owns the canonical Context Compaction concept and its traceability requirement.
 - `docs/core/work-model.md` owns the distinction between durable Knowledge and runtime continuity.
 - `docs/core/agent-session.md` owns Worker-native session continuity.
 - `docs/specs/20260813-internal_agent_runtime.md` owns the shared Internal Agent Loop.

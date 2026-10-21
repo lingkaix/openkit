@@ -20,7 +20,7 @@ kind: process
 
 - `docs/core/foundation.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/sandbox.md`
 - `docs/core/evidence.md`
 

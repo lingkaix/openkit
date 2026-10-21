@@ -35,4 +35,4 @@ The engineer decides that spending a bounded worker Turn on clarification is una
 - docs/specs/20260704-task_mode_worker_delegation.md
 - docs/specs/20260704-workflow_coordinator_internal_agent.md
 - docs/specs/20260704-chat_mode_assistant.md
-- docs/core/agent-workflow.md
+- docs/core/work-model.md

@@ -195,7 +195,6 @@ An external, provider-native, or adapter-native runtime identifier must not beco
 - `docs/core/runtime-model.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`

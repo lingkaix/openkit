@@ -28,7 +28,7 @@ kind: boundary
 
 - `docs/core/knowledge.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/policy.md`
 - `docs/core/evidence.md`
 - `docs/core/storage.md`
@@ -268,7 +268,7 @@ S18 alone owns the real Knowledge L6 story. This specification adds no story or 
 
 - `docs/core/knowledge.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/specs/20260702-knowledge_store_governance_rules.md`
 - `docs/specs/20260703-knowledge_store_implementation.md`
 - `docs/specs/20260703-worker_context_package.md`

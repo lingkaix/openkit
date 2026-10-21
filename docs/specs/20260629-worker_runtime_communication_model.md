@@ -106,7 +106,7 @@ This document is the release-neutral overview for worker runtime communication. 
 - `docs/core/sandbox.md`
 - `docs/core/storage.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/protocol.md`
 - `docs/core/knowledge.md`
 

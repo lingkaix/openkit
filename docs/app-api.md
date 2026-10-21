@@ -57,7 +57,6 @@ This guide does not own the semantic contracts, executable route facts, package 
 - `docs/core/communication.md`
 - `docs/core/contract-evolution.md`
 - `docs/core/work-model.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/agent-supply.md`
 - `docs/core/mediation.md`
 - `docs/core/identity.md`

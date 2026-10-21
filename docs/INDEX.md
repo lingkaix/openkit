@@ -51,7 +51,7 @@ and are not listed here.
 - `docs/core/sandbox.md` — This document defines OpenKit sandbox semantics.
 - `docs/core/storage.md` — This document records the storage principles and key concepts for OpenKit across two explicit layers of one persistence module: Layer 1 (System State And Work…
 - `docs/core/vault.md` — This document defines OpenKit secret vault semantics.
-- `docs/core/work-model.md` — This document owns how OpenKit work appears to users and product surfaces.
+- `docs/core/work-model.md` — This document owns how OpenKit work appears to users and product surfaces and the Core workflow mechanisms used to coordinate worker-agent work.
 
 ## Specifications
 

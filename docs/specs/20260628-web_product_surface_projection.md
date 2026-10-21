@@ -43,7 +43,6 @@ The superseded Web UI slice specs are retained as historical reference only. The
 ## Core References
 
 - `docs/core/work-model.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/architecture.md`
 - `docs/core/identity.md`
 - `docs/core/protocol.md`
@@ -407,7 +406,6 @@ They are retained to recover useful copy, interaction details, and edge-case not
 ## Links
 
 - [Work Model](../core/work-model.md)
-- [Agent Workflow](../core/agent-workflow.md)
 - [Core Architecture](../core/architecture.md)
 - [Knowledge Model](../core/knowledge.md)
 - [Agent Capability](../core/mediation.md)
