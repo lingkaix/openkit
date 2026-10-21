@@ -588,6 +588,7 @@ describe('Workspace execution journal producer boundaries', () => {
     const workspaceRoot = dirname(dirname(workspaceDbPath(f.coreDb.dataRoot, workspaceId)));
     const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
     let moved = false;
+    let writerBlock: ReturnType<typeof openBootVerifiedWorkspaceDb> | undefined;
     let acknowledgedStart: NanoHostHarnessCommand | null = null;
     try {
       if (operation === 'turn.start') {
@@ -607,7 +608,17 @@ describe('Workspace execution journal producer boundaries', () => {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
       });
-      // Move the complete private Workspace, including every SQLite sidecar; never synthesize an empty replacement.
+      // Hold the real database's writer lock: renaming alone cannot stop an already-open native handle.
+      writerBlock = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+      const contender = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+      try {
+        writerBlock.sqlite.exec('BEGIN IMMEDIATE');
+        contender.sqlite.pragma('busy_timeout = 0');
+        expect(() => contender.sqlite.exec('BEGIN IMMEDIATE')).toThrow(/locked|busy/i);
+      } finally {
+        contender.sqlite.close();
+      }
+      // Move the complete private Workspace and sidecars as well; never synthesize a replacement.
       renameSync(workspaceRoot, heldRoot);
       moved = true;
       expect(() => openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId)).toThrow();
@@ -642,6 +653,10 @@ describe('Workspace execution journal producer boundaries', () => {
         )
         .toBe(false);
     } finally {
+      if (writerBlock?.sqlite.open) {
+        if (writerBlock.sqlite.inTransaction) writerBlock.sqlite.exec('ROLLBACK');
+        writerBlock.sqlite.close();
+      }
       if (moved) {
         if (existsSync(workspaceRoot))
           renameSync(workspaceRoot, join(f.coreDb.dataRoot, 'unexpected-workspace'));

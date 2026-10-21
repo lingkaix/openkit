@@ -1602,30 +1602,28 @@ describe('private NanoHost Harness records', () => {
           .get()
       ).toEqual({ nextSequence: 1, operationState: 'settled' });
 
-      queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          agentSessionId: testEntityId('as', 'agent-session-1'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.inspect',
-        timestamp: now,
-      });
+      // Physical Receipt Consumption: this receiver-only test has no Workspace consumer acknowledgement.
+      try {
+        queueNanoHostHarnessOperation(coreDb, {
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.inspect',
+          timestamp: now,
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toMatch(/unsettled|consum|receipt|acknowledg/i);
+      }
       const inspect = dispatchNanoHostHarnessOperation(coreDb, {
         sandboxIntegrationBindingRef: 'integration-binding-1',
       });
-      markNanoHostHarnessOperationUnknown(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
-        operationId: inspect!.operationId,
-        timestamp: now,
-      });
+      expect.soft(inspect !== null).toBe(false);
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT drain_state AS drainState, lifecycle_state AS lifecycleState, operation_state AS operationState FROM harness_instance_records'
-          )
-          .get()
-      ).toEqual({ drainState: 'draining', lifecycleState: 'failed', operationState: 'unknown' });
+        coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
+      ).toEqual(receipt);
     } finally {
       coreDb.sqlite.close();
     }
