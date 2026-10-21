@@ -263,3 +263,7 @@ Claim and reusable Observation/conflict content use the ordinary Notebook operat
 MCP binding requests, catalog entries and Worker projections expose only allowedTools supply. The retired approvalRequiredTools and deniedTools fields are absent; strict binding requests refuse them. Human Tool conditions use the existing full Policy candidate and confirmation contract.
 
 Native `policy.write` retains the human Policy proposal/outcome and adds a separate closed Coordinator Task-grant input/output. `GoalTaskPolicyWriteInputSchema` names only the Task Thread, expected Policy revision and existing permission fields; native consumers restore authority and lineage. `NativeOperationDefinition.inputSchema` permits an object union for these native variants; public operation inputs remain objects and no HTTP/CLI route is added.
+
+Goal proposal inputs expose registered product operations and native Goal, Workspace, Thread, and Turn resource containers; retained and read Policy shapes remain open. NanoCore validates exact current references before it raises approval.
+
+Goal proposal actions use a runtime-neutral enum. NanoCore's `src/policy/goal-domains.test.ts` checks exact parity with the native Policy registry. Changes to this shared schema package require its package-boundary tests, the Web browser-package-boundary test, and regeneration checks for OpenAPI and the bundled administrator CLI.

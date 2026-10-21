@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GoalDomainProposalSchema } from '@openkit/app-api-schemas';
+import { ProductOperationSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
@@ -452,4 +454,10 @@ describe('jointly approved Goal-domain publication', () => {
     expect(f.service().read(f.key)).not.toBeNull();
     update.mockRestore();
   });
+});
+
+it('keeps the browser-safe Goal proposal action enum equal to the native Policy registry', () => {
+  expect(GoalDomainProposalSchema.shape.scope.shape.actions.element.options).toEqual(
+    ProductOperationSchema.options
+  );
 });
