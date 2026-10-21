@@ -11,9 +11,9 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import {
+  allocateEntityId,
   deriveEntityId,
   PROTOCOL_VERSION,
-  SEALED_TURN_TERMINALS,
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -31,7 +31,6 @@ import {
   listThreadPendingRequests,
   renderPendingOutcomeItems,
 } from '../runtime/pending-requests.js';
-import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -135,7 +134,12 @@ async function finishTarget(
   const map = mapping(core, input, owned);
   const workspaceId = owned.workspace_id;
   const final = join(core.dataRoot, 'workspaces', workspaceId);
-  const predecessor = join(dirname(owned.candidate_ref), 'predecessor');
+  // This unregistered recovery slot retains original identities and is never a published Workspace.
+  const predecessor = join(
+    core.dataRoot,
+    'workspaces',
+    deriveEntityId('ws', `workspace-recovery:predecessor:${owned.admission_id}`)
+  );
   const candidate = existsSync(owned.candidate_ref) ? owned.candidate_ref : final;
   if (!owned.proof.candidateDigest || candidateDigest(candidate) !== owned.proof.candidateDigest)
     refuseRecovery('recovery-required');
@@ -327,7 +331,11 @@ export async function abandonWorkspaceRecovery(
       )
         refuseRecovery('recovery-required');
       renameSync(candidate, retired);
-      const predecessor = join(dirname(owned.candidate_ref), 'predecessor');
+      const predecessor = join(
+        core.dataRoot,
+        'workspaces',
+        deriveEntityId('ws', `workspace-recovery:predecessor:${owned.admission_id}`)
+      );
       if (existsSync(predecessor)) renameSync(predecessor, final);
       syncCanonicalDirectory(dirname(final));
       syncCanonicalDirectory(dirname(retired));
@@ -553,15 +561,15 @@ async function bindTargetCandidate(
         restrictedRecovery: restricted,
       }),
     });
-    await interruptImportedHistory(db, root, records);
+    await closeImportedPendingRequests(db, root, records);
     owned.proof.result = { ...owned.proof.result, restrictedRecovery: restricted };
   } finally {
     sqlite.close();
   }
 }
 
-/** Ends captured work through native owners; after S lands, RD-A and RD-D extract the shared FsStore publication preparation (Ruling 14:43Z). */
-async function interruptImportedHistory(
+/** Duplicates FsStore native publication preparation until a shared owner exists. */
+async function closeImportedPendingRequests(
   db: ReturnType<typeof bindWorkspaceSqlite>,
   root: string,
   records: NonNullable<ReturnType<typeof loadWorkspaceFileRecords>[number]>
@@ -619,41 +627,21 @@ async function interruptImportedHistory(
           entries: [],
           receipt: null,
         });
-      const turns = records.turns.filter(
-        (turn) => turn.threadId === thread.id && !SEALED_TURN_TERMINALS[turn.status]
-      );
-      const closeout = pending().some(
-        (record) => record.state === 'pending' || record.delivery === 'undelivered'
-      );
-      if (!turns.length && closeout) {
-        const base = records.turns.find((turn) => turn.threadId === thread.id)!;
-        turns.push({
-          ...base,
-          id: deriveEntityId('tu', `${db.workspaceId}:recovery:${thread.id}`),
-          items: [],
-          agentId: null,
-          agentSessionId: null,
-          triggerActor: { kind: 'system', id: 'workspace-recovery', responsibleUserId: null },
-          triggerSource: { kind: 'system-input', summary: 'Offline recovery closeout' },
-          status: 'pending',
-        });
-      }
-      for (const before of turns) {
+      for (const record of pending().filter(
+        (request) => request.state === 'pending' || request.delivery === 'undelivered'
+      )) {
         const now = new Date().toISOString();
-        const actor = { kind: 'system' as const, id: 'workspace-recovery' };
+        const turnId = allocateEntityId('tu');
         const command = {
           action: 'closeout' as const,
           workspaceId: db.workspaceId,
           threadId: thread.id,
-          closeoutTurnId: before.id,
-          actor,
+          closeoutTurnId: turnId,
+          actor: { kind: 'system' as const, id: 'workspace-recovery' },
           now,
-          expected: sources(),
-          expectedThreadCensus: pending().map((record) => record.requestId),
-          invalidatingEvents: pending().map((record) => ({
-            requestId: record.requestId,
-            event: 'workspace-recovered',
-          })),
+          expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+          expectedThreadCensus: pending().map((request) => request.requestId),
+          invalidatingEvents: [{ requestId: record.requestId, event: 'workspace-recovered' }],
         };
         let items: ReturnType<typeof renderPendingOutcomeItems>;
         db.sqlite.exec('SAVEPOINT recovery_projection');
@@ -661,9 +649,10 @@ async function interruptImportedHistory(
           items = renderPendingOutcomeItems(
             applyPendingCloseout(db.sqlite, {
               ...command,
+              usable: (request) => request.requestId === record.requestId,
               invalidatingEvent: () => 'workspace-recovered',
             }),
-            before.id,
+            turnId,
             now
           );
         } finally {
@@ -671,29 +660,31 @@ async function interruptImportedHistory(
           db.sqlite.exec('RELEASE recovery_projection');
         }
         const turn = {
-          ...before,
-          items: [...before.items, ...items],
-          status: 'interrupted' as const,
-          completedAt: now,
-          error: {
-            code: 'workspace_recovered',
-            message: 'Captured work was interrupted by offline recovery.',
+          id: turnId,
+          owner,
+          threadId: thread.id,
+          triggerActor: {
+            kind: 'system' as const,
+            id: 'workspace-recovery',
+            responsibleUserId: null,
           },
+          triggerSource: { kind: 'system-input' as const, summary: 'Offline recovery closeout' },
+          agentId: null,
+          agentSessionId: null,
+          configVersion: null,
+          items,
+          status: 'completed' as const,
+          startedAt: now,
+          completedAt: now,
+          durationMs: 0,
+          error: null,
         };
         const entries: ControlProductEntry[] = [];
-        const itemTail = Number(
-          db.sqlite
-            .prepare(
-              "SELECT COALESCE(MAX(sequence),0) FROM control_product_entries WHERE kind='item' AND turn_id=?"
-            )
-            .pluck()
-            .get(before.id)
-        );
         for (const item of items)
           entries.push({
             kind: 'item',
-            turnId: before.id,
-            sequence: itemTail + entries.length + 1,
+            turnId,
+            sequence: entries.length + 1,
             expectedRevision: 0,
             content: await publishImmutableProductJson(
               mount,
@@ -702,17 +693,10 @@ async function interruptImportedHistory(
               writeRetainedV1(item)
             ),
           });
-        const sequence = Number(
-          db.sqlite
-            .prepare(
-              "SELECT COALESCE(MAX(sequence),0)+1 FROM control_product_entries WHERE kind='event' AND turn_id=?"
-            )
-            .pluck()
-            .get(before.id)
-        );
+        const sequence = 1;
         entries.push({
           kind: 'event',
-          turnId: before.id,
+          turnId,
           sequence,
           expectedRevision: 0,
           content: await publishImmutableProductJson(
@@ -723,48 +707,34 @@ async function interruptImportedHistory(
               protocolVersion: PROTOCOL_VERSION,
               workspaceId: db.workspaceId,
               threadId: thread.id,
-              turnId: before.id,
+              turnId,
               requestId: null,
               timestamp: now,
               sequence,
               event: 'turn.completed',
-              data: { type: 'turn-completed', stopReason: 'aborted', turn },
+              data: { type: 'turn-completed', stopReason: 'completed', turn },
             })
           ),
         });
-        const governed = db.sqlite
-          .prepare('SELECT 1 FROM control_executions WHERE work_id=?')
-          .get(before.id)
-          ? await workerTurnTerminalPublication(db, before.id, 'interrupted')
-          : undefined;
         await client.terminal(database, {
           owner,
           turn: {
             kind: 'turn',
-            expectedRevision: Number(
-              db.sqlite
-                .prepare('SELECT revision FROM control_turns WHERE id=?')
-                .pluck()
-                .get(before.id) ?? 0
-            ),
+            expectedRevision: 0,
             record: writeRetainedV1({
               ...turn,
               items: [],
-              captureCoverage:
-                records.turnCaptureCoverage?.get(before.id) ??
-                records.turnCaptureCoverage?.get(
-                  records.turns.find((t) => t.threadId === thread.id)!.id
-                ),
+              captureCoverage: { scope: 'workspace', value: 'off' },
             }),
           },
           products: [],
           entries,
           pending: [command],
           reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
-          evidence: governed?.evidence ?? [],
+          evidence: [],
           evidenceContent: [],
           command: null,
-          execution: governed?.execution ?? null,
+          execution: null,
         });
       }
     }
