@@ -619,7 +619,8 @@ describe('quick chat app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    onTestFinished(() => {
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
@@ -629,12 +630,14 @@ describe('quick chat app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const admitted = Promise.withResolvers<void>();
+    const admitted = Promise.withResolvers<AbortSignal>();
     const provider = Promise.withResolvers<unknown>();
-    const createResponses = vi.fn(async () => {
-      admitted.resolve();
-      return provider.promise;
-    });
+    const createResponses = vi.fn<PiAiGatewayClient['createResponses']>(
+      async (_provider, _request, _onUsage, options) => {
+        admitted.resolve(options!.signal!);
+        return provider.promise;
+      }
+    );
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       coreDb,
@@ -663,26 +666,31 @@ describe('quick chat app API', () => {
         )
       );
     const pending = submit();
-    await admitted.promise;
+    const signal = await admitted.promise;
     const turn = store.listThreadTurns(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001'
     )[0]!;
-    const originalUpdate = store.updateTurn.bind(store);
-    const update = vi.spyOn(store, 'updateTurn').mockImplementation(async (...args) => {
-      if (failure === 'Turn' && args[1].status === 'interrupted')
-        throw new Error('private persist refusal');
-      return await originalUpdate(...args);
-    });
-    const originalRecord = store.recordCommandRequest.bind(store);
-    const record = vi.spyOn(store, 'recordCommandRequest').mockImplementation((...args) => {
-      if (
-        (failure === 'receipt' && args[0].command === 'conversation.submit') ||
-        (failure === 'interrupt receipt' && args[0].command === 'turn.interrupt')
-      )
-        throw new Error('private receipt refusal');
-      return originalRecord(...args);
-    });
+    const { getControlStoreWorkerClient } = await import(
+      './storage/control-store-worker-client.js'
+    );
+    const { workspaceDbPath } = await import('./storage/fs-layout.js');
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')}`;
+    // The real owner installs a connection-local fault in this private fixture database.
+    // No product row is written by Main, and the ordinary native savepoint must roll back.
+    await client.write(database, [
+      {
+        mode: 'run',
+        sql:
+          failure === 'Turn'
+            ? "CREATE TEMP TRIGGER refuse_chat_stop BEFORE UPDATE OF status ON control_turns WHEN NEW.status='interrupted' BEGIN SELECT RAISE(ABORT, 'private persist refusal'); END"
+            : `CREATE TEMP TRIGGER refuse_chat_stop BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='${failure === 'receipt' ? 'conversation.submit' : 'turn.interrupt'}' AND NEW.request_id='${failure === 'receipt' ? '00000000-0000-4000-8000-000000144003' : '00000000-0000-4000-8000-000000000902'}' BEGIN SELECT RAISE(ABORT, 'private receipt refusal'); END`,
+        parameters: [],
+      },
+    ]);
+    const terminal = vi.spyOn(client, 'terminal');
+    const admission = vi.spyOn(client, 'transition');
     try {
       const stop = () =>
         app.request(
@@ -707,6 +715,15 @@ describe('quick chat app API', () => {
         );
       const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
       const [stopped, concurrent] = await Promise.all(requests);
+      const write = failure === 'interrupt receipt' ? admission : terminal;
+      expect(write).toHaveBeenCalledTimes(1);
+      // Observe the real native rejection, not a Promise treated as proof of a write.
+      await expect(write.mock.results[0]!.value).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      expect(store.getTurnById(turn.id).status).toBe('running');
+      expect(signal.aborted).toBe(failure !== 'interrupt receipt');
       expect(stopped.status).toBe(409);
       const stopBody = await stopped.json();
       expect(stopBody).toMatchObject({ code: 'recovery_required' });
@@ -731,8 +748,15 @@ describe('quick chat app API', () => {
           turnId: turn.id,
         })
       ).toBeNull();
-      update.mockRestore();
-      record.mockRestore();
+      terminal.mockRestore();
+      admission.mockRestore();
+      await client.write(database, [
+        {
+          mode: 'run',
+          sql: 'DROP TRIGGER IF EXISTS refuse_chat_stop',
+          parameters: [],
+        },
+      ]);
       const replay = await submit();
       expect(replay.status).toBe(failure === 'interrupt receipt' ? 499 : 409);
       await expect(replay.json()).resolves.toMatchObject({
@@ -828,8 +852,15 @@ describe('quick chat app API', () => {
           .every((item) => item.type !== 'assistant-message')
       ).toBe(true);
     } finally {
-      update.mockRestore();
-      record.mockRestore();
+      terminal.mockRestore();
+      admission.mockRestore();
+      await client.write(database, [
+        {
+          mode: 'run',
+          sql: 'DROP TRIGGER IF EXISTS refuse_chat_stop',
+          parameters: [],
+        },
+      ]);
       provider.resolve({ choices: [] });
       await pending;
     }
