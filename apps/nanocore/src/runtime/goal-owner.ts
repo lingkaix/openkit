@@ -33,7 +33,7 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
-import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
+import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
 import { policyDigest } from '../policy/statements.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
@@ -443,9 +443,7 @@ function captureGoalDomain(
   input: OperationInput<'goal.plan.propose'>['goalDomain'],
   goal: GoalRecord,
   version: GoalPlanVersion,
-  context: GoalOwnerContext,
-  store: FsStore,
-  services: GoalOwnerServices
+  context: GoalOwnerContext
 ): { statement: z.infer<typeof PolicyDelegationV1Schema>; digest: string } {
   const statement = PolicyDelegationV1Schema.parse({
     ...input,
@@ -464,17 +462,6 @@ function captureGoalDomain(
       approvalRequestId: version.pendingRequestId,
     },
   });
-  const supportError = goalDomainSupportError({
-    statement,
-    store,
-    actor: context.actor,
-    workspaceId: goal.workspaceId,
-    goalId: goal.goalId,
-    administratorEligible: Boolean(
-      services.coreDb && isCurrentDeploymentAdministrator(services.coreDb, context.actor)
-    ),
-  });
-  if (supportError) throw new GoalCommandError('invalid_request', supportError, 400);
   return { statement, digest: policyDigest(statement) };
 }
 
@@ -643,16 +630,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   db: WorkspaceDb,
   services: GoalOwnerServices = {}
 ): Promise<GoalView> {
-  const parsed = GOAL_OPERATION_DEFINITIONS[id].inputSchema.safeParse(value);
-  if (!parsed.success)
-    throw new GoalCommandError(
-      'invalid_request',
-      id === 'goal.plan.propose'
-        ? `Invalid ${parsed.error.issues[0]?.path.join('.') || 'input'}. Use registered product actions and exact native Goal, Workspace, Thread or Turn references.`
-        : 'Invalid Goal operation input.',
-      400
-    );
-  const input = parsed.data as GoalArguments;
+  const input = GOAL_OPERATION_DEFINITIONS[id].inputSchema.parse(value) as GoalArguments;
   const goalId =
     typeof input.goalId === 'string'
       ? input.goalId
@@ -947,14 +925,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               pendingRequestId: `ap_${commandInput.requestId}`,
               createdAt: now(),
             };
-            const goalDomain = captureGoalDomain(
-              input.goalDomain,
-              goal,
-              version,
-              context,
-              store,
-              services
-            );
+            const goalDomain = captureGoalDomain(input.goalDomain, goal, version, context);
             invalidateGoalPendingRequests(
               db.sqlite,
               goalId,

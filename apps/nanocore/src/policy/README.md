@@ -77,5 +77,3 @@ Kernel-backed permission records retain their matched association and prohibitio
 `mcp-tool-permissions.ts` selects current human-authored exact Workspace Tool conditions and projects prohibitions through the existing Kernel. It supplies no baseline grant. Discovery, call serialization, built-ins and I16 use that same selection; the captured response requires its current native mediation readback. Candidate preparation validates current observed Tool names at both proposal and apply, without retaining a schema pin. The first subset has a Workspace anchor and no finite uses. Retired binding lists supply no authority or fallback.
 
 The agent Policy provider derives prompt-cache and call addressing from the admitted Turn's explicit Workspace owner. It uses the canonical Work record family; Server work supplies no Workspace selector or membership.
-
-`goalDomainSupportError` shares the native action, resource-reference, and Goal-anchor support predicate between proposal capture and publication. Proposal checks grant no authority; publication still checks the deciding credential, lifetime, and current Plan.

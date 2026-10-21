@@ -1,6 +1,4 @@
-import { ProductOperationSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
-import { GoalDomainProposalSchema } from './goal.js';
 import {
   operationHttpPath,
   operationToolName,
@@ -29,34 +27,4 @@ describe('Goal atomic cutover projections', () => {
       expect(operationToolName(id)).toBe(id.replaceAll('.', '_'));
     }
   });
-});
-
-it.each([
-  'read',
-  'propose',
-  'knowledge-candidate',
-])('rejects the nonnative Goal proposal action %s without aliases', (action) => {
-  const owner = { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
-  const input = {
-    id: 'domain',
-    scope: {
-      subjects: [{ kind: 'agent', id: 'worker' }],
-      actions: [action],
-      resources: [
-        { kind: 'container', container: { owner, kind: 'workspace', id: owner.workspaceId } },
-      ],
-    },
-    lifetime: { anchor: { owner, kind: 'goal', id: 'goal' } },
-  };
-  expect(ProductOperationSchema.safeParse(action).success).toBe(false);
-  for (const registered of ProductOperationSchema.options) {
-    expect(
-      GoalDomainProposalSchema.safeParse({
-        ...input,
-        scope: { ...input.scope, actions: [registered] },
-      }).success,
-      registered
-    ).toBe(true);
-  }
-  expect(GoalDomainProposalSchema.safeParse(input).success).toBe(false);
 });

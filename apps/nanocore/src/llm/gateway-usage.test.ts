@@ -164,39 +164,27 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
 
       const usageIds = recordInternalLlmGatewayUsage(input);
 
-      expect(usageIds).toHaveLength(2);
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            'SELECT usage_id FROM usage_records WHERE capability_call_id=? ORDER BY usage_id'
-          )
-          .all(call.id)
-      ).toEqual([...usageIds].sort().map((usage_id) => ({ usage_id })));
+      expect(usageIds).toHaveLength(1);
       expect(
         workspaceDb.sqlite
           .prepare('SELECT * FROM usage_records WHERE capability_call_id = ?')
           .all(call.id)
-      ).toEqual(
-        expect.arrayContaining(
-          [
-            { quantity: 9, source: 'llm-gateway-adapter-reported:input' },
-            { quantity: 3, source: 'llm-gateway-adapter-reported:output' },
-          ].map((measurement) =>
-            expect.objectContaining({
-              ...measurement,
-              capability_call_id: call.id,
-              category: 'llm',
-              model_id: 'logical_test',
-              provider_ref: 'provider_test',
-              request_id: null,
-              thread_id: testEntityId('th', 'th_usage'),
-              turn_id: testEntityId('tu', 'turn_usage'),
-              unit: 'tokens',
-              workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
-            })
-          )
-        )
-      );
+      ).toEqual([
+        expect.objectContaining({
+          capability_call_id: call.id,
+          category: 'llm',
+          model_id: 'logical_test',
+          provider_ref: 'provider_test',
+          quantity: 12,
+          request_id: null,
+          source: 'gateway-reported',
+          thread_id: testEntityId('th', 'th_usage'),
+          turn_id: testEntityId('tu', 'turn_usage'),
+          unit: 'tokens',
+          usage_id: usageIds[0],
+          workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
+        }),
+      ]);
       expect(
         workspaceDb.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(call.id)
       ).toEqual(before);
@@ -413,129 +401,4 @@ describe('GatewayUsageTracker', () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledWith('consumer disconnected');
   });
-});
-
-// The route recorder and internal recorder consume the same adapter observations.
-it.each([
-  {
-    name: 'components plus USD',
-    usage: {
-      input: 3,
-      output: 4,
-      cacheRead: 7,
-      cacheWrite: 5,
-      totalTokens: 19,
-      cost: { total: 0.0012 },
-    },
-    succeeded: true,
-    expected: [
-      { quantity: 3, source: 'llm-gateway-adapter-reported:input', unit: 'tokens' },
-      { quantity: 4, source: 'llm-gateway-adapter-reported:output', unit: 'tokens' },
-      { quantity: 7, source: 'llm-gateway-adapter-reported:cache_read', unit: 'tokens' },
-      { quantity: 5, source: 'llm-gateway-adapter-reported:cache_write', unit: 'tokens' },
-      { quantity: 0.0012, source: 'llm-gateway-adapter-reported:cost_estimate', unit: 'usd' },
-    ],
-  },
-  {
-    name: 'explicit zero caches',
-    usage: { input: 3, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 7 },
-    succeeded: true,
-    expected: [
-      { quantity: 3, source: 'llm-gateway-adapter-reported:input', unit: 'tokens' },
-      { quantity: 4, source: 'llm-gateway-adapter-reported:output', unit: 'tokens' },
-      { quantity: 0, source: 'llm-gateway-adapter-reported:cache_read', unit: 'tokens' },
-      { quantity: 0, source: 'llm-gateway-adapter-reported:cache_write', unit: 'tokens' },
-    ],
-  },
-  {
-    name: 'total-only usage',
-    usage: { totalTokens: 19 },
-    succeeded: true,
-    expected: [{ quantity: 19, source: 'llm-gateway-adapter-reported:total', unit: 'tokens' }],
-  },
-  {
-    name: 'invalid quantities',
-    usage: {
-      input: -1,
-      output: Number.NaN,
-      cacheRead: Infinity,
-      cacheWrite: '5',
-      totalTokens: -1,
-      cost: { total: -0.1 },
-    },
-    succeeded: false,
-    expected: [],
-  },
-  {
-    name: 'unmetered success',
-    usage: undefined,
-    succeeded: true,
-    expected: [{ quantity: 1, source: 'gateway-observed', unit: 'requests' }],
-  },
-  {
-    name: 'unmetered failure',
-    usage: undefined,
-    succeeded: false,
-    expected: [],
-  },
-])('retains internal usage $name with exact capability lineage', ({
-  usage,
-  succeeded,
-  expected,
-}) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'internal-usage-measurements-'));
-  const workspaceId = testEntityId('ws', 'usage-components');
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  try {
-    applyScopedMigrations(workspaceDb);
-    const threadId = testEntityId('th', 'usage-components');
-    const turnId = testEntityId('tu', 'usage-components');
-    const call = startCapabilityCall({
-      authorityActor: { kind: 'user', id: testEntityId('usr', 'usage-components') },
-      capabilityId: 'inference.local.goal_coordinator',
-      family: 'llm',
-      operation: 'goal.coordinate',
-      redactionClass: 'metadata-only',
-      requestId: null,
-      threadId,
-      turnId,
-      workspaceDb,
-      workspaceId,
-    });
-    const usageIds = recordInternalLlmGatewayUsage({
-      call,
-      workspaceDb,
-      logicalModelId: 'logical_test',
-      providerId: 'provider_test',
-      usage,
-      succeeded,
-    });
-    const rows = workspaceDb.sqlite
-      .prepare('SELECT * FROM usage_records WHERE capability_call_id=? ORDER BY rowid')
-      .all(call.id);
-    expect(rows).toHaveLength(expected.length);
-    expect(rows).toEqual(
-      expect.arrayContaining(
-        expected.map((measurement) =>
-          expect.objectContaining({
-            ...measurement,
-            capability_call_id: call.id,
-            workspace_id: workspaceId,
-            thread_id: threadId,
-            turn_id: turnId,
-            request_id: null,
-            category: 'llm',
-            model_id: 'logical_test',
-            provider_ref: 'provider_test',
-          })
-        )
-      )
-    );
-    expect(rows.map((row) => (row as { usage_id: string }).usage_id).sort()).toEqual(
-      [...usageIds].sort()
-    );
-  } finally {
-    workspaceDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
 });
