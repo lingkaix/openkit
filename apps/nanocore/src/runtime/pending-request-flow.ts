@@ -175,7 +175,7 @@ export interface PendingAdmissionDependencies extends PendingRequestDatabase {
   /** Goal owner accepts Coordinator outcome input without scheduler capacity. */
   coordinatorDelivery?: PendingWorkerDelivery;
   /** Goal owner considers marker admission after the ordinary terminal barrier. */
-  goalTerminal?: (turn: ReturnType<FsStore['getTurnById']>) => void;
+  goalTerminal?: (turn: ReturnType<FsStore['getTurnById']>) => void | Promise<void>;
 }
 
 const attentionObservers = new WeakMap<FsStore, (record: PendingRequestRecord) => void>();
@@ -281,7 +281,8 @@ export function installPendingRequestAdmission(
       if (store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).status === 'archived')
         return;
       await admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
-      dependencies.goalTerminal?.(turn);
+      // Finish this native admission before the command owner can issue another Goal wake.
+      await dependencies.goalTerminal?.(turn);
     },
   });
   if (dependencies.workerDelivery) {
