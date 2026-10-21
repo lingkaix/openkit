@@ -1654,7 +1654,11 @@ export function applyControlReviewCommand(
     if (prior) {
       if (!existing || !isDeepStrictEqual(existing, judgement))
         throw reviewError('recovery_required', 'The judgement receipt has no exact annotation.');
-    } else appendArtifactReviewJudgement(db, judgement);
+    } else {
+      if (existing)
+        throw reviewError('recovery_required', 'The judgement annotation has no original receipt.');
+      appendArtifactReviewJudgement(db, judgement);
+    }
     responseId = judgement.requestId;
     result = { mode: 'judgement', value: existing ?? judgement, replayed: !!prior };
   } else if (input.mode === 'select') {

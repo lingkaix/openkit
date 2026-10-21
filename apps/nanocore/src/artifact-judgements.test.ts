@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RecordEvaluationJudgementRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { appendArtifactJudgement, readArtifactJudgement } from './artifact-judgements.js';
@@ -11,7 +12,12 @@ import {
   listArtifactReviews,
   listExportableArtifactReviews,
 } from './artifact-reviews.js';
+import { createEvaluationJudgementOperationImplementations } from './evaluation-judgement-operations.js';
 import { FsStore } from './lib/store.js';
+import {
+  type InflightIdempotentCommand,
+  runIdempotentCommand,
+} from './runtime/idempotent-command.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -71,7 +77,48 @@ async function fixture() {
       updatedAt: now,
     });
   }
+  const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
+  const operations = createEvaluationJudgementOperationImplementations({
+    coreDb,
+    store,
+    inflightCommands,
+    repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
+  });
+  /** Uses the actual command owner so the worker receives the original caller input and receipt. */
+  async function append(input: Parameters<typeof appendArtifactJudgement>[1], author = actor) {
+    const { artifactId, artifactVersion, contentDigest, requestId, ...assessment } = input;
+    return (
+      await operations['evaluation.judgement-add'](
+        RecordEvaluationJudgementRequestSchema.parse({
+          workspaceId: workspace.id,
+          requestId,
+          judgement: {
+            ...assessment,
+            target: { kind: 'artifact-version', artifactId, artifactVersion, contentDigest },
+          },
+        }),
+        {
+          kind: 'public',
+          actor: author,
+          actorRef: { kind: 'user', id: author.userId },
+          scope: { kind: 'workspace', workspaceId: workspace.id },
+        }
+      )
+    ).judgement;
+  }
+  /** Reads only the original owner-local receipt; no replacement receipt is synthesized. */
+  function receipt(requestId: string) {
+    return store.getCommandRequest(
+      'evaluation.judgement-add',
+      requestId,
+      { workspaceId: workspace.id },
+      workspaceDb
+    );
+  }
   return {
+    append,
+    receipt,
+    inflightCommands,
     dataRoot,
     coreDb,
     workspaceDb,
@@ -116,9 +163,14 @@ describe('Exact Artifact judgement in the existing Review', () => {
       extensions: { assessmentLabel: 'human' },
     };
     expect(readArtifactJudgement(state.access, input)).toBeNull();
-    const first = await state.workspaceDb.sqlite.transaction(() =>
-      appendArtifactJudgement(state.access, input)
-    )();
+    const first = await state.append(input);
+    expect(state.receipt(input.requestId)).toMatchObject({
+      command: 'evaluation.judgement-add',
+      requestId: input.requestId,
+      scope: { workspaceId: state.workspace.id },
+      response: { kind: 'evaluation_judgement', id: input.requestId },
+    });
+    expect(await state.append(input)).toEqual(first);
     expect(first).toMatchObject({
       requestId: input.requestId,
       actor: { kind: 'user', id: state.userId },
@@ -147,12 +199,46 @@ describe('Exact Artifact judgement in the existing Review', () => {
     expect(() =>
       readArtifactJudgement(state.access, { ...input, note: 'Different input.' })
     ).toThrow(expect.objectContaining({ code: 'conflict' }));
-    expect(() =>
-      state.workspaceDb.sqlite.transaction(() => appendArtifactJudgement(state.access, input))()
-    ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
-    expect(() =>
-      appendArtifactJudgement(state.access, { ...input, requestId: 'outside-transaction' })
-    ).toThrow(/transaction/);
+    // Fault injection runs only while the native writer is stopped. A missing original receipt cannot be repaired from its annotation.
+    await shutdownControlStoreWorkerClient();
+    state.workspaceDb.sqlite
+      .prepare('DELETE FROM idempotency_requests WHERE request_key = ?')
+      .run(state.receipt(input.requestId)!.key);
+    await expect(state.append(input)).rejects.toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(state.receipt(input.requestId)).toBeNull();
+    expect(getArtifactReview(state.workspaceDb, artifact.id, 1).judgements).toEqual([first]);
+    // The original receipt must identify this exact producer, even without a Main transaction.
+    const refused = { ...input, requestId: 'outside-transaction' };
+    const { artifactId, artifactVersion, contentDigest, requestId, ...assessment } = refused;
+    await expect(
+      runIdempotentCommand({
+        store: state.store,
+        inflightCommands: state.inflightCommands,
+        workspaceDb: state.workspaceDb,
+        command: 'evaluation.judgement-add',
+        requestId,
+        scope: { workspaceId: state.workspace.id },
+        input: {
+          actor: { kind: 'user', id: state.userId },
+          judgement: {
+            ...assessment,
+            target: { kind: 'artifact-version', artifactId, artifactVersion, contentDigest },
+          },
+        },
+        responseKind: 'evaluation_judgement',
+        responseId: (judgement) => judgement.requestId,
+        replay: () => readArtifactJudgement(state.access, refused)!,
+        execute: (receipt) =>
+          appendArtifactJudgement(state.access, refused, {
+            ...receipt,
+            responseKind: 'artifact_review',
+          }),
+      })
+    ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    expect(state.receipt(requestId)).toBeNull();
+    expect(getArtifactReview(state.workspaceDb, artifact.id, 1).judgements).toEqual([first]);
     const raw = [
       {
         ...first,
@@ -161,10 +247,12 @@ describe('Exact Artifact judgement in the existing Review', () => {
         descriptiveAnnotation: { retained: true },
       },
     ];
+    await shutdownControlStoreWorkerClient();
     state.workspaceDb.sqlite
       .prepare('UPDATE artifact_reviews SET judgements = ? WHERE review_id = ?')
       .run(JSON.stringify(raw), review.reviewId);
     if (artifact.content.format === 'file') throw new Error('Fixture requires inline original.');
+    // Retain a pre-existing decision in the stopped fixture phase; the live judgement must not change it.
     decideArtifactReview(state.workspaceDb, {
       artifactId: artifact.id,
       artifactVersion: 1,
@@ -177,14 +265,12 @@ describe('Exact Artifact judgement in the existing Review', () => {
       artifactContent: artifact.content.body,
       artifactMediaType: 'text/plain',
     });
-    const rating = state.workspaceDb.sqlite.transaction(() =>
-      appendArtifactJudgement(state.access, {
-        ...input,
-        requestId: 'rate-original',
-        kind: 'rate',
-        choice: { value: 3, lowerBound: 0, upperBound: 4 },
-      })
-    )();
+    const rating = await state.append({
+      ...input,
+      requestId: 'rate-original',
+      kind: 'rate',
+      choice: { value: 3, lowerBound: 0, upperBound: 4 },
+    });
     expect(getArtifactReview(state.workspaceDb, artifact.id, 1)).toMatchObject({
       decision: 'rejected',
       decisionActorId: state.userId,
@@ -201,26 +287,42 @@ describe('Exact Artifact judgement in the existing Review', () => {
     );
     expect(exported?.judgements).toEqual(JSON.parse(retained.judgements));
     const rollbackArtifact = state.imported('rolled-back-annotation');
-    expect(() =>
-      state.workspaceDb.sqlite.transaction(() => {
-        appendArtifactJudgement(state.access, {
-          ...input,
-          artifactId: rollbackArtifact.id,
-          contentDigest: rollbackArtifact.contentDigest,
-          requestId: 'rollback',
-        });
-        throw new Error('Receipt publication failed.');
-      })()
-    ).toThrow('Receipt publication failed.');
-    expect(listArtifactReviews(state.workspaceDb)).toHaveLength(1);
-    const manual = state.workspaceDb.sqlite.transaction(() =>
-      appendArtifactJudgement(state.access, {
-        ...input,
-        artifactVersion: 2,
-        contentDigest: next.version.contentDigest,
-        requestId: 'judge-manual',
-      })
-    )();
+    const rollbackInput = {
+      ...input,
+      artifactId: rollbackArtifact.id,
+      contentDigest: rollbackArtifact.contentDigest,
+      requestId: 'rollback',
+    };
+    // Fail the receipt INSERT after Review publication inside the native savepoint, rather than throwing outside the async producer.
+    await shutdownControlStoreWorkerClient();
+    state.workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_judgement_receipt
+      BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name = 'evaluation.judgement-add' AND NEW.request_id = 'rollback'
+      BEGIN SELECT RAISE(ABORT, 'Receipt publication failed.'); END`);
+    try {
+      await expect(state.append(rollbackInput)).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      expect(state.receipt('rollback')).toBeNull();
+      expect(listArtifactReviews(state.workspaceDb)).toHaveLength(1);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      state.workspaceDb.sqlite.exec('DROP TRIGGER refuse_judgement_receipt');
+    }
+    // The identical admitted input succeeds without the fault, so the refusal cannot be a setup failure.
+    const retried = await state.append(rollbackInput);
+    expect(readArtifactJudgement(state.access, rollbackInput)).toEqual(retried);
+    expect(state.receipt('rollback')?.response).toEqual({
+      kind: 'evaluation_judgement',
+      id: 'rollback',
+    });
+    const manual = await state.append({
+      ...input,
+      artifactVersion: 2,
+      contentDigest: next.version.contentDigest,
+      requestId: 'judge-manual',
+    });
     expect(getArtifactReview(state.workspaceDb, artifact.id, 2)).toMatchObject({
       sourceThreadId: thread.id,
       sourceTurnId: next.version.turnId,
@@ -246,6 +348,7 @@ describe('Exact Artifact judgement in the existing Review', () => {
     expect(() =>
       readArtifactJudgement(reopened, { ...input, contentDigest: `sha256:${'0'.repeat(64)}` })
     ).toThrow(expect.objectContaining({ code: 'source_digest_mismatch' }));
+    await shutdownControlStoreWorkerClient();
     const corrupt = JSON.parse(retained.judgements);
     corrupt[0].target.artifactVersion = 2;
     reopenedDb.sqlite
@@ -322,13 +425,12 @@ describe('Exact Artifact judgement in the existing Review', () => {
     expect(() => readArtifactJudgement(denied, input)).toThrow(
       expect.objectContaining({ code: 'not_found' })
     );
-    expect(() =>
-      state.workspaceDb.sqlite.transaction(() => appendArtifactJudgement(denied, input))()
-    ).toThrow(expect.objectContaining({ code: 'not_found' }));
+    await expect(state.append(input, denied.actor)).rejects.toThrow(
+      expect.objectContaining({ code: 'not_found' })
+    );
+    expect(state.receipt(input.requestId)).toBeNull();
     expect(listArtifactReviews(state.workspaceDb)).toEqual([]);
-    const judgement = state.workspaceDb.sqlite.transaction(() =>
-      appendArtifactJudgement(state.access, input)
-    )();
+    const judgement = await state.append(input);
     expect(judgement).toMatchObject({ actor: { kind: 'user', id: state.userId } });
     expect(() => readArtifactJudgement(denied, input)).toThrow(
       expect.objectContaining({ code: 'not_found' })
