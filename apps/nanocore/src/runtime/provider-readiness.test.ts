@@ -8,11 +8,9 @@ import {
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import {
-  createSchedulerAdmissionEntry,
-  requireSchedulerAdmissionEntry,
-} from '../scheduler-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -22,8 +20,9 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { ExecutionBackend } from './execution-backend.js';
+import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import { startTurn } from './orchestrator.js';
-import { startProductTurn } from './product-turn-start.js';
+import { observeTurnAdmission, startProductTurn } from './product-turn-start.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import type { TurnExecutor } from './types.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
@@ -201,7 +200,7 @@ function expectNoRuntimeEffects(f: ReturnType<typeof fixture>) {
 }
 
 /** Publishes a real queued request, pending Turn and command receipt for scheduler re-evaluation. */
-function enqueue(f: ReturnType<typeof fixture>) {
+async function enqueue(f: ReturnType<typeof fixture>) {
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: f.backend.id,
     modelId: null,
@@ -217,32 +216,48 @@ function enqueue(f: ReturnType<typeof fixture>) {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     workspaceRoots: [],
   });
-  f.store.createTurn(entry.workspaceId, entry.threadId, entry.turnInput, entry.triggerActor, null, {
-    turnId: entry.turnId,
-    status: 'pending',
-    agentId: f.manifest.id,
-    executorKind: 'worker',
-  });
-  publishReceipt(f, entry);
+  await f.store.createTurn(
+    entry.workspaceId,
+    entry.threadId,
+    entry.turnInput,
+    entry.triggerActor,
+    null,
+    {
+      turnId: entry.turnId,
+      status: 'pending',
+      agentId: f.manifest.id,
+      executorKind: 'worker',
+      commandReceipt: commandReceipt({
+        requestId: entry.requestId,
+        workspaceId: entry.workspaceId,
+        threadId: entry.threadId,
+        agentId: f.manifest.id,
+        input: entry.turnInput,
+      }),
+    }
+  );
 }
 
-/** Publishes the ordinary source receipt that authorizes queued dispatch after admission. */
-function publishReceipt(
-  f: ReturnType<typeof fixture>,
-  entry: ReturnType<typeof createSchedulerAdmissionEntry>
-) {
-  f.store.recordCommandRequest({
+/** Prepares the original command facts for the native Turn owner, before admission or dispatch. */
+function commandReceipt(
+  input: Parameters<typeof startProductTurn>[0]['input']
+): IdempotentCommandReceipt {
+  const scope = {
+    actorId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+  };
+  const createdAt = new Date().toISOString();
+  return {
+    key: commandRequestKey('turn.start', input.requestId, scope),
     command: 'turn.start',
-    requestId: entry.requestId,
-    inputHash: 'readiness-fixture',
-    scope: {
-      actorId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: entry.workspaceId,
-      threadId: entry.threadId,
-    },
-    response: { kind: 'turn', id: entry.turnId },
-    createdAt: new Date().toISOString(),
-  });
+    requestId: input.requestId,
+    inputHash: commandInputHash(input),
+    scope,
+    responseKind: 'turn',
+    createdAt,
+    expiresAt: commandRequestExpiresAt(createdAt),
+  };
 }
 
 describe('provider readiness at Turn boundaries', () => {
@@ -323,7 +338,7 @@ describe('provider readiness at Turn boundaries', () => {
   ] as const)('scheduler refuses %s before backend preparation', async (kind) => {
     const f = await fixture(kind);
     expect(f.setup().setup).toBeNull();
-    enqueue(f);
+    await enqueue(f);
     const result = runSchedulerDispatchLoop({
       ...f.hooks,
       agentManifests: [f.manifest],
@@ -405,7 +420,7 @@ describe('provider readiness at Turn boundaries', () => {
   ] as const)('scheduler reaches the backend capacity boundary with %s supply', async (kind) => {
     const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
-    enqueue(f);
+    await enqueue(f);
     const result = await runSchedulerDispatchLoop({
       ...f.hooks,
       agentManifests: [f.manifest],
@@ -430,7 +445,7 @@ describe('scheduler to orchestrator readiness handoff', () => {
   ] as const)('rechecks %s supply after preparation and before executor start', async (kind) => {
     const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
-    enqueue(f);
+    await enqueue(f);
     f.prepare.mockImplementation(async (_store, input) => {
       if (kind === 'healthy')
         vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
@@ -475,47 +490,79 @@ describe('product admission to queued dispatch readiness handoff', () => {
       prepared.resolve();
       throw new WorkerGovernanceCapacityUnavailableError();
     });
-    const completion = startProductTurn({
-      ...f.hooks,
-      coreDb: f.coreDb,
-      store: f.store,
-      snapshot: f.snapshot,
-      turnExecutor: f.executor,
-      workerPlacement: 'local',
-      requestedAgentId: f.manifest.id,
-      providerCredentialResolver: () => null,
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      input: {
-        requestId: '00000000-0000-4000-8000-000000000304',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        input: 'Recheck supply after admission.',
-      },
-      onTurnCreated: (turn) => {
-        const row = f.coreDb.sqlite
-          .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
-          .get(turn.id) as { id: string };
-        publishReceipt(f, requireSchedulerAdmissionEntry(f.coreDb, row.id));
-        if (kind === 'healthy')
-          vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
-        else
-          vi.mocked(f.hooks.subscriptionAccounts!.gatewayUnavailableReason).mockReturnValue(
-            'subscription_account_logged_out'
-          );
-      },
+    const input = {
+      requestId: '00000000-0000-4000-8000-000000000304',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      input: 'Recheck supply after admission.',
+    };
+    const receipt = commandReceipt(input);
+    let originalTurnId: string | undefined;
+    const observed = observeTurnAdmission({
+      execute: (admit) =>
+        startProductTurn({
+          ...f.hooks,
+          coreDb: f.coreDb,
+          store: f.store,
+          snapshot: f.snapshot,
+          turnExecutor: f.executor,
+          workerPlacement: 'local',
+          requestedAgentId: f.manifest.id,
+          providerCredentialResolver: () => null,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          input,
+          commandReceipt: receipt,
+          onTurnCreated: (turn) => {
+            expect(turn.status).toBe('pending');
+            expect(turn.agentSessionId ?? null).toBeNull();
+            originalTurnId = turn.id;
+            admit(turn);
+            if (kind === 'healthy')
+              vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
+            else
+              vi.mocked(f.hooks.subscriptionAccounts!.gatewayUnavailableReason).mockReturnValue(
+                'subscription_account_logged_out'
+              );
+          },
+        }),
+      settled: () => {},
+      failed: () => {},
+    });
+    // Accepted queue ownership survives a later execution failure; it is not a terminal handle.
+    const accepted = await observed.accepted;
+    expect(accepted.id).toBe(originalTurnId);
+    const originalReceipt = f.store.getCommandRequest('turn.start', input.requestId, receipt.scope);
+    expect(originalReceipt).toMatchObject({
+      requestId: input.requestId,
+      inputHash: receipt.inputHash,
+      response: { kind: 'turn', id: accepted.id },
     });
     const outcome = await Promise.race([
-      completion.then((handle) => ({ boundary: 'terminal' as const, handle })),
+      observed.execution.then(
+        () => ({ boundary: 'unexpected-success' as const }),
+        (error: unknown) => ({ boundary: 'terminal' as const, error })
+      ),
       prepared.promise.then(() => ({ boundary: 'backend-preparation' as const })),
     ]);
     // Let the invoked scheduler settle before closing its real database, including the red path.
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(outcome.boundary).toBe('terminal');
     if (outcome.boundary !== 'terminal') throw new Error('Readiness reached backend preparation.');
-    expect(outcome.handle.turn).toMatchObject({
+    expect(outcome.error).toMatchObject({
+      code: 'agent_not_ready',
+      message: expect.stringMatching(/logical model/i),
+    });
+    expect(f.store.getTurn(input.workspaceId, input.threadId, accepted.id)).toMatchObject({
+      id: accepted.id,
       status: 'failed',
       error: { code: 'worker_preparation_failed' },
     });
+    expect(f.admissions()).toMatchObject([
+      { turn_id: accepted.id, request_id: input.requestId, workspace_id: input.workspaceId },
+    ]);
+    expect(f.store.getCommandRequest('turn.start', input.requestId, receipt.scope)).toEqual(
+      originalReceipt
+    );
     expect(f.setup().setup).toBeNull();
     expectNoRuntimeEffects(f);
   });

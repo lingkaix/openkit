@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -9,6 +9,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -72,7 +73,7 @@ it('permits denial of a person command intent whose exact detail is unavailable'
     const requestId = '00000000-0000-4000-8000-000000000938';
     const title = 'Confirm exact effect';
     const description = 'Complete detail is required to grant.';
-    const record = raiseRecordedPendingRequest(store, db.sqlite, {
+    const record = await raiseRecordedPendingRequest(store, db.sqlite, {
       requestId,
       workspaceId,
       threadId,
@@ -100,7 +101,7 @@ it('permits denial of a person command intent whose exact detail is unavailable'
       completedAt: NOW,
     });
     expect(projectApprovalEffect({ record, store, coreDb, actor }).status).toBe('unavailable');
-    expect(() =>
+    await expect(
       resolveCommandIntentApproval({
         store,
         sqlite: db.sqlite,
@@ -109,9 +110,9 @@ it('permits denial of a person command intent whose exact detail is unavailable'
         actor,
         coreDb,
       })
-    ).toThrow('Exact effect unavailable; approval disabled');
+    ).rejects.toThrow('Exact effect unavailable; approval disabled');
     expect(
-      resolveCommandIntentApproval({
+      await resolveCommandIntentApproval({
         store,
         sqlite: db.sqlite,
         record,
@@ -397,7 +398,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, input);
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
       const response = await app.request(
         ...operationRequest(
           'approval.respond',
@@ -474,6 +475,8 @@ describe('pending requests', () => {
       );
       for (let index = 0; index < 17; index++) {
         const requestId = `uq_count_${String(index).padStart(2, '0')}`;
+        // Stopped retained-record fixture; this does not claim native admission or execution.
+        await shutdownControlStoreWorkerClient();
         raisePendingRequest(db.sqlite, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -554,6 +557,8 @@ describe('pending requests', () => {
         null
       );
       const input = approvalRaise(turn.id, 'ap_detail_boundary', '');
+      // Stopped retained-record fixture; this does not claim native admission or execution.
+      await shutdownControlStoreWorkerClient();
       const record = raisePendingRequest(db.sqlite, input).record;
       const preview = (message: string, userId = 'usr_00000000-0000-7000-8000-000000000001') =>
         projectApprovalEffect({
@@ -663,10 +668,14 @@ describe('pending requests', () => {
     );
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
+    // Stopped retained-record fixture; this does not claim native admission or execution.
+    await shutdownControlStoreWorkerClient();
     const record = raisePendingRequest(
       db.sqlite,
       approvalRaise(turn.id, 'ap_broken_boot', 'broken')
     ).record;
+    // Exclude the live native writer before constructing this retained corruption.
+    await shutdownControlStoreWorkerClient();
     db.sqlite
       .prepare(
         "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'usr_00000000-0000-7000-8000-000000000001', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
@@ -675,7 +684,7 @@ describe('pending requests', () => {
     const before = db.sqlite
       .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
       .get(record.requestId);
-    recoverPendingRequestsAtBoot(store, {
+    await recoverPendingRequestsAtBoot(store, {
       openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
     });
     expect(
@@ -725,7 +734,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      const valid = raiseRecordedPendingRequest(store, db.sqlite, {
+      const valid = await raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ap_canonical',
         requestItemId: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -852,7 +861,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      const pending = raiseRecordedPendingRequest(store, db.sqlite, input);
+      const pending = await raiseRecordedPendingRequest(store, db.sqlite, input);
       const decision = {
         id: pendingRequestItemId(input.requestId, 'decision'),
         owner: { kind: 'workspace', workspaceId: input.workspaceId },
@@ -970,7 +979,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      const record = raiseRecordedPendingRequest(store, db.sqlite, input);
+      const record = await raiseRecordedPendingRequest(store, db.sqlite, input);
       const turns = store.listThreadTurns(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
@@ -1029,7 +1038,9 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, input);
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
+      // Exclude the live native writer before constructing this retained corruption.
+      await shutdownControlStoreWorkerClient();
       db.sqlite
         .prepare(
           "UPDATE pending_requests SET authorization_context_json = '{invalid' WHERE request_id = ?"
@@ -1068,10 +1079,14 @@ describe('pending requests', () => {
     );
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
+    // Stopped retained-record fixture; this does not claim native admission or execution.
+    await shutdownControlStoreWorkerClient();
     const record = raisePendingRequest(
       db.sqlite,
       approvalRaise(turn.id, 'ap_broken_boot', 'broken')
     ).record;
+    // Exclude the live native writer before constructing this retained corruption.
+    await shutdownControlStoreWorkerClient();
     db.sqlite
       .prepare(
         "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'usr_00000000-0000-7000-8000-000000000001', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
@@ -1147,7 +1162,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      const valid = raiseRecordedPendingRequest(store, db.sqlite, {
+      const valid = await raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ap_canonical',
         requestItemId: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1269,7 +1284,7 @@ describe('pending requests', () => {
           createdAt: NOW,
           completedAt: NOW,
         });
-        raiseRecordedPendingRequest(store, db.sqlite, {
+        await raiseRecordedPendingRequest(store, db.sqlite, {
           requestId: `ap_attention_${id}`,
           requestItemId: testEntityId('it', `it_attention_${id}`),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1287,6 +1302,8 @@ describe('pending requests', () => {
           now: NOW,
         });
       }
+      // Exclude the live native writer before constructing this retained corruption.
+      await shutdownControlStoreWorkerClient();
       db.sqlite
         .prepare(
           "UPDATE pending_requests SET request_item_id='it_00000000-0000-7073-8596-45dc5f23bd0f' WHERE request_id='ap_attention_bad'"
@@ -1326,6 +1343,7 @@ describe('pending requests', () => {
     'boot',
   ] as const)('publishes a delivered person grant invalidation on its own completed Turn: %s', async (cause) => {
     const { app, coreDb, dataRoot, store } = await openPendingApp();
+    store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -1338,6 +1356,21 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     const now = new Date().toISOString();
+    const createTurn = store.createTurn.bind(store);
+    const clock = vi.spyOn(store, 'createTurn').mockImplementation(async (...args) => {
+      if (args[5]?.executorKind !== 'person') return createTurn(...args);
+      const decidedAt = readPendingRequest(db.sqlite, 'ap_person_late')!.decidedAt!;
+      const itemTime = new Date(Date.parse(decidedAt) + 1).toISOString();
+      const itemClock = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue(itemTime);
+      try {
+        return await createTurn(args[0], args[1], args[2], args[3], args[4], {
+          ...args[5],
+          startedAt: decidedAt,
+        });
+      } finally {
+        itemClock.mockRestore();
+      }
+    });
     try {
       await store.createItem({
         id: 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086',
@@ -1353,7 +1386,7 @@ describe('pending requests', () => {
         createdAt: now,
         completedAt: now,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, {
+      await raiseRecordedPendingRequest(store, db.sqlite, {
         requestId: 'ap_person_late',
         requestItemId: 'it_00000000-0000-7a55-b4f2-9c2a5ec7c086',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1370,6 +1403,8 @@ describe('pending requests', () => {
         governedIntent: { operation: 'host-push' },
         now,
       });
+      // Exclude the live native writer before constructing this retained corruption.
+      await shutdownControlStoreWorkerClient();
       db.sqlite
         .prepare(
           "UPDATE pending_requests SET state='resolved', resolution='granted', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id='ap_person_late'"
@@ -1398,6 +1433,8 @@ describe('pending requests', () => {
             id: 'usr_00000000-0000-7000-8000-000000000001',
           }
         );
+        // Exclude the live native writer before constructing this retained corruption.
+        await shutdownControlStoreWorkerClient();
         db.sqlite
           .prepare(
             "UPDATE pending_requests SET disposition='denied-not-executed', disposition_reason='membership-revoked' WHERE request_id='ap_person_late'"
@@ -1429,7 +1466,7 @@ describe('pending requests', () => {
           completedAt: new Date().toISOString(),
         });
         if (cause === 'boot')
-          recoverPendingRequestsAtBoot(store, {
+          await recoverPendingRequestsAtBoot(store, {
             openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
           });
       } else {
@@ -1476,13 +1513,72 @@ describe('pending requests', () => {
           .getTurnById(decision.publicationTurnId!)
           .items.filter((item) => item.type === 'status')
       ).toHaveLength(0);
-      recoverPendingRequestsAtBoot(store, {
+      const original = store.getTurnById(decision.publicationTurnId!);
+      expect(original.items[0]!.createdAt).not.toBe(original.startedAt);
+      expect(store.getTurnCaptureCoverage(original.id)).toEqual({ scope: 'server', value: 'off' });
+      const scope = nativeProductScope(dataRoot, original.owner);
+      // Snapshot native revisions, immutable bytes and terminal envelopes before replay.
+      const snapshot = () => {
+        const turns = db.sqlite.prepare('SELECT * FROM control_turns ORDER BY id').all();
+        const entries = db.sqlite
+          .prepare('SELECT * FROM control_product_entries ORDER BY turn_id,kind,sequence')
+          .all() as Array<{ content_json: string }>;
+        const bytes = entries.map((row) =>
+          readFileSync(
+            join(scope.contentMount.root, JSON.parse(row.content_json).reference.locator.path)
+          )
+        );
+        return { turns, entries, bytes };
+      };
+      const before = snapshot();
+      const reopened = new FsStore({ dataRoot });
+      reopened.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await recoverPendingRequestsAtBoot(reopened, {
+          openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
+        });
+        expect(snapshot()).toEqual(before);
+        expect(reopened.getTurnById(original.id)).toEqual(original);
+        expect(reopened.getTurnById(publication.id)).toEqual(publication);
+        expect(reopened.getTurnCaptureCoverage(original.id)).toEqual({
+          scope: 'server',
+          value: 'off',
+        });
+        expect(readPendingRequest(db.sqlite, 'ap_person_late')).toMatchObject({
+          publicationTurnId: original.id,
+          invalidationTurnId: publication.id,
+          delivery: 'delivered',
+        });
+      }
+      // Contradictory authority must stay inspect-only rather than borrow retained Item content.
+      await shutdownControlStoreWorkerClient();
+      db.sqlite
+        .prepare("UPDATE pending_requests SET decided_at=? WHERE request_id='ap_person_late'")
+        .run('2026-10-01T00:00:00.000Z');
+      const contradicted = readPendingRequest(db.sqlite, 'ap_person_late')!;
+      expect(
+        validateCanonicalLoad(
+          contradicted,
+          reopened.listThreadTurns(contradicted.workspaceId, contradicted.threadId)
+        )
+      ).not.toBeNull();
+      await recoverPendingRequestsAtBoot(reopened, {
         openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
       });
-      expect(
-        store.getTurnById(publication.id).items.filter((item) => item.type === 'status')
-      ).toHaveLength(1);
+      await expect(
+        resolveCommandIntentApproval({
+          store: reopened,
+          sqlite: db.sqlite,
+          record: contradicted,
+          decision: 'denied',
+          coreDb,
+          actor: { kind: 'local', userId: contradicted.responsibleUserId },
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(readPendingRequest(db.sqlite, 'ap_person_late')).toEqual(contradicted);
+      expect(snapshot()).toEqual(before);
     } finally {
+      clock.mockRestore();
       db.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -1495,28 +1591,57 @@ describe('pending requests', () => {
     ['boot-resume', 'transient'],
     ['terminal-barrier', 'refusal-release'],
     ['boot-resume', 'initial-lookup'],
-  ] as const)('contains delivery and Workspace opener failures at %s with fault %s', async (site, fault) => {
+  ] as const)('contains delivery and native bookkeeping failures at %s with fault %s', async (site, fault) => {
     const { coreDb, dataRoot, store } = await openPendingApp('agent_demo');
-    let unavailable = false;
-    const recovers = fault !== 'permanent';
     let submissions = 0;
     let lookup: ReturnType<typeof vi.spyOn> | undefined;
     let outcomeTurnId: string | undefined;
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const settled = Promise.withResolvers<void>();
+    const attempted = Promise.withResolvers<void>();
+    const releaseFault = Promise.withResolvers<void>();
+    const logged = vi.spyOn(console, 'error').mockImplementation((message) => {
+      if (
+        String(message).startsWith('Outcome delivery for Turn ') ||
+        String(message).startsWith('Could not fail outcome Turn ')
+      )
+        settled.resolve();
+    });
     const dependencies = {
-      openWorkspace: (workspaceId: string) => {
-        if (unavailable) {
-          if (recovers) unavailable = false;
-          throw new Error('Workspace unavailable during delivery');
-        }
-        return openWorkspaceDb(dataRoot, workspaceId);
-      },
+      openWorkspace: (workspaceId: string) => openWorkspaceDb(dataRoot, workspaceId),
     };
+    let nativeAttempts = 0;
+    const apply = store.applyPendingRequestCommand.bind(store);
+    const nativeWrite = vi
+      .spyOn(store, 'applyPendingRequestCommand')
+      .mockImplementation(async (...args) => {
+        const command = args[1];
+        if (
+          'turnId' in command &&
+          command.turnId === outcomeTurnId &&
+          (command.action === 'delivery-release' || command.action === 'delivery-unknown')
+        ) {
+          nativeAttempts++;
+          if (nativeAttempts === 1) {
+            attempted.resolve();
+            await releaseFault.promise;
+          }
+          if (fault === 'permanent' || nativeAttempts === 1)
+            throw new Error('Native delivery bookkeeping unavailable');
+        }
+        return apply(...args);
+      });
+    const complete = store.completeTurn.bind(store);
+    const terminal = vi.spyOn(store, 'completeTurn').mockImplementation(async (...args) => {
+      if (args[0] === outcomeTurnId && fault === 'permanent')
+        throw new Error('Native terminal bookkeeping unavailable');
+      const result = await complete(...args);
+      if (args[0] === outcomeTurnId) settled.resolve();
+      return result;
+    });
     const workerDelivery = {
       async startTurn(_store: FsStore, turnId: string) {
         outcomeTurnId = turnId;
         submissions++;
-        unavailable = true;
         if (fault === 'refusal-release')
           throw new TurnStartValidationError('agent_not_found', 'Agent is unavailable.', 409);
         throw new Error('Native submission result unknown');
@@ -1552,7 +1677,9 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, input);
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
+      // Exclude the live native writer before constructing this retained corruption.
+      await shutdownControlStoreWorkerClient();
       db.sqlite
         .prepare(
           "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id=?"
@@ -1576,7 +1703,13 @@ describe('pending requests', () => {
         }
         installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      if (fault !== 'initial-lookup') {
+        await attempted.promise;
+        expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe('frozen');
+        expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
+        releaseFault.resolve();
+      }
+      await settled.promise;
       expect(outcomeTurnId).toBeDefined();
       // Slow-stage observations share stderr; this oracle owns delivery messages, not other owners.
       const deliveryLogs = logged.mock.calls.filter(
@@ -1592,7 +1725,7 @@ describe('pending requests', () => {
         expect(deliveryLogs[0]?.[0]).toBe(
           `Outcome delivery for Turn ${outcomeTurnId} failed before submission; leaving it for boot resume.`
         );
-      } else if (recovers) {
+      } else if (fault !== 'permanent') {
         const refused = fault === 'refusal-release';
         expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe(
           refused ? 'undelivered' : 'delivery-unknown'
@@ -1605,8 +1738,13 @@ describe('pending requests', () => {
           `Recording the outcome delivery result failed for Turn ${outcomeTurnId}.`
         );
       } else {
+        expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe('frozen');
         expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
       }
+      expect(nativeAttempts).toBe(fault === 'initial-lookup' ? 0 : 2);
+      expect(
+        nativeWrite.mock.calls.some(([, command]) => command.action === 'delivery-prove')
+      ).toBe(false);
       if (fault === 'transient') {
         const later = await store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -1624,7 +1762,9 @@ describe('pending requests', () => {
       }
       expect(submissions).toBe(fault === 'initial-lookup' ? 0 : 1);
     } finally {
-      unavailable = false;
+      releaseFault.resolve();
+      nativeWrite.mockRestore();
+      terminal.mockRestore();
       lookup?.mockRestore();
       logged.mockRestore();
       db.sqlite.close();
@@ -1667,7 +1807,9 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, input);
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
+      // Exclude the live native writer before constructing this retained corruption.
+      await shutdownControlStoreWorkerClient();
       db.sqlite
         .prepare(
           "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='usr_00000000-0000-7000-8000-000000000001', decided_at=? WHERE request_id=?"
@@ -1702,12 +1844,29 @@ describe('pending requests', () => {
       });
       expect(store.getTurnById(admitted.deliveryTurnId!).status).toBe('pending');
       let submissions = 0;
+      const settled = Promise.withResolvers<void>();
+      const publish = store.publishPendingRequestServiceTurn.bind(store);
+      const closeout = vi
+        .spyOn(store, 'publishPendingRequestServiceTurn')
+        .mockImplementation(async (...args) => {
+          const result = await publish(...args);
+          if (readPendingRequest(db.sqlite, input.requestId)?.delivery === 'closed-out')
+            settled.resolve();
+          return result;
+        });
+      onTestFinished(() => closeout.mockRestore());
       const workerDelivery = {
         async startTurn(_store: FsStore, turnId: string) {
           submissions++;
           if (mode === 'agent-removed')
             throw new TurnStartValidationError('agent_not_found', 'Agent is unavailable.', 409);
-          proveFrozenDelivery(db.sqlite, turnId, new Date().toISOString());
+          await store.applyPendingRequestCommand(input.workspaceId, {
+            action: 'delivery-prove',
+            workspaceId: input.workspaceId,
+            turnId,
+            now: new Date().toISOString(),
+          });
+          settled.resolve();
         },
       };
       installPendingRequestAdmission(store, {
@@ -1715,7 +1874,7 @@ describe('pending requests', () => {
         workerDelivery,
         agentAuthority: () => mode === 'accepted',
       });
-      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      await settled.promise;
       expect(submissions).toBe(1);
       expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe(
         mode === 'accepted' ? 'delivered' : 'closed-out'
@@ -1762,7 +1921,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, input);
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
       current = false;
       await store.updateTurn(turn.id, {
         status: 'completed',
@@ -1798,11 +1957,17 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
+      // Stopped retained-record fixture; this does not claim native admission or execution.
+      await shutdownControlStoreWorkerClient();
       const first = raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_same', 'digest-a'));
       expect(() =>
         raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_same', 'changed-same-id'))
       ).toThrow(/different pending request/);
+      // Stopped retained-record fixture; this does not claim native admission or execution.
+      await shutdownControlStoreWorkerClient();
       const repeat = raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_other', 'digest-a'));
+      // Stopped retained-record fixture; this does not claim native admission or execution.
+      await shutdownControlStoreWorkerClient();
       const changed = raisePendingRequest(
         db.sqlite,
         approvalRaise(turn.id, 'ap_changed', 'digest-b')
@@ -1811,6 +1976,8 @@ describe('pending requests', () => {
       expect(repeat).toMatchObject({ created: false, record: { requestId: 'ap_same' } });
       expect(changed).toMatchObject({ created: true, record: { requestId: 'ap_changed' } });
       for (let index = 0; index < 14; index += 1) {
+        // Stopped retained-record fixture; this does not claim native admission or execution.
+        await shutdownControlStoreWorkerClient();
         raisePendingRequest(
           db.sqlite,
           approvalRaise(turn.id, `ap_bound_${index}`, `digest-${index}`)
@@ -1880,7 +2047,7 @@ describe('pending requests', () => {
             'sha256:760fdb6951f11b512c6e556739733aec40036c3a57167b4985947dd0408b46b5',
         };
       }
-      raiseRecordedPendingRequest(store, db.sqlite, raised);
+      await raiseRecordedPendingRequest(store, db.sqlite, raised);
     } finally {
       db.sqlite.close();
     }
@@ -1888,12 +2055,28 @@ describe('pending requests', () => {
     const started = Promise.withResolvers<{ turnId: string; completion: Promise<void> }>();
     const startTurn = executor.startTurn.bind(executor);
     let completion: Promise<void> | undefined;
+    let deliveredInput: unknown;
     const execution = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      const inputDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        deliveredInput = JSON.parse(
+          frozenPendingOutcomeInput(inputDb.sqlite, args[1], 'approval outcome')
+        );
+      } finally {
+        inputDb.sqlite.close();
+      }
       completion = startTurn(...args);
       started.resolve({ turnId: args[1], completion });
       return completion;
     });
     try {
+      const responseInput = {
+        decision: 'granted',
+        requestId: '00000000-0000-4000-8000-000000000701',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: turn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      };
       const response = await app.request(
         ...operationRequest(
           'approval.respond',
@@ -1901,29 +2084,70 @@ describe('pending requests', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              decision: 'granted',
-              requestId: '00000000-0000-4000-8000-000000000701',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            }),
+            body: JSON.stringify(responseInput),
           }
         )
       );
       expect(response.status, await response.clone().text()).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({ id: 'ap_supply', status: 'granted' });
+      const responseBody = await response.json();
+      expect(responseBody).toMatchObject({ id: 'ap_supply', status: 'granted' });
       const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(readPendingRequest(recorded.sqlite, 'ap_supply')).toMatchObject({
+          state: 'resolved',
           resolution: 'granted',
-          disposition: 'denied-not-executed',
+          disposition: 'execution-error',
           dispositionReason: 'tool-left-supply',
-          claim: 'unclaimed',
+          claim: 'finished',
+          executionCallId: expect.any(String),
         });
         expect(callTool).not.toHaveBeenCalled();
         expect(listTools).not.toHaveBeenCalled();
-        expect(recorded.sqlite.prepare('SELECT * FROM capability_calls').all()).toEqual([]);
+        const executionCallId = readPendingRequest(recorded.sqlite, 'ap_supply')!.executionCallId;
+        const originalExecutionRows = recorded.sqlite
+          .prepare('SELECT * FROM capability_calls')
+          .all();
+        expect(originalExecutionRows).toEqual([
+          expect.objectContaining({
+            call_id: executionCallId,
+            request_id: responseInput.requestId,
+            turn_id: turn.id,
+            status: 'failed',
+          }),
+        ]);
+        expect(recorded.sqlite.prepare('SELECT * FROM usage_records').all()).toEqual([]);
+        const decision = recorded.sqlite
+          .prepare(
+            'SELECT result, context_summary_json FROM permission_decisions WHERE approval_id = ?'
+          )
+          .get('ap_supply') as { result: string; context_summary_json: string };
+        expect(decision.result).toBe('deny');
+        expect(JSON.parse(decision.context_summary_json)).toMatchObject({
+          capabilityCallId: executionCallId,
+          upstreamContacted: false,
+        });
+        const replay = await app.request(
+          ...operationRequest(
+            'approval.respond',
+            { approvalRequestId: 'ap_supply' },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(responseInput),
+            }
+          )
+        );
+        expect(replay.status, await replay.clone().text()).toBe(200);
+        expect(await replay.json()).toEqual(responseBody);
+        expect(readPendingRequest(recorded.sqlite, 'ap_supply')!.executionCallId).toBe(
+          executionCallId
+        );
+        expect(recorded.sqlite.prepare('SELECT * FROM capability_calls').all()).toEqual(
+          originalExecutionRows
+        );
+        expect(recorded.sqlite.prepare('SELECT * FROM usage_records').all()).toEqual([]);
+        expect(callTool).not.toHaveBeenCalled();
+        expect(listTools).not.toHaveBeenCalled();
       } finally {
         recorded.sqlite.close();
       }
@@ -1963,7 +2187,35 @@ describe('pending requests', () => {
         deliveryTurnId: outcome!.id,
       });
       delivered.sqlite.close();
-      expect(outcome?.items.some((item) => item.type === 'status')).toBe(true);
+      expect(
+        outcome?.items.filter(
+          (item) => item.id === pendingRequestItemId('ap_supply', 'disposition')
+        )
+      ).toEqual([
+        expect.objectContaining({
+          type: 'tool-call',
+          turnId: outcome!.id,
+          id: pendingRequestItemId('ap_supply', 'disposition'),
+          causationId: testEntityId('it', 'it_ap_supply'),
+          server: serverId,
+          tool: serverId === 'echo' ? 'echo' : 'repository_push',
+          result: 'execution-error',
+          error: 'tool-left-supply',
+          arguments: null,
+        }),
+      ]);
+      expect(deliveredInput).toMatchObject({
+        pendingOutcomes: [
+          {
+            requestId: 'ap_supply',
+            requestItemId: testEntityId('it', 'it_ap_supply'),
+            publicationTurnId: outcome!.id,
+            resolution: 'granted',
+            disposition: 'execution-error',
+            reason: 'tool-left-supply',
+          },
+        ],
+      });
     } finally {
       await completion?.catch(() => undefined);
       execution.mockRestore();
@@ -1990,7 +2242,7 @@ describe('pending requests', () => {
       isSecret: false,
     };
     try {
-      await store.createItem({
+      const pathRequestItem = await store.createItem({
         id: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2004,20 +2256,25 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, {
-        requestId: 'ui_path',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        raisingTurnId: turn.id,
-        requestItemId: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
-        kind: 'user-input',
-        requesterKind: 'assistant',
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        questions: [question],
-        questionDigest: 'digest-path',
-        now: NOW,
-      });
-      await store.createItem({
+      await raiseRecordedPendingRequest(
+        store,
+        db.sqlite,
+        {
+          requestId: 'ui_path',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          raisingTurnId: turn.id,
+          requestItemId: 'it_00000000-0000-730f-baa3-bbcbde464aaa',
+          kind: 'user-input',
+          requesterKind: 'assistant',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          questions: [question],
+          questionDigest: 'digest-path',
+          now: NOW,
+        },
+        pathRequestItem
+      );
+      const secretRequestItem = await store.createItem({
         id: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2031,19 +2288,24 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(store, db.sqlite, {
-        requestId: 'ui_secret',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        raisingTurnId: turn.id,
-        requestItemId: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
-        kind: 'user-input',
-        requesterKind: 'assistant',
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        questions: [{ ...question, id: 'secret', isSecret: true }],
-        questionDigest: 'digest-secret',
-        now: NOW,
-      });
+      await raiseRecordedPendingRequest(
+        store,
+        db.sqlite,
+        {
+          requestId: 'ui_secret',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          raisingTurnId: turn.id,
+          requestItemId: 'it_00000000-0000-7c53-9f67-b4db2e48a984',
+          kind: 'user-input',
+          requesterKind: 'assistant',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          questions: [{ ...question, id: 'secret', isSecret: true }],
+          questionDigest: 'digest-secret',
+          now: NOW,
+        },
+        secretRequestItem
+      );
     } finally {
       db.sqlite.close();
     }
@@ -2158,7 +2420,11 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(db);
     try {
+      // Stopped retained-record fixture; this does not claim native admission or execution.
+      await shutdownControlStoreWorkerClient();
       raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_crash', 'digest-crash'));
+      // Exclude the live native writer before constructing this retained corruption.
+      await shutdownControlStoreWorkerClient();
       db.sqlite
         .prepare(
           `UPDATE pending_requests
@@ -2204,7 +2470,7 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(
+      await raiseRecordedPendingRequest(
         store,
         db.sqlite,
         approvalRaise(turn.id, 'ap_archive', 'digest-archive')
@@ -2328,12 +2594,12 @@ describe('pending requests', () => {
         createdAt: NOW,
         completedAt: NOW,
       });
-      raiseRecordedPendingRequest(
+      await raiseRecordedPendingRequest(
         store,
         db.sqlite,
         approvalRaise(goodTurn.id, 'ap_good', 'digest-good')
       );
-      raiseRecordedPendingRequest(store, db.sqlite, {
+      await raiseRecordedPendingRequest(store, db.sqlite, {
         ...approvalRaise(otherTurn.id, 'ap_bad', 'digest-bad'),
         threadId: other.id,
         requestItemId: 'it_00000000-0000-70b9-a8af-9e7514095096',

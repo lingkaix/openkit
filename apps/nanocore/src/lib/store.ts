@@ -3559,17 +3559,32 @@ export class FsStore {
         event: 'turn.completed',
         data: { type: 'turn-completed', stopReason: 'completed', turn },
       });
+    let content: ControlProductEntry['content'];
+    if (priorEvent) {
+      // Sealed replay retains exact immutable bytes, including retained descriptive field order.
+      const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+      try {
+        const entry = reader.entries(turn.id, 'event', event.sequence - 1, 1)[0];
+        if (!entry || entry.sequence !== event.sequence)
+          throw terminalTurnPublicationConflict(turn.id);
+        content = entry.content;
+      } finally {
+        reader.close();
+      }
+    } else {
+      content = await publishImmutableProductJson(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+        writeRetainedV1(event)
+      );
+    }
     entries.push({
       kind: 'event',
       turnId: turn.id,
       sequence: event.sequence,
       expectedRevision: 0,
-      content: await publishImmutableProductJson(
-        scope.contentMount,
-        scope.owner,
-        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
-        writeRetainedV1(event)
-      ),
+      content,
     });
     const [command] = input.pending;
     if (!command)
@@ -3597,9 +3612,9 @@ export class FsStore {
           kind: 'turn',
           expectedRevision: existing?.revision ?? 0,
           record: writeRetainedV1({
+            ...(existing?.metadata ?? { captureCoverage: this.liveCaptureCoverage }),
             ...turn,
             items: [],
-            captureCoverage: this.liveCaptureCoverage,
           }),
         },
         products:

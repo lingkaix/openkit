@@ -1,9 +1,11 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from './auth/identity.js';
+import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
 import type { DiscordReply } from './channels/discord.js';
 import { FsStore } from './lib/store.js';
@@ -16,6 +18,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { managedThreadPolicy } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { removeWorkspaceMember } from './workspace-sharing.js';
@@ -104,7 +107,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
         createdAt: turn.startedAt!,
         completedAt: turn.startedAt!,
       });
-      raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+      await raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
         ...common,
         kind,
         governedIntent: { action: 'review.apply', page: 'page_exact' },
@@ -125,7 +128,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
           isSecret: false,
         },
       ];
-      await store.createItem({
+      const requestItem = await store.createItem({
         id: itemId,
         owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
         threadId: thread.id,
@@ -139,12 +142,17 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
         createdAt: turn.startedAt!,
         completedAt: turn.startedAt!,
       });
-      raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
-        ...common,
-        kind,
-        questions,
-        questionDigest: 'exact-color-question',
-      });
+      await raiseRecordedPendingRequest(
+        store,
+        workspaceDb.sqlite,
+        {
+          ...common,
+          kind,
+          questions,
+          questionDigest: 'exact-color-question',
+        },
+        requestItem
+      );
     }
   } finally {
     workspaceDb.sqlite.close();
@@ -286,6 +294,26 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
         })
       )();
       expect(result.kind).toBe('removed');
+    },
+    /** Removes the current read grant through the standalone store's authored Policy owner. */
+    revokeThreadAudience() {
+      const config = WorkspaceConfigSchema.parse({
+        schemaVersion: 1,
+        requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
+        workspace: {
+          name: store.getWorkspace(DEMO_WORKSPACE_ID).name,
+          policy: {
+            mediation: managedThreadPolicy({
+              workspaceId: DEMO_WORKSPACE_ID,
+              threadId: thread.id,
+              userId: actor.userId,
+            }),
+          },
+        },
+      });
+      const directory = join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'config');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'workspace.jsonc'), JSON.stringify(config));
     },
     restart() {
       coreDb.sqlite.close();
@@ -464,20 +492,24 @@ describe('Discord to native Pending Request seam', () => {
     const f = await fixture();
     await f.pair();
     const disclosure = await f.disclose();
+    const pending = f.record();
     if (loss === 'membership') {
       f.removeMembership();
     } else if (loss === 'audience') {
-      // Fault the real source audience after disclosure; the real current-source reader must refuse it.
-      Object.assign(f.store.getThread(DEMO_WORKSPACE_ID, f.target.thread), {
-        visibility: 'private',
-        privateOwnerUserId: testEntityId('usr', 'channel-other'),
-      });
+      const thread = f.store.getThread(DEMO_WORKSPACE_ID, f.target.thread);
+      expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(true);
+      // Visibility is creation-fixed; current managed Policy removes access without conversion.
+      f.revokeThreadAudience();
+      expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(false);
+      expect(f.store.getThread(DEMO_WORKSPACE_ID, thread.id)).toEqual(thread);
     } else {
       f.services.discord!.revoke(actor);
     }
     expect(text(await f.send('deny', { ...f.target, disclosure }))).toContain('refused');
     expect(f.nativeCalls).toHaveLength(0);
     expect(f.record().state).toBe('pending');
+    expect(f.record()).toEqual(pending);
+    expect(f.record().claim).toBe('unclaimed');
   });
 
   it.each([

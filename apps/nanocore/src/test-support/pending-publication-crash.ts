@@ -13,14 +13,19 @@ import {
   readPendingRequest,
   validateCanonicalLoad,
 } from '../runtime/pending-requests.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { StoredTurnV1Schema } from '../storage/retained-work-metadata-v1.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createDemoStore } from './demo-store.js';
 import { ensureLocalUser } from './local-user.js';
 import { operationRequest } from './operation-request.js';
 
-// Separate processes cross the actual retained-file/SQLite boundary, not an in-memory restart.
+// Separate processes cross actual native publication and acknowledgement boundaries.
 const [mode, phase, retainedRoot] = process.argv.slice(2);
 const dataRoot = retainedRoot ?? mkdtempSync(join(tmpdir(), 'pending-publication-crash-'));
 const coreDb = openCoreDb(dataRoot);
@@ -52,7 +57,7 @@ if (retainedRoot) {
     const before = observe();
     let recoveryCode: string | null = null;
     try {
-      recoverPendingRequestsAtBoot(store, {
+      await recoverPendingRequestsAtBoot(store, {
         coreDb,
         openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
       });
@@ -61,11 +66,12 @@ if (retainedRoot) {
         error && typeof error === 'object' && 'code' in error ? String(error.code) : 'unexpected';
     }
     console.log(JSON.stringify({ recoveryCode, before, after: observe() }));
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     coreDb.sqlite.close();
     process.exit(0);
   }
-  recoverPendingRequestsAtBoot(store, {
+  await recoverPendingRequestsAtBoot(store, {
     coreDb,
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
   });
@@ -154,32 +160,84 @@ if (retainedRoot) {
       openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     });
   }
-  if (phase === 'before-association') {
-    const originalCreateTurn = store.createTurn.bind(store);
-    store.createTurn = async (...args) => {
-      // Await the real canonical write before the process dies ahead of the freeze hook.
-      store.setTurnAdmissionHooks(null);
-      await originalCreateTurn(...args);
-      console.log(JSON.stringify({ dataRoot }));
-      process.exit(23);
-    };
-  }
-  const original = store.createItem.bind(store);
-  let writes = 0;
-  store.createItem = async (item, ...args) => {
+  const client = getControlStoreWorkerClient();
+  const pendingCommand = client.pendingCommand.bind(client);
+  let awaitingAtomicReply: 'pending' | 'terminal' | null = null;
+  // Observe the actual worker reply before it reaches the client; the SQL tuple is already committed.
+  const transport = client as unknown as { receive(value: unknown): void };
+  const receive = transport.receive.bind(client);
+  transport.receive = (value) => {
+    const reply = value as { status?: string; operation?: string };
     if (
-      [0, 1].some(
-        (index) => item.causationId === pendingRequestItemId(`ap_crash_${index}`, 'request')
-      )
+      awaitingAtomicReply &&
+      reply.status === 'ok' &&
+      reply.operation === awaitingAtomicReply &&
+      phase !== 'between' &&
+      mode !== 'throw' &&
+      mode !== 'shared-closeout'
     ) {
-      if (writes++ === (phase === 'between' ? 1 : 0) && mode !== 'shared-closeout') {
-        if (mode === 'throw')
-          throw new Error('review injected publication crash before first outcome Item');
-        console.log(JSON.stringify({ dataRoot }));
-        process.exit(23);
-      }
+      console.log(JSON.stringify({ dataRoot, boundary: 'native-commit-before-reply' }));
+      process.exit(23);
     }
-    return await original(item, ...args);
+    receive(value);
+  };
+  /** Seeds adversarial retained history; the real native Turn-and-freeze packet has no association gap. */
+  const retainMissingAssociation = async (record: unknown): Promise<never> => {
+    const candidate = StoredTurnV1Schema.parse(record);
+    store.setTurnAdmissionHooks(null);
+    await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      String(candidate.threadId),
+      'Retained incomplete Pending publication',
+      candidate.triggerActor,
+      candidate.configVersion,
+      {
+        turnId: String(candidate.id),
+        status: 'running',
+        triggerSource: { kind: 'approval-resolution', summary: 'Incomplete Pending publication' },
+      }
+    );
+    console.log(JSON.stringify({ dataRoot, boundary: 'retained-missing-association' }));
+    process.exit(23);
+  };
+  /** Fails only after the actual FULL acknowledgement, before the publishing caller receives it. */
+  const loseConsumerAcknowledgement = (): never => {
+    if (mode === 'throw')
+      throw new Error('Injected consumer acknowledgement loss after atomic Pending publication.');
+    console.log(JSON.stringify({ dataRoot, boundary: 'native-reply-before-consumer' }));
+    process.exit(23);
+  };
+  const products = client.products.bind(client);
+  client.products = async (database, input) => {
+    if (
+      mode === 'delivery' &&
+      phase === 'before-association' &&
+      input.pending?.some((command) => command.action === 'freeze' && command.executor === 'person')
+    )
+      return retainMissingAssociation(
+        input.products.find((product) => product.kind === 'turn')?.record
+      );
+    return products(database, input);
+  };
+  const terminal = client.terminal.bind(client);
+  client.terminal = async (database, input) => {
+    if (
+      !['delivery', 'throw'].includes(mode!) ||
+      !input.pending?.some((command) => command.action === 'delivery-prove')
+    )
+      return terminal(database, input);
+    awaitingAtomicReply = 'terminal';
+    await terminal(database, input);
+    awaitingAtomicReply = null;
+    return loseConsumerAcknowledgement();
+  };
+  client.pendingCommand = async (database, input) => {
+    if (!input.terminal || mode === 'shared-closeout') return pendingCommand(database, input);
+    if (phase === 'before-association') return retainMissingAssociation(input.terminal.turn.record);
+    awaitingAtomicReply = 'pending';
+    await pendingCommand(database, input);
+    awaitingAtomicReply = null;
+    return loseConsumerAcknowledgement();
   };
   if (mode === 'delivery' && phase === 'between')
     await store.updateTurn(turn.id, { status: 'completed', completedAt: now });
@@ -236,5 +294,6 @@ const records = [0, 1]
     ),
   }));
 console.log(JSON.stringify({ dataRoot, records }));
+await shutdownControlStoreWorkerClient();
 db.sqlite.close();
 coreDb.sqlite.close();

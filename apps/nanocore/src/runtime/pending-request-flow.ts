@@ -2,6 +2,7 @@ import {
   allocateEntityId,
   deriveEntityId,
   type Item,
+  ItemSchema,
   isSealedTurnTerminal,
   workspaceIdForOwner,
 } from '@openkit/protocol';
@@ -378,7 +379,17 @@ export async function recoverPendingRequestsAtBoot(
           summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
           actor: publication.triggerActor,
           now: publication.completedAt ?? now,
-          items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now),
+          items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map((item) => {
+            const retained = publication.items.find((current) => current.id === item.id);
+            // Replay validates semantic fields while retaining the original projection clocks.
+            return retained
+              ? ItemSchema.parse({
+                  ...item,
+                  createdAt: retained.createdAt,
+                  completedAt: retained.completedAt,
+                })
+              : item;
+          }),
           pending: [{ action: 'delivery-prove', workspaceId: workspace.id, turnId, now }],
         });
       }

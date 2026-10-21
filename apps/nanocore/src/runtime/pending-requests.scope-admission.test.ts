@@ -50,7 +50,7 @@ it.each([
     const healthyDb = openWorkspaceDb(dataRoot, good.id);
     let beforeRow: unknown;
     try {
-      raiseRecordedPendingRequest(initial, healthyDb.sqlite, {
+      await raiseRecordedPendingRequest(initial, healthyDb.sqlite, {
         requestId,
         requestItemId,
         workspaceId: good.id,

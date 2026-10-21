@@ -6,11 +6,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { FsStore } from './lib/store.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
@@ -31,7 +35,7 @@ async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'revi
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-approval-route-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = await createDemoStore();
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -104,7 +108,7 @@ async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'revi
     });
   }
   if (action === 'review.apply') {
-    raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+    await raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
       requestId: gate.approvalId,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: turn.threadId,
@@ -310,29 +314,54 @@ describe('Pending Request operations', () => {
     }
   });
 
-  it('keeps a committed person grant when the command receipt write fails', async () => {
+  it('keeps a committed person grant and original receipt after native acknowledgement loss', async () => {
     const fixture = await createApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';
     const otherRequestId = '00000000-0000-4000-8000-000000000102';
 
     try {
-      vi.spyOn(fixture.store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('Injected approval response receipt failure.');
+      const client = getControlStoreWorkerClient();
+      const pendingCommand = client.pendingCommand.bind(client);
+      let loseGrantAcknowledgement = true;
+      vi.spyOn(client, 'pendingCommand').mockImplementation(async (...args) => {
+        const result = await pendingCommand(...args);
+        if (loseGrantAcknowledgement && args[1].input.action === 'grant-command') {
+          loseGrantAcknowledgement = false;
+          throw new Error('Injected approval response acknowledgement loss after native commit.');
+        }
+        return result;
       });
 
       const failed = await respondToApproval(fixture, requestId);
       expect(failed.status).toBe(500);
       expect(await failed.text()).toBe('Internal Server Error');
+      // Lost acknowledgement leaves Main caches unpublished; reopen the committed owner for recovery.
+      await shutdownControlStoreWorkerClient();
+      fixture.store = new FsStore({ dataRoot: fixture.coreDb.dataRoot });
+      fixture.app = createApp({
+        coreDb: fixture.coreDb,
+        store: fixture.store,
+        turnExecutor: new SimulatedTurnExecutor(),
+      });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
-      expect(fixture.store.listCommandRequests()).toEqual([]);
+      expect(fixture.store.listCommandRequests()).toMatchObject([
+        {
+          command: 'approval.respond',
+          requestId,
+          response: { kind: 'approval', id: fixture.gate.approvalId },
+        },
+      ]);
 
       const changed = await respondToApproval(fixture, otherRequestId, 'denied');
       expect(changed.status).toBe(409);
       await expect(changed.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
 
       const retried = await respondToApproval(fixture, requestId);
-      expect(retried.status).toBe(409);
-      await expect(retried.json()).resolves.toMatchObject({ code: 'request_not_pending' });
+      expect(retried.status).toBe(200);
+      await expect(retried.json()).resolves.toMatchObject({
+        id: fixture.gate.approvalId,
+        status: 'granted',
+      });
       expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
     } finally {
       fixture.coreDb.sqlite.close();

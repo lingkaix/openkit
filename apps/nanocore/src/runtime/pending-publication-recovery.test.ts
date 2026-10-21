@@ -28,9 +28,10 @@ describe('public pending publication recovery', () => {
     'delivery',
     'closeout',
     'invalidation',
-  ])('completes a named %s after a real process exit before its first Item', (mode) => {
+  ])('completes a named %s after native commit and process exit before the transport reply', (mode) => {
     const crashed = probe(mode);
     expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    expect(crashed.value.boundary).toBe('native-commit-before-reply');
     const recovered = probe(mode, 'first', crashed.root);
     expect(recovered.result.status, recovered.result.stderr).toBe(0);
     const published = recovered.value.records.filter(
@@ -53,9 +54,10 @@ describe('public pending publication recovery', () => {
     'delivery',
     'closeout',
     'invalidation',
-  ])('completes a named %s after a real process exit between Items', (mode) => {
+  ])('completes a named %s after native commit and process exit before caller acknowledgement', (mode) => {
     const crashed = probe(mode, 'between');
     expect(crashed.result.status, crashed.result.stderr).toBe(23);
+    expect(crashed.value.boundary).toBe('native-reply-before-consumer');
     const recovered = probe(mode, 'between', crashed.root);
     expect(recovered.result.status, recovered.result.stderr).toBe(0);
     for (const record of recovered.value.records) {
@@ -72,14 +74,14 @@ describe('public pending publication recovery', () => {
     }
   }, 90_000);
 
-  it('does not report successful delivery when the first Item write throws', () => {
+  it('retains complete native publication when caller acknowledgement throws', () => {
     const failed = probe('throw');
     expect(failed.result.status, failed.result.stderr).toBe(0);
     expect(JSON.parse(failed.result.stdout.trim().split('\n')[0]!).responseStatus).not.toBe(200);
     expect(failed.value.records[0]).toMatchObject({
-      delivery: 'frozen',
-      status: 'running',
-      items: [],
+      delivery: 'delivered',
+      status: 'completed',
+      items: ['approval-decision'],
     });
     const recovered = probe('throw', 'first', failed.root);
     expect(recovered.value.records[0]).toMatchObject({
@@ -114,7 +116,7 @@ describe('public pending publication recovery', () => {
   it.each([
     'delivery',
     'closeout',
-  ])('refuses a %s Turn persisted before its association without a replacement', (mode) => {
+  ])('refuses a retained %s publication Turn without its association or a replacement', (mode) => {
     const crashed = probe(mode, 'before-association');
     expect(crashed.result.status, crashed.result.stderr).toBe(23);
     const refused = probe(mode, 'before-association', crashed.root);

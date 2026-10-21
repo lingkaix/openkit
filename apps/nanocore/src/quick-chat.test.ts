@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
@@ -11,6 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { InternalRoleProfilesConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri, workspaceIdForOwner } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
@@ -29,9 +30,13 @@ import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requ
 import type { TurnExecutor } from './runtime/types.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import {
+  publishImmutableProductJson,
+  readImmutableProductJson,
+} from './storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
-import { artifactReferenceItemId } from './storage/workspace-file-records.js';
+import { artifactReferenceItemId, nativeProductScope } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { type CreateAppOptions, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -42,7 +47,10 @@ import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import {
+  ensureUserQuickChatWorkspace,
+  recordWorkspaceOwnerMembership,
+} from './workspace-membership.js';
 
 const EXPECTED_QUICK_CHAT_SYSTEM_PROMPT = BUILT_IN_SYSTEM_PROMPTS['quick-chat'];
 
@@ -198,8 +206,9 @@ async function createTimelineFixture(options: Omit<CreateAppOptions, 'coreDb' | 
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
+  await ensureUserQuickChatWorkspace({ coreDb, store, userId });
   const app = createAppWithWorkspaceAuthority({
     ...createQuickChatProviderOptions(),
     turnExecutor: new ThrowingTurnExecutor(),
@@ -283,6 +292,92 @@ function goalProposalProvider(intent: string) {
     },
   } as unknown as PiAiGatewayClient;
   return { client, calls, assistantCalls: () => assistantCalls };
+}
+
+/** Isolates one retained-authority fault after real command acceptance and actual native-writer shutdown. */
+async function stoppedChatReplayCopy(
+  source: { dataRoot: string; coreDb: ReturnType<typeof openCoreDb> },
+  options: CreateAppOptions,
+  fault: (
+    sqlite: Database.Database,
+    scope: ReturnType<typeof nativeProductScope>
+  ) => void | Promise<void>
+) {
+  await shutdownControlStoreWorkerClient();
+  if (source.coreDb.sqlite.open) source.coreDb.sqlite.close();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-stopped-corruption-'));
+  cpSync(source.dataRoot, dataRoot, { recursive: true });
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  // Admit the intact copy before the deliberate fault. Reopening corrupt history would test boot quarantine.
+  const store = new FsStore({ dataRoot });
+  const app = createAppWithWorkspaceAuthority({ ...options, coreDb, dataRoot, store });
+  await shutdownControlStoreWorkerClient();
+  const scope = nativeProductScope(dataRoot, {
+    kind: 'workspace',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
+  const mutator = new Database(scope.path, { fileMustExist: true });
+  try {
+    // This connection is only a stopped private fault instrument, never a production update or live writer.
+    await fault(mutator, scope);
+  } finally {
+    mutator.close();
+  }
+  const retained = () => {
+    const reader = new Database(scope.path, { readonly: true, fileMustExist: true });
+    try {
+      return [
+        'control_threads',
+        'control_turns',
+        'control_product_entries',
+        'idempotency_requests',
+        'pending_requests',
+      ].map((table) => reader.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    } finally {
+      reader.close();
+    }
+  };
+  const beforeReplay = retained();
+  return { app, assertUnchanged: () => expect(retained()).toEqual(beforeReplay) };
+}
+
+/** Changes only existing Item payloads in a stopped copy, with exact new immutable bytes before their faulted references. */
+async function corruptStoppedChatItem(
+  sqlite: Database.Database,
+  scope: ReturnType<typeof nativeProductScope>,
+  itemId: string,
+  change: (item: Record<string, unknown>) => void
+) {
+  const rows = sqlite
+    .prepare(
+      "SELECT turn_id,sequence,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY sequence"
+    )
+    .all(itemId) as Array<{ turn_id: string; sequence: number; content_json: string }>;
+  if (!rows.length) throw new Error('The original accepted Item has no retained native revision.');
+  for (const row of rows) {
+    const item = readImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      JSON.parse(row.content_json)
+    ) as Record<string, unknown>;
+    change(item);
+    const content = await publishImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      join(scope.contentMount.root, '..', '..', 'runtime', 'staging'),
+      item
+    );
+    sqlite
+      .prepare(
+        "UPDATE control_product_entries SET content_json=? WHERE kind='item' AND turn_id=? AND sequence=?"
+      )
+      .run(JSON.stringify(content), row.turn_id, row.sequence);
+  }
 }
 
 describe('quick chat app API', () => {
@@ -879,23 +974,25 @@ describe('quick chat app API', () => {
       'closed',
     ] as const;
     const sessionIds = states.map(() => allocateEntityId('as'));
-    const threads = states.map(async (status, index) => {
-      const thread = await store.createThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        `Worker ${status}`
-      );
-      await store.createAgentSession({
-        id: sessionIds[index]!,
-        agentId: workerSetup.manifest.id,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        status,
-        message: null,
-        createdAt: '2026-09-16T00:00:00.000Z',
-        updatedAt: '2026-09-16T00:00:00.000Z',
-      });
-      return thread;
-    });
+    const threads = await Promise.all(
+      states.map(async (status, index) => {
+        const thread = await store.createThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          `Worker ${status}`
+        );
+        await store.createAgentSession({
+          id: sessionIds[index]!,
+          agentId: workerSetup.manifest.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          status,
+          message: null,
+          createdAt: '2026-09-16T00:00:00.000Z',
+          updatedAt: '2026-09-16T00:00:00.000Z',
+        });
+        return thread;
+      })
+    );
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       agentManifests: [workerSetup.manifest],
@@ -1627,6 +1724,7 @@ describe('quick chat app API', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
+    const demoStore = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1694,7 +1792,7 @@ describe('quick chat app API', () => {
       ...providerOptions,
       coreDb,
       dataRoot,
-      store: await createDemoStore({ dataRoot }),
+      store: demoStore,
       turnExecutor: new ThrowingTurnExecutor(),
       llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
     });
@@ -2103,7 +2201,7 @@ describe('quick chat app API', () => {
     });
     const brief = 'Explain OpenKit in one short paragraph.';
     let modelCalls = 0;
-    const app = createAppWithWorkspaceAuthority({
+    const appOptions: CreateAppOptions = {
       ...createQuickChatProviderOptions(),
       coreDb,
       dataRoot,
@@ -2127,7 +2225,8 @@ describe('quick chat app API', () => {
               }
             : providerAnswer('The exact work awaits your selection.'),
       } as unknown as PiAiGatewayClient,
-    });
+    };
+    const app = createAppWithWorkspaceAuthority(appOptions);
     const requestId = randomUUID();
     const submit = () =>
       app.request(
@@ -2219,17 +2318,35 @@ describe('quick chat app API', () => {
       .find((item) => item.id === parsed.item.id);
     if (storedRequest?.type !== 'user-input-request')
       throw new Error('Expected stored confirmation.');
-    storedRequest.responsibleUserId = 'usr_00000000-0000-73d4-904a-d4c4b905df7c';
-    const contradictedReplay = await submit();
+    const contradicted = await stoppedChatReplayCopy(
+      { dataRoot, coreDb },
+      appOptions,
+      (sqlite, scope) =>
+        corruptStoppedChatItem(sqlite, scope, storedRequest.id, (item) => {
+          item.responsibleUserId = 'usr_00000000-0000-73d4-904a-d4c4b905df7c';
+        })
+    );
+    const contradictedReplay = await contradicted.app.request(
+      ...operationRequest(
+        'conversation.submit',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
+        { body: JSON.stringify(conversationRequest('Help', requestId)) }
+      )
+    );
     expect(contradictedReplay.status).toBe(409);
     expect(await contradictedReplay.json()).toMatchObject({ code: 'recovery_required' });
     expect(modelCalls).toBe(2);
+    contradicted.assertUnchanged();
   });
 
   it('delivers an existing Assistant clarification through its pending owner without a conversation receipt', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-clarify-'));
     const coreDb = openCoreDb(dataRoot);
-    onTestFinished(() => {
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
@@ -2281,23 +2398,42 @@ describe('quick chat app API', () => {
     });
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      raiseRecordedPendingRequest(store, db.sqlite, {
-        requestId: pendingId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        raisingTurnId: raisingTurn.id,
-        requestItemId: question.id,
-        kind: 'user-input',
-        requesterKind: 'assistant',
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        questions,
-        questionDigest: `sha256:${createHash('sha256').update(JSON.stringify(questions)).digest('hex')}`,
-        now: at,
-      });
+      await raiseRecordedPendingRequest(
+        store,
+        db.sqlite,
+        {
+          requestId: pendingId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          raisingTurnId: raisingTurn.id,
+          requestItemId: question.id,
+          kind: 'user-input',
+          requesterKind: 'assistant',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          questions,
+          questionDigest: `sha256:${createHash('sha256').update(JSON.stringify(questions)).digest('hex')}`,
+          now: at,
+        },
+        question
+      );
     } finally {
       db.sqlite.close();
     }
     await store.updateTurn(raisingTurn.id, { status: 'completed', completedAt: at });
+    const completed = Promise.withResolvers<{ result: ReturnType<FsStore['completeTurn']> }>();
+    const complete = store.completeTurn.bind(store);
+    const terminal = vi.spyOn(store, 'completeTurn').mockImplementation((...args) => {
+      const result = complete(...args);
+      const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        if (readPendingRequest(db.sqlite, pendingId)?.deliveryTurnId === args[0])
+          completed.resolve({ result });
+      } finally {
+        db.sqlite.close();
+      }
+      return result;
+    });
+    onTestFinished(() => terminal.mockRestore());
     let modelCalls = 0;
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
@@ -2349,6 +2485,7 @@ describe('quick chat app API', () => {
     const answered = await answer();
     expect(answered.status, await answered.clone().text()).toBe(200);
     const acceptedAnswer = await answered.json();
+    await (await completed.promise).result;
     await vi.waitFor(() =>
       expect(
         store
@@ -2397,14 +2534,15 @@ describe('quick chat app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createAppWithWorkspaceAuthority({
+    const appOptions: CreateAppOptions = {
       ...createQuickChatProviderOptions(),
       coreDb,
       dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: { createResponses: callProvider } as unknown as PiAiGatewayClient,
-    });
+    };
+    const app = createAppWithWorkspaceAuthority(appOptions);
     const requestId = randomUUID();
     const input = 'What is OpenKit?';
     const scope = {
@@ -2458,8 +2596,15 @@ describe('quick chat app API', () => {
     if (userItem?.type !== 'user-message') {
       throw new Error('Expected the stored Chat user message.');
     }
-    userItem.actor = { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' };
-    const contradictedActorReplay = await app.request(
+    const actorFault = await stoppedChatReplayCopy(
+      { dataRoot, coreDb },
+      appOptions,
+      (sqlite, nativeScope) =>
+        corruptStoppedChatItem(sqlite, nativeScope, userItem.id, (item) => {
+          item.actor = { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' };
+        })
+    );
+    const contradictedActorReplay = await actorFault.app.request(
       ...operationRequest(
         'conversation.submit',
         {
@@ -2477,10 +2622,19 @@ describe('quick chat app API', () => {
     await expect(contradictedActorReplay.json()).resolves.toMatchObject({
       code: 'recovery_required',
     });
-    userItem.actor = accepted.turn.triggerActor;
+    actorFault.assertUnchanged();
     const storedTurn = store.getTurnById(accepted.turn.id);
-    storedTurn.status = 'failed';
-    const contradictedTurnReplay = await app.request(
+    const turnFault = await stoppedChatReplayCopy({ dataRoot, coreDb }, appOptions, (sqlite) => {
+      const row = sqlite
+        .prepare('SELECT record_json FROM control_turns WHERE id=?')
+        .get(storedTurn.id) as { record_json: string };
+      const record = JSON.parse(row.record_json);
+      record.status = 'failed';
+      sqlite
+        .prepare('UPDATE control_turns SET status=?,record_json=? WHERE id=?')
+        .run('failed', JSON.stringify(record), storedTurn.id);
+    });
+    const contradictedTurnReplay = await turnFault.app.request(
       ...operationRequest(
         'conversation.submit',
         {
@@ -2499,18 +2653,20 @@ describe('quick chat app API', () => {
     await expect(contradictedTurnReplay.json()).resolves.toMatchObject({
       code: 'recovery_required',
     });
-    storedTurn.status = 'completed';
+    turnFault.assertUnchanged();
     const receipt = store.getCommandRequest('conversation.submit', requestId, scope);
     expect(receipt).not.toBeNull();
-    store.recordCommandRequest({
-      command: 'conversation.submit',
-      inputHash: receipt!.inputHash,
-      requestId,
-      response: { id: 'tu_00000000-0000-73cb-a293-4bafac039342', kind: 'turn' },
-      scope,
+    const receiptFault = await stoppedChatReplayCopy({ dataRoot, coreDb }, appOptions, (sqlite) => {
+      // Corrupt only the genuine production receipt; no Main receipt insertion or backfill is allowed.
+      const changed = sqlite
+        .prepare(
+          'UPDATE idempotency_requests SET response_kind=?,response_id=?,response_json=NULL WHERE request_key=? AND input_hash=?'
+        )
+        .run('turn', 'tu_00000000-0000-73cb-a293-4bafac039342', receipt!.key, receipt!.inputHash);
+      if (changed.changes !== 1) throw new Error('The original accepted receipt is unavailable.');
     });
 
-    const replay = await app.request(
+    const replay = await receiptFault.app.request(
       ...operationRequest(
         'conversation.submit',
         {
@@ -2528,6 +2684,7 @@ describe('quick chat app API', () => {
     expect(replay.status).toBe(409);
     await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
     expect(callProvider).toHaveBeenCalledTimes(1);
+    receiptFault.assertUnchanged();
   });
 
   it('creates a Goal only after exact semantic confirmation without a nested Goal receipt', async () => {
@@ -2675,15 +2832,18 @@ describe('quick chat app API', () => {
       );
       const pending = readPendingRequest(db.sqlite, accepted.item.userInputRequestId)!;
       expect(pending.delivery).toBe('delivered');
-      const handoff = store
-        .listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id)
-        .find(
-          (item) =>
-            item.turnId === pending.deliveryTurnId &&
-            item.type === 'status' &&
-            item.title === 'Goal Mode handoff'
-        );
-      expect(handoff).toBeDefined();
+      const handoff = await vi.waitFor(() => {
+        const handoff = store
+          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id)
+          .find(
+            (item) =>
+              item.turnId === pending.deliveryTurnId &&
+              item.type === 'status' &&
+              item.title === 'Goal Mode handoff'
+          );
+        expect(handoff).toBeDefined();
+        return handoff;
+      });
       expect(handoff!.causationId).toBeTruthy();
       const receivingThreads = store
         .listThreads('ws_00000000-0000-7000-8000-000000000001')
@@ -3406,9 +3566,11 @@ describe('Assistant execution deadline', () => {
       providerProfileId: 'backup',
       providerModel: 'openai/gpt-5.2',
     });
+    const admitted = Promise.withResolvers<void>();
     const contexts: Array<Parameters<LLMGatewayProviderDispatcher['createResponses']>[2]> = [];
     const dispatch = vi.fn(async (_provider, _request, context) => {
       contexts.push(context);
+      admitted.resolve();
       if (contexts.length < 3)
         throw new GatewayAttemptFailure({
           kind: contexts.length === 1 ? 'rate_limited' : 'auth_rejected',
@@ -3428,6 +3590,7 @@ describe('Assistant execution deadline', () => {
     try {
       const before = Date.now();
       const pending = fixture.submit('Explain a short concept.');
+      await admitted.promise;
       await vi.runAllTimersAsync();
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(200);
