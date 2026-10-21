@@ -14,6 +14,7 @@ import {
 } from './codex-runtime-provenance.js';
 import {
   type emitRuntimeFact,
+  NativeRuntimeCapture,
   type RuntimeCaptureInput,
   type RuntimeFact,
   RuntimeJsonlReader,
@@ -49,6 +50,7 @@ export class CodexRuntimeCapture {
   private readonly parents = new Map<string, string>();
   private readonly observedSpawns = new Set<string>();
   private readonly semantic: RuntimeSemanticCapture;
+  private readonly native: NativeRuntimeCapture;
   private readonly gaps = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -70,6 +72,10 @@ export class CodexRuntimeCapture {
   ) {
     this.primaryRef = runtimeRef('rts', input.packageSnapshotId, 'stdout');
     this.semantic = new RuntimeSemanticCapture(input);
+    this.native = new NativeRuntimeCapture({
+      ...input,
+      authoredVersion: input.authoredVersion ?? adapterVersion,
+    });
     this.primary = new RuntimeJsonlReader(async (bytes, _sequence, failure) => {
       if (!bytes) {
         await this.gap(this.primaryRef, 'primary-content', failure!);
@@ -187,6 +193,7 @@ export class CodexRuntimeCapture {
           );
       if (!this.primaryContext.threadId || !this.tails.has(this.primaryContext.threadId))
         await this.gap(this.primaryRef, 'primary-content', 'source-missing');
+      await this.native.finish();
       await this.semantic.interrupt();
       await this.coverage(this.primaryRef, 'primary-content', 'ended');
       await this.coverage(this.primaryRef, 'child-metadata', 'ended');
@@ -197,6 +204,7 @@ export class CodexRuntimeCapture {
 
   /** Releases timers after supervision failure; accepted Core observations are never erased. */
   public async invalidate(): Promise<void> {
+    this.native.abandon();
     this.stopped = true;
     clearTimeout(this.timer);
     await this.queue.catch(() => undefined);
@@ -538,6 +546,12 @@ export class CodexRuntimeCapture {
           return;
         }
         if (!tail.originEmitted) await this.emitOrigin(tail);
+        await this.native.write(`${tail.sourceRef}:native`, buffer.subarray(0, bytesRead), {
+          harness: 'codex',
+          format: 'codex-session-jsonl',
+          runtimeOriginRef: runtimeOriginRef(this.input.packageSnapshotId, tail.candidate.threadId),
+          preLaunchWatermark: this.watermarks.get(tail.candidate.path)?.size ?? 0,
+        });
         await tail.reader.write(buffer.subarray(0, bytesRead));
         tail.position += bytesRead;
       }

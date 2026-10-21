@@ -391,6 +391,8 @@ async function runResidentTurnImplementation(
       mcpServerIds,
       runtimeCapture: {
         captureCoverage,
+        nativeLogMaxBytes: packageManifest.observability?.evidence?.nativeLogMaxBytes,
+        authoredVersion: packageManifest.agent?.runtimeVersion,
         credentialValues,
         emit: (record, body) => writer.writeObservation(record, body),
         packageSnapshotId: lineage.packageSnapshotId,
@@ -672,7 +674,9 @@ function resolveRequestId(value: unknown): string | null {
 /** Minimal immutable AEP projection consumed by the worker shim. */
 interface WorkerShimPackageManifest {
   /** Exact immutable observation admission binding projected by Core. */
-  observability?: { captureCoverage?: unknown };
+  observability?: { captureCoverage?: unknown; evidence?: { nativeLogMaxBytes?: number } };
+  /** Authored runtime label; it provides no binary measurement. */
+  agent?: { runtimeVersion?: string };
   /** Package-owned lineage fields consumed by the worker supervisor. */
   scope?: {
     /** Request that owns this worker Turn, when present. */
