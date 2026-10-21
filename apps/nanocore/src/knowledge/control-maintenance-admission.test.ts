@@ -6,12 +6,15 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { commandRequestKey, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
+import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import type { ControlMaintenanceAdmissionInput } from './knowledge-agent-maintenance.js';
+import { NotebookError } from './notebook.js';
 
 const timestamp = '2026-10-20T12:00:00.000Z';
 const userId = allocateEntityId('usr');
@@ -82,12 +85,34 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
       else call?.resolve(reply.result);
     });
   });
+  let nativeClient: ReturnType<typeof getControlStoreWorkerClient> | undefined;
+  const path =
+    kind === 'server'
+      ? join(root, 'server', 'db', 'core.sqlite')
+      : join(root, 'workspaces', workspaceId, 'db', 'workspace.sqlite');
   onTestFinished(async () => {
+    await nativeClient?.shutdown();
     await worker.terminate();
     rmSync(root, { recursive: true, force: true });
   });
   const call = async (action: string, value: unknown) => {
     await ready;
+    if (nativeClient) {
+      if (action === 'sql') {
+        const reader = new Database(path, { readonly: true, fileMustExist: true });
+        reader.pragma('query_only = ON');
+        try {
+          return reader.prepare(value as string).all();
+        } finally {
+          reader.close();
+        }
+      }
+      if (action === 'exec')
+        return nativeClient.write(`${kind === 'server' ? 'core' : 'workspace'}:${path}`, [
+          { mode: 'run', sql: value as string, parameters: [] },
+        ]);
+      throw new Error('Direct owner fixture is stopped after native transport takes ownership.');
+    }
     const id = ++nextId;
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
@@ -140,6 +165,21 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
   };
   return {
     input,
+    transport: async () => {
+      await ready;
+      await worker.terminate();
+      nativeClient = getControlStoreWorkerClient();
+      const database = `${kind === 'server' ? 'core' : 'workspace'}:${path}`;
+      await nativeClient.open({
+        database,
+        path,
+        dataRoot: root,
+        create: false,
+        initialize: kind === 'server' ? 'core' : 'workspace',
+        productOwner: kind === 'server' ? { kind: 'server' } : { kind: 'workspace', workspaceId },
+      });
+      return { client: nativeClient, database };
+    },
     apply: (value: unknown) => call('apply', value),
     sql: (sql: string) => call('sql', sql),
     exec: (sql: string) => call('exec', sql),
@@ -147,6 +187,52 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
 }
 
 describe('native Knowledge maintenance admission', () => {
+  for (const kind of ['workspace', 'server'] as const) {
+    it(`commits and replays the original ${kind} receipt through production transport after a reached-trigger rollback`, async () => {
+      const f = fixture(kind);
+      const input = f.input();
+      await f.exec(
+        "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
+      );
+      const { client, database } = await f.transport();
+      await expect(client.maintenance(database, input)).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+        message: 'Control database writer operation failed.',
+      });
+      for (const table of ['control_threads', 'control_turns', 'idempotency_requests'])
+        expect(await f.sql(`SELECT * FROM ${table}`)).toEqual([]);
+      await f.exec('DROP TRIGGER refuse_receipt');
+      await expect(client.maintenance(database, input)).resolves.toEqual({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        busy: false,
+        replayed: false,
+      });
+      await expect(client.maintenance(database, input)).resolves.toEqual({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        busy: false,
+        replayed: true,
+      });
+      expect(await f.sql('SELECT response_id FROM idempotency_requests')).toEqual([
+        { response_id: input.turnId },
+      ]);
+      await expect(
+        client.maintenance(database, {
+          ...input,
+          receipt: { ...input.receipt!, inputHash: commandInputHash({ changed: true }) },
+        })
+      ).rejects.toBeInstanceOf(IdempotencyKeyConflictError);
+      await expect(
+        client.maintenance(database, {
+          ...f.input(),
+          ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
+        })
+      ).rejects.toBeInstanceOf(NotebookError);
+    }, 30_000);
+  }
+
   for (const kind of ['workspace', 'server'] as const) {
     it(`rolls back every ${kind} product when the original receipt insert fails`, async () => {
       const f = fixture(kind);

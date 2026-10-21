@@ -1,6 +1,12 @@
 import { isAbsolute } from 'node:path';
 import { GoalViewSchema } from '@openkit/app-api-schemas';
 import {
+  type ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionInputSchema,
+  type ControlMaintenanceAdmissionResult,
+  ControlMaintenanceAdmissionResultSchema,
+} from '../knowledge/knowledge-agent-maintenance.js';
+import {
   type ControlGoalCommandInput,
   ControlGoalCommandInputSchema,
   type ControlGoalCommandResult,
@@ -106,6 +112,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
+      | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -135,7 +142,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 
 /** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
 export interface ControlWorkerDomainRefusal {
-  readonly operation: 'goal';
+  readonly operation: 'goal' | 'maintenance';
   readonly code: string;
   readonly message: string;
   readonly status: number;
@@ -175,6 +182,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'goal';
       readonly result: ControlGoalCommandResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'maintenance';
+      readonly result: ControlMaintenanceAdmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -237,7 +249,11 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
   return (
     isRecord(value) &&
     exactFields(value, ['operation', 'code', 'message', 'status']) &&
-    value.operation === 'goal' &&
+    (value.operation === 'goal' ||
+      (value.operation === 'maintenance' &&
+        ((value.code === 'invalid_request' && value.status === 400) ||
+          ((value.code === 'recovery_required' || value.code === 'idempotency_key_conflict') &&
+            value.status === 409)))) &&
     typeof value.code === 'string' &&
     value.code.length > 0 &&
     value.code.length <= 128 &&
@@ -301,6 +317,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
       return false;
     }
   }
+  if (reply.operation === 'maintenance')
+    return ControlMaintenanceAdmissionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'goal') {
     return (
       isRecord(reply.result) &&
@@ -451,7 +469,8 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (
     value.operation === 'project-cleanup' ||
     value.operation === 'observation' ||
-    value.operation === 'goal'
+    value.operation === 'goal' ||
+    value.operation === 'maintenance'
   ) {
     try {
       const schema =
@@ -459,7 +478,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
           ? ProjectWorkerBackendCleanupInputSchema
           : value.operation === 'goal'
             ? ControlGoalCommandInputSchema
-            : ControlWorkObservationInputSchema;
+            : value.operation === 'maintenance'
+              ? ControlMaintenanceAdmissionInputSchema
+              : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

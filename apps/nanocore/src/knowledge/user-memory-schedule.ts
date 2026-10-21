@@ -123,7 +123,7 @@ export async function scanUserMemoryMaintenance(input: {
         const admitted = await admitControlMaintenance(coreDb.dataRoot, workspaceId, {
           purpose: 'maintenance',
           ownerScope,
-          actor: { kind: 'user', id: userId },
+          actor: { kind: 'system', id: 'knowledge-manager', responsibleUserId: userId },
           requestId: uuidv5(
             JSON.stringify(['memory.maintain', ownerScope, startedAt.slice(0, 10)])
           ),

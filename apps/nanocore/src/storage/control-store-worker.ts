@@ -2,6 +2,8 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
+import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
+import { NotebookError } from '../knowledge/notebook.js';
 import {
   applyControlGoalCommand,
   GoalCommandError,
@@ -51,7 +53,16 @@ const port = parentPort;
 /** A queued transition, not a durable request or a second command receipt. */
 type WriteRequest = Extract<
   ControlWorkerRequest,
-  { operation: 'write' | 'transition' | 'products' | 'project-cleanup' | 'observation' | 'goal' }
+  {
+    operation:
+      | 'write'
+      | 'transition'
+      | 'products'
+      | 'project-cleanup'
+      | 'observation'
+      | 'goal'
+      | 'maintenance';
+  }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
@@ -96,18 +107,31 @@ function failure(
   return { version: CONTROL_WORKER_VERSION, id, status: 'error', code, commit };
 }
 
-/** Projects only errors declared by the trusted Goal owner; SQLite and other native exceptions are never included. */
-function goalRefusal(error: unknown): ControlWorkerDomainRefusal | undefined {
-  if (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError) {
-    const domain = {
-      operation: 'goal' as const,
-      code: error.code,
-      message: error.message,
-      status: error.status,
-    };
-    if (isControlWorkerReply({ ...failure(0, 'precondition'), domain })) return domain;
+/** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
+function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  let domain: ControlWorkerDomainRefusal | undefined;
+  if (
+    operation === 'goal' &&
+    (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
+  ) {
+    domain = { operation, code: error.code, message: error.message, status: error.status };
+  } else if (operation === 'maintenance') {
+    if (error instanceof IdempotencyKeyConflictError)
+      domain = { operation, code: error.code, message: error.message, status: error.status };
+    else if (
+      error instanceof NotebookError &&
+      (error.code === 'invalid_request' || error.code === 'recovery_required')
+    )
+      domain = {
+        operation,
+        code: error.code,
+        message: new NotebookError(error.code).message,
+        status: error.code === 'invalid_request' ? 400 : 409,
+      };
   }
-  return undefined;
+  return domain && isControlWorkerReply({ ...failure(0, 'precondition'), domain })
+    ? domain
+    : undefined;
 }
 
 /** Classifies a native failure without publishing its message, SQL or parameters. */
@@ -229,6 +253,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'goal',
               result,
             };
+          } else if (request.operation === 'maintenance') {
+            if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
+            const result = applyControlMaintenanceAdmission(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'maintenance',
+              result,
+            };
           } else if (request.operation === 'observation') {
             if (!owner.productOwner || !owner.scopeDb) throw new ControlProductPreconditionError();
             const result = applyControlWorkObservation(sqlite, owner.productOwner, request.input);
@@ -274,7 +308,7 @@ function flush(owner: OwnedDatabase): void {
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
           if (failureCode(error) === 'integrity') throw error;
-          const domain = request.operation === 'goal' ? goalRefusal(error) : undefined;
+          const domain = domainRefusal(request.operation, error);
           outcomes.push(
             domain
               ? { ...failure(request.id, 'precondition'), domain }
@@ -471,7 +505,8 @@ function receive(value: unknown): void {
       value.operation === 'products' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
-      value.operation === 'goal'
+      value.operation === 'goal' ||
+      value.operation === 'maintenance'
     ) {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));
@@ -497,7 +532,7 @@ function receive(value: unknown): void {
           }
         } catch (error) {
           // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
-          const domain = value.operation === 'goal' ? goalRefusal(error) : undefined;
+          const domain = domainRefusal(value.operation, error);
           reply(
             domain
               ? { ...failure(value.id, 'precondition'), domain }

@@ -1640,7 +1640,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                   }
                 : {}),
           })),
-      prepare: ({ ownerScope }, startedAt) => {
+      prepare: async ({ ownerScope }, startedAt) => {
         const workspaceId = ownerScope.workspaceId;
         const owner = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId)?.ownerUserId;
         if (!owner) throw new Error('Knowledge maintenance Workspace owner is unavailable.');
@@ -1654,7 +1654,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             throw new Error('Knowledge maintenance scope authority is unavailable.');
         };
         try {
-          const prepared = prepareKnowledgeMaintenance(
+          const prepared = await prepareKnowledgeMaintenance(
             {
               store: sharedStore,
               coreDb,
@@ -1711,8 +1711,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             execute: async () => {
               await prepared.execute();
             },
-            fail: () => {
-              prepared.fail();
+            fail: async () => {
+              await prepared.fail();
             },
           };
         } catch {
@@ -1729,15 +1729,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             );
           const thread =
             previous ??
-            sharedStore.createThread(
+            (await sharedStore.createThread(
               workspaceId,
               'Knowledge maintenance',
               undefined,
               'knowledge-manager',
               { visibility: 'workspace' }
-            );
+            ));
           const completedAt = new Date().toISOString();
-          const turn = sharedStore.createTurn(
+          const turn = await sharedStore.createTurn(
             workspaceId,
             thread.id,
             'Scheduled Knowledge maintenance was skipped.',
@@ -1753,7 +1753,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               },
             }
           );
-          sharedStore.createItem({
+          await sharedStore.createItem({
             id: allocateEntityId('it'),
             owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId: thread.id,
@@ -1767,7 +1767,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             createdAt: completedAt,
             completedAt,
           });
-          sharedStore.updateTurn(turn.id, {
+          await sharedStore.updateTurn(turn.id, {
             status: 'failed',
             completedAt,
             error: {
@@ -1808,12 +1808,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 },
               },
             })),
-        prepare: (_scope, startedAt) => {
+        prepare: async (_scope, startedAt) => {
           const requestActor = currentServerMaintenanceActor(
             coreDb,
             mode === 'local' ? localUserId : undefined
           );
-          const prepared = prepareServerKnowledgeMaintenance(serverKnowledgeMaintenance, {
+          const prepared = await prepareServerKnowledgeMaintenance(serverKnowledgeMaintenance, {
             requestId: uuidv5(
               JSON.stringify(['knowledge.server.maintain', startedAt.slice(0, 10)])
             ),
@@ -1834,8 +1834,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             execute: async () => {
               await prepared.execute();
             },
-            fail: () => {
-              prepared.fail();
+            fail: async () => {
+              await prepared.fail();
             },
           };
         },

@@ -43,6 +43,7 @@ import {
 import {
   getCommandRequestRecordFromDb,
   normalizeCommandRequestResponse,
+  recordControlCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import {
   applyControlProducts,
@@ -125,12 +126,17 @@ export type ControlMaintenanceAdmissionInput = z.infer<
 >;
 
 /** Only acknowledged product identities leave SQL; busy admission has no permission to invoke a model. */
-export interface ControlMaintenanceAdmissionResult {
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly busy: boolean;
-  readonly replayed: boolean;
-}
+export const ControlMaintenanceAdmissionResultSchema = z.object({
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  busy: z.boolean(),
+  replayed: z.boolean(),
+});
+
+/** A complete acknowledged admission result; consumers ignore additive descriptive fields. */
+export type ControlMaintenanceAdmissionResult = z.infer<
+  typeof ControlMaintenanceAdmissionResultSchema
+>;
 
 /**
  * Selects and admits complete Knowledge work against current native scope state in the caller's savepoint.
@@ -342,7 +348,7 @@ export function applyControlMaintenanceAdmission(
         createdAt: input.startedAt,
       }),
       schemaVersion: 1,
-      preview: input.instructions,
+      preview: input.instructions.slice(0, 160),
       updatedAt: input.startedAt,
     },
   });
@@ -393,26 +399,7 @@ export function applyControlMaintenanceAdmission(
       kind: 'turn',
       id: input.turnId,
     });
-    // This operation partition alone belongs to this native tuple; a read never prunes another writer's rows.
-    db.sqlite
-      .prepare('DELETE FROM idempotency_requests WHERE request_key=? AND expires_at<=?')
-      .run(receipt.key, receipt.createdAt);
-    db.sqlite
-      .prepare(
-        'INSERT INTO idempotency_requests (schema_version,request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        receipt.key,
-        receipt.command,
-        receipt.requestId,
-        JSON.stringify(receipt.scope),
-        receipt.inputHash,
-        response.kind,
-        response.id,
-        null,
-        receipt.createdAt,
-        receipt.expiresAt
-      );
+    recordControlCommandRequestRecordInDb(db, { ...receipt, response });
   }
   return { threadId, turnId: input.turnId, busy, replayed: false };
 }

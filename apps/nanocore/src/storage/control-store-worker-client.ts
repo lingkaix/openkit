@@ -2,6 +2,11 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import type {
+  ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionResult,
+} from '../knowledge/knowledge-agent-maintenance.js';
+import { NotebookError } from '../knowledge/notebook.js';
 import {
   type ControlGoalCommandInput,
   type ControlGoalCommandResult,
@@ -218,6 +223,25 @@ class ControlStoreWorkerClient {
         if (error.domain.code === 'idempotency_key_conflict')
           throw new IdempotencyKeyConflictError();
         throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
+  /** Admits one scoped Knowledge unit; model work starts only after its native acknowledgement. */
+  async maintenance(
+    database: string,
+    input: ControlMaintenanceAdmissionInput
+  ): Promise<ControlMaintenanceAdmissionResult> {
+    try {
+      const reply = await this.request({ operation: 'maintenance', database, input });
+      return (reply as Extract<Success, { operation: 'maintenance' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'maintenance') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        if (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
+          throw new NotebookError(error.domain.code);
       }
       throw error;
     }
