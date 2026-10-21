@@ -19,10 +19,15 @@ import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/stor
 import { OperationError } from '../operation-error.js';
 import {
   commandInputHash,
+  type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  admitControlMaintenance,
+  ControlMaintenanceAdmissionInputSchema,
+} from './knowledge-agent-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
@@ -73,6 +78,8 @@ export interface ServerKnowledgeMaintenanceInput {
   readonly pageIds?: readonly string[];
   readonly startedAt?: string;
   readonly signal: AbortSignal;
+  /** Original command facts; Server admission commits these with its native products. */
+  readonly receipt?: IdempotentCommandReceipt;
 }
 
 /** Uses only the actual local process authority; stored credentials are never presented by a timer. */
@@ -207,31 +214,35 @@ function prefix(text: string, maximum = 16_384): string {
 }
 
 /** Admits one fresh Server Turn, or an ordinary visible skipped/failed outcome without model replay. */
-export function prepareServerKnowledgeMaintenance(
+export async function prepareServerKnowledgeMaintenance(
   dependencies: ServerKnowledgeMaintenanceDependencies,
   input: ServerKnowledgeMaintenanceInput
 ) {
   const { store, coreDb } = dependencies;
   if (input.trigger === 'request') requireCurrentDeploymentAdmin(coreDb, input.requestActor);
-  const threads = store
-    .listServerThreads()
-    .filter((thread) => thread.entryPath === 'knowledge-manager');
-  if (threads.length > 1) throw new NotebookError('recovery_required');
-  const thread = threads[0] ?? store.createServerThread('Server Knowledge maintenance');
-  const history = store.listServerThreadTurns(thread.id);
-  const busy = history.some((turn) => turn.status === 'running' || turn.status === 'pending');
-  const turn = store.createServerTurn(thread.id, input.instructions, input.actor, null, {
-    agentId: 'knowledge-manager',
-    ...(input.startedAt ? { startedAt: input.startedAt } : {}),
-    ...(busy ? { status: 'completed' as const } : {}),
-    triggerSource: {
-      kind: input.trigger === 'schedule' ? 'automation' : 'system-input',
-      summary:
-        input.trigger === 'schedule'
-          ? 'Knowledge Manager scheduled maintenance.'
-          : 'Knowledge maintenance.',
-    },
-  });
+  input.signal.throwIfAborted();
+  const admitted = await admitControlMaintenance(
+    coreDb.dataRoot,
+    undefined,
+    ControlMaintenanceAdmissionInputSchema.parse({
+      purpose: 'maintenance',
+      ownerScope: { kind: 'server' },
+      actor: input.actor,
+      requestId: input.requestId,
+      threadId: allocateEntityId('th'),
+      turnId: allocateEntityId('tu'),
+      startedAt: input.startedAt ?? new Date().toISOString(),
+      trigger: input.trigger,
+      instructions: input.instructions,
+      captureCoverage: store.getLiveCaptureCoverage(),
+      ...(input.receipt ? { receipt: input.receipt } : {}),
+    })
+  );
+  if (admitted.replayed) throw new NotebookError('recovery_required');
+  const thread = store.getServerThread(admitted.threadId);
+  const turn = store.getServerTurnById(admitted.turnId);
+  const history = store.listServerThreadTurns(thread.id).filter((prior) => prior.id !== turn.id);
+  const busy = admitted.busy;
   const git = new KnowledgeNotebook({
     repositoryPath: join(coreDb.dataRoot, 'server', 'knowledge', 'notebook.git'),
   });
@@ -251,11 +262,10 @@ export function prepareServerKnowledgeMaintenance(
     });
   let outcome: ReturnType<typeof result> | undefined;
   let settled: ReturnType<typeof result> | undefined;
-  const retain = (value: ReturnType<typeof result>) => {
+  const retain = async (value: ReturnType<typeof result>) => {
     if (settled) return settled;
-    settled = value;
     const timestamp = new Date().toISOString();
-    store.createServerItem(
+    await store.createServerItem(
       {
         id: allocateEntityId('it'),
         owner: { kind: 'server' },
@@ -272,11 +282,12 @@ export function prepareServerKnowledgeMaintenance(
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    settled = value;
     return value;
   };
-  const fail = () => {
+  const fail = async () => {
     const current = store.getServerTurnById(turn.id);
-    const value = retain(
+    const value = await retain(
       outcome ??
         result(
           'failed',
@@ -285,7 +296,7 @@ export function prepareServerKnowledgeMaintenance(
         )
     );
     if (current.status === 'running' || current.status === 'pending')
-      store.updateServerTurn(turn.id, {
+      await store.updateServerTurn(turn.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: { code: 'knowledge_maintenance_failed', message: value.summary },
@@ -293,7 +304,9 @@ export function prepareServerKnowledgeMaintenance(
     return value;
   };
   if (busy) {
-    const value = retain(result('skipped', 'Another Server Knowledge maintenance Turn is active.'));
+    const value = await retain(
+      result('skipped', 'Another Server Knowledge maintenance Turn is active.')
+    );
     return { turnId: turn.id, fail, execute: async () => value };
   }
   let started = false;
@@ -544,7 +557,7 @@ export function prepareServerKnowledgeMaintenance(
           tool('knowledge.notebook.update', 'summary', async (summary) => {
             const native = await editor.notebookUpdate({ summary });
             if (native.outcome === 'no_change') outcome = result('no-change', summary);
-            if (outcome) retain(outcome);
+            if (outcome) await retain(outcome);
             return native;
           }),
         ];
@@ -616,7 +629,6 @@ export function prepareServerKnowledgeMaintenance(
             assertCurrent();
             if (!outcome)
               return 'Call knowledge.notebook.update first, including for no change. Then call knowledge.result.';
-            retain(outcome);
           },
         };
 
@@ -646,7 +658,7 @@ export async function runServerKnowledgeMaintenanceCommand(
     tellContent: input.tellContent,
     pageIds: input.pageIds,
   };
-  return runIdempotentCommand({
+  return runIdempotentCommand<ReturnType<typeof KnowledgeMaintenanceResponseSchema.parse>>({
     store: dependencies.store,
     inflightCommands: dependencies.inflightCommands,
     command,
@@ -656,7 +668,7 @@ export async function runServerKnowledgeMaintenanceCommand(
     receiptDb: dependencies.coreDb,
     responseKind: 'turn',
     responseId: (result) => result.turnId,
-    execute: async () => {
+    execute: async (receipt) => {
       const captured =
         input.tellContent === undefined
           ? undefined
@@ -669,23 +681,14 @@ export async function runServerKnowledgeMaintenanceCommand(
                 content: input.tellContent,
               }
             );
-      const prepared = prepareServerKnowledgeMaintenance(dependencies, {
+      const prepared = await prepareServerKnowledgeMaintenance(dependencies, {
         ...input,
+        receipt,
         sources: [
           ...input.sources,
           ...(captured ? [`source:${captured.id}@${captured.contentDigest}`] : []),
         ],
       });
-      await dependencies.store.recordCommandRequest(
-        {
-          command,
-          requestId: input.requestId,
-          scope,
-          inputHash: commandInputHash(canonicalInput),
-          response: { kind: 'turn', id: prepared.turnId },
-        },
-        dependencies.coreDb
-      );
       return prepared.execute();
     },
     replay: (receipt) => {
@@ -705,12 +708,12 @@ export async function runServerKnowledgeMaintenanceCommand(
 }
 
 /** Boot marks interrupted Server KM work inspect-only; it never replays a model or notebook effect. */
-export function recoverServerKnowledgeManagerTurns(store: FsStore): void {
+export async function recoverServerKnowledgeManagerTurns(store: FsStore): Promise<void> {
   for (const thread of store.listServerThreads())
     for (const turn of store.listServerThreadTurns(thread.id)) {
       if (turn.agentId !== 'knowledge-manager' || !['pending', 'running'].includes(turn.status))
         continue;
-      store.updateServerTurn(turn.id, {
+      await store.updateServerTurn(turn.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: {

@@ -7,6 +7,7 @@ import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { type CoreDb, openUserDb, type UserDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
+import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge-maintenance-schedule.js';
 import {
   prepareUserMemoryMaintenance,
@@ -14,14 +15,14 @@ import {
 } from './user-memory-agent-maintenance.js';
 
 /** Existing daily scan and scope records; no timer, session or execution authority is created. */
-export function scanUserMemoryMaintenance(input: {
+export async function scanUserMemoryMaintenance(input: {
   readonly now: string;
   readonly store: FsStore;
   readonly coreDb: CoreDb;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly localUserId?: string;
   readonly dependencies: (userDb: UserDb) => UserMemoryMaintenanceDependencies;
-}): void {
+}): Promise<void> {
   const { store, coreDb } = input;
   const turns = (userId: string) => {
     const workspaceId = quickChatWorkspaceIdForUser(userId);
@@ -36,7 +37,7 @@ export function scanUserMemoryMaintenance(input: {
       )
       .flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
   };
-  scanDailyKnowledgeMaintenance({
+  await scanDailyKnowledgeMaintenance({
     now: input.now,
     scopes: input.runtimeConfigManager.current().userConfigs.map(({ userId, config }) => ({
       ownerScope: { kind: 'user' as const, userId },
@@ -68,19 +69,21 @@ export function scanUserMemoryMaintenance(input: {
                 }
               : {}),
         })),
-    prepare: ({ ownerScope }, startedAt) => {
+    prepare: async ({ ownerScope }, startedAt) => {
       const userId = ownerScope.userId;
       let userDb: UserDb | undefined;
+      let admissionAttempted = false;
       try {
         let actor: Actor | undefined;
         if (input.localUserId === userId) actor = { kind: 'local', userId };
         if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor))
           throw new Error('Current User maintenance authority is unavailable.');
-        ensureUserQuickChatWorkspace({ coreDb, store, userId });
+        await ensureUserQuickChatWorkspace({ coreDb, store, userId });
         userDb = openUserDb(coreDb.dataRoot, userId);
         applyScopedMigrations(userDb);
         const ownedDb = userDb;
-        const prepared = prepareUserMemoryMaintenance(input.dependencies(ownedDb), {
+        admissionAttempted = true;
+        const prepared = await prepareUserMemoryMaintenance(input.dependencies(ownedDb), {
           requestId: uuidv5(
             JSON.stringify(['memory.maintain', ownerScope, startedAt.slice(0, 10)])
           ),
@@ -97,69 +100,68 @@ export function scanUserMemoryMaintenance(input: {
             try {
               await prepared.execute();
             } catch {
-              prepared.fail();
+              await prepared.fail();
             } finally {
               ownedDb.sqlite.close();
             }
           },
-          fail: () => {
+          fail: async () => {
             try {
-              prepared.fail();
+              await prepared.fail();
             } finally {
               if (ownedDb.sqlite.open) ownedDb.sqlite.close();
             }
           },
         };
-      } catch {
+      } catch (error) {
         if (userDb?.sqlite.open) userDb.sqlite.close();
+        // A failed acknowledgement can hide a commit. Never admit a replacement Turn on this path.
+        if (admissionAttempted) throw error;
         // A missing credential is an inspectable skipped run, never a fabricated session.
-        ensureUserQuickChatWorkspace({ coreDb, store, userId });
+        await ensureUserQuickChatWorkspace({ coreDb, store, userId });
         const workspaceId = quickChatWorkspaceIdForUser(userId);
-        const prior = turns(userId).find(
-          (turn) => turn.triggerSource?.summary === 'User Memory maintenance.'
-        );
-        const thread = prior
-          ? store.getThread(workspaceId, prior.threadId)
-          : store.createThread(workspaceId, 'Memory maintenance', undefined, 'knowledge-manager', {
-              visibility: 'private',
-              privateOwnerUserId: userId,
-            });
-        const turn = store.createTurn(
-          workspaceId,
-          thread.id,
-          'Scheduled User Memory maintenance was skipped.',
-          { kind: 'user', id: userId },
-          null,
-          {
-            agentId: 'knowledge-manager',
-            executorKind: 'assistant',
-            startedAt,
-            triggerSource: { kind: 'automation', summary: 'User Memory maintenance.' },
-          }
-        );
+        const admitted = await admitControlMaintenance(coreDb.dataRoot, workspaceId, {
+          purpose: 'maintenance',
+          ownerScope,
+          actor: { kind: 'user', id: userId },
+          requestId: uuidv5(
+            JSON.stringify(['memory.maintain', ownerScope, startedAt.slice(0, 10)])
+          ),
+          threadId: allocateEntityId('th'),
+          turnId: allocateEntityId('tu'),
+          startedAt,
+          instructions: 'Scheduled User Memory maintenance was skipped.',
+          trigger: 'schedule',
+          captureCoverage: store.getLiveCaptureCoverage(),
+        });
+        if (admitted.replayed) return null;
+        const thread = store.getThread(workspaceId, admitted.threadId);
+        const turn = store.getTurnById(admitted.turnId);
         const completedAt = new Date().toISOString();
-        store.createItem({
+        await store.createItem({
           id: allocateEntityId('it'),
           owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId: thread.id,
           turnId: turn.id,
           type: 'status',
-          status: 'failed',
-          level: 'error',
+          status: admitted.busy ? 'completed' : 'failed',
+          level: admitted.busy ? 'info' : 'error',
           title: 'Memory maintenance skipped',
-          summary:
-            'Current User authority, notebook or model admission is unavailable. Inspect the failure and request a new run.',
+          summary: admitted.busy
+            ? 'Another User Memory maintenance Turn is still active.'
+            : 'Current User authority, notebook or model admission is unavailable. Inspect the failure and request a new run.',
           createdAt: completedAt,
           completedAt,
         });
-        store.updateTurn(turn.id, {
-          status: 'failed',
-          completedAt,
-          error: {
-            code: 'memory_maintenance_unavailable',
-            message: 'Scheduled Memory maintenance could not be admitted.',
-          },
-        });
+        if (!admitted.busy)
+          await store.updateTurn(turn.id, {
+            status: 'failed',
+            completedAt,
+            error: {
+              code: 'memory_maintenance_unavailable',
+              message: 'Scheduled Memory maintenance could not be admitted.',
+            },
+          });
         return null;
       }
     },
