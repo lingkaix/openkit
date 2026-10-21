@@ -366,7 +366,7 @@ describe('Item-confirmed self Memory forget', () => {
           f.writer.store
         )
       ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-      expect(() => prepareMemoryForget(f.writer, f.request)).toThrowError(
+      await expect(prepareMemoryForget(f.writer, f.request)).rejects.toThrowError(
         expect.objectContaining({ code: 'recovery_required' })
       );
     }
@@ -396,7 +396,7 @@ describe('Item-confirmed self Memory forget', () => {
       metadata: f.notebook.readRevision(baseRevision).metadata,
     });
     const sourceRevision = f.notebook.publish({ baseRevision, candidateRevision }).revision;
-    expect(() => prepareMemoryForget(f.writer, f.request)).toThrowError(
+    await expect(prepareMemoryForget(f.writer, f.request)).rejects.toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(readPendingRequest(f.writer.workspaceDb.sqlite, f.request.requestId)).toBeNull();
@@ -474,10 +474,10 @@ describe('Item-confirmed self Memory forget', () => {
     expect(turn.agentId).toBeUndefined();
     expect(turn.agentSessionId).toBeUndefined();
     expect(f.writer.store.getTurnExecutor(turn.id)).toBe('person');
-    expect(prepareMemoryForgetCommand(f.writer, input)).toEqual(result);
-    expect(() =>
+    expect(await prepareMemoryForgetCommand(f.writer, input)).toEqual(result);
+    await expect(
       prepareMemoryForgetCommand(f.writer, { ...input, digest: `sha256:${'0'.repeat(64)}` })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(f.writer.store.listThreadTurns(input.workspaceId, f.thread.id)).toHaveLength(before + 1);
     expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
   });
@@ -501,16 +501,16 @@ describe('Item-confirmed self Memory forget', () => {
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
       code: 'approval_required',
     });
-    expect(() =>
+    await expect(
       prepareMemoryForget(f.writer, { ...f.request, digest: `sha256:${'0'.repeat(64)}` })
-    ).toThrow();
-    expect(() =>
+    ).rejects.toThrow();
+    await expect(
       prepareMemoryForget(f.writer, {
         ...f.request,
         requestId: randomUUID(),
         threadId: 'th_00000000-0000-7000-8000-000000000001',
       })
-    ).toThrow();
+    ).rejects.toThrow();
     await f.decide(prepared.pendingRequestId);
     const configRoot = join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'config');
     mkdirSync(configRoot, { recursive: true });
@@ -534,7 +534,7 @@ describe('Item-confirmed self Memory forget', () => {
   it('captures exact disclosure and actual human decision but executes only the later apply', async () => {
     const f = await fixture();
     const prepared = await prepareMemoryForget(f.writer, f.request);
-    expect(prepareMemoryForget(f.writer, f.request)).toEqual(prepared);
+    expect(await prepareMemoryForget(f.writer, f.request)).toEqual(prepared);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     expect(
       f.writer.store.getTurnById(f.turn.id).items.filter((item) => item.type === 'approval-request')

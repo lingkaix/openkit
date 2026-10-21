@@ -106,6 +106,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     rmSync(dataRoot, { recursive: true, force: true });
   });
   // An uncompleted real call distinguishes byte retention from ordinary restart recovery writes.
+  await shutdownControlStoreWorkerClient();
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   startCapabilityCall({
     authorityActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
@@ -118,18 +119,20 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     workspaceDb,
     workspaceId,
   });
+  const originalWorkspaceRecord = workspaceDb.sqlite
+    .prepare('SELECT record_json FROM control_workspaces WHERE id = ?')
+    .pluck()
+    .get(workspaceId) as string;
+  if (fault === 'records')
+    expect(
+      workspaceDb.sqlite
+        .prepare('UPDATE control_workspaces SET record_json = ? WHERE id = ?')
+        .run(JSON.stringify('{unreadable history'), workspaceId).changes
+    ).toBe(1);
   workspaceDb.sqlite.close();
-  const originalWorkspaceRecord = readFileSync(
-    join(dataRoot, 'workspaces', workspaceId, 'workspace-record.json')
-  );
   if (fault === 'missing') rmSync(workspaceDbPath(dataRoot, workspaceId));
   if (fault === 'corrupt')
     writeFileSync(workspaceDbPath(dataRoot, workspaceId), 'Retained corrupt authority');
-  if (fault === 'records')
-    writeFileSync(
-      join(dataRoot, 'workspaces', workspaceId, 'workspace-record.json'),
-      '{unreadable history'
-    );
   verifyAndMigrateExistingScopedDatabases(dataRoot, () => FsStore.validateFileAuthority(dataRoot));
   expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
   expect(isScopeAdmitted(dataRoot, 'workspace', siblingId)).toBe(true);
@@ -284,8 +287,20 @@ describe('retired registry consumers and retained Core migration', () => {
     // Reverse only the injected fixture fault while stopped. This is not a product repair path.
     // Readable retained bytes must not revive a retired identity. They make a late boot fence observable.
     const targetRoot = join(f.dataRoot, 'workspaces', f.workspaceId);
-    if (fault === 'records')
-      writeFileSync(join(targetRoot, 'workspace-record.json'), f.originalWorkspaceRecord);
+    if (fault === 'records') {
+      const stopped = new Database(workspaceDbPath(f.dataRoot, f.workspaceId), {
+        fileMustExist: true,
+      });
+      try {
+        expect(
+          stopped
+            .prepare('UPDATE control_workspaces SET record_json = ? WHERE id = ?')
+            .run(f.originalWorkspaceRecord, f.workspaceId).changes
+        ).toBe(1);
+      } finally {
+        stopped.close();
+      }
+    }
     const before = bytes(targetRoot);
     /** Reads only a detached copy while the fixture or child is stopped; WAL readers can create sidecars. */
     const readCallStatus = () => {
@@ -591,13 +606,13 @@ describe('retired registry consumers and retained Core migration', () => {
     const tree = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
     const ensure = vi.spyOn(f.store, 'ensureQuickChatWorkspace');
     // This is the existing successful-session provisioning callback, not a new recovery API.
-    expect(() =>
+    await expect(
       ensureUserQuickChatWorkspace({
         coreDb: f.coreDb,
         store: f.store,
         userId: FIXTURE_LOCAL_USER_ID,
       })
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
     const sibling = await f.call(
       'workspace.member-list',
       { workspaceId: f.siblingId },
