@@ -80,6 +80,9 @@ type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly command: ControlWorkerCommand;
+  readonly request: ControlWorkerRequest;
+  /** Unposted capture waiters share this same finite admission map and byte budget. */
+  posted: boolean;
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly resolve: (reply: Success) => void;
@@ -121,6 +124,8 @@ class ControlStoreWorkerClient {
   private stopping = false;
   private closed = false;
   private shutdownPromise: Promise<void> | undefined;
+  private backupPaused = false;
+  private backupDrain: (() => void) | undefined;
 
   /** Starts the real compiled entry, or the existing TypeScript loader in development. */
   constructor() {
@@ -382,6 +387,40 @@ class ControlStoreWorkerClient {
   }
 
   /**
+   * Holds native posting for the existing synchronous data-root capture after every posted acknowledgement settles.
+   *
+   * New requests keep the same finite admission slots and byte budget while waiting. The caller must resume in finally; this hold neither closes scopes nor replays commands. A failed channel refuses capture because its outstanding commits are unknown.
+   *
+   * @returns An idempotent release for this one backup hold.
+   */
+  async pauseForDataRootBackup(): Promise<() => void> {
+    if (this.failed || this.stopping || this.closed)
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    if (this.backupPaused) throw new ControlStoreWorkerError('busy', 'not-committed');
+    this.backupPaused = true;
+    const resume = () => {
+      if (!this.backupPaused) return;
+      this.backupPaused = false;
+      this.backupDrain = undefined;
+      for (const [id, entry] of this.pending) if (!entry.posted) this.post(id, entry);
+    };
+    await new Promise<void>((resolve) => {
+      this.backupDrain = resolve;
+      this.completeBackupDrain();
+    });
+    if (this.failed || this.stopping || this.closed) {
+      resume();
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      resume();
+    };
+  }
+
+  /**
    * Stops admission, drains accepted work and closes the actual owned thread.
    *
    * A failed transport is terminated without retrying its pending work. A subsequent explicit host lifetime does not resolve those unknown command outcomes.
@@ -458,28 +497,57 @@ class ControlStoreWorkerClient {
     if (!isControlWorkerRequest(request)) {
       return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
     }
+    // Posting normally transfers ownership immediately. A capture hold must take the same
+    // immutable input now, so its caller cannot change a bounded envelope before resume.
+    let admittedRequest = request;
+    if (this.backupPaused) {
+      try {
+        admittedRequest = structuredClone(request, {
+          transfer: request.operation === 'material' && request.content ? [request.content] : [],
+        });
+      } catch {
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      }
+    }
     const id = this.nextId++;
     return new Promise<Success>((resolve, reject) => {
       this.materialBytes += materialBytes;
-      this.pending.set(id, { command: posted, materialBytes, resolve, reject });
+      const entry: Pending = {
+        command: admittedRequest,
+        request: admittedRequest,
+        posted: false,
+        materialBytes,
+        resolve,
+        reject,
+      };
+      this.pending.set(id, entry);
       if (database !== undefined)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
       this.worker.ref();
-      try {
-        const transferList =
-          request.operation === 'material' && request.content !== undefined
-            ? [request.content]
-            : [];
-        this.worker.postMessage(request, transferList);
-      } catch {
-        // Structured cloning fails before a message is enqueued; nothing was submitted.
-        this.complete(
-          id,
-          undefined,
-          new ControlStoreWorkerError('invalid-request', 'not-committed')
-        );
-      }
+      if (!this.backupPaused) this.post(id, entry);
     });
+  }
+
+  /** Posts an admitted message once, including a message held by data-root capture. */
+  private post(id: number, entry: Pending): void {
+    entry.posted = true;
+    try {
+      const request = entry.request;
+      const transferList =
+        request.operation === 'material' && request.content !== undefined ? [request.content] : [];
+      this.worker.postMessage(request, transferList);
+    } catch {
+      // Structured cloning fails before a message is enqueued; nothing was submitted.
+      this.complete(id, undefined, new ControlStoreWorkerError('invalid-request', 'not-committed'));
+    }
+  }
+
+  /** A held capture can start only after every previously posted message has settled. */
+  private completeBackupDrain(): void {
+    if (!this.backupDrain || [...this.pending.values()].some((entry) => entry.posted)) return;
+    const complete = this.backupDrain;
+    this.backupDrain = undefined;
+    complete();
   }
 
   /** Completes correlation once and releases the pre-post admission slot. */
@@ -502,6 +570,7 @@ class ControlStoreWorkerClient {
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
     if (this.pending.size === 0) this.worker.unref();
+    this.completeBackupDrain();
   }
 
   /** Rejects unknown/miscorrelated wire meanings without falsely reporting rollback. */
@@ -513,6 +582,7 @@ class ControlStoreWorkerClient {
     const entry = this.pending.get(value.id);
     if (
       entry === undefined ||
+      !entry.posted ||
       (value.status === 'ok' && value.operation !== entry.command.operation) ||
       (value.status === 'error' &&
         value.domain !== undefined &&
@@ -535,7 +605,13 @@ class ControlStoreWorkerClient {
     if (this.failed) return;
     this.failed = true;
     for (const id of this.pending.keys()) {
-      this.complete(id, undefined, new ControlStoreWorkerError('unavailable', 'unknown'), false);
+      const posted = this.pending.get(id)!.posted;
+      this.complete(
+        id,
+        undefined,
+        new ControlStoreWorkerError('unavailable', posted ? 'unknown' : 'not-committed'),
+        !posted
+      );
     }
     // A failed channel must not retain a writable connection or continue queued work.
     void this.worker.terminate();
