@@ -33,6 +33,13 @@ import {
 } from '../storage/recurring-portable-history.js';
 import { withVerifiedWorkspaceBackupBundle } from '../storage/workspace-backup-bundle.js';
 import {
+  finishWorkspaceMove,
+  moveOutWorkspace,
+  type WorkspaceMoveOutInput,
+  type WorkspaceRecoveryBoundary,
+  type WorkspaceRecoveryDependencies,
+} from '../storage/workspace-move.js';
+import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
@@ -210,6 +217,336 @@ async function fixture(registered: boolean) {
   await shutdownControlStoreWorkerClient();
   return { dataRoot, badId, goodId: good.id, callId, token: token.secret, ownerId, store };
 }
+
+/** Cold-opens private copies, including crash-retained journals, without repairing the source. */
+function crashSourceState(f: Awaited<ReturnType<typeof fixture>>, backupId: string) {
+  const observer = mkdtempSync(join(tmpdir(), 'd0-crash-observer-'));
+  try {
+    const read = (path: string, name: string, query: (db: Database.Database) => unknown) => {
+      const copy = join(observer, name);
+      cpSync(dirname(path), copy, { recursive: true });
+      const db = new Database(join(copy, basename(path)), {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+        return query(db);
+      } finally {
+        db.close();
+      }
+    };
+    const workspace = read(workspaceDbPath(f.dataRoot, f.badId), 'workspace', (db) => ({
+      authority: db.prepare('SELECT * FROM control_workspaces WHERE id=?').get(f.badId),
+      audit: db.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),
+      capture: db
+        .prepare('SELECT * FROM workspace_capture_records WHERE capture_id=?')
+        .get(backupId),
+      calls: db.prepare('SELECT * FROM capability_calls ORDER BY rowid').all(),
+    })) as {
+      authority: { revision: number; record_json: string };
+      audit: Record<string, unknown>[];
+      capture: { state: string };
+      calls: Record<string, unknown>[];
+    };
+    const core = read(coreDbPath(f.dataRoot), 'core', (db) => ({
+      admission: db
+        .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
+        .get(backupId),
+      registry: db.prepare('SELECT * FROM workspace_registry WHERE workspace_id=?').all(f.badId),
+      members: db
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id=? ORDER BY rowid')
+        .all(f.badId),
+    }));
+    return { workspace, core };
+  } finally {
+    rmSync(observer, { recursive: true, force: true });
+  }
+}
+
+/** Exits inside the real synchronous boundary callback; neither SQL nor publication is mocked. */
+async function crashMoveOut(
+  input: WorkspaceMoveOutInput,
+  point: Parameters<NonNullable<WorkspaceRecoveryDependencies['atBoundary']>>[0]
+) {
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      `
+      import { writeSync } from 'node:fs';
+      import { moveOutWorkspace } from ${JSON.stringify(new URL('../storage/workspace-move.ts', import.meta.url).href)};
+      const visited = [];
+      try {
+        await moveOutWorkspace(${JSON.stringify(input)}, {
+          atBoundary(point) {
+            visited.push(point);
+            if (point === ${JSON.stringify(point)}) {
+              writeSync(1, JSON.stringify({ point, visited }));
+              process.exit(73);
+            }
+          },
+        });
+        writeSync(1, JSON.stringify({ returnedWithoutCrash: true, visited }));
+        process.exit(74);
+      } catch (error) {
+        writeSync(1, JSON.stringify({ code: error.code, visited }));
+        process.exit(75);
+      }
+      `,
+    ],
+    {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      env: { PATH: process.env.PATH, TMPDIR: tmpdir() },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
+  let output = '';
+  for (const stream of [child.stdout, child.stderr])
+    stream.on('data', (chunk) => {
+      output = (output + String(chunk)).slice(-8192);
+    });
+  let exited = false;
+  const done = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) => {
+      exited = true;
+      resolve(code);
+    });
+  });
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 30_000);
+  deadline.unref();
+  disposals.push(async () => {
+    if (!exited) child.kill('SIGKILL');
+    await done.catch(() => undefined);
+    clearTimeout(deadline);
+  });
+  try {
+    expect(await done, output).toBe(73);
+    expect(JSON.parse(output)).toEqual({
+      point,
+      visited: sourceCrashPoints.slice(0, sourceCrashPoints.indexOf(point) + 1),
+    });
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
+const sourceCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
+  'before-moved-out-commit',
+  'after-moved-out-commit',
+  'before-seal-publication',
+  'after-seal-publication',
+];
+
+describe('D0 RED-3 source crash boundaries / Ruling 13:07Z', () => {
+  it.each(
+    sourceCrashPoints
+  )('WM 389, 411–415 / %s: cold state, real boot refusal and exact explicit recovery', async (point) => {
+    const f = await fixture(true);
+    const commandRoot = mkdtempSync(join(tmpdir(), 'd0-source-crash-'));
+    disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
+    const bundleRoot = join(commandRoot, 'bundle');
+    const releaseIdentityPath = join(commandRoot, 'release-identity.json');
+    writeFileSync(
+      releaseIdentityPath,
+      JSON.stringify({ releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) })
+    );
+    const backupId = allocateEntityId('wsbak');
+    const prepared = await runCli(
+      [
+        'capture',
+        '--source-data-root',
+        f.dataRoot,
+        '--workspace-id',
+        f.badId,
+        '--expected-source-deployment-id',
+        readDataRootLayoutMarker(f.dataRoot).deploymentId,
+        '--bundle-root',
+        bundleRoot,
+        '--purpose',
+        'move',
+        '--backup-id',
+        backupId,
+      ],
+      () => {},
+      { releaseIdentityPath }
+    );
+    expect(prepared).toMatchObject({
+      disposition: 'prepared',
+      workspaceId: f.badId,
+      capture: { backupId },
+    });
+    const digest = `sha256:${createHash('sha256')
+      .update(readFileSync(join(bundleRoot, 'manifest.json')))
+      .digest('hex')}`;
+    expect(prepared.capture!.manifestDigest).toBe(digest);
+    expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
+    const capturedBytes = bytes(bundleRoot);
+    const before = crashSourceState(f, backupId);
+    expect(before.workspace.capture.state).toBe('active');
+    expect(callStatus(f.dataRoot, f.badId, f.callId)).toBe('running');
+    const input: WorkspaceMoveOutInput = {
+      dataRoot: f.dataRoot,
+      workspaceId: f.badId,
+      backupId,
+      bundleRoot,
+      expectedRevision: prepared.capture!.capturedRevision,
+    };
+    await crashMoveOut(input, point);
+
+    const committed = point !== 'before-moved-out-commit';
+    const sealed = point === 'after-seal-publication';
+    const cold = crashSourceState(f, backupId);
+    if (!committed) {
+      expect.soft(cold).toEqual(before);
+    } else {
+      expect.soft(cold.workspace.authority.revision).toBeGreaterThan(input.expectedRevision);
+      expect.soft(JSON.parse(cold.workspace.authority.record_json)).toMatchObject({
+        movedOut: { backupId, manifestDigest: digest },
+      });
+      expect
+        .soft(
+          cold.workspace.audit.filter(
+            (row) => JSON.stringify(row).includes(backupId) && JSON.stringify(row).includes(digest)
+          )
+        )
+        .toHaveLength(1);
+    }
+    // No durable seal means no independent verified copy and no end to capture protection.
+    if (!sealed) expect.soft(cold.workspace.capture).toEqual(before.workspace.capture);
+    expect
+      .soft(cold.workspace.calls.map((call) => call.call_id))
+      .toEqual(before.workspace.calls.map((call) => call.call_id));
+    expect
+      .soft(['running', 'unknown'])
+      .toContain(cold.workspace.calls.find((call) => call.call_id === f.callId)?.status);
+    expect.soft(existsSync(join(bundleRoot, 'seal.json'))).toBe(sealed);
+    const bundleAfterCrash = bytes(bundleRoot);
+    const { '/seal.json': _seal, ...unsealedBytes } = bundleAfterCrash;
+    // A failed publication may leave owned temporary bytes, but may not change captured content.
+    expect.soft(unsealedBytes).toMatchObject(capturedBytes);
+    if (sealed) {
+      expect.soft(JSON.parse(readFileSync(join(bundleRoot, 'seal.json'), 'utf8'))).toMatchObject({
+        format: 'openkit-workspace-backup-seal',
+        version: 1,
+        purpose: 'move',
+        backupId,
+        manifestDigest: digest,
+      });
+      await expect
+        .soft(
+          runCli(['verify', '--bundle-root', bundleRoot], () => {}, {
+            releaseIdentityPath,
+          })
+        )
+        .resolves.toMatchObject({
+          disposition: 'verified',
+          capture: { backupId, manifestDigest: digest },
+        });
+    } else {
+      const output: string[] = [];
+      const refusal: unknown = await runCli(
+        ['verify', '--bundle-root', bundleRoot],
+        (line) => output.push(line),
+        { releaseIdentityPath }
+      ).catch((error: unknown) => error);
+      expect.soft(refusal).toBeInstanceOf(WorkspaceRecoveryError);
+      expect.soft((refusal as WorkspaceRecoveryError).code).toBe('invalid-bundle');
+      expect.soft(output).toEqual([]);
+    }
+
+    // Boot must preserve both unfinished capture and committed tombstone, before native recovery.
+    const server = await boot(f.dataRoot);
+    const healthy = await server.call(
+      'thread.create',
+      {
+        workspaceId: f.goodId,
+        name: 'Healthy beside crashed MOVE',
+        requestId: randomUUID(),
+      },
+      f.token
+    );
+    expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
+    const refused = await server.call(
+      'thread.create',
+      {
+        workspaceId: f.badId,
+        name: 'Must not reopen partial MOVE',
+        requestId: randomUUID(),
+      },
+      f.token
+    );
+    expect.soft([403, 409], await refused.clone().text()).toContain(refused.status);
+    await server.stop();
+    expect.soft(callStatus(f.dataRoot, f.goodId, f.callId)).toBe('unknown');
+    expect.soft(crashSourceState(f, backupId)).toEqual(cold);
+    expect.soft(bytes(bundleRoot)).toEqual(bundleAfterCrash);
+
+    const selection = [
+      '--data-root',
+      f.dataRoot,
+      '--workspace-id',
+      f.badId,
+      '--backup-id',
+      backupId,
+    ];
+    await expect
+      .soft(runCli(['inspect', ...selection], () => {}, { releaseIdentityPath }))
+      .resolves.toMatchObject({
+        disposition: committed ? 'moved-out' : 'prepared',
+        currentRevision: cold.workspace.authority.revision,
+        capture: { backupId, manifestDigest: digest },
+      });
+    // A cold retry owns recovery; boot may neither seal the bundle nor replay the source work.
+    const recovered = committed
+      ? finishWorkspaceMove({
+          dataRoot: f.dataRoot,
+          workspaceId: f.badId,
+          selection: { kind: 'capture', backupId },
+        })
+      : moveOutWorkspace(input);
+    await expect.soft(recovered).resolves.toMatchObject({
+      disposition: 'moved-out',
+      workspaceId: f.badId,
+      capture: { backupId, manifestDigest: digest },
+    });
+    await expect
+      .soft(
+        runCli(['verify', '--bundle-root', bundleRoot], () => {}, {
+          releaseIdentityPath,
+        })
+      )
+      .resolves.toMatchObject({
+        disposition: 'verified',
+        capture: { backupId, manifestDigest: digest },
+      });
+    const finished = crashSourceState(f, backupId);
+    expect.soft(finished.workspace.capture.state).toBe('finished');
+    expect
+      .soft(
+        finished.workspace.audit.filter(
+          (row) => JSON.stringify(row).includes(backupId) && JSON.stringify(row).includes(digest)
+        )
+      )
+      .toHaveLength(1);
+    expect
+      .soft(finished.workspace.calls.map((call) => call.call_id))
+      .toEqual(before.workspace.calls.map((call) => call.call_id));
+    expect
+      .soft(['running', 'unknown'])
+      .toContain(finished.workspace.calls.find((call) => call.call_id === f.callId)?.status);
+    await expect.soft(moveOutWorkspace(input)).resolves.toMatchObject({
+      disposition: 'moved-out',
+      currentRevision: finished.workspace.authority.revision,
+      capture: { backupId, manifestDigest: digest },
+    });
+    expect.soft(crashSourceState(f, backupId)).toEqual(finished);
+  }, 120_000);
+});
 
 /** Creates native recurring rows through their owner, including one real published queued Turn when selected. */
 async function recurringFixture(queued: boolean) {
