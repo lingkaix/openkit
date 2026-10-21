@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import {
   FILE_CORPUS_FAMILIES,
+  NATIVE_METADATA_FAMILIES,
   readFileCorpus,
   seedFileCorpus,
 } from '../scripts/upgrade-from-previous-corpus.mjs';
@@ -77,16 +78,39 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
   assert.equal(first['Artifact original payload']?.bytes.length, 2);
   for (const [family, observed] of Object.entries(first)) {
     assert.ok(observed.values.length > 0, `${family}: no native reader result`);
-    assert.ok(observed.bytes.length > 0, `${family}: no retained bytes`);
+    if (NATIVE_METADATA_FAMILIES.includes(family)) {
+      for (const snapshot of observed.values) {
+        assert.deepEqual(snapshot.owner, { kind: 'workspace', workspaceId: selectors.workspaceId });
+        assert.ok(Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0);
+        const expected = {
+          'Workspace record': [selectors.workspaceId, 'active'],
+          'Thread record': [selectors.threadId, 'active'],
+          'Turn record': [selectors.turnId, 'completed'],
+          AgentSession: [selectors.agentSessionId, 'closed'],
+        }[family];
+        assert.equal(snapshot.record.id, expected[0]);
+        assert.equal(snapshot.record.status, expected[1]);
+        if (family === 'Turn record') {
+          assert.ok(snapshot.record.startedAt);
+          assert.ok(snapshot.record.completedAt);
+        } else {
+          assert.ok(snapshot.record.createdAt);
+          assert.ok(snapshot.record.updatedAt);
+        }
+      }
+    } else {
+      assert.ok(observed.bytes.length > 0, `${family}: no retained bytes`);
+    }
     for (const entry of observed.bytes) {
       assert.ok(!entry.path.startsWith('/'), `${family}: absolute path leaked`);
       assert.ok(entry.byteLength >= 0, `${family}: invalid byte length`);
       assert.match(entry.sha256, /^[a-f0-9]{64}$/);
     }
-    assert.ok(
-      observed.bytes.some((entry) => entry.byteLength > 0),
-      `${family}: no nonempty retained sample`
-    );
+    if (!NATIVE_METADATA_FAMILIES.includes(family))
+      assert.ok(
+        observed.bytes.some((entry) => entry.byteLength > 0),
+        `${family}: no nonempty retained sample`
+      );
   }
 });
 
@@ -94,20 +118,14 @@ test('file reader fails on retained history corruption instead of accepting a bo
   const input = await fixture(t);
   const selectors = await seedFileCorpus(input);
   const before = await readFileCorpus({ ...input, selectors });
-  const path = join(
-    input.dataRoot,
-    'workspaces',
-    selectors.workspaceId,
-    'threads',
-    selectors.threadId,
-    'turns',
-    selectors.turnId,
-    'items.jsonl'
-  );
+  const selected = before['Item revision log'].bytes[0];
+  const path = join(input.dataRoot, selected.path.slice('data/'.length));
+  chmodSync(path, 0o644);
   const bytes = readFileSync(path);
   writeFileSync(path, '{"invalid":"retained-history"}\n');
   await assert.rejects(readFileCorpus({ ...input, selectors }));
   writeFileSync(path, bytes);
+  chmodSync(path, 0o444);
   assert.deepEqual(readFileSync(path), bytes);
   await assert.rejects(readFileCorpus({ ...input, selectors }), { code: 'recovery_required' });
 
