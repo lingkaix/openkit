@@ -5,9 +5,9 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -20,13 +20,20 @@ import {
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { prepareAuditEvent } from '../audit-events.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import type { ControlAdmission } from '../storage/control-store-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-records.js';
+import {
+  nativeProductScope,
+  parseCanonicalWorkspaceHistory,
+  readNativeProductEntries,
+} from '../storage/workspace-file-records.js';
 import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -36,9 +43,101 @@ import {
   readWorkspaceSourceFixture,
 } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { FsStore } from './store.js';
+import { commandRequestKey, FsStore } from './store.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+
+/** Preserves retained bytes and the actual native database's exact schema and undecoded SQL rows. */
+function retainedWorkspaceSnapshot(root: string): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = {};
+  const nativeDatabase = join(root, 'db', 'workspace.sqlite');
+  const sortKey = (row: unknown) =>
+    JSON.stringify(row, (_key, value) =>
+      typeof value === 'bigint' ? { sqliteInt64: value.toString() } : value
+    );
+  const visit = (directory: string, prefix = '') => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const key = join(prefix, entry.name);
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) snapshot[key] = { symbolicLink: readlinkSync(path) };
+      else if (entry.isDirectory()) {
+        snapshot[key] = 'directory';
+        visit(path, key);
+      } else if (entry.isFile()) {
+        if (path === `${nativeDatabase}-wal` || path === `${nativeDatabase}-shm`) continue;
+        if (path !== nativeDatabase) snapshot[key] = readFileSync(path);
+        else {
+          const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+          try {
+            const schema = sqlite
+              .prepare(
+                'SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name,tbl_name'
+              )
+              .safeIntegers()
+              .raw()
+              .all();
+            const tables = sqlite
+              .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+              .all() as { name: string }[];
+            snapshot[key] = {
+              schema,
+              tables: tables.map(({ name }) => ({
+                name,
+                rows: sqlite
+                  .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                  .safeIntegers()
+                  .raw()
+                  .all()
+                  .sort((left, right) => sortKey(left).localeCompare(sortKey(right))),
+              })),
+            };
+          } finally {
+            sqlite.close();
+          }
+        }
+      } else
+        throw new Error('Retained snapshot requires regular files, directories or symbolic links.');
+    }
+  };
+  visit(root);
+  return snapshot;
+}
+
+/** Builds original command facts for the actual native Thread producer and its required Audit. */
+function originalAdmission(
+  workspaceId: string,
+  requestId: string,
+  threadId: string,
+  createdAt = '2026-07-12T00:00:00.000Z',
+  expiresAt = '2999-01-01T00:00:00.000Z'
+): Pick<ControlAdmission, 'receipt' | 'audit'> {
+  const scope = { workspaceId };
+  const receipt = {
+    key: commandRequestKey('thread.create', requestId, scope),
+    command: 'thread.create' as const,
+    requestId,
+    scope,
+    inputHash: artifactDigest('Original Thread create input'),
+    response: { kind: 'thread', id: threadId },
+    createdAt,
+    expiresAt,
+  };
+  return {
+    receipt,
+    audit: prepareAuditEvent({
+      workspaceId,
+      threadId,
+      requestId,
+      actor: LOCAL_ACTOR,
+      category: 'command',
+      action: receipt.command,
+      resource: `thread:${threadId}`,
+      outcome: 'succeeded',
+      summary: 'Original Thread created.',
+      now: new Date(createdAt),
+    }),
+  };
+}
 
 /**
  * Finds serialized files containing one forbidden value.
@@ -682,20 +781,35 @@ describe('FsStore persistence', () => {
       id: 'it_00000000-0000-7154-8cae-61e44aa74095',
       lastMutationRequestId: 'artifact-introduction-duplicate',
     };
-    const turnRoot = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'turns',
-      firstInput.turnId
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspace.id });
+    const content = await publishImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      join(dataRoot, 'runtime', 'staging'),
+      writeRetainedV1(duplicate)
     );
-
-    writeFileSync(
-      join(turnRoot, 'items.jsonl'),
-      `${JSON.stringify(writeRetainedV1(firstReference))}\n${JSON.stringify(writeRetainedV1(duplicate))}\n`
-    );
+    await shutdownControlStoreWorkerClient();
+    const malformedDb = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      const first = malformedDb.sqlite
+        .prepare("SELECT * FROM control_product_entries WHERE kind='item' AND id=?")
+        .get(firstReference.id) as Record<string, string | number>;
+      const identity = { ...JSON.parse(String(first.identity_json)), id: duplicate.id };
+      malformedDb.sqlite
+        .prepare(
+          "INSERT INTO control_product_entries(kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES('item',?,?,?,?,1,?,?)"
+        )
+        .run(
+          firstInput.turnId,
+          Number(first.sequence) + 1,
+          duplicate.id,
+          1,
+          JSON.stringify(content),
+          JSON.stringify(identity)
+        );
+    } finally {
+      malformedDb.sqlite.close();
+    }
 
     // A separate restart root keeps refusal from masking the repaired-history control below.
     const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-introduction-restart-'));
@@ -705,17 +819,9 @@ describe('FsStore persistence', () => {
     });
     cpSync(dataRoot, restartRoot, { recursive: true });
     const copiedWorkspaceRoot = join(restartRoot, 'workspaces', workspace.id);
-    const copiedLog = join(
-      copiedWorkspaceRoot,
-      'threads',
-      thread.id,
-      'turns',
-      firstInput.turnId,
-      'items.jsonl'
-    );
-    const bytes = readFileSync(copiedLog);
-    const database = readFileSync(join(copiedWorkspaceRoot, 'db', 'workspace.sqlite'));
-    const entries = readdirSync(copiedWorkspaceRoot, { recursive: true }).sort();
+    const copiedScope = nativeProductScope(restartRoot, scope.owner);
+    const bytes = readNativeProductEntries(copiedScope, firstInput.turnId, 'item');
+    const retained = retainedWorkspaceSnapshot(copiedWorkspaceRoot);
     const refused = new FsStore({ dataRoot: restartRoot });
     const refusal = expect.objectContaining({ code: 'recovery_required' });
     expect(() => refused.getWorkspace(workspace.id)).toThrow(refusal);
@@ -724,14 +830,18 @@ describe('FsStore persistence', () => {
     expect(refused.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
     const added = await refused.createThread(healthy.id, 'New sibling history');
     expect(new FsStore({ dataRoot: restartRoot }).getThread(healthy.id, added.id)).toEqual(added);
-    expect(readFileSync(copiedLog)).toEqual(bytes);
-    expect(readFileSync(join(copiedWorkspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
-    expect(readdirSync(copiedWorkspaceRoot, { recursive: true }).sort()).toEqual(entries);
+    expect(readNativeProductEntries(copiedScope, firstInput.turnId, 'item')).toEqual(bytes);
+    expect(retainedWorkspaceSnapshot(copiedWorkspaceRoot)).toEqual(retained);
 
-    writeFileSync(
-      join(turnRoot, 'items.jsonl'),
-      `${JSON.stringify(writeRetainedV1(firstReference))}\n`
-    );
+    await shutdownControlStoreWorkerClient();
+    const repairedDb = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      repairedDb.sqlite
+        .prepare("DELETE FROM control_product_entries WHERE kind='item' AND id=?")
+        .run(duplicate.id);
+    } finally {
+      repairedDb.sqlite.close();
+    }
     expect(() => new FsStore({ dataRoot })).not.toThrow();
   });
 
@@ -909,13 +1019,16 @@ describe('FsStore persistence', () => {
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
 
-    store.emitTurnEvent(turn.id, {
-      event: 'artifact.created',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'artifact-created', artifact },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'artifact.created',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'artifact-created', artifact },
+      })
+    );
 
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const artifactProjectionPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
@@ -946,13 +1059,6 @@ describe('FsStore persistence', () => {
       knowledgeSource.id,
       'original'
     );
-    const agentSessionProjectionPath = join(
-      workspaceRoot,
-      'runtime',
-      'agent-sessions',
-      agentSession.id,
-      'session.json'
-    );
     const restarted = new FsStore({ dataRoot });
 
     expect(JSON.parse(readFileSync(artifactProjectionPath, 'utf8'))).toEqual(
@@ -974,9 +1080,15 @@ describe('FsStore persistence', () => {
       knowledgeSource.title
     );
     expect(readFileSync(knowledgeSourceMaterialPath, 'utf8')).toBe(knowledgeSourceContent);
-    expect(JSON.parse(readFileSync(agentSessionProjectionPath, 'utf8'))).toEqual(
-      writeRetainedV1(agentSession)
-    );
+    const sessionDb = openWorkspaceDb(dataRoot, agentSession.workspaceId);
+    try {
+      const row = sessionDb.sqlite
+        .prepare('SELECT record_json FROM control_agent_sessions WHERE id=?')
+        .get(agentSession.id) as { record_json: string };
+      expect(JSON.parse(row.record_json)).toEqual(writeRetainedV1(agentSession));
+    } finally {
+      sessionDb.sqlite.close();
+    }
     expect(
       restarted.listThreads('ws_00000000-0000-7000-8000-000000000001').map((item) => item.id)
     ).toContain(thread.id);
@@ -1054,13 +1166,16 @@ describe('FsStore persistence', () => {
       listenerEnvelopes.push(JSON.stringify(event));
     });
 
-    const emitted = store.emitTurnEvent(turn.id, {
-      event: 'agent.session.updated',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'agent-session-updated', agentSession },
-    });
+    const emitted = store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'agent.session.updated',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'agent-session-updated', agentSession },
+      })
+    );
     unsubscribe();
 
     const expectedAgentSession = AgentSessionSchema.parse(agentSession);
@@ -1112,18 +1227,21 @@ describe('FsStore persistence', () => {
       thread.id,
       commandId
     );
-    const repeated = store.emitTurnEvent(completionTurn.id, {
-      data: {
-        code: 'worker_governance_turn_failed',
-        message: 'Worker execution failed.',
-        type: 'error',
-      },
-      event: 'error',
-      requestId: commandId,
-      threadId: thread.id,
-      turnId: completionTurn.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
+    const repeated = store.emitTurnEvent(
+      completionTurn.id,
+      await store.persistTurnEvent(completionTurn.id, {
+        data: {
+          code: 'worker_governance_turn_failed',
+          message: 'Worker execution failed.',
+          type: 'error',
+        },
+        event: 'error',
+        requestId: commandId,
+        threadId: thread.id,
+        turnId: completionTurn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
     const completedTurn = await store.updateTurn(completionTurn.id, {
       completedAt: completionTurn.startedAt ?? new Date().toISOString(),
       status: 'completed',
@@ -1134,30 +1252,43 @@ describe('FsStore persistence', () => {
       status: 'failed',
     });
 
-    const completed = store.emitTurnEvent(completionTurn.id, {
-      data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId: commandId,
-      threadId: thread.id,
-      turnId: completionTurn.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    const completed = store.emitTurnEvent(
+      completionTurn.id,
+      await store.persistTurnEvent(completionTurn.id, {
+        data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+        event: 'turn.completed',
+        requestId: commandId,
+        threadId: thread.id,
+        turnId: completionTurn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    const failed = store.emitTurnEvent(
+      failureTurn.id,
+      await store.persistTurnEvent(failureTurn.id, {
+        data: { stopReason: 'error', turn: failedTurn, type: 'turn-completed' },
+        event: 'turn.completed',
+        requestId: commandId,
+        threadId: thread.id,
+        turnId: failureTurn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    const otherFailedTurn = await store.updateTurn(otherTurn.id, {
+      status: 'failed',
+      completedAt: otherTurn.startedAt!,
     });
-    const failed = store.emitTurnEvent(failureTurn.id, {
-      data: { stopReason: 'error', turn: failedTurn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId: commandId,
-      threadId: thread.id,
-      turnId: failureTurn.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const otherScope = store.emitTurnEvent(otherTurn.id, {
-      data: { stopReason: 'error', turn: otherTurn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId: commandId,
-      threadId: otherThread.id,
-      turnId: otherTurn.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
+    const otherScope = store.emitTurnEvent(
+      otherTurn.id,
+      await store.persistTurnEvent(otherTurn.id, {
+        data: { stopReason: 'error', turn: otherFailedTurn, type: 'turn-completed' },
+        event: 'turn.completed',
+        requestId: commandId,
+        threadId: otherThread.id,
+        turnId: otherTurn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
 
     expect(RequestIdSchema.parse(completed.requestId)).toBe(expectedRequestId);
     expect(failed.requestId).toBe(expectedRequestId);
@@ -1198,14 +1329,17 @@ describe('FsStore persistence', () => {
       status: 'completed',
     });
 
-    const emitted = store.emitTurnEvent(turn.id, {
-      data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId,
-      threadId: thread.id,
-      turnId: turn.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
+    const emitted = store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
+        event: 'turn.completed',
+        requestId,
+        threadId: thread.id,
+        turnId: turn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
 
     expect(emitted.requestId).toBe(requestId);
   });
@@ -1239,10 +1373,10 @@ describe('FsStore persistence', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     };
 
-    expect(() => store.emitTurnEvent(turn.id, { ...event, requestId: '' })).toThrow(
+    await expect(store.persistTurnEvent(turn.id, { ...event, requestId: '' })).rejects.toThrow(
       /Invalid uuid/i
     );
-    expect(() => store.emitTurnEvent(turn.id, { ...event, requestId: '   ' })).toThrow(
+    await expect(store.persistTurnEvent(turn.id, { ...event, requestId: '   ' })).rejects.toThrow(
       /Invalid uuid/i
     );
     expect(store.getTurnEvents(turn.id)).toEqual([]);
@@ -1252,65 +1386,93 @@ describe('FsStore persistence', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Idempotency workspace');
-
-    store.recordCommandRequest({
-      command: 'conversation.submit',
-      requestId: '0190f4c8-0000-7000-8000-000000000501',
-      scope: { workspaceId: workspace.id },
-      inputHash: 'sha256:live',
-      response: {
-        kind: 'turn',
-        id: 'tu_00000000-0000-7548-b9e4-56b5633aac0e',
-        conversationMetadata: {
-          downstream: null,
-          logicalModelId: 'reasoning',
-          receivingThreadId: 'th_00000000-0000-7ac9-b5d3-7c03840e3fbd',
-          receivingWorkspaceId: workspace.id,
-          resultKind: 'provider-answer',
-          status: 200,
-          targetRef: 'internal-role:assistant',
-        },
-      },
-      createdAt: '2026-05-27T00:00:00.000Z',
-      expiresAt: '2999-01-01T00:00:00.000Z',
+    const expired = originalAdmission(
+      workspace.id,
+      '0190f4c8-0000-7000-8000-000000000502',
+      'th_00000000-0000-7072-aae0-1071aac8c7ef',
+      '2000-01-01T00:00:00.000Z',
+      '2000-01-02T00:00:00.000Z'
+    );
+    await store.createThread(
+      workspace.id,
+      'Expired receipt history',
+      expired.receipt.response.id,
+      'conversation',
+      undefined,
+      expired
+    );
+    const thread = await store.createThread(
+      workspace.id,
+      'Original provider answer',
+      'th_00000000-0000-7ac9-b5d3-7c03840e3fbd'
+    );
+    const turn = await store.createTurn(workspace.id, thread.id, 'Answer once', LOCAL_ACTOR, null, {
+      turnId: 'tu_00000000-0000-7548-b9e4-56b5633aac0e',
     });
-    store.recordCommandRequest({
-      command: 'thread.create',
-      requestId: '0190f4c8-0000-7000-8000-000000000502',
-      scope: { workspaceId: workspace.id },
-      inputHash: 'sha256:expired',
-      response: { kind: 'thread', id: 'th_00000000-0000-7072-aae0-1071aac8c7ef' },
-      createdAt: '2000-01-01T00:00:00.000Z',
-      expiresAt: '2000-01-02T00:00:00.000Z',
-    });
-
-    const restarted = new FsStore({ dataRoot });
-
-    expect(
-      restarted.getCommandRequest('conversation.submit', '0190f4c8-0000-7000-8000-000000000501', {
-        workspaceId: workspace.id,
-      })?.response
-    ).toEqual({
+    const response = {
       kind: 'turn',
-      id: 'tu_00000000-0000-7548-b9e4-56b5633aac0e',
+      id: turn.id,
       conversationMetadata: {
         downstream: null,
         logicalModelId: 'reasoning',
-        receivingThreadId: 'th_00000000-0000-7ac9-b5d3-7c03840e3fbd',
+        receivingThreadId: thread.id,
         receivingWorkspaceId: workspace.id,
         resultKind: 'provider-answer',
         status: 200,
         targetRef: 'internal-role:assistant',
       },
-    });
-    expect(
-      restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000502', {
+    } as const;
+    const receipt = {
+      key: commandRequestKey('conversation.submit', '0190f4c8-0000-7000-8000-000000000501', {
         workspaceId: workspace.id,
-      })
+      }),
+      command: 'conversation.submit' as const,
+      requestId: '0190f4c8-0000-7000-8000-000000000501',
+      scope: { workspaceId: workspace.id },
+      inputHash: artifactDigest('Original provider answer input'),
+      response,
+      createdAt: '2026-05-27T00:00:00.000Z',
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    await store.completeTurn(
+      turn.id,
+      { status: 'completed', completedAt: turn.startedAt! },
+      {
+        requestId: receipt.requestId,
+        command: {
+          receipt,
+          audit: prepareAuditEvent({
+            workspaceId: workspace.id,
+            threadId: thread.id,
+            turnId: turn.id,
+            requestId: receipt.requestId,
+            actor: LOCAL_ACTOR,
+            category: 'command',
+            action: receipt.command,
+            resource: `turn:${turn.id}`,
+            outcome: 'succeeded',
+            summary: 'Original provider answer completed.',
+            now: new Date(receipt.createdAt),
+          }),
+        },
+      }
+    );
+    const restarted = new FsStore({ dataRoot });
+    expect(
+      restarted.getCommandRequest(receipt.command, receipt.requestId, receipt.scope)?.response
+    ).toEqual(response);
+    expect(
+      restarted.getCommandRequest(
+        expired.receipt.command,
+        expired.receipt.requestId,
+        expired.receipt.scope
+      )
     ).toBeNull();
     expect(restarted.listCommandRequests().map((record) => record.inputHash)).toEqual([
-      'sha256:live',
+      receipt.inputHash,
     ]);
+    expect(restarted.getTurnById(turn.id).status).toBe('completed');
+    expect(restarted.getTurnEvents(turn.id).at(-1)?.event).toBe('turn.completed');
   });
 
   it('rejects extra receipt metadata outside conversation.submit', () => {
@@ -1358,24 +1520,27 @@ describe('FsStore persistence', () => {
     expect(store.listCommandRequests()).toEqual([]);
   });
 
-  it('does not create storage for workspace-scoped idempotency without a workspace', () => {
+  it('does not create storage for workspace-scoped idempotency without a workspace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
-
-    expect(() =>
-      store.recordCommandRequest({
-        command: 'thread.create',
-        requestId: '0190f4c8-0000-7000-8000-000000000505',
-        scope: { workspaceId },
-        inputHash: 'sha256:missing-workspace',
-        response: { kind: 'thread', id: 'th_00000000-0000-70ca-938d-c2a0530f9882' },
-      })
-    ).toThrow(`Workspace not found: ${workspaceId}`);
-    expect(
-      store.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000505', {
+    const admission = originalAdmission(
+      workspaceId,
+      '0190f4c8-0000-7000-8000-000000000505',
+      'th_00000000-0000-70ca-938d-c2a0530f9882'
+    );
+    await expect(
+      store.createThread(
         workspaceId,
-      })
+        'Missing owner',
+        admission.receipt.response.id,
+        'conversation',
+        undefined,
+        admission
+      )
+    ).rejects.toThrow(`Workspace not found: ${workspaceId}`);
+    expect(
+      store.getCommandRequest('thread.create', admission.receipt.requestId, { workspaceId })
     ).toBeNull();
     expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
   });
@@ -1396,15 +1561,19 @@ describe('FsStore persistence', () => {
     const workspaceRequestId = '0190f4c8-0000-7000-8000-000000000503';
     const userRequestId = '0190f4c8-0000-7000-8000-000000000504';
 
-    store.recordCommandRequest({
-      command: 'thread.create',
-      requestId: workspaceRequestId,
-      scope: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      inputHash: 'sha256:workspace-database-owner',
-      response: { kind: 'thread', id: 'th_00000000-0000-7756-85e1-80371364cde9' },
-      createdAt: '2026-07-12T00:00:00.000Z',
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    });
+    const workspaceAdmission = originalAdmission(
+      'ws_00000000-0000-7000-8000-000000000001',
+      workspaceRequestId,
+      'th_00000000-0000-7756-85e1-80371364cde9'
+    );
+    await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Native receipt owner',
+      workspaceAdmission.receipt.response.id,
+      'conversation',
+      undefined,
+      workspaceAdmission
+    );
     store.recordCommandRequest({
       command: 'workspace.create',
       requestId: userRequestId,
@@ -1422,7 +1591,7 @@ describe('FsStore persistence', () => {
         requestId: userRequestId,
       },
       {
-        inputHash: 'sha256:workspace-database-owner',
+        inputHash: workspaceAdmission.receipt.inputHash,
         path: workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
         requestId: workspaceRequestId,
       },

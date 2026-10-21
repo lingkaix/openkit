@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -12,7 +12,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { InternalRoleExecutionProfileSchema } from '@openkit/config-schema';
-import { workspaceIdForOwner } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type CapabilityAuditLineage,
@@ -26,6 +26,7 @@ import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { createTestStore } from '../test-support/store.js';
 
 const databases: WorkspaceDb[] = [];
@@ -1370,22 +1371,36 @@ describe('internal Agent Gateway provider', () => {
           .map((event) => (event.message as { content: unknown }).content)
       ).toEqual([[{ type: 'text', text: answer }]]);
     }
-    const turnPath = join(
-      capture.dataRoot,
-      'workspaces',
-      capture.workspaceDb.workspaceId,
-      'threads',
-      capture.threadId,
-      'turns',
-      capture.turnId,
-      'turn.json'
-    );
-    const turn = JSON.parse(readFileSync(turnPath, 'utf8')) as Record<string, unknown>;
-    delete turn.captureCoverage;
-    writeFileSync(turnPath, JSON.stringify(turn));
+    // Retained history without an admitted capture binding is genuinely unknown.
+    // A readable turn.json projection cannot remove native capture authority.
+    const workspaceId = allocateEntityId('ws');
+    const threadId = allocateEntityId('th');
+    const turnId = allocateEntityId('tu');
+    const owner = { kind: 'workspace' as const, workspaceId };
+    await capture.store.importWorkspaceSnapshot({
+      workspace: {
+        ...capture.store.getWorkspace(capture.workspaceDb.workspaceId),
+        id: workspaceId,
+      },
+      threads: [
+        {
+          ...capture.store.getThread(capture.workspaceDb.workspaceId, capture.threadId),
+          id: threadId,
+          owner,
+        },
+      ],
+      turns: [{ ...capture.turn, id: turnId, owner, threadId, items: [] }],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+      ...notebookImportFixture({ workspaceId, knowledge: [] }),
+    });
+    const unknownTurn = capture.store.getTurn(workspaceId, threadId, turnId);
     const onModelCall = vi.fn();
     await expect(
-      withTurnModelCapture({ store: capture.store, turn: capture.turn }, onModelCall)
+      withTurnModelCapture({ store: capture.store, turn: unknownTurn }, onModelCall)
     ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
     expect(onModelCall).not.toHaveBeenCalled();
     expect(faux.state.callCount).toBe(1);
