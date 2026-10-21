@@ -21,7 +21,7 @@ updated: 2026-09-09
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/agent-supply.md`
 - `docs/core/mediation.md`
 - `docs/core/storage.md`

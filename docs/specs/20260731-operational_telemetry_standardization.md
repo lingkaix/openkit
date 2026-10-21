@@ -26,7 +26,7 @@ date: "2026-07-31"
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
 - `docs/core/evidence.md`

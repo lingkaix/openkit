@@ -22,7 +22,7 @@ updated: 2026-10-17
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/agent-supply.md`
 - `docs/core/storage.md`
 - `docs/core/policy.md`

@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-OpenKit is an agent-native system. Agents are the premise of the platform, not one of its features. The premise is stated in `docs/product-vision.md`. The design rule it implies is a Foundation principle in `docs/core/foundation.md`: each Core capability is defined as one semantic operation that an agent can discover and invoke as naturally as a tool call, and its human surfaces and agent tool surfaces are projections of that operation. The Foundation principle keeps every decision that an owner reserves to a human with that human; agents can request, observe, and explain such a decision but never make it.
+OpenKit is an agent-native system. Agents are the premise of the platform, not one of its features. The premise is stated in `docs/product-vision.md`. The design rule it implies is a Doctrine principle in `docs/core/doctrine.md`: each Core capability is defined as one semantic operation that an agent can discover and invoke as naturally as a tool call, and its human surfaces and agent tool surfaces are projections of that operation. The Doctrine principle keeps every decision that an owner reserves to a human with that human; agents can request, observe, and explain such a decision but never make it.
 
 ## Reason
 
@@ -33,4 +33,4 @@ The human-reserved qualifier was added by the agent. It is not a separate engine
 ## Affected Owners
 
 - docs/product-vision.md
-- docs/core/foundation.md
+- docs/core/doctrine.md

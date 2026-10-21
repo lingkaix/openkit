@@ -52,7 +52,7 @@ Source: change record 202610020440000000-interface_unification.
 
 ## Affected Owners
 
-- docs/core/foundation.md
+- docs/core/doctrine.md
 - docs/core/contract-evolution.md
 - docs/specs/20260715-contract_stability_baseline.md
 - docs/specs/20260910-agent_operator_skill.md

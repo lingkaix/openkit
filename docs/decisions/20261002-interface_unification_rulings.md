@@ -56,7 +56,7 @@ Source: change record 202610020440000000-interface_unification.
 
 ## Affected Owners
 
-- docs/core/foundation.md
+- docs/core/doctrine.md
 - docs/core/identity.md
 - docs/core/policy.md
 - docs/specs/20260713-openkit_agent_skill_interface.md

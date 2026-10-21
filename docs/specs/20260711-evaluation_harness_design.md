@@ -18,7 +18,7 @@ kind: process
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/architecture.md`
 - `docs/core/work-model.md`
 - `docs/core/sandbox.md`

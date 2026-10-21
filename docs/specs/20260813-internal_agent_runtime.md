@@ -27,7 +27,7 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 - `docs/core/architecture.md`
 - `docs/core/mediation.md`
 - `docs/core/work-model.md`
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/policy.md`
 
 ## Summary

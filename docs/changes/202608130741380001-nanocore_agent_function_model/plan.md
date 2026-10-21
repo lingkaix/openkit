@@ -31,7 +31,7 @@ Absorption is distillation, not copying. `[DOC-015]` binds it: no criterion that
 - [`docs/change-execution.md`](../../change-execution.md)
 - [`docs/documentation-model.md`](../../documentation-model.md)
 - [`docs/engineering-doctrine.md`](../../engineering-doctrine.md)
-- [`docs/core/foundation.md`](../../core/foundation.md)
+- [docs/core/foundation.md](../../core/doctrine.md)
 - [`docs/core/work-model.md`](../../core/work-model.md)
 - [`docs/core/agent-session.md`](../../core/agent-session.md)
 - [docs/core/agent-workflow.md](../../core/work-model.md)

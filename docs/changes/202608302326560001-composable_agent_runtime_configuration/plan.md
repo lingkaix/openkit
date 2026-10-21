@@ -74,7 +74,7 @@ branch: main
 ## Accepted Owners
 
 - `docs/core/core-concepts.md` owns the stable Server and Workspace configuration scopes and their relationship to the User scope owned by Identity; `docs/core/identity.md` owns User identity, membership, and the personal-preference subject.
-- `docs/core/foundation.md` owns useful human and Workspace agency, proportionality, one owner per responsibility, and the prohibition on speculative future machinery; it does not redefine the three scopes.
+- [docs/core/foundation.md](../../core/doctrine.md) owns useful human and Workspace agency, proportionality, one owner per responsibility, and the prohibition on speculative future machinery; it does not redefine the three scopes.
 - `docs/core/architecture.md` owns App/Core/Agent layers, internal Core role boundaries, and the distinction between product selection and runtime placement; it does not own Harness, Sandbox, Server, Workspace, or User definitions.
 - `docs/core/agent-supply.md` owns Agent catalogs, one Agent Manifest plus nested profile, authored composition into one setup, Workspace-visible supply, and the one-way boundary from authored setup to resolved setup.
 - `docs/core/agent-session.md` owns one-Thread continuity, AgentSession replacement, and the boundary between a current AgentSession and its sequential Turns.

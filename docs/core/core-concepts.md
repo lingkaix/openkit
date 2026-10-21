@@ -189,7 +189,7 @@ An external, provider-native, or adapter-native runtime identifier must not beco
 
 ## Related Docs
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
 - `docs/core/runtime-model.md`

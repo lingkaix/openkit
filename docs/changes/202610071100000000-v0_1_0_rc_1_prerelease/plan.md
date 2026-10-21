@@ -6,7 +6,7 @@ branch: rel-prep
 ---
 # v0.1.0-rc.1 Pre-Release Preparation
 
-This record preserves preparation, publication and accepted independent verification evidence for the first pre-release, delivered as `v0.1.0-rc.2` under Intent Revision 2. It adds no rule or authorization; [Release Management](../../specs/20260829-release_management.md), [Foundation](../../core/foundation.md), and their linked owners govern the work, with the [Release Cookbook](../../cookbooks/release.md) supplying the procedure.
+This record preserves preparation, publication and accepted independent verification evidence for the first pre-release, delivered as `v0.1.0-rc.2` under Intent Revision 2. It adds no rule or authorization; [Release Management](../../specs/20260829-release_management.md), [Foundation](../../core/doctrine.md), and their linked owners govern the work, with the [Release Cookbook](../../cookbooks/release.md) supplying the procedure.
 
 ## Intent Epoch 1 — 2026-10-07
 

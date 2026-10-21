@@ -17,7 +17,7 @@ The Model Context Protocol tool-call rule stays in [Worker MCP Tool Supply](2026
 
 ## Core References
 
-- [Foundation](../core/foundation.md)
+- [Doctrine](../core/doctrine.md)
 - [Contract Evolution](../core/contract-evolution.md)
 - [Permissions](../core/policy.md)
 - [Evidence](../core/evidence.md)

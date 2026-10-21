@@ -13,7 +13,7 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 ## Principles
 
-**OpenKit records are the product truth; everything else is evidence.** [Foundation](foundation.md) owns durable product truth. Worker reports, native histories, provider output, MCP results and channel receipts are evidence with a recorded origin. They become product records only through their owner's validation.
+**OpenKit records are the product truth; everything else is evidence.** [Doctrine](doctrine.md) owns durable product truth. Worker reports, native histories, provider output, MCP results and channel receipts are evidence with a recorded origin. They become product records only through their owner's validation.
 
 **Acknowledge only what is durable.** A success shown to a user, client or agent follows the durable commit of the content it describes. Content is durable before a durable reference to it is published; the reference is the commit point.
 
@@ -143,7 +143,7 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 
 ## Relationships To Other Core Aspects
 
-- [Foundation](foundation.md) owns durable product truth and trust boundaries; this document applies them to failure.
+- [Doctrine](doctrine.md) owns durable product truth and trust boundaries; this document applies them to failure.
 - [Storage](storage.md) owns acknowledgement points, integrity failure handling, retained volumes and backup coverage.
 - [Protocol](protocol.md) and [Communication](communication.md) own request replay, Turn outcomes, streams, pending-outcome delivery and closeout.
 - [Runtime Model](runtime-model.md) owns scheduling, placement, collection, interruption and execution-domain cleanup, and projects durable execution, safe points and danger windows onto the execution lifecycle.

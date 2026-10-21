@@ -7,7 +7,7 @@ branch: main
 ---
 # v0.1.0-rc.5 Pre-Release
 
-This record preserves the source intent and the evidence for prerelease `v0.1.0-rc.5`. It adds no design authority. [Foundation](../../core/foundation.md), [Architecture](../../core/architecture.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [Test Strategy](../../specs/20260529-test_strategy.md), and [App Update Delivery](../../specs/20260910-app_update_delivery.md) govern the work. The [Release Cookbook](../../cookbooks/release.md) supplies the procedure. The closed rc.4 record is [v0.1.0-rc.4 Pre-Release](../202610130200000000-v0_1_0_rc_4_prerelease/plan.md).
+This record preserves the source intent and the evidence for prerelease `v0.1.0-rc.5`. It adds no design authority. [Foundation](../../core/doctrine.md), [Architecture](../../core/architecture.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [Test Strategy](../../specs/20260529-test_strategy.md), and [App Update Delivery](../../specs/20260910-app_update_delivery.md) govern the work. The [Release Cookbook](../../cookbooks/release.md) supplies the procedure. The closed rc.4 record is [v0.1.0-rc.4 Pre-Release](../202610130200000000-v0_1_0_rc_4_prerelease/plan.md).
 
 ## Intent
 

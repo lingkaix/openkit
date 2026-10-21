@@ -149,7 +149,7 @@ This guide does not own tool-version values, the documentation type system, test
 - Public worker base and external derivation contract: `docs/specs/20260721-worker_execution_environment_images.md`
 - Image catalog, release identity, and publishing policy: `docs/specs/20260708-container_image_packaging.md`
 - Engineering rationale and product direction: `docs/engineering-doctrine.md`, `docs/product-vision.md`, `docs/roadmap.md`
-- System scope and fallback doctrine: `docs/core/foundation.md`
+- System scope and fallback doctrine: `docs/core/doctrine.md`
 - Directory-local workflow: the directory's `README.md`
 
 ## Known Debt

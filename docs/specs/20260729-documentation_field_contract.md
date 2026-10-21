@@ -22,7 +22,7 @@ kind: process
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 
 ## Problem
 

@@ -43,6 +43,7 @@ const HISTORICAL_CORE_RENAMES = new Map([
   ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
   ['docs/core/agent-workflow.md', 'docs/core/work-model.md'],
   ['docs/core/audit.md', 'docs/core/evidence.md'],
+  ['docs/core/foundation.md', 'docs/core/doctrine.md'],
   ['docs/core/metering.md', 'docs/core/evidence.md'],
   ['docs/core/permissions.md', 'docs/core/policy.md'],
 ]);

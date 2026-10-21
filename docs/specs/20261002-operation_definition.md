@@ -35,7 +35,7 @@ Where this specification describes a migration whose owning-document amendment i
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/contract-evolution.md`
 - `docs/core/identity.md`
 - `docs/core/policy.md`

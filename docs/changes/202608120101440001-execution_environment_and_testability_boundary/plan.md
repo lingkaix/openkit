@@ -35,7 +35,7 @@ Where a package's work is mechanical rather than editorial, this record carries 
 - [`docs/specs/20260529-test_strategy.md`](../../specs/20260529-test_strategy.md)
 - [`docs/specs/20260708-container_image_packaging.md`](../../specs/20260708-container_image_packaging.md)
 - [`docs/specs/20260721-worker_execution_environment_images.md`](../../specs/20260721-worker_execution_environment_images.md)
-- [`docs/core/foundation.md`](../../core/foundation.md)
+- [docs/core/foundation.md](../../core/doctrine.md)
 - NanoCore Agent Function Model program, change record 202608130741380001
 
 **Governing dependency — engineer decision, 2026-08-20:** As of 2026-08-20 this program depends on the NanoCore Agent Function Model program, change record 202608130741380001, completing first. The engineer's reason is that WP-4 renames `image` placement to `any` across twenty root scripts and both Git hooks, and WP-5 adds two L0 rules enforced across the whole test corpus, so together they change how every gate in this repository is executed — landing that while the NanoCore program still has unopened implementation packages would move the ground under them.
