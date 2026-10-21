@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -29,6 +29,7 @@ import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
+import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
 import {
   createVerifiedWorkspaceExport,
   importVerifiedWorkspace,
@@ -254,7 +255,7 @@ describe('work observation portable closure', () => {
     const db = workspaceDb(dataRoot, demo.workspace.id);
     const environment = {
       version: '0.0.0',
-      workspaceId: foreignOwner ?? demo.workspace.id,
+      workspaceId: demo.workspace.id,
       assistantSkillAdmission: {
         catalogRevision: 17,
         skills: [
@@ -316,22 +317,6 @@ describe('work observation portable closure', () => {
           }),
           turn.id
         );
-      if (foreignOwner !== null) {
-        // Retained malformed archive input must not require the native writer to admit a foreign owner.
-        const row = db.sqlite
-          .prepare(
-            'SELECT record_json FROM control_work_observations WHERE turn_id=? AND sequence=1'
-          )
-          .get(turn.id) as { record_json: string };
-        const retained = JSON.parse(row.record_json);
-        expect(retained.type).toBe('env.bound');
-        retained.payload.workspaceId = foreignOwner;
-        db.sqlite
-          .prepare(
-            'UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=1'
-          )
-          .run(JSON.stringify(retained), turn.id);
-      }
       const exported = createVerifiedWorkspaceExport({
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -346,6 +331,43 @@ describe('work observation portable closure', () => {
       const observationFile = [...exported.verified.fileContents.keys()].find((path) =>
         path.endsWith('/observations.jsonl')
       )!;
+      if (foreignOwner !== null) {
+        // Corrupt the private portable input after a valid export, leaving the live source intact.
+        const exportRoot = join(
+          dataRoot,
+          'server',
+          'exports',
+          'workspaces',
+          demo.workspace.id,
+          exported.verified.manifest.id
+        );
+        const lines = exported.verified.fileContents.get(observationFile)!.split('\n');
+        const retained = JSON.parse(lines[0]!);
+        expect(retained.type).toBe('env.bound');
+        retained.payload.workspaceId = foreignOwner;
+        lines[0] = JSON.stringify(retained);
+        const text = lines.join('\n');
+        writeFileSync(join(exportRoot, observationFile), text);
+        const manifest = JSON.parse(exported.verified.manifestText) as {
+          contentDigest: string;
+          contentInventory: Array<{ path: string; bytes: number; digest: string }>;
+        };
+        const entry = manifest.contentInventory.find((row) => row.path === observationFile)!;
+        entry.bytes = Buffer.byteLength(text);
+        entry.digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+        manifest.contentDigest = `sha256:${createHash('sha256')
+          .update(JSON.stringify(manifest.contentInventory))
+          .digest('hex')}`;
+        writeFileSync(
+          join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE),
+          `${JSON.stringify(manifest, null, 2)}\n`
+        );
+        exported.verified = verifyWorkspaceExportTree({ exportRoot });
+        expect(
+          JSON.parse(exported.verified.fileContents.get(observationFile)!.split('\n')[0]!).payload
+            .workspaceId
+        ).toBe(foreignOwner);
+      }
       expect(
         JSON.parse(exported.verified.fileContents.get(observationFile)!.split('\n')[0]!).payload
           .assistantSkillAdmission

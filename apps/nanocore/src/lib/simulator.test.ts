@@ -28,6 +28,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
+import * as productTurnStart from '../runtime/product-turn-start.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
@@ -262,6 +263,7 @@ describe('SimulatedTurnExecutor', () => {
     const coreDb = createCoreDb();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new SimulatedTurnExecutor({ coreDb });
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -301,6 +303,9 @@ describe('SimulatedTurnExecutor', () => {
       const turn = (await turnResponse.json()) as { id: string };
 
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      // Admission is not completion. The unchanged test deadline also bounds this real owner.
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       const storedTurn = store.getTurnById(turn.id);
       expect(storedTurn).toMatchObject({
@@ -353,6 +358,7 @@ describe('SimulatedTurnExecutor', () => {
           )
       ).toEqual([]);
     } finally {
+      closeouts.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -952,14 +958,21 @@ describe('SimulatedTurnExecutor', () => {
               publicationPressure.mockRestore();
             }
 
-            // A Review failure must compensate through this same canonical-write admission owner.
+            // Compensation removes its owned directory; only actual byte writes require a reservation.
             const rollbackArtifact = store.rollbackArtifactCreation.bind(store);
             const compensation = vi
               .spyOn(store, 'rollbackArtifactCreation')
               .mockImplementation((id) => {
-                const previousReservations = reserve.mock.calls.length;
+                const artifactRoot = join(
+                  coreDb.dataRoot,
+                  'workspaces',
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'artifacts',
+                  id
+                );
+                expect(existsSync(artifactRoot)).toBe(true);
                 rollbackArtifact(id);
-                expect(reserve.mock.calls.length).toBeGreaterThan(previousReservations);
+                expect(existsSync(artifactRoot)).toBe(false);
               });
             const reviewFailure = vi
               .spyOn(getControlStoreWorkerClient(), 'review')
@@ -1642,6 +1655,8 @@ describe('SimulatedTurnExecutor', () => {
   it('emits command output delta before the command item completes', async () => {
     const coreDb = createCoreDb();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -1657,7 +1672,7 @@ describe('SimulatedTurnExecutor', () => {
         },
       ]),
       store,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+      turnExecutor: executor,
     });
 
     try {
@@ -1681,6 +1696,8 @@ describe('SimulatedTurnExecutor', () => {
       );
       const turn = (await turnResponse.json()) as { id: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       const commandItemId = deriveEntityId('it', ['command', turn.id]);
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
@@ -1721,6 +1738,7 @@ describe('SimulatedTurnExecutor', () => {
       });
       expect(commandItem?.output).toBe('simulator: ok');
     } finally {
+      closeouts.mockRestore();
       coreDb.sqlite.close();
     }
   });
@@ -1732,6 +1750,7 @@ describe('SimulatedTurnExecutor', () => {
     });
     const prepareSpy = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const startSpy = vi.spyOn(executor, 'startTurn');
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
 
     try {
       const turnResponse = await app.request(
@@ -1752,6 +1771,8 @@ describe('SimulatedTurnExecutor', () => {
       );
       const turn = (await turnResponse.json()) as { agentSessionId?: string; id?: string };
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
       await vi.waitFor(() => expect(store.getTurnById(turn.id!).status).toBe('completed'));
       const admissions = coreDb.sqlite
         .prepare(
