@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { EvidenceBundleRecord } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,7 +14,176 @@ import {
 import { openWorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 
+/** An old restricted bundle eligible for physical compaction. */
+function restrictedBundle(workspaceId: string, id: string): EvidenceBundleRecord {
+  return {
+    id,
+    workspaceId,
+    threadId: null,
+    goalId: null,
+    turnId: null,
+    agentSessionId: null,
+    backendType: null,
+    sourceKind: 'work-observation-body',
+    summary: 'Restricted evidence.',
+    rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
+    redactedEvidenceRefs: [],
+    contentDigests: [],
+    retentionClass: 'restricted-raw',
+    sensitivityClass: 'restricted',
+    importStatus: 'promoted',
+    requiredFeatures: [],
+    createdAt: '2026-07-01T00:00:00.000Z',
+  };
+}
+
 describe('evidence bundles', () => {
+  it.each([
+    'record',
+    'import',
+  ] as const)('refuses the shared digest namespace at %s admission and preserves canonical bytes', (admission) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-namespace-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const bytes = Buffer.from('Canonical content shared by retained records.');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const namespace = join(
+      dataRoot,
+      'workspaces',
+      workspaceDb.workspaceId,
+      'evidence',
+      'backend',
+      'sha256'
+    );
+    const path = join(namespace, digest);
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      mkdirSync(namespace, { recursive: true });
+      writeFileSync(path, bytes);
+      const record = restrictedBundle(workspaceDb.workspaceId, 'sha256');
+      expect
+        .soft(() => {
+          if (admission === 'record') recordWorkspaceEvidenceBundle(workspaceDb, record);
+          else importWorkspaceEvidenceBundles(workspaceDb, [record]);
+        })
+        .toThrow(/reserved evidence bundle id/i);
+      expect
+        .soft(
+          compactWorkspaceEvidenceBundles({
+            workspaceDb,
+            workspaceId: workspaceDb.workspaceId,
+            olderThan: '2026-07-02T00:00:00.000Z',
+          })
+        )
+        .toEqual({ expiredCount: 0 });
+      expect(existsSync(path) ? readFileSync(path) : null).toEqual(bytes);
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM evidence_bundles').all()).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'promoted',
+    'expired',
+  ] as const)('refuses a retained %s namespace collision before deleting bytes or updating any row', (status) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-preflight-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const backend = join(dataRoot, 'workspaces', workspaceDb.workspaceId, 'evidence', 'backend');
+    const bytes = Buffer.from('Republished canonical content.');
+    const path = join(backend, 'sha256', createHash('sha256').update(bytes).digest('hex'));
+    const ordinaryPath = join(backend, 'evb_first', 'raw', 'content');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceEvidenceBundle(
+        workspaceDb,
+        restrictedBundle(workspaceDb.workspaceId, 'evb_first')
+      );
+      recordWorkspaceEvidenceBundle(
+        workspaceDb,
+        restrictedBundle(workspaceDb.workspaceId, 'evb_collision')
+      );
+      // Seed a predecessor row without passing through current admission.
+      workspaceDb.sqlite
+        .prepare(
+          "UPDATE evidence_bundles SET evidence_bundle_id = 'sha256', import_status = ? WHERE evidence_bundle_id = 'evb_collision'"
+        )
+        .run(status);
+      mkdirSync(join(backend, 'sha256'), { recursive: true });
+      mkdirSync(join(ordinaryPath, '..'), { recursive: true });
+      writeFileSync(path, bytes);
+      writeFileSync(ordinaryPath, 'Ordinary restricted bytes.');
+      const before = workspaceDb.sqlite
+        .prepare('SELECT * FROM evidence_bundles ORDER BY evidence_bundle_id')
+        .all();
+
+      expect
+        .soft(() =>
+          compactWorkspaceEvidenceBundles({
+            workspaceDb,
+            workspaceId: workspaceDb.workspaceId,
+            olderThan: '2026-07-02T00:00:00.000Z',
+          })
+        )
+        .toThrow(/reserved evidence bundle id/i);
+      expect.soft(existsSync(path) ? readFileSync(path) : null).toEqual(bytes);
+      expect
+        .soft(existsSync(ordinaryPath) ? readFileSync(ordinaryPath, 'utf8') : null)
+        .toBe('Ordinary restricted bytes.');
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT * FROM evidence_bundles ORDER BY evidence_bundle_id')
+          .all()
+      ).toEqual(before);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not delete bytes again for an already-expired restricted bundle', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-repeat-compaction-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const root = join(
+      dataRoot,
+      'workspaces',
+      workspaceDb.workspaceId,
+      'evidence',
+      'backend',
+      'evb_expired'
+    );
+    const path = join(root, 'raw', 'content');
+    const input = {
+      workspaceDb,
+      workspaceId: workspaceDb.workspaceId,
+      olderThan: '2026-07-02T00:00:00.000Z',
+    };
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      recordWorkspaceEvidenceBundle(
+        workspaceDb,
+        restrictedBundle(workspaceDb.workspaceId, 'evb_expired')
+      );
+      mkdirSync(join(root, 'raw'), { recursive: true });
+      writeFileSync(path, 'Original bytes.');
+      expect(compactWorkspaceEvidenceBundles(input)).toEqual({ expiredCount: 1 });
+      expect(existsSync(root)).toBe(false);
+      const expired = workspaceDb.sqlite.prepare('SELECT * FROM evidence_bundles').all();
+      mkdirSync(join(root, 'raw'), { recursive: true });
+      writeFileSync(path, 'Later bytes.');
+
+      expect(compactWorkspaceEvidenceBundles(input)).toEqual({ expiredCount: 0 });
+      expect(existsSync(path) ? readFileSync(path, 'utf8') : null).toBe('Later bytes.');
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM evidence_bundles').all()).toEqual(expired);
+    } finally {
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('accepts exact stable-id replays and rejects divergent content', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-replay-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
