@@ -1065,3 +1065,45 @@ it('reload warns by route name when its required API key is missing', () => {
     })
   );
 });
+
+// RET §Native Transcripts And Runtime Logs: the operator can adjust the combined limit.
+it('RET-2 reload selects a checked log bound without changing a running Turn capture binding', () => {
+  const dataRoot = createDataRoot();
+  try {
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1', ', "policy": { "workDataCapture": {} }');
+    const store = createDemoStore({ dataRoot });
+    const manager = createRuntimeConfigManager({ dataRoot, captureCoverage: store });
+    const prior = manager.current();
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Native log policy',
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
+    writeConfiguredServer(
+      dataRoot,
+      'openai/gpt-5.1',
+      ', "policy": { "workDataCapture": { "nativeLogMaxBytes": 97 } }'
+    );
+    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect(manager.current().openKitConfig.policy?.workDataCapture).toEqual({
+      value: 'off',
+      nativeLogMaxBytes: 97,
+    });
+    expect(prior.openKitConfig.policy?.workDataCapture).toEqual({
+      value: 'off',
+      nativeLogMaxBytes: 16_777_216,
+    });
+    expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'off' });
+    const accepted = manager.current();
+    writeConfiguredServer(
+      dataRoot,
+      'openai/gpt-5.1',
+      ', "policy": { "workDataCapture": { "nativeLogMaxBytes": 0 } }'
+    );
+    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).not.toBe('applied');
+    expect(manager.current()).toBe(accepted);
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});

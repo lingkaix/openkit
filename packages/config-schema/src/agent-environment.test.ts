@@ -2231,3 +2231,43 @@ describe('explicit encoded-slash grant authority', () => {
     expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
   });
 });
+
+// RET §Native Transcripts And Runtime Logs; RET-2 binds the selected limit only in AEP evidence.
+describe('RET-2 immutable native log authority', () => {
+  it('retains checked bounds and does not invent authority for a historical package', () => {
+    const historical = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
+    const bytes = JSON.stringify(historical);
+    expect(
+      RetainedAgentEnvironmentPackageSchema.parse(JSON.parse(bytes)).observability.evidence
+    ).not.toHaveProperty('nativeLogMaxBytes');
+    expect(JSON.stringify(historical)).toBe(bytes);
+    const current = {
+      ...historical,
+      observability: {
+        ...historical.observability,
+        evidence: { ...historical.observability.evidence, nativeLogMaxBytes: 97 },
+      },
+    };
+    expect(
+      AgentEnvironmentPackageSchema.parse(current).observability.evidence?.nativeLogMaxBytes
+    ).toBe(97);
+    expect(
+      RetainedAgentEnvironmentPackageSchema.parse(current).observability.captureCoverage
+    ).toEqual({ scope: 'server', value: 'off' });
+  });
+
+  it('fails closed on malformed bound authority in live and retained AEPs', () => {
+    const pkg = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
+    for (const nativeLogMaxBytes of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '97', null]) {
+      const invalid = {
+        ...pkg,
+        observability: {
+          ...pkg.observability,
+          evidence: { ...pkg.observability.evidence, nativeLogMaxBytes },
+        },
+      };
+      expect(AgentEnvironmentPackageSchema.safeParse(invalid).success).toBe(false);
+      expect(RetainedAgentEnvironmentPackageSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+});

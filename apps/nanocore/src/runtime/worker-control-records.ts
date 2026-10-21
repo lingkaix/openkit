@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
+import { NativeLogMaxBytesSchema } from '@openkit/config-schema';
 import {
   readRetainedV1,
   type StopReason,
@@ -12,6 +13,7 @@ import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalEventDataSchema,
+  type WorkerObservationData,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
 import { stageWorkObservationChunk, workObservationBodyBundleId } from '../evidence-bundles.js';
@@ -24,11 +26,13 @@ import {
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
 } from './nanohost-attempt-records.js';
+import { getWorkerBackendSession, workerBackendImageIdentity } from './worker-backend-sessions.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
@@ -220,6 +224,125 @@ function recordWorkerObservation(
       .update(JSON.stringify([lineage.packageSnapshotId, observationId]))
       .digest('hex')}`;
   const id = recordId(event.event.data.observationId);
+  /** Validate native source evidence and reserve expected unit bytes through existing records. */
+  const admitNative = (data: WorkerObservationData): void => {
+    if (data.fact.kind !== 'native-transcript' && data.fact.kind !== 'runtime-log') return;
+    const native = data.fact.native;
+    const current = requireAgentEnvironmentPackageSnapshot(
+      workspaceDb,
+      lineage.workspaceId,
+      lineage.packageSnapshotId
+    ).snapshot;
+    if (
+      !native ||
+      current.scope.threadId !== lineage.threadId ||
+      current.scope.turnId !== lineage.turnId ||
+      current.scope.agentSessionId !== lineage.agentSessionId ||
+      current.agent.runtimeKind !== native.harness ||
+      current.agent.runtimeVersion !== native.authoredVersion
+    )
+      throw new Error('Native observation does not match its named AEP.');
+    if (native.imageDigest !== null) {
+      // This owner binds physical NanoHost Epochs; backendKind names the logical backend.
+      // Only its unique same-package physical binding can verify a Worker image claim.
+      const bindings = coreDb.sqlite
+        .prepare(
+          `SELECT attempt_id AS attemptId FROM worker_backend_sessions
+           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+             AND agent_session_id = ? AND package_snapshot_id = ? LIMIT 2`
+        )
+        .all(
+          lineage.workspaceId,
+          lineage.threadId,
+          lineage.turnId,
+          lineage.agentSessionId,
+          lineage.packageSnapshotId
+        ) as { attemptId: string }[];
+      const backend =
+        bindings.length === 1 ? getWorkerBackendSession(coreDb, bindings[0]!.attemptId) : null;
+      const identity = backend ? workerBackendImageIdentity(backend.backendLineage) : null;
+      const digest = identity?.match(/(?:^|@)(sha256:[a-f0-9]{64})$/)?.[1];
+      // Without a bound digest the claim stays descriptive, never admission authority.
+      if (digest && native.imageDigest !== digest)
+        throw new Error('Native image claim conflicts with its physical backend binding.');
+    }
+    const rows = readWorkObservations(workspaceDb, owner);
+    let used = 0;
+    let firstLogPackage: string | undefined;
+    for (const row of rows) {
+      if (row.type !== 'runtime.observed') continue;
+      const prior = WorkerObservationDataSchema.parse(row.payload);
+      if (prior.fact.kind !== 'native-transcript' && prior.fact.kind !== 'runtime-log') continue;
+      const associations = row.refs?.filter(
+        (ref) =>
+          ref.kind === 'aep-snapshot' &&
+          ref.edge === 'association' &&
+          ref.scope.workspaceId === lineage.workspaceId
+      );
+      if (associations?.length !== 1)
+        throw new Error('recovery_required: native observation AEP association is missing');
+      const packageId = associations[0]!.locator;
+      if (packageId === lineage.packageSnapshotId && prior.sourceRef === data.sourceRef) {
+        if (prior.sourceSequence === data.sourceSequence && row.id !== id)
+          throw new Error('Native source sequence conflicts with an existing observation.');
+        if (
+          prior.fact.kind !== data.fact.kind ||
+          (prior.fact.runtimeOriginRef !== null &&
+            data.fact.runtimeOriginRef !== null &&
+            prior.fact.runtimeOriginRef !== data.fact.runtimeOriginRef)
+        )
+          throw new Error('Native source association conflicts with existing evidence.');
+        for (const key of [
+          'harness',
+          'authoredVersion',
+          'measuredVersion',
+          'format',
+          'preLaunchWatermark',
+          'logSource',
+        ] as const) {
+          const value = prior.fact.native?.[key];
+          if (value != null && native[key] != null && value !== native[key])
+            throw new Error('Native source identity conflicts with existing evidence.');
+        }
+      }
+      if (prior.fact.kind !== 'runtime-log' || prior.content.state !== 'expected') continue;
+      firstLogPackage ??= packageId;
+      if (row.id !== id) {
+        if (used > Number.MAX_SAFE_INTEGER - prior.content.bytes)
+          throw new Error('recovery_required: native log byte count is invalid');
+        used += prior.content.bytes;
+      }
+    }
+    if (data.content.state !== 'expected') return;
+    const selected = NativeLogMaxBytesSchema.safeParse(
+      current.observability.evidence?.nativeLogMaxBytes
+    );
+    if (!selected.success)
+      throw new Error('Native content requires an immutable selected AEP log bound.');
+    if (current.observability.captureCoverage.value !== 'on')
+      throw new Error('Native content is not admitted by its named AEP.');
+    if (data.fact.kind !== 'runtime-log') return;
+    if (firstLogPackage && firstLogPackage !== lineage.packageSnapshotId) {
+      const original = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        lineage.workspaceId,
+        firstLogPackage
+      ).snapshot;
+      const originalBound = NativeLogMaxBytesSchema.safeParse(
+        original.observability.evidence?.nativeLogMaxBytes
+      );
+      if (
+        original.scope.threadId !== lineage.threadId ||
+        original.scope.turnId !== lineage.turnId ||
+        !originalBound.success ||
+        originalBound.data !== selected.data
+      )
+        throw new Error('A different package cannot renew the native Turn log bound.');
+    }
+    // Expected units already own potential bytes, even before complete publication or after loss.
+    if (used > selected.data || data.content.bytes > selected.data - used)
+      throw new Error('Native Turn log collection bound exceeded.');
+  };
   try {
     applyScopedMigrations(workspaceDb);
     const binding = readWorkObservationTurnBinding(workspaceDb, owner);
@@ -229,6 +352,7 @@ function recordWorkerObservation(
       throw new Error('recovery_required: observation AgentSession mismatch');
     if (event.event.type === 'observation.recorded') {
       const data = event.event.data;
+      admitNative(data);
       if (data.content.state === 'expected' && binding.coverage.value !== 'on')
         throw new Error('Observation content is not admitted by this Turn');
       let parent: string | undefined;
@@ -302,6 +426,7 @@ function recordWorkerObservation(
     const initial = readWorkObservations(workspaceDb, owner).find((row) => row.id === id);
     if (!initial) throw new Error('Observation content arrived without durable metadata');
     const declaration = WorkerObservationDataSchema.parse(initial.payload);
+    admitNative(declaration);
     if (declaration.content.state !== 'expected')
       throw new Error('Observation has no expected content');
     const expected = declaration.content;
