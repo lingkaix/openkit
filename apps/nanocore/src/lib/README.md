@@ -72,3 +72,5 @@ Workspace counts are an enumerable derived projection evaluated only when access
 Turn interruption carries its original receipt and authenticated command Audit explicitly to the execution owner. Simulator and queued cancellation publish them in their first native terminal tuple. A live Worker accepts the current Turn snapshot and command before external cancellation contact; acceptance does not prove physical stop or release. Main never backfills the receipt or Audit.
 
 Native identity discovery scans only admitted scopes, as startup readers do. A quarantined Workspace cannot block reads or writes in a healthy sibling, and it never supplies fallback authority. Explicit access to the refused Workspace still follows the existing recovery diagnostic.
+
+An unscoped Turn lookup searches admitted native owners only. If it finds no owner while a Workspace is quarantined, it cannot prove absence and returns the existing scope-admission `recovery_required` refusal without opening that Workspace. Known healthy Turns remain readable, and an absent Turn remains not found when the entire search domain is admitted. No cached body or replacement owner is used.

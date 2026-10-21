@@ -62,7 +62,12 @@ import {
   type CreateArtifactReviewInput,
 } from '../artifact-reviews.js';
 import { prepareAuditEvent } from '../audit-events.js';
-import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
+import {
+  assertScopeAdmitted,
+  isScopeAdmitted,
+  refuseScope,
+  scopeAdmissionFailures,
+} from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import {
   initializeDefaultKnowledgeBaseId,
@@ -4676,7 +4681,14 @@ export class FsStore {
   public getTurnById(turnId: string): Turn {
     if (this.dataRoot) {
       const lineage = this.getTurnLineage(turnId);
-      if (!lineage) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+      if (!lineage) {
+        // An opaque miss cannot prove absence while part of its search domain is quarantined.
+        // Never open that authority to distinguish absence; known healthy owners still resolve above.
+        for (const failure of scopeAdmissionFailures(this.dataRoot))
+          if (failure.scope === 'workspace')
+            assertScopeAdmitted(this.dataRoot, 'workspace', failure.id);
+        throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+      }
       return this.getTurn(lineage.workspaceId, lineage.threadId, turnId);
     }
     const turn = this.turns.get(turnId);
