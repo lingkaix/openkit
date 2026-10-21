@@ -111,6 +111,17 @@ describe('openkit-generative MCP', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
+    const sessionTimestamp = turn.startedAt ?? new Date().toISOString();
+    await store.createAgentSession({
+      id: testEntityId('as', 'session_demo'),
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      status: 'created',
+      message: null,
+      createdAt: sessionTimestamp,
+      updatedAt: sessionTimestamp,
+    });
     await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'session_demo'),
@@ -220,6 +231,7 @@ describe('openkit-generative MCP', () => {
         data: { active: false },
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -240,6 +252,17 @@ describe('openkit-generative MCP', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
+    const sessionTimestamp = turn.startedAt ?? new Date().toISOString();
+    await store.createAgentSession({
+      id: testEntityId('as', 'session_demo'),
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      status: 'created',
+      message: null,
+      createdAt: sessionTimestamp,
+      updatedAt: sessionTimestamp,
+    });
     await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'session_demo'),
@@ -331,6 +354,7 @@ describe('openkit-generative MCP', () => {
       ).rejects.toMatchObject({ code: 'bound_input_conflict', status: 403 });
       expect(count()).toBe(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
