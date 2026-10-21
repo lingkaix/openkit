@@ -5085,6 +5085,9 @@ export class FsStore {
         if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) stream.events.shift();
       }
     }
+    // Feedback is a separate file owner and can publish only after native terminal acknowledgement.
+    if (scope && owner.kind === 'workspace' && turn.status === 'completed')
+      ensureTurnFeedback(this, turn, turn.agentId ?? null);
     for (const terminalEvent of [...precedingEvents, event])
       this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
     if (scope && owner.kind === 'workspace' && !prior && this.terminalHookDepth < 8) {
