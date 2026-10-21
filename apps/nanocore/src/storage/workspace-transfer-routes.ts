@@ -6,7 +6,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -200,9 +199,11 @@ import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
+  listNativeProducts,
+  nativeProductScope,
   readCanonicalFile,
   readCanonicalTextFile,
-  readPublishedTurnFileRecords,
+  readNativeTurnHistory,
   readWorkspaceTurnEvents,
   writeFileAtomic,
 } from './workspace-file-records.js';
@@ -1290,36 +1291,21 @@ export function createVerifiedWorkspaceExport({
   assertCanonicalDirectory(workspaceRoot);
   const canonicalItemRevisions: Item[] = [];
   const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
-  const turns = threads.flatMap((thread) => {
-    assertSafeWorkspacePathSegment(thread.id, 'Thread id');
-    const threadsRoot = join(workspaceRoot, 'threads');
-    const threadRoot = join(threadsRoot, thread.id);
-    const turnsRoot = join(threadRoot, 'turns');
-    assertCanonicalDirectory(threadsRoot);
-    assertCanonicalDirectory(threadRoot);
-    if (!lstatSync(turnsRoot, { throwIfNoEntry: false })) return [];
-    assertCanonicalDirectory(turnsRoot);
-    // A failed publication can leave the derivative cache ahead of, or without, a canonical Turn.
-    return readdirSync(turnsRoot, { withFileTypes: true })
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .flatMap((directory) => {
-        if (directory.isSymbolicLink())
-          throw new Error('Canonical Turn directory must not contain a symbolic link.');
-        if (!directory.isDirectory()) return [];
-        const published = readPublishedTurnFileRecords(
-          dataRoot,
-          workspaceId,
-          thread.id,
-          directory.name
-        );
-        if (!published) throw new Error('Workspace export cannot claim an unpublished Turn.');
-        canonicalItemRevisions.push(...published.itemRevisions);
-        if (published.captureCoverage)
-          turnCaptureCoverage.set(published.turn.id, published.captureCoverage);
-        return [published.turn];
-      })
-      .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
-  });
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+  const threadIds = new Set(threads.map((thread) => thread.id));
+  // Native rows select published history. Input/media directories cannot enumerate product authority.
+  const turns = listNativeProducts(scope, 'turn')
+    .map((snapshot) => {
+      const published = readNativeTurnHistory(scope, snapshot.record.id as string);
+      if (!published || !threadIds.has(published.turn.threadId))
+        throw new Error('Workspace export cannot claim a Turn without its native Thread.');
+      canonicalItemRevisions.push(...published.itemRevisions);
+      if (published.captureCoverage)
+        turnCaptureCoverage.set(published.turn.id, published.captureCoverage);
+      return published.turn;
+    })
+    .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
+
   const canonicalTurns = new Map(turns.map((turn) => [turn.id, turn]));
   const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
   const dataSourceCatalog = existsSync(dataSourceCatalogPath)
