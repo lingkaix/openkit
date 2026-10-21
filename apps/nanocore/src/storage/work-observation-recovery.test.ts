@@ -1,11 +1,4 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -19,7 +12,9 @@ import { applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import {
   appendWorkObservation,
+  prepareControlTurnReap,
   readWorkObservations,
+  readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from './work-observations.js';
 
@@ -53,21 +48,16 @@ async function fixture() {
   databases.push(db);
   applyScopedMigrations(db);
   const owner = { threadId: thread.id, turnId: turn.id };
-  const turnRoot = join(
-    dataRoot,
-    'workspaces',
-    workspace.id,
-    'threads',
-    thread.id,
-    'turns',
-    turn.id
-  );
-  return { dataRoot, store, db, owner, turnRoot };
+  return { dataRoot, store, db, owner };
 }
 
-/** Exercises the existing product terminalization before the recovery observation seam. */
-function recover(f: Awaited<ReturnType<typeof fixture>>, anchored = true, timestamp = completedAt) {
-  const turn = terminalizeGovernedWorkerTurn({
+/** Awaits the native terminal tuple, then verifies its already committed recovery snapshot. */
+async function recover(
+  f: Awaited<ReturnType<typeof fixture>>,
+  anchored = true,
+  timestamp = completedAt
+) {
+  const turn = await terminalizeGovernedWorkerTurn({
     agentSessionId: null,
     completedAt: timestamp,
     errorCode: 'worker_governance_restart_recovery',
@@ -153,7 +143,40 @@ async function observe(f: Awaited<ReturnType<typeof fixture>>, observation: Work
   return (await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).observation;
 }
 
-describe('restart recovery observations', () => {
+/** Captures exact committed metadata bytes so terminal attempts cannot hide a native rewrite. */
+function observationBytes(f: Awaited<ReturnType<typeof fixture>>) {
+  return f.db.sqlite
+    .prepare('SELECT record_json FROM control_work_observations WHERE turn_id=? ORDER BY sequence')
+    .all(f.owner.turnId);
+}
+
+/** Validates the exact native fault in a rolled-back terminal staging transaction before crossing redacted transport. */
+async function expectNativeReapRefusal(f: Awaited<ReturnType<typeof fixture>>, message: string) {
+  await shutdownControlStoreWorkerClient();
+  f.db.sqlite.exec('BEGIN');
+  try {
+    f.db.sqlite
+      .prepare(
+        "UPDATE control_turns SET status='interrupted',record_json=json_set(record_json,'$.status','interrupted','$.completedAt',?) WHERE id=?"
+      )
+      .run(completedAt, f.owner.turnId);
+    expect(() =>
+      prepareControlTurnReap(
+        f.db.sqlite,
+        { kind: 'workspace', workspaceId: f.db.workspaceId },
+        {
+          ...f.owner,
+          reason: 'interrupted',
+          inferredBy: 'native-terminal-publication',
+        }
+      )
+    ).toThrow(message);
+  } finally {
+    f.db.sqlite.exec('ROLLBACK');
+  }
+}
+
+describe('native terminal recovery observations', () => {
   it.each([
     false,
     true,
@@ -174,16 +197,17 @@ describe('restart recovery observations', () => {
         obs: 'nanocore',
         ret: 'turn-evidence',
         payload: {
-          reason: anchored ? 'anchored-cleanup' : 'pre-anchor',
+          reason: anchored ? 'interrupted' : 'failed',
           lastObservedTs: null,
           unresolvedCalls: [],
-          inferredBy: 'scheduler-restart-recovery',
+          inferredBy: 'native-terminal-publication',
         },
       },
     ]);
-    expect(JSON.parse(readFileSync(join(f.turnRoot, 'turn.json'), 'utf8')).captureCoverage).toEqual(
-      { scope: 'server', value: 'off' }
-    );
+    expect(readWorkObservationTurnBinding(f.db, f.owner).coverage).toEqual({
+      scope: 'server',
+      value: 'off',
+    });
   });
 
   it('pairs only observed model and runtime calls inside the Turn, using committed order', async () => {
@@ -206,6 +230,8 @@ describe('restart recovery observations', () => {
       null,
       {
         captureCoverage: { scope: 'server', value: 'off' },
+        // A retained terminal sibling preserves same-Thread isolation without a second active Turn.
+        status: 'completed',
       }
     );
     await appendWorkObservation(f.db, {
@@ -249,12 +275,12 @@ describe('restart recovery observations', () => {
     const context = { workspaceDb: f.db, ...f.owner, corr: 'logical-call' };
     const first = new ModelCapture({ ...context, attempt: 0 }, [], 'provider_test');
     const second = new ModelCapture({ ...context, attempt: 1 }, [], 'provider_test');
-    first.request({ model: 'model_test', input: 'First attempt' });
-    second.request({ model: 'model_test', input: 'Second attempt' });
+    await first.request({ model: 'model_test', input: 'First attempt' });
+    await second.request({ model: 'model_test', input: 'Second attempt' });
     const requests = readWorkObservations(f.db, f.owner);
     expect(requests.map((row) => row.payload.attempt)).toEqual([0, 1]);
     expect(requests[0]!.id).not.toBe(requests[1]!.id);
-    first.event({ type: 'error' });
+    await first.event({ type: 'error' });
     expect(readWorkObservations(f.db, f.owner).at(-1)?.parent).toBe(requests[0]!.id);
     await recover(f);
     expect(readWorkObservations(f.db, f.owner).at(-1)?.payload.unresolvedCalls).toEqual([
@@ -265,14 +291,23 @@ describe('restart recovery observations', () => {
   it('fails required collection when the deterministic reap id belongs to another supported type', async () => {
     const f = await fixture();
     await observe(f, model(`turn.reap:${f.owner.turnId}`, 'collision'));
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const original = readFileSync(path);
-    expect(() => recover(f)).toThrow('recovery_required');
-    expect(f.store.getTurnById(f.owner.turnId)).toMatchObject({
-      status: 'interrupted',
-      completedAt,
+    const original = observationBytes(f);
+    const turn = f.store.getTurnById(f.owner.turnId);
+    const events = f.store.getTurnEvents(f.owner.turnId);
+    await expectNativeReapRefusal(f, 'recovery_required: turn.reap identity conflict');
+    await expect(recover(f)).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({
+          name: 'ControlStoreWorkerError',
+          code: 'sql-failed',
+          commit: 'not-committed',
+          message: 'Control database writer operation failed.',
+        }),
+      ],
     });
-    expect(readFileSync(path)).toEqual(original);
+    expect(f.store.getTurnById(f.owner.turnId)).toEqual(turn);
+    expect(f.store.getTurnEvents(f.owner.turnId)).toEqual(events);
+    expect(observationBytes(f)).toEqual(original);
   });
 
   it('reuses the exact committed snapshot after late observations and a cold retry', async () => {
@@ -285,7 +320,8 @@ describe('restart recovery observations', () => {
       ...model('late-done', 'open', 'done', '2026-09-29T00:02:00.000Z'),
       parent: 'open',
     });
-    const bytes = readFileSync(join(f.turnRoot, 'observations.jsonl'));
+    const bytes = observationBytes(f);
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(db);
@@ -294,19 +330,22 @@ describe('restart recovery observations', () => {
     expect(readWorkObservations(db, f.owner).filter((row) => row.type === 'turn.reap')).toEqual([
       original,
     ]);
-    expect(readFileSync(join(f.turnRoot, 'observations.jsonl'))).toEqual(bytes);
+    expect(observationBytes(cold)).toEqual(bytes);
   });
 
   it('preserves never-recorded coverage without binding current policy', async () => {
     const f = await fixture();
-    const path = join(f.turnRoot, 'turn.json');
-    const raw = JSON.parse(readFileSync(path, 'utf8'));
-    delete raw.captureCoverage;
-    writeFileSync(path, `${JSON.stringify(raw)}\n`);
+    await shutdownControlStoreWorkerClient();
+    // Model retained never-recorded admission in its canonical owner, with the writer stopped.
+    f.db.sqlite
+      .prepare(
+        "UPDATE control_turns SET record_json=json_remove(record_json,'$.captureCoverage') WHERE id=?"
+      )
+      .run(f.owner.turnId);
     const cold = { ...f, store: new FsStore({ dataRoot: f.dataRoot }) };
     expect(await recover(cold)).toMatchObject({ status: 'interrupted' });
-    expect(JSON.parse(readFileSync(path, 'utf8')).captureCoverage).toBeUndefined();
-    expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
+    expect(readWorkObservationTurnBinding(f.db, f.owner).coverage).toBeNull();
+    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
   });
 
   it.each([
@@ -328,41 +367,70 @@ describe('restart recovery observations', () => {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    const observations = readWorkObservations(f.db, f.owner);
     expect(await recover(f)).toMatchObject({ status: terminal.status, error: terminal.error });
-    expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
+    expect(readWorkObservations(f.db, f.owner)).toEqual(observations);
   });
 
   it('leaves a never-created product Turn without an observation ledger', async () => {
     const f = await fixture();
+    const missingTurnId = 'tu_00000000-0000-76d4-be96-fe2dccab50f4';
     expect(
-      await recover({ ...f, owner: { ...f.owner, turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4' } })
+      await recover({
+        ...f,
+        owner: { ...f.owner, turnId: missingTurnId },
+      })
     ).toEqual({
       status: 'missing',
     });
-    expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
+    expect(
+      f.db.sqlite.prepare('SELECT 1 FROM control_turns WHERE id=?').get(missingTurnId)
+    ).toBeUndefined();
+    expect(
+      f.db.sqlite
+        .prepare('SELECT 1 FROM control_work_observations WHERE turn_id=?')
+        .get(missingTurnId)
+    ).toBeUndefined();
+    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
   });
 
-  it('propagates committed ledger corruption after terminalization and allows a repaired retry', async () => {
+  it('rolls back terminalization on corrupt native observation authority and allows a repaired retry', async () => {
     const f = await fixture();
     await observe(f, model('open', 'open'));
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const valid = readFileSync(path);
-    appendFileSync(path, '{corrupt committed row}\n');
-    const corrupt = readFileSync(path);
-    expect(() => recover(f)).toThrow();
-    expect(f.store.getTurnById(f.owner.turnId)).toMatchObject({
-      status: 'interrupted',
-      completedAt,
-      error: { code: 'worker_governance_restart_recovery' },
-    });
-    expect(readFileSync(path)).toEqual(corrupt);
-    // Repair belongs to the ledger owner; retry must reuse the already-decided product outcome.
-    writeFileSync(path, valid);
-    await recover(
-      { ...f, store: new FsStore({ dataRoot: f.dataRoot }) },
-      true,
-      '2026-09-29T00:03:00.000Z'
+    await shutdownControlStoreWorkerClient();
+    const select = f.db.sqlite.prepare(
+      'SELECT record_json FROM control_work_observations WHERE turn_id=? AND id=?'
     );
+    const valid = select.get(f.owner.turnId, 'open') as { record_json: string };
+    const turn = f.store.getTurnById(f.owner.turnId);
+    const events = f.store.getTurnEvents(f.owner.turnId);
+    // Keep valid SQLite JSON but contradict the canonical sequence index; a file tail is no longer authority.
+    f.db.sqlite
+      .prepare(
+        "UPDATE control_work_observations SET record_json=json_set(record_json,'$.seq',99) WHERE turn_id=? AND id=?"
+      )
+      .run(f.owner.turnId, 'open');
+    const corrupt = select.get(f.owner.turnId, 'open');
+    await expectNativeReapRefusal(f, 'recovery_required: native observation index mismatch');
+    await expect(recover(f)).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({
+          name: 'ControlStoreWorkerError',
+          code: 'sql-failed',
+          commit: 'not-committed',
+          message: 'Control database writer operation failed.',
+        }),
+      ],
+    });
+    expect(f.store.getTurnById(f.owner.turnId)).toEqual(turn);
+    expect(f.store.getTurnEvents(f.owner.turnId)).toEqual(events);
+    expect(select.get(f.owner.turnId, 'open')).toEqual(corrupt);
+    // Explicit fixture repair restores the exact prior authority; the failed tuple established no terminal outcome.
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite
+      .prepare('UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND id=?')
+      .run(valid.record_json, f.owner.turnId, 'open');
+    await recover({ ...f, store: new FsStore({ dataRoot: f.dataRoot }) }, true, completedAt);
     expect(readWorkObservations(f.db, f.owner).at(-1)).toMatchObject({
       type: 'turn.reap',
       ts: completedAt,

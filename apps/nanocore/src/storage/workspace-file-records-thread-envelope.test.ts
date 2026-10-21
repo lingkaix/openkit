@@ -1,17 +1,8 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
-import {
-  cpSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseRecordEnvelope } from '@openkit/config-schema';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
@@ -21,7 +12,7 @@ import {
 } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
 /** Seeds the recorded User for current private Thread authority checks. */
@@ -36,12 +27,34 @@ function createOwnerBoundStore(dataRoot: string): FsStore {
   return new FsStore({ dataRoot });
 }
 
-/** Reads one persisted Thread record from an isolated store. */
+/** Reads and explicitly corrupts the native retained Thread payload, never a readable projection. */
 function threadRecord(dataRoot: string, workspaceId: string, threadId: string) {
-  const path = join(dataRoot, 'workspaces', workspaceId, 'threads', threadId, 'thread.json');
+  const read = () => {
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      return (
+        db.sqlite.prepare('SELECT record_json FROM control_threads WHERE id=?').get(threadId) as {
+          record_json: string;
+        }
+      ).record_json;
+    } finally {
+      db.sqlite.close();
+    }
+  };
   return {
-    path,
-    value: JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>,
+    value: JSON.parse(read()) as Record<string, unknown>,
+    read,
+    async write(value: Record<string, unknown>) {
+      await shutdownControlStoreWorkerClient();
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        db.sqlite
+          .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+          .run(JSON.stringify(value), threadId);
+      } finally {
+        db.sqlite.close();
+      }
+    },
   };
 }
 
@@ -61,13 +74,15 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
     await shutdownControlStoreWorkerClient();
     return rmSync(restartRoot, { recursive: true, force: true });
   });
-  const seed = new FsStore({ dataRoot: restartRoot });
+  const seed = createTestStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
+  // Exclude the live native writer before copying its SQLite authority.
+  await shutdownControlStoreWorkerClient();
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
-  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  /** Preserves raw native SQL schema/values and exact other bytes; WAL/SHM are bookkeeping. */
   function snapshot(root: string): Record<string, Buffer | string> {
     const entries: Record<string, Buffer | string> = {};
     const visit = (directory: string, prefix = '') => {
@@ -77,8 +92,42 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
         if (entry.isDirectory()) {
           entries[key] = 'directory';
           visit(path, key);
-        } else {
-          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        } else if (entry.isSymbolicLink()) {
+          entries[key] = `link:${readlinkSync(path)}`;
+        } else if (key === join('db', 'workspace.sqlite')) {
+          const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+          try {
+            entries[key] = sqlite.transaction(() => {
+              const schema = sqlite
+                .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')
+                .all();
+              const tables = sqlite
+                .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+                .all() as { name: string }[];
+              const rows = tables.map(({ name }) => [
+                name,
+                sqlite
+                  .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                  .raw(true)
+                  .safeIntegers(true)
+                  .all()
+                  .map((row) =>
+                    JSON.stringify(row, (_key, value) =>
+                      typeof value === 'bigint' ? { integer: value.toString() } : value
+                    )
+                  )
+                  .sort(),
+              ]);
+              return Buffer.from(JSON.stringify({ schema, rows }));
+            })();
+          } finally {
+            sqlite.close();
+          }
+        } else if (
+          key !== join('db', 'workspace.sqlite-wal') &&
+          key !== join('db', 'workspace.sqlite-shm')
+        ) {
+          entries[key] = readFileSync(path);
         }
       }
     };
@@ -95,7 +144,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   expect(() => reopened.getWorkspace(workspaceId)).toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
-  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+  await expect(reopened.createThread(workspaceId, 'Must remain refused')).rejects.toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
@@ -110,7 +159,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 }
 
 describe('Thread canonical record envelope', () => {
-  it('writes entryPath behind its required feature and rejects unsupported Thread semantics', async () => {
+  it('retains explicit entry and visibility and rejects unsupported required Thread semantics', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-envelope-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Envelope workspace');
@@ -126,27 +175,15 @@ describe('Thread canonical record envelope', () => {
     expect(persisted.value).toMatchObject({
       entryPath: 'administration',
       id: thread.id,
-      ownerScope: 'workspace',
-      recordType: 'thread',
-      requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
       schemaVersion: 1,
       owner: { kind: 'workspace', workspaceId: workspace.id },
     });
-    expect(() =>
-      parseRecordEnvelope(persisted.value, { supportedFeatures: ['openkit.thread-entry.v1'] })
-    ).toThrow('Unsupported required feature: openkit.thread-visibility.v1');
-    expect(persisted.value.lineage).toEqual({
-      threadId: thread.id,
-      workspaceId: workspace.id,
+    await persisted.write({
+      ...persisted.value,
+      requiredFeatures: ['workspace.mount.fuse'],
     });
-
-    writeFileSync(
-      persisted.path,
-      `${JSON.stringify({
-        ...persisted.value,
-        requiredFeatures: ['openkit.thread-entry.v1', 'workspace.mount.fuse'],
-      })}\n`
-    );
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
@@ -182,37 +219,19 @@ describe('Thread canonical record envelope', () => {
     ]) {
       delete legacy[field];
     }
-    writeFileSync(persisted.path, `${JSON.stringify(legacy)}\n`);
+    await persisted.write(legacy);
 
-    const bytes = readFileSync(persisted.path, 'utf8');
+    const bytes = persisted.read();
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
-    expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
+    expect(persisted.read()).toBe(bytes);
   });
 });
 
-/** Removes only visibility-era metadata and recomputes the predecessor envelope digest. */
+/** Removes required native visibility metadata without inventing a replacement audience. */
 function predecessorRecord(value: Record<string, unknown>) {
   const predecessor = { ...value };
   delete predecessor.visibility;
   delete predecessor.privateOwnerUserId;
-  delete predecessor.threadSource;
-  delete predecessor.parentThreadId;
-  predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
-  const { id, owner, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
-  predecessor.contentDigest = `sha256:${createHash('sha256')
-    .update(
-      JSON.stringify({
-        id,
-        owner,
-        name,
-        preview,
-        status,
-        entryPath,
-        createdAt,
-        updatedAt,
-      })
-    )
-    .digest('hex')}`;
   return predecessor;
 }
 
@@ -228,10 +247,10 @@ it('refuses predecessor envelopes for both formal and conversation history witho
     });
     if (formal) await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
-    writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
-    const bytes = readFileSync(persisted.path, 'utf8');
+    await persisted.write(predecessorRecord(persisted.value));
+    const bytes = persisted.read();
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
-    expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
+    expect(persisted.read()).toBe(bytes);
   }
 });
 
@@ -255,7 +274,7 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
       }
     );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
-    writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
+    await persisted.write({ ...persisted.value, ...damage });
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   }
 });
@@ -270,24 +289,28 @@ it('does not infer shared inception when formal and conversation Turns have tied
     id: LOCAL_USER_ID,
   });
   await store.updateTurn(formal.id, { agentId: 'agent_codex_host' });
+  await store.completeTurn(formal.id, { status: 'completed', completedAt: formal.startedAt });
   const conversation = await store.createTurn(workspace.id, thread.id, 'Conversation', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
-  const conversationPath = join(
-    dataRoot,
-    'workspaces',
-    workspace.id,
-    'threads',
-    thread.id,
-    'turns',
-    conversation.id,
-    'turn.json'
-  );
-  const rawTurn = JSON.parse(readFileSync(conversationPath, 'utf8'));
-  writeFileSync(conversationPath, JSON.stringify({ ...rawTurn, startedAt: formal.startedAt }));
+  await shutdownControlStoreWorkerClient();
+  const db = openWorkspaceDb(dataRoot, workspace.id);
+  try {
+    const row = db.sqlite
+      .prepare('SELECT record_json FROM control_turns WHERE id=?')
+      .get(conversation.id) as { record_json: string };
+    db.sqlite
+      .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+      .run(
+        JSON.stringify({ ...JSON.parse(row.record_json), startedAt: formal.startedAt }),
+        conversation.id
+      );
+  } finally {
+    db.sqlite.close();
+  }
   const persisted = threadRecord(dataRoot, workspace.id, thread.id);
-  writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
+  await persisted.write(predecessorRecord(persisted.value));
   await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
 });
 
@@ -319,11 +342,11 @@ it.each([
       ...persisted.value,
       [field]: value === 'self' ? thread.id : value,
     };
-    const bytes = `${JSON.stringify(predecessor)}\n`;
-    writeFileSync(persisted.path, bytes);
+    await persisted.write(predecessor);
+    const bytes = persisted.read();
 
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
-    expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
+    expect(persisted.read()).toBe(bytes);
   } finally {
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -349,17 +372,15 @@ it('preserves current administration entry and validates its envelope without re
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     const predecessor = persisted.value;
     for (const damage of [
-      { contentDigest: `sha256:${'0'.repeat(64)}` },
-      {
-        lineage: { workspaceId: workspace.id, threadId: 'th_00000000-0000-7000-8000-000000000001' },
-      },
+      { schemaVersion: 2 },
+      { id: 'th_00000000-0000-7000-8000-000000000001' },
     ]) {
-      const bytes = `${JSON.stringify({ ...predecessor, ...damage })}\n`;
-      writeFileSync(persisted.path, bytes);
+      await persisted.write({ ...predecessor, ...damage });
+      const bytes = persisted.read();
       await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
-      expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
+      expect(persisted.read()).toBe(bytes);
     }
-    writeFileSync(persisted.path, `${JSON.stringify(predecessor)}\n`);
+    await persisted.write(predecessor);
     expect(new FsStore({ dataRoot }).getThread(workspace.id, thread.id)).toMatchObject({
       entryPath: 'administration',
       visibility: 'private',
