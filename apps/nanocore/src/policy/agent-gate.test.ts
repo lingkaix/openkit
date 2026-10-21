@@ -14,6 +14,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { preparePolicyConfiguration, readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
 import {
@@ -215,6 +216,7 @@ function configurationFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
   const store = createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   cleanup.push(() => {
