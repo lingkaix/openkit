@@ -71,7 +71,7 @@ Read the [Contributing Guide](./CONTRIBUTING.md) for the development and review 
 
 ### Understand The System
 
-Start with the [documentation index](./docs/INDEX.md), then read [Foundation](./docs/core/foundation.md), [Architecture](./docs/core/architecture.md), and the [Work Model](./docs/core/work-model.md). Component-specific entry points live in the [apps guide](./apps/README.md), [packages guide](./packages/README.md), and [Skill guide](./skills/README.md).
+Start with the [documentation index](./docs/INDEX.md), then read [Doctrine](./docs/core/doctrine.md), [Architecture](./docs/core/architecture.md), and the [Work Model](./docs/core/work-model.md). Component-specific entry points live in the [apps guide](./apps/README.md), [packages guide](./packages/README.md), and [Skill guide](./skills/README.md).
 
 ### Plan, Implement, And Verify Changes
 

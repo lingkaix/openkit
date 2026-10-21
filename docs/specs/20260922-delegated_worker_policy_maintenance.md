@@ -16,7 +16,7 @@ General Permissions, a new grant store, the internal agent loop, policy language
 
 ## Core References
 
-[Permissions](../core/policy.md), [Sandbox](../core/sandbox.md), [Architecture](../core/architecture.md), [Agent Capability](../core/mediation.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), [Storage](../core/storage.md), and [Foundation](../core/foundation.md).
+[Permissions](../core/policy.md), [Sandbox](../core/sandbox.md), [Architecture](../core/architecture.md), [Agent Capability](../core/mediation.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), [Storage](../core/storage.md), and [Doctrine](../core/doctrine.md).
 
 ## Summary
 

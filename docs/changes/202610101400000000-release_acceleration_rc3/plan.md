@@ -6,7 +6,7 @@ branch: rc3-docs
 ---
 # Release Acceleration And v0.1.0-rc.3
 
-This record preserves the accepted source intent, bounded release acceleration work and observed rc.3 verification evidence. It adds no design authority or authorization; [Foundation](../../core/foundation.md), [Architecture](../../core/architecture.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [Test Strategy](../../specs/20260529-test_strategy.md) and their linked owners govern the work. [Release Acceleration](../../decisions/20261010-release_acceleration.md) records the accepted ruling, and the [Release Cookbook](../../cookbooks/release.md) supplies its procedure.
+This record preserves the accepted source intent, bounded release acceleration work and observed rc.3 verification evidence. It adds no design authority or authorization; [Foundation](../../core/doctrine.md), [Architecture](../../core/architecture.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [Test Strategy](../../specs/20260529-test_strategy.md) and their linked owners govern the work. [Release Acceleration](../../decisions/20261010-release_acceleration.md) records the accepted ruling, and the [Release Cookbook](../../cookbooks/release.md) supplies its procedure.
 
 ## Intent Epoch 1 — 2026-10-10
 

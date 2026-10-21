@@ -22,7 +22,7 @@ date: 2026-09-09
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/architecture.md`
 - `docs/core/runtime-model.md`
 - `docs/core/sandbox.md`

@@ -6,7 +6,7 @@ started: "2026-10-12"
 ---
 # L6 Story Reorganization
 
-This plan records the 2026-10-12 reorganization of L6 stories and the release gate. It adds no design authority. [Foundation](../../core/foundation.md), [L6 Story Acceptance](../../specs/20260529-l6_story_acceptance.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), and [Test Strategy](../../specs/20260529-test_strategy.md) govern the work. [L6 story reorganization](../../decisions/20261012-l6_story_reorganization.md) records the accepted ruling. The [Release Cookbook](../../cookbooks/release.md) and [Persistent Live Acceptance](../../cookbooks/persistent-live-acceptance.md) project those owners.
+This plan records the 2026-10-12 reorganization of L6 stories and the release gate. It adds no design authority. [Foundation](../../core/doctrine.md), [L6 Story Acceptance](../../specs/20260529-l6_story_acceptance.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), and [Test Strategy](../../specs/20260529-test_strategy.md) govern the work. [L6 story reorganization](../../decisions/20261012-l6_story_reorganization.md) records the accepted ruling. The [Release Cookbook](../../cookbooks/release.md) and [Persistent Live Acceptance](../../cookbooks/persistent-live-acceptance.md) project those owners.
 
 ## Intent Revision 1 — 2026-10-12
 

@@ -24,7 +24,7 @@ date: 2026-07-15
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/core-concepts.md`
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`

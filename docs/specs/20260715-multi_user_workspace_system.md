@@ -32,7 +32,7 @@ updated: "2026-10-06"
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/core-concepts.md`
 - `docs/core/architecture.md`
 - `docs/core/work-model.md`

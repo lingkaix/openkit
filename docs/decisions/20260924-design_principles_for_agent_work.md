@@ -27,7 +27,7 @@ A principle named here is repeatedly cited to justify added machinery, or feedba
 ## Affected Owners
 
 - docs/engineering-doctrine.md
-- docs/core/foundation.md
+- docs/core/doctrine.md
 - docs/roles/builder.md
 - docs/roles/reviewer.md
 - docs/roles/test-author.md

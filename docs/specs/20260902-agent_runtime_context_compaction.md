@@ -31,7 +31,7 @@ Core Assistant and Goal/Workflow Coordinator default to [rolling context](#inter
 - `docs/core/work-model.md`
 - `docs/core/agent-session.md`
 - `docs/core/mediation.md`
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/evidence.md`
 
 ## Related Docs

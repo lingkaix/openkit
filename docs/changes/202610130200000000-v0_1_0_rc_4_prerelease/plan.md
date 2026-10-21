@@ -7,7 +7,7 @@ branch: main
 ---
 # v0.1.0-rc.4 Pre-Release
 
-This record preserves the source intent and the evidence for prerelease `v0.1.0-rc.4`. It adds no design authority. [Foundation](../../core/foundation.md), [Architecture](../../core/architecture.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [Test Strategy](../../specs/20260529-test_strategy.md), and their linked owners govern the work. [L6 Story Reorganization](../../decisions/20261012-l6_story_reorganization.md) and [Catalog Story Cadence](../../decisions/20261012-catalog_story_cadence.md) record the accepted rulings this prerelease applies. The [Release Cookbook](../../cookbooks/release.md) supplies the procedure.
+This record preserves the source intent and the evidence for prerelease `v0.1.0-rc.4`. It adds no design authority. [Foundation](../../core/doctrine.md), [Architecture](../../core/architecture.md), [Release Management](../../specs/20260829-release_management.md), [Persistent Deployment Acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [Test Strategy](../../specs/20260529-test_strategy.md), and their linked owners govern the work. [L6 Story Reorganization](../../decisions/20261012-l6_story_reorganization.md) and [Catalog Story Cadence](../../decisions/20261012-catalog_story_cadence.md) record the accepted rulings this prerelease applies. The [Release Cookbook](../../cookbooks/release.md) supplies the procedure.
 
 ## Intent
 

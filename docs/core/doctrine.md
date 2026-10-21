@@ -1,7 +1,7 @@
 ---
 status: Accepted
 ---
-# Foundation Model
+# Doctrine Model
 
 This document owns the cross-aspect doctrine that every OpenKit design, implementation, deployment, and product projection must preserve.
 
@@ -48,17 +48,17 @@ This model supplies those cross-aspect invariants without replacing the speciali
 
 ## Boundaries And Non-Goals
 
-Foundation owns doctrine shared by every Core aspect. Specialized concepts remain owned by their aspect documents even when they realize a Foundation principle.
+Doctrine owns doctrine shared by every Core aspect. Specialized concepts remain owned by their aspect documents even when they realize a Doctrine principle.
 
-Foundation does not define which actions require review, how a permission decision is represented, how evidence is stored, which runtime executes a task, how a projection is transported, or how a user interface presents state.
+Doctrine does not define which actions require review, how a permission decision is represented, how evidence is stored, which runtime executes a task, how a projection is transported, or how a user interface presents state.
 
-Foundation does not require every action to wait for a human. Automation may proceed within explicit delegated authority, policy, scope, and stop conditions.
+Doctrine does not require every action to wait for a human. Automation may proceed within explicit delegated authority, policy, scope, and stop conditions.
 
-Foundation does not make runtime-native state authoritative merely because it is durable inside a provider, sandbox, repository, or external service.
+Doctrine does not make runtime-native state authoritative merely because it is durable inside a provider, sandbox, repository, or external service.
 
-Foundation does not require every accepted operation to recover transparently after process, transport, or runtime failure. A bounded fallback may preserve the authoritative history, expose an `interrupted` or otherwise explicitly uncertain outcome, and require inspection or a new authorized attempt.
+Doctrine does not require every accepted operation to recover transparently after process, transport, or runtime failure. A bounded fallback may preserve the authoritative history, expose an `interrupted` or otherwise explicitly uncertain outcome, and require inspection or a new authorized attempt.
 
-Foundation does not promise compatibility with obsolete internal contracts. Contract evolution follows the clean current model.
+Doctrine does not promise compatibility with obsolete internal contracts. Contract evolution follows the clean current model.
 
 ## Invariants
 

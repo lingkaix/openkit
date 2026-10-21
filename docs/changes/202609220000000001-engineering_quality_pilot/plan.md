@@ -15,7 +15,7 @@ The authorization covers local investigation, governance edits, tests, and clean
 ## Owners
 
 - [Agent execution contract](../../../AGENTS.md), [change execution](../../change-execution.md), [documentation model](../../documentation-model.md), and [verification instruments](../../verification-instruments.md).
-- [Foundation](../../core/foundation.md), [architecture](../../core/architecture.md), and [protocol](../../core/protocol.md).
+- [Foundation](../../core/doctrine.md), [architecture](../../core/architecture.md), and [protocol](../../core/protocol.md).
 - [Test strategy](../../specs/20260529-test_strategy.md) and [Core Client boundary](../../specs/20260528-core_client_boundary.md); additional slice owners are recorded when selected.
 
 ## Scheme And Evidence
