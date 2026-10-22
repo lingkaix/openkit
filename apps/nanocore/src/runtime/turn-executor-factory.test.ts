@@ -7166,6 +7166,11 @@ describe('createConfiguredTurnExecutor', () => {
       purpose === 'failed-closeout-refused' ||
       purpose === 'completed';
     const coreDb = createFactoryCoreDb();
+    const interruptReply = Promise.withResolvers<void>();
+    let interruptResult: Promise<
+      NonNullable<ReturnType<typeof dispatchNanoHostHarnessOperation>>
+    > | null = null;
+    let stop: Promise<void> | undefined;
     const effects: NanoHostSessionEffectRequest[] = [];
     const resultOnlyCalls: string[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -7461,6 +7466,8 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .get() as { integrationRef: string };
       let startedTurns = 0;
+      let holdInterruptReply = false;
+      const interruptDispatched = Promise.withResolvers<void>();
       const settleNext = async (
         operation:
           | 'session.open'
@@ -7518,6 +7525,10 @@ describe('createConfiguredTurnExecutor', () => {
         }
         if (operation === 'turn.start') {
           expect(wireCommand.body).not.toHaveProperty('runtimeEnvironment');
+        }
+        if (operation === 'turn.interrupt' && holdInterruptReply) {
+          interruptDispatched.resolve();
+          await interruptReply.promise;
         }
         const result = {
           body,
@@ -7695,9 +7706,12 @@ describe('createConfiguredTurnExecutor', () => {
         return;
       }
 
-      const stop = completed
-        ? Promise.resolve()
-        : backend.interruptTurn(environmentPackage.snapshotId);
+      holdInterruptReply = !completed;
+      stop = completed ? Promise.resolve() : backend.interruptTurn(environmentPackage.snapshotId);
+      void stop.catch(() => undefined);
+      interruptResult = completed ? null : settleNext('turn.interrupt', { state: 'interrupted' });
+      // Native intent acknowledgement and actual Harness dispatch must precede final-status admission.
+      if (interruptResult) await Promise.race([interruptDispatched.promise, interruptResult]);
       recordWorkerControlAcceptedRecord(coreDb, {
         acceptedAt: '2026-09-06T00:00:01.000Z',
         lineage: {
@@ -7728,7 +7742,8 @@ describe('createConfiguredTurnExecutor', () => {
       expect(inspectionState).toBe('pending');
       let interruptSequence: number | undefined;
       if (!completed) {
-        const interrupt = await settleNext('turn.interrupt', { state: 'interrupted' });
+        interruptReply.resolve();
+        const interrupt = await interruptResult!;
         expect(interrupt.body).toMatchObject({
           agentSessionId: testEntityId('as', 'as_human_gate'),
           leaseId: testEntityId('attempt', 'lease_human_gate'),
@@ -7901,6 +7916,8 @@ describe('createConfiguredTurnExecutor', () => {
         ]);
       }
     } finally {
+      interruptReply.resolve();
+      await Promise.allSettled([interruptResult, stop]);
       coreDb.sqlite.close();
     }
   });
