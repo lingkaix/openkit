@@ -8,7 +8,12 @@ import { Worker } from 'node:worker_threads';
 import { allocateEntityId, deriveEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
 import { LocalStorage, type StorageResult } from '@openkit/storage';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
+import {
+  commandRequestExpiresAt,
+  commandRequestKey,
+  DEFAULT_CAPTURE_COVERAGE_BINDING,
+  FsStore,
+} from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { publishImmutableContent } from '../storage/immutable-content.js';
@@ -515,6 +520,7 @@ describe('native Goal command deciding body', () => {
         boundaries: 'No deployment',
       },
     });
+    proposal.captureCoverage = DEFAULT_CAPTURE_COVERAGE_BINDING;
     proposal.proposalTurnId = allocateEntityId('tu');
     proposal.pendingItem = await pendingItem(f, proposal, goal.threadId, proposal.proposalTurnId);
     await f.send('reject-plan');
