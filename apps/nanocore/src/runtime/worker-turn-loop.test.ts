@@ -1,15 +1,11 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
-import { ProviderRegistry } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
@@ -19,10 +15,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import {
-  createTestAgentSetup,
-  createTestGatewayConfig,
-} from '../test-support/agent-environment.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -35,22 +28,35 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import * as attempts from './execution-attempt-records.js';
-import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
+import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
 } from './nanohost-harness-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import { startProductTurn } from './product-turn-start.js';
-import type { TurnStartRuntimeContext } from './types.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+import {
+  markWorkerBackendSessionLaunching,
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+  workerBackendLineageFromRuntimeImage,
+} from './worker-backend-sessions.js';
 import {
   clearWorkerCheckpoint,
   getWorkerCheckpoint,
   updateWorkerCheckpoint,
 } from './worker-checkpoints.js';
+import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
+import {
+  endWorkerTurnJournalRelease,
+  endWorkerTurnMaterialization,
+  prepareWorkerTurnJournalIntents,
+} from './worker-governance-turn-executor.js';
 import { resolveInterruptedWorkerRetryDecision } from './worker-recovery.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import type { RunWorkerTurnLoopInput, WorkerTurnLoopStartWorkerInput } from './worker-turn-loop.js';
-import { bindWorkerCheckpointToPreparedSession, runWorkerTurnLoop } from './worker-turn-loop.js';
+import { runWorkerTurnLoop } from './worker-turn-loop.js';
 
 /**
  * Opens a migrated Core database for worker-turn loop tests.
@@ -515,7 +521,7 @@ it('bounds quoting worker errors in the loop checkpoint before rethrowing', asyn
   }
 });
 
-/** Publishes real callback authority; only interrupted recovery uses the stronger legacy executor. */
+/** Publishes native callback authority and original journal intent for modeled interrupted work. */
 function admittedWorker(
   coreDb: CoreDb,
   store: import('../lib/store.js').FsStore,
@@ -531,187 +537,128 @@ function admittedWorker(
 ) {
   return async ({ turnId, prepared, onAdmitted }: WorkerTurnLoopStartWorkerInput) => {
     const manifest = createTestAgentSetup().manifest;
-    if (!hooks.interruptedRecovery) {
-      // The loop owns checkpoint projection, not the outside executor's terminal or release proof.
-      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-      const threadId = 'th_00000000-0000-7000-8000-000000000001';
-      const timestamp = new Date().toISOString();
-      if (
-        !store.listThreadAgentSessions(workspaceId, threadId).some((s) => s.id === agentSessionId)
-      )
-        await store.createAgentSession({
-          id: agentSessionId,
-          agentId: manifest.id,
-          workspaceId,
-          threadId,
-          status: 'busy',
-          message: null,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
-      const prompt = serializeStructuredWorkerDelegationRequest(prepared.delegationRequest);
-      const entry = createSchedulerAdmissionEntry(coreDb, {
-        backendId: 'nanohost',
-        queueEntryId: `queue_loop_${turnId}`,
-        requestId,
-        turnId,
-        threadId,
-        workspaceId,
-        requestedAgentId: manifest.id,
-        triggerActor: { kind: 'user', id: actorId },
-        turnInput: prompt,
-        serverAdminTokenId:
-          requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin'
-            ? (requestActor.tokenId ?? null)
-            : null,
-      });
-      recordTestExecutionAttempt(coreDb, {
-        entry,
-        attemptId: testEntityId('attempt', `loop:${turnId}`),
-        agentSessionId,
-        inputRef: `aepsnap_${turnId}_${agentSessionId}`,
-        bindingRef: `worker-loop:${turnId}`,
-        sessionCompatibilityKey: 'sha256:fixture',
-        now: () => timestamp,
-      });
-      const admitted = await store.createTurn(
+    // The loop owns checkpoint projection, not the outside executor's terminal or release proof.
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const timestamp = new Date().toISOString();
+    if (!store.listThreadAgentSessions(workspaceId, threadId).some((s) => s.id === agentSessionId))
+      await store.createAgentSession({
+        id: agentSessionId,
+        agentId: manifest.id,
         workspaceId,
         threadId,
-        prompt,
-        { kind: 'user', id: actorId },
-        null,
-        { turnId, agentId: manifest.id, agentSessionId }
-      );
-      onAdmitted(admitted, agentSessionId);
-      hooks.observe?.(admitted, agentSessionId);
-      await hooks.execute?.(turnId);
-      return { workerSessionId: agentSessionId };
-    }
-    admitTestNativeEnvironment(coreDb, manifest);
-    recordTestNativeRuntimeTarget(coreDb);
-    const executor = new SimulatedTurnExecutor({ coreDb });
-    let workerCompletion: Promise<void> | undefined;
-    const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    executor.prepareAgentSessionForTurn = async () => {
-      return {
-        agentSessionId,
-        sessionCompatibilityKey: 'sha256:fixture',
-        currentAgentSession: null,
-        replacementRequired: false,
-      };
-    };
-    executor.commitPreparedAgentSessionForTurn = async (_store, input) => {
-      bindNanoHostAttemptPreparation(coreDb, {
-        attemptId: input.attemptId,
-        agentSessionId,
-        inputRef: `aepsnap_${turnId}_${agentSessionId}`,
-        bindingRef: `worker-loop:${input.attemptId}`,
-        sessionCompatibilityKey: input.prepared.sessionCompatibilityKey,
+        status: 'busy',
+        message: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
       });
-      return undefined;
-    };
-    executor.startTurn = (_store, id, prompt, context?: TurnStartRuntimeContext) => {
-      workerCompletion = (async () => {
-        const turn = store.getTurnById(id);
-        bindWorkerCheckpointToPreparedSession({
-          coreDb,
-          workspaceDb: db,
-          store,
-          workspaceId: workspaceIdForOwner(turn.owner),
-          threadId: turn.threadId,
-          turnId: id,
-          requestId,
-          agentSessionId,
-          attemptId: context!.attemptId!,
-        });
-        hooks.observe?.(store.getTurnById(id), agentSessionId);
+    const prompt = serializeStructuredWorkerDelegationRequest(prepared.delegationRequest);
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue_loop_${turnId}`,
+      requestId,
+      turnId,
+      threadId,
+      workspaceId,
+      requestedAgentId: manifest.id,
+      triggerActor: { kind: 'user', id: actorId },
+      turnInput: prompt,
+      serverAdminTokenId:
+        requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin'
+          ? (requestActor.tokenId ?? null)
+          : null,
+    });
+    const attempt = recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId: testEntityId('attempt', `loop:${turnId}`),
+      agentSessionId,
+      inputRef: `aepsnap_${turnId}_${agentSessionId}`,
+      bindingRef: `worker-loop:${turnId}`,
+      sessionCompatibilityKey: 'sha256:fixture',
+      now: () => timestamp,
+    });
+    const admitted = await store.createTurn(
+      workspaceId,
+      threadId,
+      prompt,
+      { kind: 'user', id: actorId },
+      null,
+      { turnId, agentId: manifest.id, agentSessionId }
+    );
+    onAdmitted(admitted, agentSessionId);
+    hooks.observe?.(admitted, agentSessionId);
+    if (hooks.interruptedRecovery) {
+      const setup = createTestAgentSetup();
+      admitTestNativeEnvironment(coreDb, manifest);
+      const target = recordTestNativeRuntimeTarget(coreDb);
+      const db = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+      try {
         const environmentPackage = resolveAgentEnvironmentPackage({
           coreDb,
           agentSessionId,
-          agentSetup: context!.agentSetup!,
+          agentSetup: setup,
           backend: { kind: 'openshell' },
-          createdAt: new Date().toISOString(),
+          createdAt: timestamp,
           requestId,
-          turn,
+          turn: admitted,
           turnInput: prompt,
-          triggerActor: turn.triggerActor,
+          triggerActor: admitted.triggerActor,
           workspaceRoots: [],
         });
-        recordAgentEnvironmentPackageSnapshot(db, {
-          environmentPackage,
-          createdAt: new Date().toISOString(),
+        recordAgentEnvironmentPackageSnapshot(db, { environmentPackage, createdAt: timestamp });
+        await store.updateAgentSession(agentSessionId, {
+          environmentPackageSnapshotId: environmentPackage.snapshotId,
         });
+        await store.updateTurn(
+          turnId,
+          { agentSessionId },
+          { journalIntents: prepareWorkerTurnJournalIntents(db, environmentPackage, attempt, null) }
+        );
+        const hex = turnId.slice(3).replaceAll('-', '');
+        const backendSessionId = `nh-${hex.slice(0, 16)}-${hex.slice(16)}`;
+        // This explicit outside peer allocates no physical process or Workspace inputs.
+        recordWorkerBackendSessionMaterializing(coreDb, {
+          identity: {
+            agentSessionId,
+            backendKind: 'openshell',
+            backendSessionId,
+            deploymentId: target.deploymentId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            runtimeTargetId: target.targetId,
+            stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+            transientProviderInstanceId: null,
+          },
+          backendVersion: 'test',
+          backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
+          lineage: { workspaceId, threadId, turnId },
+          sandboxBindingRef: attempt.bindingRef!,
+        });
+        transitionWorkerBackendSessionState(coreDb, {
+          attemptId: attempt.attemptId,
+          fromState: 'materializing',
+          toState: 'materialized',
+        });
+        markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: attempt.attemptId });
         const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
-          attemptId: context!.attemptId!,
-          operationId: `worker-loop:${id}`,
+          attemptId: attempt.attemptId,
+          operationId: `worker-loop:${turnId}`,
           submission: true,
         });
         attempts.acceptSchedulerExecutionObservation(
           coreDb,
-          await executor.submit({
+          await new SimulatedTurnExecutor({ coreDb }).submit({
             ...attempts.schedulerExecutionCorrelation(submitted),
             deadline: submitted.deadline!,
           })
         );
-        context!.onSubmissionSettled?.();
-        await hooks.execute?.(id);
-        throw new Error('Interrupted recovery fixture requires its controlled failure.');
-      })();
-      return workerCompletion;
-    };
-    try {
-      await startProductTurn({
-        coreDb,
-        store,
-        triggerActor: { kind: 'user', id: actorId },
-        requestActor,
-        snapshot: createInMemoryRuntimeConfigSnapshot({
-          agentManifests: [manifest],
-          dataRoot: null,
-          gatewayConfig: createTestGatewayConfig(),
-          providerRegistry: new ProviderRegistry([
-            {
-              id: 'agent-openrouter',
-              displayName: 'Fixture',
-              kind: 'local',
-              baseUrl: 'http://127.0.0.1:11434/v1',
-              defaultModel: 'openai/gpt-5.2',
-              models: ['openai/gpt-5.2'],
-              modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
-            },
-          ]),
-        }),
-        providerCredentialResolver: () => null,
-        reservedTurnId: turnId,
-        input: {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          agentId: manifest.id,
-          requestId,
-          input: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-        },
-        onTurnCreated: (created, sessionId) => {
-          expect(sessionId).toBeNull();
-          onAdmitted(created, sessionId);
-          store.recordCommandRequest({
-            command: 'turn.start',
-            requestId,
-            inputHash: `fixture:${requestId}`,
-            scope: {
-              actorId,
-              workspaceId: workspaceIdForOwner(created.owner),
-              threadId: created.threadId,
-            },
-            response: { kind: 'turn', id: created.id },
-          });
-        },
-        turnExecutor: executor,
-      });
-      if (workerCompletion) await workerCompletion;
-    } finally {
-      db.sqlite.close();
+        markWorkerBackendSessionLaunching(coreDb, { attemptId: attempt.attemptId });
+        await endWorkerTurnMaterialization(store, db, turnId, 'completed', [backendSessionId]);
+      } finally {
+        db.sqlite.close();
+      }
     }
-    throw new Error('Interrupted recovery fixture did not report its controlled failure.');
+    await hooks.execute?.(turnId);
+    return { workerSessionId: agentSessionId };
   };
 }
 
@@ -862,33 +809,25 @@ it.each([
             execute: async (turnId) => {
               launches++;
               const at = new Date().toISOString();
-              await store.createAgentSession({
-                id: sessionId,
+              const [attempt] = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
                 workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
                 threadId: 'th_00000000-0000-7000-8000-000000000001',
-                agentId: createTestAgentSetup().manifest.id,
-                status: 'interrupted',
-                message: null,
-                createdAt: at,
-                updatedAt: at,
-              });
-              const terminal = await store.updateTurn(turnId, {
-                status: 'interrupted',
-                agentSessionId: sessionId,
-                completedAt: at,
-              });
-              store.emitTurnEvent(
                 turnId,
-                {
-                  event: 'turn.completed',
-                  requestId: 'req_interrupted',
-                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                  threadId: 'th_00000000-0000-7000-8000-000000000001',
-                  turnId,
-                  data: { type: 'turn-completed', stopReason: 'aborted', turn: terminal },
-                },
-                ALREADY_DECIDED_PUBLICATION_ADMISSION
-              );
+              });
+              attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+                attemptId: attempt!.attemptId,
+                cause: 'authority-revoked',
+              });
+              await terminalizeGovernedWorkerTurn({
+                store,
+                turnId,
+                agentSessionId: sessionId,
+                requestId: 'req_interrupted',
+                completedAt: at,
+                outcome: 'interrupted',
+                errorCode: 'worker_governance_restart_recovery',
+                message: 'Worker execution was interrupted during scheduler recovery.',
+              });
               throw error;
             },
           }
@@ -907,35 +846,46 @@ it.each([
       stopReason: null,
       workerSessionId: sessionId,
     });
+    const [original] = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, checkpoint);
+    const lineage = {
+      ...checkpoint,
+      agentSessionId: sessionId,
+      packageSnapshotId: original!.inputRef!,
+    };
+    expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
     if (failure !== 'authority-denial') {
-      const row = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnId: checkpoint.turnId,
-      })[0]!;
-      const correlation = attempts.schedulerExecutionCorrelation(row);
-      const proof = {
-        terminalHandoff: true,
-        output: true,
-        evidence: true,
-        outsideWorkspaceCollection: true,
-        integrationDrain: true,
-        routesRevoked: true,
-      } as const;
-      const released = await new SimulatedTurnExecutor({ coreDb }).release({
-        ...correlation,
-        proof,
+      const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
+      await runNanoHostAttemptRecoveryMaintenance(coreDb, {
+        store,
+        executionBackend: runtime.turnExecutor.executionBackend!,
+        // The outside peer acknowledges deletion of only its modeled allocation.
+        cleanupBackendSession: async (identity) => {
+          expect(identity).toMatchObject({
+            agentSessionId: sessionId,
+            packageSnapshotId: original!.inputRef,
+          });
+        },
+        prepareBackendCleanup: () => {},
+        restoreBackendSession: async () => {},
+        reconcileAcceptedFinalStatus: async () => {
+          throw new Error('No final was reported.');
+        },
+        projectRecoveredTurn: async (subject) => {
+          const turn = store.getTurnById(subject.turnId);
+          if (turn.status !== 'interrupted') throw new Error('Original interruption is missing.');
+          return { status: turn.status };
+        },
       });
-      attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
-        correlation,
-        proof,
-        fenceRef: released.fenceRef!,
-      });
+      const closed = attempts.requireSchedulerExecutionAttempt(coreDb, original!.attemptId);
+      expect(closed).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+      await endWorkerTurnJournalRelease(store, workspaceDb, checkpoint.turnId, closed.fenceRef!);
+      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
     }
     if (failure === 'incomplete-lease')
       coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET agent_session_id=? WHERE turn_id=?')
         .run('as_00000000-0000-7099-938c-16baf0c1baa4', checkpoint.turnId);
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     const reopenedCore = openCoreDb(coreDb.dataRoot);

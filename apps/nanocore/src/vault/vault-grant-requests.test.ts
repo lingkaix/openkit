@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import type { OperationId } from '@openkit/app-api-schemas';
+import { type OperationId, StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
-import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -19,15 +18,14 @@ import {
   createMcpConfig,
   updateMcpBinding,
 } from '../catalog/resource-catalog.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { WORKSPACE_MEMBER_OPERATIONS } from '../policy/workspace-access.js';
-import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import {
-  acceptSchedulerExecutionObservation,
-  closeSchedulerExecutionAttemptWithoutEffects,
-  schedulerExecutionCorrelation,
-} from '../runtime/execution-attempt-records.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import {
   createOpenkitGenerativeMcpSupply,
   dispatchOpenkitGenerativeTool,
@@ -35,24 +33,25 @@ import {
 import { recoverPendingRequestsAtBoot } from '../runtime/pending-request-flow.js';
 import * as pendingRequests from '../runtime/pending-requests.js';
 import { claimCommandIntentGrant, readPendingRequest } from '../runtime/pending-requests.js';
-import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
+import * as productTurnStart from '../runtime/product-turn-start.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
-import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { createVaultGrant, getVaultGrant } from './vault-grants.js';
+import { createVaultGrant, getVaultGrant, listVaultGrants } from './vault-grants.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /** Owns one isolated real App/API fixture and removes every synthetic record at closeout. */
@@ -141,7 +140,8 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
           }
         )
       ),
-    cleanup: () => {
+    cleanup: async () => {
+      await shutdownControlStoreWorkerClient();
       vaultUnlockState.lock();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -207,7 +207,7 @@ describe('supported Vault grant request and review', () => {
       expect(changed.status).toBe(409);
       expect(JSON.stringify(body)).not.toContain('synthetic-private-canary');
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 });
@@ -381,7 +381,7 @@ it.each([
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
     expect(JSON.stringify([result, actual, audit])).not.toContain('synthetic-resolution-canary');
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -421,7 +421,7 @@ it.each([
     expect(record.resolution ?? record.ending).toBe(ending);
     expect(record.delivery).toBe('delivered');
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -481,7 +481,7 @@ it('refuses a revoked deciding credential even when another administrator consum
       grantId: null,
     });
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -524,7 +524,7 @@ it('refuses a revoked initiating credential without substituting current members
     expect(issue.status).toBe(403);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -576,7 +576,7 @@ it('refuses issuance after the human requester loses only request-Thread write r
     expect((await issue.json()).code).toBe('workspace_access_denied');
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -617,7 +617,7 @@ it('retains an interrupted claim as unknown after restart and never issues again
     });
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -650,7 +650,7 @@ it('rejects unsupported lifetime, visibility, raw fields and a changed scope bef
     }
     expect(f.store.listThreadTurns(source.workspaceId, source.threadId)).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -662,11 +662,27 @@ it('records a committed grant with uncertain request settlement without retrying
       await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
     ).json();
     expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    const settle = vi
-      .spyOn(pendingRequests, 'finishPendingExecution')
-      .mockImplementationOnce(() => {
-        throw new Error('Synthetic interruption after the Core grant commit.');
-      });
+    const transaction = f.coreDb.sqlite.transaction.bind(f.coreDb.sqlite);
+    let interrupted = false;
+    // Lose the acknowledgement only after the real grant transaction has committed.
+    const settle = vi.spyOn(f.coreDb.sqlite, 'transaction').mockImplementation(
+      (...args) =>
+        new Proxy(transaction(...args), {
+          apply(target, receiver, parameters) {
+            const result = Reflect.apply(target, receiver, parameters);
+            if (
+              !interrupted &&
+              listVaultGrants(f.coreDb).some(
+                (grant) => grant.approvalId === request.approvalRequestId
+              )
+            ) {
+              interrupted = true;
+              throw new Error('Synthetic interruption after the Core grant commit.');
+            }
+            return result;
+          },
+        })
+    );
     const command = {
       workspaceId: source.workspaceId,
       threadId: source.threadId,
@@ -674,6 +690,7 @@ it('records a committed grant with uncertain request settlement without retrying
     };
     expect((await f.send('vault.grant-issue', command)).status).toBe(409);
     settle.mockRestore();
+    expect(interrupted).toBe(true);
     const observed = await f.send('vault.grant-request-list', {
       workspaceId: source.workspaceId,
       threadId: source.threadId,
@@ -686,7 +703,7 @@ it('records a committed grant with uncertain request settlement without retrying
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
   } finally {
     vi.restoreAllMocks();
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -751,7 +768,7 @@ it('permits deny and withdraw when exact disclosure is unavailable and prevents 
     ).toBe(200);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -763,12 +780,11 @@ it.each([
   const ownerScope = selection === 'revoked-agent' ? 'workspace' : selection;
   const f = fixture();
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+  let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+  const admittedTurns: string[] = [];
+  const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
   try {
-    const source = await prepare(
-      f,
-      ownerScope,
-      selection === 'revoked-agent' ? 'workspace' : 'private'
-    );
+    const source = await prepare(f, ownerScope, 'workspace');
     const existingGrantId = allocateEntityId('grant');
     createVaultGrant(f.coreDb, {
       grantId: existingGrantId,
@@ -810,76 +826,85 @@ it.each([
         ],
       },
     });
-    const current = resolveWorkspaceMcpServer({
-      catalog: composeWorkspaceMcpCatalog({
-        dataRoot: f.dataRoot,
-        workspaceId: source.workspaceId,
-      }),
-      serverId: 'review-echo',
-    });
-    const turn = f.store.createTurn(
-      source.workspaceId,
-      source.threadId,
-      'Request selected credential authority',
-      { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
-    );
-    const sessionId = allocateEntityId('as');
-    const now = new Date().toISOString();
-    f.store.createAgentSession({
-      id: sessionId,
-      agentId: 'agent_codex_host',
+    const catalog = composeWorkspaceMcpCatalog({
+      dataRoot: f.dataRoot,
       workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      status: 'busy',
-      message: null,
-      createdAt: now,
-      updatedAt: now,
     });
-    f.store.updateTurn(turn.id, {
-      status: 'running',
-      agentId: 'agent_codex_host',
-      agentSessionId: sessionId,
+    const current = resolveWorkspaceMcpServer({ catalog, serverId: 'review-echo' });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: f.dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
+      agentManifests: [
+        createTestAgentSetup({
+          mcpIds: ['review-echo'],
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }).manifest,
+      ],
+      workspaceMcpServerCatalogs: [
+        {
+          catalog,
+          path: join(f.dataRoot, 'catalog/catalog.json'),
+          workspaceId: source.workspaceId,
+        },
+      ],
     });
-    const pkg = resolveAgentEnvironmentPackage({
+    native = createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+      readRuntimeConfig: () => snapshot,
+    });
+    const app = createApp({
       coreDb: f.coreDb,
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: sessionId,
-      agentSetup: createTestAgentSetup(),
-      triggerActor: turn.triggerActor,
-      turn: f.store.getTurnById(turn.id),
-      workspaceCwd: '/workspace',
-      workspaceRoots: [],
-      backend: { kind: 'openshell' },
+      store: f.store,
+      vaultUnlockState: f.vaultUnlockState,
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      }),
     });
-    pkg.supply.mcpServers.push({
-      id: current.id,
-      catalogDigest: current.catalogDigest,
-      allowedTools: ['echo'],
-      schemaPolicy: 'tracking',
-      pinnedSchemaSnapshotId: null,
-    });
-    workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage: pkg, createdAt: now });
-    const entry = createSchedulerAdmissionEntry(f.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: randomUUID(),
-      requestId: randomUUID(),
-      triggerActor: pkg.scope.triggerActor,
+    const started = await app.request(
+      ...operationRequest(
+        'task.start',
+        { workspaceId: source.workspaceId, threadId: source.threadId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Request selected credential authority',
+            requestId: randomUUID(),
+          }),
+        }
+      )
+    );
+    expect(started.status).toBe(202);
+    const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+    admittedTurns.push(turn.id);
+    const first = native.executionFor(turn.id);
+    await first.launched.promise;
+    const pkg = native.workerControlGateway.authenticatePackageToken(
+      `Bearer ${native.executor.capabilityToken}`,
+      { tokenFamily: 'capability' }
+    );
+    const sessionId = pkg.scope.agentSessionId;
+    expect(pkg.scope).toMatchObject({
       workspaceId: source.workspaceId,
       threadId: source.threadId,
       turnId: turn.id,
-      turnInput: 'Synthetic metadata request',
-      requestedAgentId: pkg.agent.agentId,
     });
-    const originalAttempt = recordTestExecutionAttempt(f.coreDb, {
-      entry,
-      attemptId: allocateEntityId('attempt'),
-      agentSessionId: sessionId,
-      inputRef: pkg.snapshotId,
-      bindingRef: 'synthetic-binding',
-      sessionCompatibilityKey: 'synthetic-request',
-      now: () => now,
-    });
+    expect(pkg.supply.mcpServers).toContainEqual(
+      expect.objectContaining({ id: current.id, catalogDigest: current.catalogDigest })
+    );
+    workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
     const context = {
       coreDb: f.coreDb,
       store: f.store,
@@ -1006,75 +1031,36 @@ it.each([
     expect(f.store.getTurnById(turn.id).status).toBe('running');
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
     expect(JSON.stringify(response)).not.toContain('synthetic-resolution-canary');
-    // Reopen product state without live admission hooks; this fixture submitted no backend operation.
-    closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
-      attemptId: originalAttempt.attemptId,
-      noOutstandingEffects: true,
-      cause: 'synthetic-preparation-ended',
-    });
-    const laterStore = new FsStore({ dataRoot: f.dataRoot });
-    laterStore.updateTurn(turn.id, { status: 'completed', completedAt: now });
-    laterStore.updateAgentSession(sessionId, { status: 'closed', updatedAt: now });
-    const laterTurn = laterStore.createTurn(
-      source.workspaceId,
-      source.threadId,
-      'Inspect the recorded grant outcome',
-      { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
+    // The next admission must follow the actual first execution and its owning Task closeout.
+    first.completion.resolve();
+    await first.execution;
+    await Promise.all(
+      admissions.mock.results
+        .filter((result) => result.type === 'return')
+        .map((result) => result.value.closeout)
     );
-    const laterSessionId = allocateEntityId('as');
-    laterStore.createAgentSession({
-      id: laterSessionId,
-      agentId: pkg.agent.agentId,
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      status: 'busy',
-      message: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-    laterStore.updateTurn(laterTurn.id, {
-      status: 'running',
-      agentId: pkg.agent.agentId,
-      agentSessionId: laterSessionId,
-    });
-    const laterPackage = resolveAgentEnvironmentPackage({
-      coreDb: f.coreDb,
-      agentSessionId: laterSessionId,
-      agentSetup: createTestAgentSetup(),
-      triggerActor: laterTurn.triggerActor,
-      turn: laterStore.getTurnById(laterTurn.id),
-      workspaceCwd: '/workspace',
-      workspaceRoots: [],
-      backend: { kind: 'openshell' },
-    });
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-      environmentPackage: laterPackage,
-      createdAt: now,
-    });
-    const laterEntry = createSchedulerAdmissionEntry(f.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: randomUUID(),
-      requestId: randomUUID(),
-      triggerActor: laterPackage.scope.triggerActor,
+    // The ready approval outcome owns the next Worker Turn at the terminal barrier.
+    const outcome = readPendingRequest(workspaceDb.sqlite, request.approvalRequestId);
+    expect(outcome?.deliveryTurnId).toEqual(expect.any(String));
+    const laterTurn = f.store.getTurnById(outcome!.deliveryTurnId!);
+    expect(laterTurn.triggerSource?.kind).toBe('approval-resolution');
+    admittedTurns.push(laterTurn.id);
+    await native.executionFor(laterTurn.id).launched.promise;
+    const laterPackage = native.workerControlGateway.authenticatePackageToken(
+      `Bearer ${native.executor.capabilityToken}`,
+      { tokenFamily: 'capability' }
+    );
+    expect(laterTurn.id).not.toBe(turn.id);
+    expect(laterPackage.scope.agentSessionId).not.toBe(sessionId);
+    expect(laterPackage.scope).toMatchObject({
       workspaceId: source.workspaceId,
       threadId: source.threadId,
       turnId: laterTurn.id,
-      turnInput: 'Synthetic outcome read',
-      requestedAgentId: laterPackage.agent.agentId,
-    });
-    recordTestExecutionAttempt(f.coreDb, {
-      entry: laterEntry,
-      attemptId: allocateEntityId('attempt'),
-      agentSessionId: laterSessionId,
-      inputRef: laterPackage.snapshotId,
-      bindingRef: 'synthetic-later-binding',
-      sessionCompatibilityKey: 'synthetic-later-request',
-      now: () => now,
     });
     const readback = await dispatchOpenkitGenerativeTool(
       {
         ...context,
-        store: laterStore,
+        store: f.store,
         scope: laterPackage.scope,
         actor: laterPackage.scope.triggerActor,
         packageSnapshotId: laterPackage.snapshotId,
@@ -1093,11 +1079,24 @@ it.each([
         },
       ],
     });
-    expect(laterStore.getAgentSession(sessionId).status).toBe('closed');
+    expect(f.store.getAgentSession(sessionId).status).toBe('closed');
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(2);
   } finally {
-    workspaceDb?.sqlite.close();
-    f.cleanup();
+    try {
+      native?.executor.completion.resolve();
+      for (const turnId of admittedTurns) native?.executionFor(turnId).completion.resolve();
+      await Promise.all(admittedTurns.map((turnId) => native!.executionFor(turnId).execution));
+      await Promise.all(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+    } finally {
+      admissions.mockRestore();
+      native?.restore();
+      workspaceDb?.sqlite.close();
+      await f.cleanup();
+    }
   }
 });
 
@@ -1179,19 +1178,27 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
       revocationStatus: 'revoked',
     });
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
-it('preserves a partial request as inspect-only and releases its Core-local raising Turn', async () => {
+it('releases its Core-local raising Turn when atomic request publication fails', async () => {
   const f = fixture();
   try {
     const source = await prepare(f);
-    const item = vi.spyOn(f.store, 'createItem').mockImplementationOnce(() => {
-      throw new Error('Synthetic Item publication interruption.');
-    });
+    const item = vi
+      .spyOn(f.store, 'applyPendingRequestCommand')
+      .mockRejectedValueOnce(
+        new pendingRequests.PendingRequestCommandError(
+          'recovery_required',
+          'Synthetic native publication refusal.',
+          409
+        )
+      );
     const response = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
     expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe('recovery_required');
+    expect(item.mock.calls[0]?.[1].action).toBe('raise');
     item.mockRestore();
     const turns = f.store.listThreadTurns(source.workspaceId, source.threadId);
     expect(turns).toHaveLength(1);
@@ -1200,12 +1207,13 @@ it('preserves a partial request as inspect-only and releases its Core-local rais
       workspaceId: source.workspaceId,
       threadId: source.threadId,
     });
-    expect(observed.status).toBe(409);
-    expect((await observed.json()).code).toBe('recovery_required');
+    // Retained partial tuples are covered by the Pending owner; live publication is atomic.
+    expect(observed.status).toBe(200);
+    expect((await observed.json()).items).toEqual([]);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
   } finally {
     vi.restoreAllMocks();
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -1252,7 +1260,7 @@ it('does not substitute a session replacement Token for the credential that deci
     expect(issue.status).toBe(403);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -1364,7 +1372,7 @@ it.each([
       request_id: request.approvalRequestId,
     });
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -1377,8 +1385,10 @@ it.each([
   const gateway = createDefaultWorkerMcpGateway(f.coreDb);
   const client = new Client({ name: 'reviewed-grant-sink-fixture', version: '1.0.0' });
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+  let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+  const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
   try {
-    const source = await prepare(f, ownerScope);
+    const source = await prepare(f, ownerScope, 'workspace');
     const { targetCapabilityId: _capability, ...terms } = source.terms;
     const raised = await f.send('vault.grant-request', {
       workspaceId: source.workspaceId,
@@ -1432,103 +1442,71 @@ it.each([
       dataRoot: f.dataRoot,
       workspaceId: source.workspaceId,
     });
-    const setup = createTestAgentSetup({ mcpIds: ['reviewed-sink'] });
-    const turn = f.store.createTurn(
-      source.workspaceId,
-      source.threadId,
-      'Use the reviewed credential through the Gateway',
-      { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
-    );
-    const sessionId = allocateEntityId('as');
-    const now = new Date().toISOString();
-    f.store.createAgentSession({
-      id: sessionId,
-      agentId: setup.manifest.id,
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      status: 'busy',
-      message: null,
-      createdAt: now,
-      updatedAt: now,
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: f.dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
+      agentManifests: [
+        createTestAgentSetup({
+          mcpIds: ['reviewed-sink'],
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }).manifest,
+      ],
+      workspaceMcpServerCatalogs: [
+        {
+          workspaceId: source.workspaceId,
+          path: join(f.dataRoot, 'catalog/catalog.json'),
+          catalog,
+        },
+      ],
     });
-    f.store.updateTurn(turn.id, {
-      status: 'running',
-      agentId: setup.manifest.id,
-      agentSessionId: sessionId,
+    native = createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+      readRuntimeConfig: () => snapshot,
     });
-    const pkg = resolveAgentEnvironmentPackage({
-      coreDb: f.coreDb,
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: sessionId,
-      agentSetup: setup,
-      triggerActor: turn.triggerActor,
-      turn: f.store.getTurnById(turn.id),
-      workspaceCwd: '/workspace',
-      workspaceRoots: [],
-      workspaceMcpServerCatalog: catalog,
-      backend: { kind: 'openshell' },
-    });
-    workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage: pkg, createdAt: now });
-    const entry = createSchedulerAdmissionEntry(f.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: randomUUID(),
-      requestId: randomUUID(),
-      triggerActor: pkg.scope.triggerActor,
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      turnId: turn.id,
-      turnInput: 'Synthetic reviewed sink proof',
-      requestedAgentId: pkg.agent.agentId,
-    });
-    const attempt = recordTestExecutionAttempt(f.coreDb, {
-      entry,
-      attemptId: allocateEntityId('attempt'),
-      agentSessionId: sessionId,
-      inputRef: pkg.snapshotId,
-      bindingRef: 'synthetic-reviewed-binding',
-      sessionCompatibilityKey: 'synthetic-reviewed-sink',
-      now: () => now,
-      operationId: `fixture-submit:${randomUUID()}`,
-    });
-    expect(
-      acceptSchedulerExecutionObservation(f.coreDb, {
-        ...schedulerExecutionCorrelation(attempt),
-        disposition: 'accepted',
-        execution: 'running',
-        fenceRef: null,
-        outcomeRef: null,
-      })?.disposition
-    ).toBe('accepted');
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
+    const app = createApp({
       coreDb: f.coreDb,
       store: f.store,
       vaultUnlockState: f.vaultUnlockState,
       workerMcpGateway: gateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-      workerControlGateway: {
-        authenticatePackageToken: () => pkg,
-      } as unknown as WorkerControlGateway,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot: f.dataRoot,
-          agentManifests: [setup.manifest],
-          workspaceMcpServerCatalogs: [
-            {
-              workspaceId: source.workspaceId,
-              path: join(f.dataRoot, 'catalog/catalog.json'),
-              catalog,
-            },
-          ],
-        }),
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      }),
     });
+    const started = await app.request(
+      ...operationRequest(
+        'task.start',
+        { workspaceId: source.workspaceId, threadId: source.threadId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Use the reviewed credential through the Gateway',
+            requestId: randomUUID(),
+          }),
+        }
+      )
+    );
+    expect(started.status).toBe(202);
+    const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+    await native.executionFor(turn.id).launched.promise;
+    workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
     const transport = new StreamableHTTPClientTransport(
       new URL('http://nanocore.test/api/worker-capabilities/mcp/reviewed-sink'),
       {
         fetch: (url, init) => app.fetch(new Request(url, init)),
-        requestInit: { headers: { authorization: 'Bearer synthetic-capability-fixture' } },
+        requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
       }
     );
     await client.connect(transport);
@@ -1605,10 +1583,19 @@ it.each([
     ).toEqual([{ revocation_status: 'revoked' }]);
   } finally {
     await client.close();
+    native?.executor.completion.resolve();
+    await Promise.all(
+      admissions.mock.results
+        .filter((result) => result.type === 'return')
+        .map((result) => result.value.closeout)
+    );
+    admissions.mockRestore();
+    native?.restore();
     await gateway.close();
     await upstream.close();
     workspaceDb?.sqlite.close();
-    f.cleanup();
+    await shutdownControlStoreWorkerClient();
+    await f.cleanup();
   }
 });
 
@@ -1664,7 +1651,7 @@ it('issues an explicitly Worker-visible GitHub grant with exact Agent and AgentS
       ])
     ).not.toContain('synthetic-worker-environment-canary');
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -1698,7 +1685,7 @@ it.each([
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -1724,7 +1711,7 @@ it('refuses a now-expired approved request without issuing or resolving material
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
   } finally {
     vi.restoreAllMocks();
-    f.cleanup();
+    await f.cleanup();
   }
 });
 
@@ -1767,6 +1754,6 @@ it.each([
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
   } finally {
-    f.cleanup();
+    await f.cleanup();
   }
 });

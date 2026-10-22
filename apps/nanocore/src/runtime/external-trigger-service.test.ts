@@ -1,16 +1,22 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AdmitExternalTriggerResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  cancelSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { findExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
@@ -23,9 +29,17 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempt-records.js';
+import {
+  acceptWorkspaceInvitation,
+  createWorkspaceInvitation,
+  getWorkspaceMember,
+  getWorkspaceRegistryFact,
+  removeWorkspaceMember,
+  transferWorkspaceOwnership,
+} from '../workspace-sharing.js';
 import {
   admitExternalTriggerEvent,
   type ExternalTriggerServiceInput,
@@ -61,9 +75,9 @@ async function fixture(options: { privateSource?: boolean } = {}) {
   applyMigrations(db);
   owned.push({ root, db });
   const userId = ensureLocalUser(db);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('External events');
-  const thread = await store.createThread(
+  let thread = await store.createThread(
     workspace.id,
     'Scheduled poll',
     undefined,
@@ -200,19 +214,23 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     dependencies,
     admit,
     nextPoll: async () => {
-      await store.updateTurn(source.turnId, { status: 'completed', completedAt: instant });
-      await store.updateAgentSession(source.agentSessionId, {
-        status: 'failed',
-        updatedAt: instant,
+      // A paused target edit admits another real poll without inventing completion of the first.
+      const paused = schedules.updateAutomation(userId, schedule.id, {
+        expectedRevision: schedules.getAutomation(schedule.id).revision,
+        status: 'paused',
       });
-      closeSchedulerExecutionAttemptWithoutEffects(db, {
-        attemptId: testEntityId('attempt', source.turnId),
-        noOutstandingEffects: true,
-        cause: 'fixture-read-only-poll',
-        now: () => instant,
+      thread = await store.createThread(workspace.id, 'Later scheduled poll');
+      const edited = schedules.updateAutomation(userId, schedule.id, {
+        expectedRevision: paused.revision,
+        threadId: thread.id,
       });
       instant = '2026-10-26T00:00:00.000Z';
       vi.setSystemTime(instant);
+      schedules.updateAutomation(userId, schedule.id, {
+        expectedRevision: edited.revision,
+        status: 'active',
+        scheduledAt: instant,
+      });
       return await poll();
     },
   };
@@ -391,7 +409,7 @@ describe('bounded scheduled poll event admission', () => {
     expect(queueCount(f.db)).toBe(3);
   });
 
-  it('returns immutable original work after a later poll, Store/SQLite reopen and command receipt expiry', async () => {
+  it('returns immutable original work after a later retargeted poll, Store/SQLite reopen and command receipt expiry', async () => {
     const f = await fixture();
     const first = await f.admit();
     const source = await f.nextPoll();
@@ -464,6 +482,16 @@ describe('bounded scheduled poll event admission', () => {
     const f = await fixture();
     const first = await f.admit();
     const sessionId = allocateEntityId('as');
+    await f.store.createAgentSession({
+      id: sessionId,
+      agentId: first.entry.requestedAgentId,
+      workspaceId: first.entry.workspaceId,
+      threadId: first.entry.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: '2026-10-18T00:00:01.000Z',
+      updatedAt: '2026-10-18T00:00:01.000Z',
+    });
     recordTestExecutionAttempt(f.db, {
       entry: first.entry,
       attemptId: testEntityId('attempt', first.turn.id),
@@ -532,56 +560,39 @@ describe('bounded scheduled poll event admission', () => {
   ] as const)('requires inspection for %s canonical accepted work', async (damage) => {
     const f = await fixture();
     const first = await f.admit();
-    const path = join(
-      f.root,
-      'workspaces',
-      first.entry.workspaceId,
-      'threads',
-      first.entry.threadId,
-      'turns',
-      first.entry.turnId,
-      'turn.json'
-    );
-    if (damage === 'missing') rmSync(path);
-    else
-      writeFileSync(
-        path,
-        JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), agentId: 'other-agent' })
-      );
+    if (damage === 'missing') {
+      await shutdownControlStoreWorkerClient();
+      const db = openWorkspaceDb(f.root, first.entry.workspaceId);
+      try {
+        // Deliberate canonical-history loss after acknowledged admission, never successful setup.
+        db.sqlite.transaction(() => {
+          db.sqlite
+            .prepare('DELETE FROM control_product_entries WHERE turn_id = ?')
+            .run(first.turn.id);
+          expect(
+            db.sqlite.prepare('DELETE FROM control_turns WHERE id = ?').run(first.turn.id).changes
+          ).toBe(1);
+        })();
+      } finally {
+        db.sqlite.close();
+      }
+    } else await f.store.updateTurn(first.turn.id, { agentId: 'other-agent' });
     const createTurn = vi.spyOn(f.store, 'createTurn');
     await expect(f.admit()).rejects.toMatchObject({ code: 'recovery_required' });
     expect(createTurn).not.toHaveBeenCalled();
     expect(queueCount(f.db)).toBe(2);
   });
 
-  it('uses canonical target history when the derivative Store is stale', async () => {
+  it('reads acknowledged canonical target history through an earlier Store', async () => {
     const f = await fixture();
     const first = await f.admit();
-    f.db.sqlite
-      .prepare(
-        "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
-      )
-      .run(first.entry.queueEntryId);
-    const path = join(
-      f.root,
-      'workspaces',
-      first.entry.workspaceId,
-      'threads',
-      first.entry.threadId,
-      'turns',
-      first.entry.turnId,
-      'turn.json'
-    );
-    writeFileSync(
-      path,
-      JSON.stringify({
-        ...JSON.parse(readFileSync(path, 'utf8')),
-        status: 'interrupted',
-        completedAt: '2026-10-18T00:01:00.000Z',
-      })
-    );
-    expect(f.store.getTurnById(first.turn.id).status).toBe('pending');
-    expect(inspectExternalTriggerAdmission(f.db, f.store, first.admission).turn.status).toBe(
+    const earlier = new FsStore({ dataRoot: f.root });
+    cancelSchedulerAdmissionEntry(f.db, first.entry);
+    await f.store.updateTurn(first.turn.id, {
+      status: 'interrupted',
+      completedAt: '2026-10-18T00:01:00.000Z',
+    });
+    expect(inspectExternalTriggerAdmission(f.db, earlier, first.admission).turn.status).toBe(
       'interrupted'
     );
   });
@@ -608,32 +619,53 @@ describe('bounded scheduled poll event admission', () => {
       });
     if (reason === 'deleted') f.schedules.deleteAutomation(f.userId, f.schedule.id);
     if (reason === 'disabled-user')
-      f.db.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(f.userId);
-    if (reason === 'removed-member') {
-      const replacement = allocateEntityId('usr');
-      const at = '2026-10-18T00:00:00.000Z';
       f.db.sqlite.transaction(() => {
-        f.db.sqlite
-          .prepare(
-            "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, 'Replacement', 'replacement@example.com', false, ?, ?, 'human')"
-          )
-          .run(replacement, Date.parse(at), Date.parse(at));
-        f.db.sqlite
-          .prepare(
-            "INSERT INTO workspace_members (workspace_id,user_id,status,invitation_id,joined_at,removed_at,revision,created_at,updated_at) VALUES (?,?,'active',NULL,?,NULL,1,?,?)"
-          )
-          .run(f.schedule.workspaceId, replacement, at, at, at);
-        f.db.sqlite
-          .prepare(
-            'UPDATE workspace_registry SET owner_user_id = ?, revision = revision + 1 WHERE workspace_id = ?'
-          )
-          .run(replacement, f.schedule.workspaceId);
-        f.db.sqlite
-          .prepare(
-            "UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ? WHERE workspace_id = ? AND user_id = ?"
-          )
-          .run(at, at, f.schedule.workspaceId, f.userId);
+        expect(disableCanonicalUser(f.db, f.userId)?.changed).toBe(true);
       })();
+    if (reason === 'removed-member') {
+      // Transfer to a real active member before removing the unchanged poll principal.
+      const email = `${randomUUID()}@example.invalid`;
+      const { user } = await createBetterAuth(f.db, { env: {} }).api.signUpEmail({
+        body: { name: 'Replacement owner', email, password: randomUUID() },
+      });
+      const removed = f.db.sqlite.transaction(() => {
+        const scope = { coreDb: f.db, workspaceId: f.schedule.workspaceId };
+        const invitation = createWorkspaceInvitation({
+          ...scope,
+          inviterUserId: f.userId,
+          inviteeEmail: email,
+        });
+        if (invitation.kind !== 'created') throw new Error('Replacement invitation failed.');
+        const accepted = acceptWorkspaceInvitation({
+          ...scope,
+          invitationId: invitation.invitation.invitationId,
+          inviteeUserId: user.id,
+          expectedRevision: invitation.invitation.revision,
+        });
+        if (accepted.kind !== 'accepted') throw new Error('Replacement membership failed.');
+        const registry = getWorkspaceRegistryFact(f.db, scope.workspaceId);
+        const member = getWorkspaceMember(f.db, scope.workspaceId, f.userId);
+        if (!registry || !member) throw new Error('Original membership is missing.');
+        const transfer = transferWorkspaceOwnership({
+          ...scope,
+          actorUserId: f.userId,
+          targetUserId: user.id,
+          expectedRegistryRevision: registry.registryRevision,
+        });
+        if (transfer.kind !== 'transferred') throw new Error('Owner transfer failed.');
+        return removeWorkspaceMember({
+          ...scope,
+          actorUserId: user.id,
+          memberUserId: f.userId,
+          expectedRevision: member.revision,
+        });
+      })();
+      if (
+        removed.kind !== 'removed' ||
+        removed.member.status !== 'removed' ||
+        removed.member.userId !== f.userId
+      )
+        throw new Error('Poll principal membership was not removed.');
     }
     if (reason === 'stale-package') source = { ...source, packageSnapshotId: 'stale-package' };
     if (reason === 'stale-session') source = { ...source, agentSessionId: allocateEntityId('as') };
