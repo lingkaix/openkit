@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
+import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -29,6 +30,7 @@ import { admitTestNativeEnvironment } from '../test-support/native-environment.j
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptRecords from './execution-attempt-records.js';
+import { commandInputHash } from './idempotent-command.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -245,17 +247,40 @@ async function fixture(
   };
   const queue = async (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
     const turnId = testEntityId('tu', `turn_port_${suffix}`);
+    const input = {
+      requestId: testEntityId('tu', `request_port_${suffix}`).slice(3),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId,
+      input: 'Execute exactly once.',
+      agentId: setup.manifest.id,
+    };
+    const scope = {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: input.workspaceId,
+      threadId,
+    };
+    const createdAt = new Date().toISOString();
     if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
       await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
     await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
+      input.workspaceId,
       threadId,
-      'Execute exactly once.',
-      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      input.input,
+      { kind: 'user', id: scope.actorId },
       null,
       {
         turnId,
-        agentId: setup.manifest.id,
+        agentId: input.agentId,
+        commandReceipt: {
+          key: commandRequestKey('turn.start', input.requestId, scope),
+          command: 'turn.start',
+          requestId: input.requestId,
+          scope,
+          inputHash: commandInputHash(input),
+          responseKind: 'turn',
+          createdAt,
+          expiresAt: commandRequestExpiresAt(createdAt),
+        },
         status: 'pending',
         executorKind: 'worker',
       }
@@ -265,22 +290,15 @@ async function fixture(
     } = {
       backendId: port.id,
       queueEntryId: `queue_port_${suffix}`,
-      requestId: `request_port_${suffix}`,
+      requestId: input.requestId,
       turnId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: input.workspaceId,
       threadId,
-      turnInput: 'Execute exactly once.',
-      requestedAgentId: setup.manifest.id,
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      turnInput: input.input,
+      requestedAgentId: input.agentId,
+      triggerActor: { kind: 'user', id: scope.actorId },
       now: dispatchInput.now!,
     };
-    store.recordCommandRequest({
-      command: 'turn.start',
-      requestId: admissionInput.requestId!,
-      scope: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId },
-      inputHash: 'fixture',
-      response: { kind: 'turn', id: turnId },
-    });
     return createSchedulerAdmissionEntry(db, admissionInput);
   };
   return {
