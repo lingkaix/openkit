@@ -18,8 +18,9 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb } from '../storage/db.js';
 import { coreDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { FIXTURE_LOCAL_USER_ID } from './local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
 import { notebookImportFixture } from './notebook-import.js';
+import { createTestStore } from './store.js';
 
 const userFixtures = new Map<string, { workspaceId: string; threadId: string }>();
 /** Explicit canonical IDs retained by the ordinary Demo fixture. */
@@ -192,4 +193,71 @@ export async function seedRetainedPersonalWorkspace(
     turnEvents: [],
     ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [], userId }),
   });
+}
+
+/**
+ * Cold-imports completed Worker history into a fresh unpublished Demo Workspace.
+ * @param options Caller-owned fixture root; existing Workspace roots are refused.
+ * @param entries Explicit earlier work, with no native execution, receipt or release claim.
+ * @returns Store whose retained products passed the real snapshot import owner.
+ */
+export async function createRetainedDemoStore(
+  options: { dataRoot: string },
+  entries: readonly { name: string; input: string; agentId: string; timestamp: string }[]
+): Promise<FsStore> {
+  const retained = await createDemoStore();
+  for (const entry of entries) {
+    const thread = await retained.createThread(DEMO_WORKSPACE_ID, entry.name);
+    const turn = await retained.createTurn(
+      DEMO_WORKSPACE_ID,
+      thread.id,
+      entry.input,
+      { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      null,
+      { startedAt: entry.timestamp }
+    );
+    const session = await retained.createAgentSession({
+      id: allocateEntityId('as'),
+      agentId: entry.agentId,
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      status: 'idle',
+      message: null,
+      createdAt: entry.timestamp,
+      updatedAt: entry.timestamp,
+    });
+    await retained.updateTurn(turn.id, {
+      agentId: entry.agentId,
+      agentSessionId: session.id,
+      status: 'completed',
+      completedAt: entry.timestamp,
+    });
+  }
+  await shutdownControlStoreWorkerClient();
+  const store = createTestStore(options);
+  const coreDb = openCoreDb(options.dataRoot);
+  try {
+    ensureLocalUser(coreDb);
+  } finally {
+    coreDb.sqlite.close();
+  }
+  const workspace = retained.getWorkspace(DEMO_WORKSPACE_ID);
+  const threads = retained.listThreads(workspace.id);
+  const turns = threads.flatMap((thread) => retained.listThreadTurns(workspace.id, thread.id));
+  const knowledge = retained.getWorkspaceResources(workspace.id).knowledge;
+  await store.importWorkspaceSnapshot({
+    workspace,
+    threads,
+    turns,
+    knowledge,
+    itemRevisions: turns.flatMap((turn) => turn.items),
+    artifacts: [],
+    agentSessions: retained.listWorkspaceAgentSessions(workspace.id),
+    turnEvents: turns.map((turn) => [turn.id, retained.getTurnEventsForExport(turn.id)]),
+    turnCaptureCoverage: new Map(
+      turns.map((turn) => [turn.id, retained.getTurnCaptureCoverage(turn.id)!])
+    ),
+    ...notebookImportFixture({ workspaceId: workspace.id, knowledge }),
+  });
+  return store;
 }

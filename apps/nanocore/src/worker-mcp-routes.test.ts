@@ -4,7 +4,7 @@ import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import {
+import fs, {
   chmodSync,
   existsSync,
   lstatSync,
@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +51,7 @@ import {
 import {
   finishCapabilityCall,
   listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import {
@@ -70,6 +72,7 @@ import { evaluateCapturedPendingCall } from './runtime/captured-pending-call.js'
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
+  listSchedulerExecutionAttemptsForTurn,
   markSchedulerExecutionAttemptClosing,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
@@ -95,7 +98,12 @@ import {
   type NanoHostSessionEffectRequest,
 } from './runtime/nanohost-session-dispatch.js';
 import { approvalCardCopy, projectApprovalEffect } from './runtime/pending-request-disclosure.js';
-import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
+import {
+  executionCallIdForRequest,
+  listThreadPendingRequests,
+  pendingRequestItemId,
+  readPendingRequest,
+} from './runtime/pending-requests.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -104,7 +112,10 @@ import {
   MCP_RESULT_TOO_LARGE_MESSAGE,
   WorkerMcpGatewayCallError,
 } from './runtime/worker-mcp-gateway.js';
-import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  listSchedulerAdmissionEntriesForWorkspace,
+} from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
@@ -113,13 +124,9 @@ import {
   verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import {
-  createTestAgentSetup,
-  createTestGatewayConfig,
-  recordTestAgentEnvironmentPackage,
-} from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, createRetainedDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -3686,6 +3693,25 @@ describe('worker MCP routes', () => {
       workerControlGateway,
       workspaceMutationAdmission,
     });
+    const execution = vi.spyOn(workerLifecycleRuntime.turnExecutor, 'startTurn');
+    let firstTurnId: string | undefined;
+    const firstResult = Promise.withResolvers<void>();
+    void firstResult.promise.catch(() => undefined);
+    const updateItem = store.updateItem.bind(store);
+    const resultPublication = vi
+      .spyOn(store, 'updateItem')
+      .mockImplementation((id, input, admission) => {
+        const publication = updateItem(id, input, admission);
+        if (
+          firstTurnId &&
+          id === deriveEntityId('it', ['worker-result', firstTurnId]) &&
+          'level' in input &&
+          input.level === 'info'
+        ) {
+          void publication.then(() => firstResult.resolve(), firstResult.reject);
+        }
+        return publication;
+      });
     const app = createApp({
       fileAdmission,
       coreDb,
@@ -4059,18 +4085,25 @@ describe('worker MCP routes', () => {
       });
       // Start the Harness dispatch budget after durable admission, not during request preparation.
       const firstResponse = await admittedFirstRequest;
-      const firstRun = await driveTask(true);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
         ownerCommand === 'conversation.submit'
           ? SubmitConversationResponseSchema.parse(await firstResponse.json())
           : StartTaskModeResponseSchema.parse(await firstResponse.json());
-      for (
-        let attempt = 0;
-        attempt < 1000 && store.getTurnById(firstTask.turn.id).status === 'running';
-        attempt += 1
-      )
-        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      firstTurnId = firstTask.turn.id;
+      const firstRun = await driveTask(true);
+      // Task closeout includes native release and the conversation's final display publication.
+      const started = execution.mock.calls.findIndex(([, turnId]) => turnId === firstTask.turn.id);
+      expect(started).toBeGreaterThanOrEqual(0);
+      await execution.mock.results[started]!.value;
+      if (ownerCommand === 'conversation.submit') await firstResult.promise;
+      expect(
+        listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId: workspaceIdForOwner(firstTask.turn.owner),
+          threadId: firstTask.turn.threadId,
+          turnId: firstTask.turn.id,
+        }).every((attempt) => attempt.phase === 'closed')
+      ).toBe(true);
       const durableTurn = store.getTurnById(firstTask.turn.id);
       if (ownerCommand === 'conversation.submit') {
         expect(durableTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
@@ -4188,13 +4221,18 @@ describe('worker MCP routes', () => {
         )
       );
       let responded: Response;
+      let refusedExecutionCalls: ReturnType<typeof listWorkspaceCapabilityCalls> | undefined;
+      let callsBeforeReplay: ReturnType<typeof listWorkspaceCapabilityCalls> | undefined;
       let continuation: Awaited<ReturnType<typeof driveTask>>;
       if (refuseFirst) {
         responded = await approvalResponse;
         const reviewDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         for (let n = 0; n < 2000; n++) {
           const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
-          if (record?.delivery === 'undelivered' && record.publicationTurnId) break;
+          if (record?.delivery === 'undelivered' && record.publicationTurnId) {
+            const publication = store.getTurnById(record.publicationTurnId);
+            if (publication.status !== 'pending' && publication.status !== 'running') break;
+          }
           await new Promise((resolve) => setTimeout(resolve, 1));
         }
         const refused = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
@@ -4208,17 +4246,24 @@ describe('worker MCP routes', () => {
           });
           expect(preparationFault).toHaveBeenCalledTimes(1);
           expect(
-            coreDb.sqlite
-              .prepare('SELECT status FROM scheduler_admission_entries WHERE turn_id = ?')
-              .get(refused.publicationTurnId)
-          ).toEqual({ status: 'admitted' });
+            listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+              workspaceId: refused.workspaceId,
+              statuses: ['admitted'],
+            })
+          ).toContainEqual(expect.objectContaining({ turnId: refused.publicationTurnId }));
           expect(
-            coreDb.sqlite
-              .prepare(
-                'SELECT phase, disposition, operation_id FROM scheduler_execution_attempts WHERE turn_id = ?'
-              )
-              .get(refused.publicationTurnId)
-          ).toEqual({ phase: 'closed', disposition: 'not_accepted', operation_id: null });
+            listSchedulerExecutionAttemptsForTurn(coreDb, {
+              workspaceId: refused.workspaceId,
+              threadId: refused.threadId,
+              turnId: refused.publicationTurnId!,
+            })
+          ).toContainEqual(
+            expect.objectContaining({
+              phase: 'closed',
+              disposition: 'not_accepted',
+              operationId: null,
+            })
+          );
           const count = store.listThreadTurns(
             'ws_00000000-0000-7000-8000-000000000001',
             firstTask.turn.threadId
@@ -4234,21 +4279,53 @@ describe('worker MCP routes', () => {
           reviewDb.sqlite.close();
           return;
         }
-        expect(refused.delivery).toBe('undelivered');
-        expect(refused.disposition).toBe('denied-not-executed');
-        expect(store.getTurnById(refused.publicationTurnId!).status).toBe('failed');
+        // Pending Requests: Main refusal after the native claim is a known execution error.
+        expect(refused).toMatchObject({
+          state: 'resolved',
+          resolution: 'granted',
+          claim: 'finished',
+          disposition: 'execution-error',
+          delivery: 'undelivered',
+          executionCallId: executionCallIdForRequest(repositoryApprovalId!),
+        });
+        refusedExecutionCalls = listWorkspaceCapabilityCalls(reviewDb, refused.workspaceId).filter(
+          (call) => call.family === 'mcp'
+        );
+        expect(refusedExecutionCalls.filter((call) => call.id === refused.executionCallId)).toEqual(
+          [
+            expect.objectContaining({
+              requestId: responseInput.requestId,
+              status: 'failed',
+              upstreamContacted: false,
+            }),
+          ]
+        );
         expect(
-          reviewDb.sqlite
-            .prepare('SELECT count(*) AS count FROM pending_requests WHERE delivery = ?')
-            .get('frozen')
-        ).toEqual({ count: 0 });
+          listWorkspaceUsageRecords(reviewDb, refused.workspaceId).filter(
+            (usage) => usage.capabilityCallId === refused.executionCallId
+          )
+        ).toEqual([]);
+        expect(existsSync(callFile)).toBe(false);
+        const publication = store.getTurnById(refused.publicationTurnId!);
+        expect(publication.status).toBe('failed');
+        expect(publication.items).toContainEqual(
+          expect.objectContaining({
+            id: pendingRequestItemId(repositoryApprovalId!, 'disposition'),
+            type: 'tool-call',
+            result: 'execution-error',
+          })
+        );
         expect(
-          coreDb.sqlite
-            .prepare(
-              "SELECT count(*) AS count FROM scheduler_admission_entries WHERE turn_id = ? AND status = 'queued'"
-            )
-            .get(refused.publicationTurnId)
-        ).toEqual({ count: 0 });
+          listThreadPendingRequests(reviewDb.sqlite, refused.workspaceId, refused.threadId).filter(
+            (record) => record.delivery === 'frozen'
+          )
+        ).toEqual([]);
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: refused.workspaceId,
+            statuses: ['queued'],
+          }).filter((entry) => entry.turnId === refused.publicationTurnId)
+        ).toEqual([]);
         const count = store.listThreadTurns(
           'ws_00000000-0000-7000-8000-000000000001',
           firstTask.turn.threadId
@@ -4282,6 +4359,11 @@ describe('worker MCP routes', () => {
         continuation = resumed;
         const delivered = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
         expect(delivered.delivery).toBe('delivered');
+        expect(delivered).toMatchObject({
+          executionCallId: refused.executionCallId,
+          claim: 'finished',
+          disposition: 'execution-error',
+        });
         expect(delivered.publicationTurnId).toBe(refused.publicationTurnId);
         expect(delivered.deliveryTurnId).not.toBe(refused.publicationTurnId);
         expect(store.getTurnById(delivered.deliveryTurnId!).items).toContainEqual(
@@ -4290,12 +4372,24 @@ describe('worker MCP routes', () => {
             text: expect.stringContaining('Continue after refused admission.'),
           })
         );
-        const trigger = store
-          .getTurnById(delivered.deliveryTurnId!)
-          .items.find((item) => item.type === 'user-message');
-        if (!trigger || trigger.type !== 'user-message')
-          throw new Error('Missing independent user trigger');
-        expect(JSON.parse(trigger.text).objective).toBe('Continue after refused admission.');
+        expect(store.getTurnById(refused.publicationTurnId!).items).toEqual(publication.items);
+        expect(store.getTurnById(delivered.deliveryTurnId!).items).not.toContainEqual(
+          expect.objectContaining({
+            id: pendingRequestItemId(repositoryApprovalId!, 'disposition'),
+          })
+        );
+        callsBeforeReplay = listWorkspaceCapabilityCalls(reviewDb, refused.workspaceId).filter(
+          (call) => call.family === 'mcp'
+        );
+        // Later user work owns its calls; carrying the outcome preserves the original execution.
+        expect(
+          callsBeforeReplay.filter((call) => call.turnId !== delivered.deliveryTurnId)
+        ).toEqual(refusedExecutionCalls);
+        expect(
+          callsBeforeReplay.filter((call) => call.requestId === responseInput.requestId)
+        ).toEqual(
+          refusedExecutionCalls.filter((call) => call.requestId === responseInput.requestId)
+        );
         reviewDb.sqlite.close();
       } else {
         [responded, continuation] = await Promise.all([approvalResponse, driveTask(false)]);
@@ -4315,8 +4409,21 @@ describe('worker MCP routes', () => {
         )
       );
       expect(replay.status).toBe(200);
+      if (refuseFirst) expect(await replay.json()).toEqual(await responded.clone().json());
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
+        if (refuseFirst) {
+          expect(
+            listWorkspaceCapabilityCalls(workspaceDb, responseInput.workspaceId).filter(
+              (call) => call.family === 'mcp'
+            )
+          ).toEqual(callsBeforeReplay);
+          expect(
+            listWorkspaceUsageRecords(workspaceDb, responseInput.workspaceId).filter(
+              (usage) => usage.capabilityCallId === executionCallIdForRequest(repositoryApprovalId!)
+            )
+          ).toEqual([]);
+        }
         expect(readPendingRequest(workspaceDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
           'delivered'
         );
@@ -4340,6 +4447,8 @@ describe('worker MCP routes', () => {
         expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
       else expect(existsSync(callFile)).toBe(false);
     } finally {
+      resultPublication.mockRestore();
+      execution.mockRestore();
       await workerMcpGateway.close();
       coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
@@ -5121,42 +5230,42 @@ describe('worker MCP routes', () => {
     'coded-programming',
   ] as const)('defers only unavailable named snapshot storage during real MCP boot reconciliation: %s', async (failure) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-backfill-unavailable-'));
-    const store = await createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
-    const timestamp = '2026-09-22T00:00:00.000Z';
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const store = await createRetainedDemoStore(
+      { dataRoot },
+      ['0_unavailable', '1_healthy'].map((suffix, index) => ({
+        name: `MCP backfill ${suffix}`,
+        input: 'Recover decided MCP publication',
+        agentId: 'agent_codex_host',
+        timestamp: `2026-09-22T00:00:0${index}.000Z`,
+      }))
+    );
+    const coreDb = openCoreDb(dataRoot);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const packages: AgentEnvironmentPackage[] = [];
+    const calls: ReturnType<typeof startCapabilityCall>[] = [];
+    let restoreRead: (() => void) | undefined;
+    let unavailableDirectory: string | undefined;
     try {
       for (const suffix of ['0_unavailable', '1_healthy']) {
-        const thread = await store.createThread(
-          'ws_00000000-0000-7000-8000-000000000001',
-          `MCP backfill ${suffix}`
-        );
-        const turn = await store.createTurn(
-          'ws_00000000-0000-7000-8000-000000000001',
-          thread.id,
-          'Recover decided MCP publication',
-          { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
-          null,
-          { startedAt: timestamp }
-        );
-        // Store writes preserve retained package directories only for registered product sessions.
-        const session = await store.createAgentSession({
-          id: testEntityId('as', `as_mcp_${suffix}`),
-          agentId: 'agent_codex_host',
-          workspaceId: workspaceIdForOwner(turn.owner),
-          threadId: turn.threadId,
-          status: 'idle',
-          message: null,
-          createdAt: timestamp,
-          updatedAt: timestamp,
+        const thread = store
+          .listThreads(workspaceId)
+          .find((row) => row.name === `MCP backfill ${suffix}`)!;
+        const turn = store.listThreadTurns(workspaceId, thread.id)[0]!;
+        const session = store.getAgentSession(turn.agentSessionId!);
+        expect(turn).toMatchObject({
+          status: 'completed',
+          agentId: session.agentId,
+          agentSessionId: session.id,
         });
-        await store.updateTurn(turn.id, { agentSessionId: session.id });
+        expect(session).toMatchObject({ workspaceId, threadId: turn.threadId, status: 'idle' });
         const environmentPackage = resolveAgentEnvironmentPackage({
+          coreDb,
           agentSetup: createTestAgentSetup(),
           agentSessionId: session.id,
           backend: { kind: 'openshell' },
           requestId: `req_mcp_${suffix}`,
+          createdAt: turn.startedAt!,
           triggerActor: turn.triggerActor,
           turn,
           turnInput: 'Recover decided MCP publication',
@@ -5165,61 +5274,106 @@ describe('worker MCP routes', () => {
         });
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           environmentPackage,
-          createdAt: timestamp,
+          createdAt: turn.startedAt!,
+        });
+        expect(
+          snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            workspaceId,
+            session.id,
+            environmentPackage.snapshotId
+          )
+        ).toMatchObject({
+          workspaceId,
+          threadId: thread.id,
+          turnId: turn.id,
+          agentSessionId: session.id,
+          snapshotId: environmentPackage.snapshotId,
         });
         packages.push(environmentPackage);
         const call = startCapabilityCall({
-          agentId: environmentPackage.agent.agentId,
-          agentSessionId: environmentPackage.scope.agentSessionId,
+          workspaceDb,
+          workspaceId,
           authorityActor: turn.triggerActor,
+          agentId: session.agentId,
+          agentSessionId: session.id,
           callId: testEntityId('cap', `cap_mcp_${suffix}`),
+          itemId: testEntityId('it', `it_mcp_${suffix}`),
           capabilityId: 'mcp.call-tool',
           family: 'mcp',
-          itemId: testEntityId('it', `it_mcp_${suffix}`),
-          now: new Date(timestamp),
           operation: 'mcp.call-tool',
           packageSnapshotId: environmentPackage.snapshotId,
           providerRef: 'echo',
-          redactionClass: 'metadata-only',
           serviceRef: 'mcp-tool:echo',
-          threadId: turn.threadId,
+          redactionClass: 'metadata-only',
+          threadId: thread.id,
           turnId: turn.id,
-          workspaceDb,
-          workspaceId: workspaceIdForOwner(turn.owner),
+          now: new Date(turn.startedAt!),
         });
         finishCapabilityCall({
           callId: call.id,
           status: 'succeeded',
           workspaceDb,
-          now: new Date(timestamp),
+          now: new Date(turn.completedAt!),
         });
-        await store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+        calls.push(call);
       }
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
-    const selected = packages[0]!;
-    const snapshotsRoot = join(
-      dirname(dirname(workspaceDb.sqlite.name)),
-      'runtime',
-      'agent-sessions',
-      selected.scope.agentSessionId,
-      'aep-snapshots'
-    );
-    const snapshotPath = join(snapshotsRoot, `${selected.snapshotId}.json`);
-    const originalBytes = readFileSync(snapshotPath, 'utf8');
-    const read = snapshotLedger.findNamedAgentEnvironmentPackageSnapshot;
-    let unavailableDirectory = false;
-    let fault: Error | undefined;
-    let inspection: { mockRestore(): void } | undefined;
-    const beforeItems = store.listAllItems();
-    const beforeEvents = packages.map((pkg) => store.getTurnEvents(pkg.scope.turnId));
-    const publish = vi.spyOn(store, 'createItem');
-    try {
+      verifyAndMigrateExistingScopedDatabases(dataRoot);
+      const selected = packages[0]!;
+      // Observe the real named reader's file effect; do not duplicate another owner's path layout.
+      let snapshotPath = '';
+      const originalRead = fs.readFileSync;
+      const locate = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+        ...args: Parameters<typeof fs.readFileSync>
+      ) => {
+        if (typeof args[0] === 'string') snapshotPath = args[0];
+        return originalRead(...args);
+      }) as typeof fs.readFileSync);
+      syncBuiltinESMExports();
+      try {
+        expect(
+          snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            workspaceId,
+            selected.scope.agentSessionId,
+            selected.snapshotId
+          )
+        ).toMatchObject({ snapshotId: selected.snapshotId, turnId: selected.scope.turnId });
+      } finally {
+        locate.mockRestore();
+        syncBuiltinESMExports();
+      }
+      expect(snapshotPath).not.toBe('');
+      const snapshotsRoot = dirname(snapshotPath);
+      const originalBytes = readFileSync(snapshotPath, 'utf8');
+      const beforeItems = store.listAllItems();
+      const beforeEvents = packages.map((pkg) => store.getTurnEvents(pkg.scope.turnId));
+      const beforeCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
+      const beforeUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
+      // Capability Usage lifecycle: one retained successful call for each of the two source requests.
+      expect(beforeCalls).toHaveLength(2);
+      expect(beforeCalls).toEqual(
+        expect.arrayContaining(
+          packages.map((pkg, index) =>
+            expect.objectContaining({
+              id: calls[index]!.id,
+              status: 'succeeded',
+              agentSessionId: pkg.scope.agentSessionId,
+              threadId: pkg.scope.threadId,
+              turnId: pkg.scope.turnId,
+              packageSnapshotId: pkg.snapshotId,
+            })
+          )
+        )
+      );
+      expect(
+        beforeItems.some((item) => calls.some((call) => call.context.itemId === item.id))
+      ).toBe(false);
+      let injections = 0;
+      let fault: Error | undefined;
       if (failure === 'permission') {
         chmodSync(snapshotsRoot, 0);
-        unavailableDirectory = true;
+        unavailableDirectory = snapshotsRoot;
         expect(() => lstatSync(snapshotPath)).toThrow(expect.objectContaining({ code: 'EACCES' }));
       } else if (failure === 'noncanonical') {
         rmSync(snapshotPath);
@@ -5235,120 +5389,167 @@ describe('worker MCP routes', () => {
       } else {
         fault =
           failure === 'programming'
-            ? new TypeError('Unexpected named-reader failure.')
-            : Object.assign(new Error('Named-reader fault.'), {
+            ? new TypeError('Unexpected named-file read failure.')
+            : Object.assign(new Error('Named-file read fault.'), {
                 code: failure === 'coded-programming' ? 'EIO' : failure,
                 ...(failure === 'coded-programming'
                   ? {}
                   : {
-                      syscall: failure === 'EIO' ? 'read' : 'open',
+                      syscall: 'read',
                       errno: failure === 'EIO' ? -5 : failure === 'EMFILE' ? -24 : -1,
                       path: snapshotPath,
                     }),
               });
-        inspection = vi
-          .spyOn(snapshotLedger, 'findNamedAgentEnvironmentPackageSnapshot')
-          .mockImplementation((db, workspaceId, sessionId, snapshotId) => {
-            if (snapshotId === selected.snapshotId) throw fault;
-            return read(db, workspaceId, sessionId, snapshotId);
-          });
       }
-      if (
-        failure === 'permission' ||
-        failure === 'EPERM' ||
-        failure === 'EIO' ||
-        failure === 'EMFILE'
-      ) {
-        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-        expect(publish).toHaveBeenCalledOnce();
-        expect(publish.mock.calls[0]![0]).toMatchObject({
-          id: testEntityId('it', 'it_mcp_1_healthy'),
-          causationId: testEntityId('cap', 'cap_mcp_1_healthy'),
-          status: 'completed',
-        });
+      let inspections = 0;
+      const originalLstat = fs.lstatSync;
+      const inspect = vi.spyOn(fs, 'lstatSync').mockImplementation(((
+        ...args: Parameters<typeof fs.lstatSync>
+      ) => {
+        if (args[0] === snapshotPath) inspections += 1;
+        return originalLstat(...args);
+      }) as typeof fs.lstatSync);
+      const readFault = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+        ...args: Parameters<typeof fs.readFileSync>
+      ) => {
+        if (args[0] === snapshotPath && fault) {
+          injections += 1;
+          throw fault;
+        }
+        return originalRead(...args);
+      }) as typeof fs.readFileSync);
+      syncBuiltinESMExports();
+      restoreRead = () => {
+        inspect.mockRestore();
+        readFault.mockRestore();
+        syncBuiltinESMExports();
+      };
+      // Core Protocol Turn Lifecycle permits only the exact already-decided missing Item.
+      const unavailable = ['permission', 'EPERM', 'EIO', 'EMFILE'].includes(failure);
+      if (unavailable) {
+        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
         expect(
-          store
-            .listAllItems()
-            .find((item) => item.id === testEntityId('it', 'it_mcp_0_unavailable'))
+          store.listAllItems().filter((item) => !beforeItems.some((prior) => prior.id === item.id))
+        ).toEqual([
+          expect.objectContaining({
+            id: calls[1]!.context.itemId,
+            causationId: calls[1]!.id,
+            status: 'completed',
+          }),
+        ]);
+        expect(
+          store.listAllItems().find((item) => item.id === calls[0]!.context.itemId)
         ).toBeUndefined();
         expect(store.getTurnEvents(selected.scope.turnId)).toEqual(beforeEvents[0]);
         if (unavailableDirectory) {
-          chmodSync(snapshotsRoot, 0o700);
-          unavailableDirectory = false;
+          chmodSync(unavailableDirectory, 0o700);
+          unavailableDirectory = undefined;
         }
-        inspection?.mockRestore();
-        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-        expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+        restoreRead?.();
+        restoreRead = undefined;
+        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
         expect(
-          store
-            .listAllItems()
-            .find((item) => item.id === testEntityId('it', 'it_mcp_0_unavailable'))
+          store.listAllItems().find((item) => item.id === calls[0]!.context.itemId)
         ).toMatchObject({
-          causationId: testEntityId('cap', 'cap_mcp_0_unavailable'),
+          causationId: calls[0]!.id,
           status: 'completed',
         });
       } else {
-        const reconcile = () => reconcileWorkerMcpItems(dataRoot, store);
-        if (fault) expect(reconcile).toThrow(fault);
-        else expect(reconcile).toThrow();
-        expect(publish).not.toHaveBeenCalled();
+        await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toBeInstanceOf(Error);
         expect(store.listAllItems()).toEqual(beforeItems);
         packages.forEach((pkg, index) => {
           expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
         });
       }
-      const reopened = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      expect(inspections).toBeGreaterThan(0);
+      if (
+        !['permission', 'noncanonical', 'malformed-json', 'schema', 'digest', 'lineage'].includes(
+          failure
+        )
+      ) {
+        expect(injections).toBeGreaterThan(0);
+      }
+      restoreRead?.();
+      restoreRead = undefined;
+      await shutdownControlStoreWorkerClient();
+      const reopened = openWorkspaceDb(dataRoot, workspaceId);
       try {
-        expect(
-          reopened.sqlite
-            .prepare('SELECT call_id, status FROM capability_calls ORDER BY call_id')
-            .all()
-        ).toEqual([
-          { call_id: testEntityId('cap', 'cap_mcp_0_unavailable'), status: 'succeeded' },
-          { call_id: testEntityId('cap', 'cap_mcp_1_healthy'), status: 'succeeded' },
-        ]);
+        expect(listWorkspaceCapabilityCalls(reopened, workspaceId)).toEqual(beforeCalls);
+        expect(listWorkspaceUsageRecords(reopened, workspaceId)).toEqual(beforeUsage);
       } finally {
         reopened.sqlite.close();
       }
     } finally {
-      if (unavailableDirectory) chmodSync(snapshotsRoot, 0o700);
-      inspection?.mockRestore();
-      publish.mockRestore();
+      if (unavailableDirectory) chmodSync(unavailableDirectory, 0o700);
+      restoreRead?.();
       await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
   it('recreates a missing terminal Item without changing its successful call', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-item-recovery-'));
-    const store = await createDemoStore({ dataRoot });
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Recover the MCP Item',
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const store = await createRetainedDemoStore({ dataRoot }, [
       {
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-        kind: 'user',
-      }
-    );
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+        name: 'MCP terminal Item recovery',
+        input: 'Recover the MCP Item',
+        agentId: 'agent_codex_host',
+        timestamp: '2026-09-22T00:00:00.000Z',
+      },
+    ]);
+    const thread = store
+      .listThreads(workspaceId)
+      .find((row) => row.name === 'MCP terminal Item recovery')!;
+    const turn = store.listThreadTurns(workspaceId, thread.id)[0]!;
+    const session = store.getAgentSession(turn.agentSessionId!);
+    const coreDb = openCoreDb(dataRoot);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    let beforeCalls: ReturnType<typeof listWorkspaceCapabilityCalls> = [];
+    let beforeUsage: ReturnType<typeof listWorkspaceUsageRecords> = [];
     try {
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
-        suffix: 'recovery',
+      expect(turn).toMatchObject({
+        status: 'completed',
+        agentId: session.agentId,
+        agentSessionId: session.id,
+      });
+      const environmentPackage = resolveAgentEnvironmentPackage({
+        coreDb,
+        agentSetup: createTestAgentSetup(),
+        agentSessionId: session.id,
+        backend: { kind: 'openshell' },
+        requestId: 'req_mcp_recovery',
+        createdAt: turn.startedAt!,
         triggerActor: turn.triggerActor,
-        workspaceInputIds: [],
+        turn,
+        turnInput: 'Recover the MCP Item',
+        workspaceCwd: null,
+        workspaceRoots: [],
+      });
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        environmentPackage,
+        createdAt: turn.startedAt!,
+      });
+      expect(environmentPackage.scope).toMatchObject({
+        workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        agentSessionId: session.id,
       });
       const call = startCapabilityCall({
-        agentId: 'agent_codex',
-        agentSessionId: environmentPackage.scope.agentSessionId,
+        agentId: session.agentId,
+        agentSessionId: session.id,
         authorityActor: turn.triggerActor,
         callId: testEntityId('cap', 'cap_mcp_recovery'),
         capabilityId: 'mcp.call-tool',
         family: 'mcp',
         itemId: testEntityId('it', 'it_mcp_recovery'),
         operation: 'mcp.call-tool',
+        now: new Date(turn.startedAt!),
         packageSnapshotId: environmentPackage.snapshotId,
         providerRef: 'echo',
         redactionClass: 'metadata-only',
@@ -5358,15 +5559,28 @@ describe('worker MCP routes', () => {
         workspaceDb,
         workspaceId: workspaceIdForOwner(turn.owner),
       });
-      finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
+      finishCapabilityCall({
+        callId: call.id,
+        status: 'succeeded',
+        workspaceDb,
+        now: new Date(turn.completedAt!),
+      });
+      beforeCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
+      beforeUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
     } finally {
       workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
     }
 
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-    expect(store.getTurnById(turn.id).items).toContainEqual(
+    const coldStore = new FsStore({ dataRoot });
+    expect(coldStore.getTurnById(turn.id).items).not.toContainEqual(
+      expect.objectContaining({ id: testEntityId('it', 'it_mcp_recovery') })
+    );
+    expect(await reconcileWorkerMcpItems(dataRoot, coldStore)).toBe(1);
+    expect(await reconcileWorkerMcpItems(dataRoot, coldStore)).toBe(0);
+    expect(coldStore.getTurnById(turn.id).items).toContainEqual(
       expect.objectContaining({
         causationId: testEntityId('cap', 'cap_mcp_recovery'),
         id: testEntityId('it', 'it_mcp_recovery'),
@@ -5380,11 +5594,14 @@ describe('worker MCP routes', () => {
       'ws_00000000-0000-7000-8000-000000000001'
     );
     try {
-      expect(
-        recoveredWorkspaceDb.sqlite
-          .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
-          .get(testEntityId('cap', 'cap_mcp_recovery'))
-      ).toEqual({ status: 'succeeded' });
+      expect(listWorkspaceCapabilityCalls(recoveredWorkspaceDb, workspaceId)).toEqual(beforeCalls);
+      expect(listWorkspaceCapabilityCalls(recoveredWorkspaceDb, workspaceId)).toContainEqual(
+        expect.objectContaining({
+          id: testEntityId('cap', 'cap_mcp_recovery'),
+          status: 'succeeded',
+        })
+      );
+      expect(listWorkspaceUsageRecords(recoveredWorkspaceDb, workspaceId)).toEqual(beforeUsage);
     } finally {
       recoveredWorkspaceDb.sqlite.close();
     }

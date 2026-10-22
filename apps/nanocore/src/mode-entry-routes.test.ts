@@ -16,9 +16,7 @@ import {
   formatReferenceUri,
   workspaceIdForOwner,
 } from '@openkit/protocol';
-import { buildWorkerCanonicalTerminalEventRecord as terminalEvent } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
   listWorkspaceCapabilityCalls,
@@ -60,12 +58,6 @@ import {
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
-import {
-  dispatchNanoHostHarnessOperation,
-  markNanoHostHarnessOperationUnknown,
-  settleNanoHostHarnessOperation,
-} from './runtime/nanohost-harness-records.js';
-import type { NanoHostSessionEffectRequest } from './runtime/nanohost-session-dispatch.js';
 import { listThreadPendingRequests } from './runtime/pending-requests.js';
 import * as productOwners from './runtime/product-turn-start.js';
 import {
@@ -82,7 +74,6 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import * as checkpointOwners from './runtime/worker-checkpoints.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
-import { getWorkerControlAcceptedFinalStatus as readFinal } from './runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from './runtime/worker-governance-backend.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import * as recoveryOwners from './runtime/worker-recovery.js';
@@ -114,6 +105,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -128,301 +120,6 @@ const SELECTED_CHOICE = {
   storageRef: STORAGE_REF,
 };
 
-/** Models the peer; native owners fence delivery and release; interrupted finals follow real commands. */
-function createNativeTaskAdmissionFixture(coreDb: ReturnType<typeof openCoreDb>, store: FsStore) {
-  recordTestNativeRuntimeTarget(coreDb);
-  const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
-  const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
-  const completion = Promise.withResolvers<void>();
-  const launched = Promise.withResolvers<void>();
-  const observedExecution = Promise.withResolvers<void>();
-  let nativeInput = '';
-  let nativeLineage: Parameters<typeof workerControlGateway.recordFinalStatus>[0]['lineage'];
-  const nativeEvents: unknown[] = [];
-  void launched.promise.catch(() => undefined);
-  let peerState = 'new';
-  const unsupported = () => Promise.reject(new Error('Native peer operation is not admitted.'));
-  const runtime = createConfiguredWorkerLifecycleRuntime({
-    coreDb,
-    store,
-    fileAdmission,
-    workerControlGateway,
-    env: {},
-    readRuntimeConfig: () =>
-      createInMemoryRuntimeConfigSnapshot({
-        dataRoot: coreDb.dataRoot,
-        workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
-      }),
-    nanoHostSessionDispatch: {
-      async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
-        const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
-        if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
-        if (request.kind === 'image.inspect')
-          return {
-            digest: request.input.imageDigest,
-            environmentDefaults: {
-              defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
-              values: {},
-            },
-            platform: { architecture: 'amd64', os: 'linux' },
-            storageLayout: {
-              family: 'openkit-worker',
-              gid: 1000,
-              uid: 1000,
-              version: '1',
-              workingDirectory: '/tmp/openkit-bootstrap',
-              targets: ['/openkit/threads', '/sandbox', '/workspace'].map((target) => ({ target })),
-            },
-          };
-        if (request.kind === 'sandbox.create') {
-          const storage = request.input.storage as { targets: object[] };
-          return {
-            sandboxId: request.input.sandboxId,
-            state: 'created',
-            storage: {
-              ...storage,
-              targets: storage.targets.map((target) => ({ ...target, initialized: true })),
-            },
-          };
-        }
-        if (request.kind === 'bridge.open')
-          return { accepted: true, integrationReady: true, state: 'open' };
-        if (request.kind === 'reference.import') return { state: 'imported' };
-        if (request.kind === 'workspace.collect')
-          return request.input.mode === 'baseline'
-            ? {
-                requestId: request.requestId,
-                outcome: 'baseline',
-                head: {
-                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
-                },
-              }
-            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
-        if (request.kind === 'file.export') {
-          if (!nativeLineage) throw new Error('Native trial has no submitted Turn.');
-          const relativePath = String(request.input.relativePath);
-          const records = relativePath.endsWith('/events.jsonl')
-            ? nativeEvents
-            : relativePath.endsWith('/items.jsonl')
-              ? [
-                  {
-                    schemaVersion: 1,
-                    kind: 'item',
-                    sequence: 1,
-                    lineage: nativeLineage,
-                    item: { type: 'assistant-message', status: 'completed', text: nativeInput },
-                  },
-                ]
-              : undefined;
-          if (!records) throw new Error('Unexpected native trial export.');
-          const bytes = Buffer.from(`${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
-          const stagingPath = join(mkdtempSync(join(coreDb.dataRoot, 'peer-')), 'capture');
-          fs.writeFileSync(stagingPath, bytes);
-          return {
-            stagingPath,
-            byteLength: bytes.length,
-            sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-          };
-        }
-        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete')
-          return { state: 'deleted' };
-        throw new Error(`Unexpected native Mode trial effect: ${request.kind}`);
-      },
-      poll: async () => null,
-      async result() {},
-      route: unsupported,
-      fileExportResult: unsupported,
-      workspaceCollectResult: unsupported,
-      imageBuildInput: unsupported,
-    },
-  });
-  const executionBackend = runtime.turnExecutor.executionBackend;
-  if (!executionBackend) throw new Error('Native admission fixture requires its actual backend.');
-  const release = executionBackend.release.bind(executionBackend);
-  const executor = Object.assign(runtime.turnExecutor, {
-    completion,
-    launched,
-    finished: { promise: observedExecution.promise.catch(() => undefined) },
-    checkpointAtLaunch: null as ReturnType<typeof getWorkerCheckpoint>,
-    execution: observedExecution.promise,
-    failCloseout: false,
-    releaseResults: [] as Awaited<ReturnType<typeof release>>[],
-    launches: 0,
-    inputs: [] as string[],
-  });
-  const releaseSpy = vi.spyOn(executionBackend, 'release').mockImplementation(async (...args) => {
-    const result = await release(...args);
-    executor.releaseResults.push(result);
-    if (executor.failCloseout && result.state === 'released' && result.fenceRef)
-      throw new Error('Controlled release response loss.');
-    return result;
-  });
-  const start = executor.startTurn.bind(executor);
-  const startObservation = vi
-    .spyOn(executor, 'startTurn')
-    .mockImplementation(async (ownerStore, turnId, input, context) => {
-      nativeInput = input;
-      executor.launches += 1;
-      executor.inputs.push(input);
-      let settled = false;
-      const execution = start(ownerStore, turnId, input, context).finally(() => {
-        settled = true;
-      });
-      void execution.catch((error: unknown) => {
-        launched.reject(error);
-        completion.resolve();
-      });
-      let failure: unknown;
-      let acceptedStart = false;
-      let finalSequence = 0;
-      let interrupt: Promise<void> | undefined;
-      let reportFinal: ((interrupted: boolean) => void) | undefined;
-      const peer = (async () => {
-        while (!settled) {
-          const integrations = coreDb.sqlite
-            .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
-            .all() as { ref: string }[];
-          for (const integration of integrations) {
-            const command = dispatchNanoHostHarnessOperation(coreDb, {
-              sandboxIntegrationBindingRef: integration.ref,
-            });
-            if (!command) continue;
-            try {
-              const wire = runtime.acceptNanoHostHarnessCommand(command);
-              const ready = { nativeHandleState: 'ready', nativeHandleDigest: 'a'.repeat(64) };
-              const operations: Record<string, [string, string, Record<string, unknown>]> = {
-                'session.open': [
-                  'new',
-                  'open',
-                  { state: 'open', maxActiveTurns: command.body.maxActiveTurns, ...ready },
-                ],
-                'turn.start': ['open', 'running', { state: 'started', ...ready }],
-                'session.inspect': [
-                  'completed',
-                  'completed',
-                  { state: 'open', childState: 'absent', cleanupState: 'clean', ...ready },
-                ],
-                'session.close': [
-                  'completed',
-                  'closed',
-                  { state: 'closed', privateState: 'absent', childState: 'absent' },
-                ],
-                'turn.interrupt': ['running', 'running', { state: 'interrupted' }],
-              };
-              const [required, next, body] = operations[command.operation] ?? [];
-              if (!body || peerState !== required)
-                throw new Error(`Native peer state does not admit ${command.operation}.`);
-              if (command.operation === 'turn.start') {
-                const turn = ownerStore.getTurnById(turnId);
-                nativeLineage = {
-                  agentSessionId: String(command.body.agentSessionId),
-                  packageSnapshotId: String(command.body.packageSnapshotId),
-                  requestId: context?.requestId ?? null,
-                  workspaceId: workspaceIdForOwner(turn.owner),
-                  threadId: turn.threadId,
-                  turnId,
-                };
-                const db = openWorkspaceDb(coreDb.dataRoot, nativeLineage.workspaceId);
-                try {
-                  const checkpoint = getWorkerCheckpoint(db, db.workspaceId, turn.threadId, turnId);
-                  executor.checkpointAtLaunch = checkpoint;
-                  const roots = db.sqlite
-                    .prepare('SELECT id,phase FROM control_executions WHERE work_id=?')
-                    .all(turnId);
-                  expect(roots).toEqual([expect.objectContaining({ phase: 'open' })]);
-                  const steps = db.sqlite
-                    .prepare(
-                      "SELECT json_extract(control_json,'$.kind') AS kind FROM control_execution_steps WHERE execution_id=?"
-                    )
-                    .all((roots[0] as { id: string }).id) as { kind: string }[];
-                  expect(steps.map((step) => step.kind)).toEqual(
-                    expect.arrayContaining(['materialize', 'terminal-publication', 'release'])
-                  );
-                } finally {
-                  db.sqlite.close();
-                }
-                reportFinal = (interrupted) => {
-                  const status = interrupted ? 'interrupted' : 'completed';
-                  const stopReason = interrupted ? 'aborted' : 'completed';
-                  const data = { status, stopReason, evidenceManifestDigests: {} } as const;
-                  const sequence = ++finalSequence;
-                  nativeEvents.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
-                  expect(
-                    workerControlGateway.recordFinalStatus({
-                      authorization: `Bearer ${wire.body.workerControlToken}`,
-                      tokenFamily: 'worker-control',
-                      lineage: nativeLineage,
-                      sequence,
-                      ...data,
-                    }).accepted
-                  ).toBe(true);
-                  peerState = 'completed';
-                };
-              }
-              peerState = next!;
-              const result = {
-                schemaVersion: 2 as const,
-                harnessInstanceId: command.harnessInstanceId,
-                operationId: command.operationId,
-                sequence: command.sequence,
-                disposition: 'succeeded' as const,
-                body,
-              };
-              settleNanoHostHarnessOperation(coreDb, {
-                result,
-                sandboxIntegrationBindingRef: integration.ref,
-                timestamp: new Date().toISOString(),
-              });
-              runtime.acceptNanoHostHarnessResult(result);
-              if (command.operation === 'turn.start') {
-                acceptedStart = true;
-                launched.resolve();
-                await completion.promise;
-                if (!settled) reportFinal!(false);
-              } else if (command.operation === 'turn.interrupt') reportFinal!(true);
-            } catch (error) {
-              failure ??= error;
-              launched.reject(failure);
-              const pending = coreDb.sqlite
-                .prepare(
-                  "SELECT harness_binding_ref AS ref FROM harness_instance_records WHERE harness_instance_id=? AND operation_id=? AND operation_state='dispatched'"
-                )
-                .get(command.harnessInstanceId, command.operationId) as { ref: string } | undefined;
-              if (pending) {
-                markNanoHostHarnessOperationUnknown(coreDb, {
-                  harnessBindingRef: pending.ref,
-                  operationId: command.operationId,
-                  timestamp: new Date().toISOString(),
-                });
-                runtime.failNanoHostHarnessDelivery(command, failure);
-              } else if (acceptedStart && !readFinal(coreDb, nativeLineage)) {
-                interrupt ??= executor.interruptTurn(ownerStore, turnId).catch(() => undefined);
-              }
-            }
-          }
-          if (!settled) await setImmediate();
-        }
-        await interrupt;
-        if (failure) throw failure;
-      })();
-      const joined = Promise.allSettled([execution, peer]).then((results) => {
-        if (failure) throw failure;
-        for (const result of results) if (result.status === 'rejected') throw result.reason;
-      });
-      observedExecution.resolve(joined);
-      await joined;
-    });
-  return {
-    executor,
-    fileAdmission,
-    workerControlGateway,
-    restore() {
-      startObservation.mockRestore();
-      releaseSpy.mockRestore();
-    },
-  };
-}
 /** Checks actual native completion authority after the selected-Worker owner has closed out. */
 async function assertNativeTaskAdmission(
   coreDb: ReturnType<typeof openCoreDb>,
@@ -1020,203 +717,6 @@ async function waitForSelectedWorkerLoopCloseout(input: {
     }
   });
 }
-
-describe('Assistant pending input', () => {
-  it('hands a confirmed exact task to a new shared Task Thread without nested command receipts', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-assistant-outcome-task-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor(coreDb);
-    const setup = createTestAgentSetup();
-    const brief = 'Implement a bounded README correction and run its focused tests.';
-    const provider = taskProposalProvider(brief, setup.manifest.id);
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      store,
-      agentManifests: [setup.manifest],
-      turnExecutor: executor,
-      llmPiAiClient: provider.client,
-    });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    try {
-      const initial = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: conversationBody({
-              input: 'Help',
-              requestId: '00000000-0000-4000-8000-000000000881',
-              targetRef: 'internal-role:assistant',
-            }),
-          }
-        )
-      );
-      expect(initial.status, await initial.clone().text()).toBe(202);
-      const first = SubmitConversationResponseSchema.parse(await initial.json());
-      expect(first.outcome).toBe('clarification-needed');
-      expect(first.item).toMatchObject({
-        type: 'user-input-request',
-        assistantHandoff: {
-          kind: 'task',
-          targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          input: brief,
-          agentId: setup.manifest.id,
-        },
-      });
-      if (first.item.type !== 'user-input-request') throw new Error('Expected exact confirmation.');
-      expect(provider.createResponses).toHaveBeenCalledTimes(2);
-      expect(executor.launches).toBe(0);
-      const originalReceipt = structuredClone(
-        store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000000881', {
-          actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-        })
-      );
-      const answerPending = app.request(
-        ...confirmTaskRequest(first.item, '00000000-0000-4000-8000-000000000882')
-      );
-      // Scheduler 83 requires complete publication before eligibility, not a minimum queued interval.
-      // Automatic dispatch may already own this exact admission when the answer publishes it.
-      await vi.waitFor(() =>
-        expect(
-          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            statuses: ['queued', 'admitted'],
-          })
-        ).toHaveLength(1)
-      );
-      await runSchedulerDispatchLoop({
-        coreDb,
-        store,
-        turnExecutor: executor,
-        executionBackend: executor.executionBackend,
-        agentManifests: [setup.manifest],
-        providerRegistry: new ProviderRegistry([
-          {
-            id: 'agent-openrouter',
-            displayName: 'Fixture',
-            kind: 'local',
-            models: ['openai/gpt-5.2'],
-          },
-        ]),
-        gatewayConfig: createTestGatewayConfig(),
-        maxDispatches: 1,
-      });
-      await vi.waitFor(() => expect(executor.launches).toBe(1));
-      executor.completion.resolve();
-      const response = await answerPending;
-      expect(response.status, await response.clone().text()).toBe(200);
-      await executor.launched.promise;
-      const lease = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        statuses: ['admitted'],
-      })[0]!;
-      const currentAttempt = observeExecutionAttempts(coreDb).find(
-        (attempt) => attempt.turn_id === lease.turnId
-      );
-      expect(
-        currentAttempt,
-        'The launched Turn must have its exact durable attempt.'
-      ).toBeDefined();
-      expect(executor.checkpointAtLaunch).toMatchObject({
-        stage: 'running_worker',
-        workerSessionId: currentAttempt!.agent_session_id,
-        stopReason: null,
-      });
-      executor.completion.resolve();
-      for (
-        let i = 0;
-        i < 1000 &&
-        !store
-          .listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .some((item) => item.type === 'status' && item.title === 'Task Mode handoff');
-        i++
-      )
-        await setImmediate();
-      const handoff = store
-        .listThreadItems(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-        .find((item) => item.type === 'status' && item.title === 'Task Mode handoff');
-      expect(handoff).toBeDefined();
-      expect(handoff!.turnId).not.toBe(first.turn.id);
-      const tasks = store
-        .listThreads('ws_00000000-0000-7000-8000-000000000001')
-        .filter((thread) => thread.id !== 'th_00000000-0000-7000-8000-000000000001');
-      const task = tasks.find((thread) =>
-        store
-          .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
-          .some((turn) => turn.agentId === setup.manifest.id)
-      );
-      expect(task).toMatchObject({
-        visibility: 'workspace',
-        parentThreadId: 'th_00000000-0000-7000-8000-000000000001',
-      });
-      expect(store.getTurnById(lease.turnId).triggerSource).toEqual({
-        kind: 'handoff',
-        summary: 'Task Worker handoff.',
-      });
-      expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
-      expect(executor.startContexts).toHaveLength(1);
-      expect(provider.createResponses).toHaveBeenCalledTimes(2);
-      expect(
-        store.listCommandRequests().filter((receipt) => receipt.command === 'conversation.submit')
-      ).toHaveLength(1);
-      expect(
-        store.listCommandRequests().filter((receipt) => receipt.command === 'task.start')
-      ).toHaveLength(0);
-      expect(
-        store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000000881', {
-          actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-        })
-      ).toEqual(originalReceipt);
-      await vi.waitFor(() => {
-        expect(
-          observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === lease.turnId)
-        ).toMatchObject({ phase: 'closed' });
-        const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        try {
-          expect(
-            getWorkerCheckpoint(
-              db,
-              'ws_00000000-0000-7000-8000-000000000001',
-              task!.id,
-              lease.turnId
-            )
-          ).toBeNull();
-        } finally {
-          db.sqlite.close();
-        }
-      });
-    } finally {
-      executor.completion.resolve();
-      if (executor.launches) await executor.finished.promise;
-      await setImmediate();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
-});
 
 describe('conversation.submit worker storage choice', () => {
   it('rejects oversized objectives before worker effects and starts the exact 2000-character boundary', async () => {
@@ -2824,6 +2324,11 @@ describe('Task durable admission response', () => {
     });
     let turnId: string | undefined;
     let dispatch = Promise.resolve<unknown>(undefined);
+    let proposingTurn: ReturnType<FsStore['getTurnById']> | undefined;
+    let requestItemId: string | undefined;
+    let answerRequest: ReturnType<typeof confirmTaskRequest> | undefined;
+    let answerResult: unknown;
+    let answerReceipt: ReturnType<FsStore['getCommandRequest']> | undefined;
     try {
       // Await the response under the test timeout; the held executor proves publication ordering.
       const response = await pending;
@@ -2861,10 +2366,18 @@ describe('Task durable admission response', () => {
           })
         ).toEqual([]);
         if (accepted.item.type !== 'user-input-request') throw new Error('Expected confirmation.');
-        const answer = await app.request(
-          ...confirmTaskRequest(accepted.item, '0190f4c8-0000-7000-8000-000000000611')
-        );
+        // Chat Handoff rules: the later outcome leaves its terminal proposing Turn unchanged.
+        proposingTurn = structuredClone(store.getTurnById(accepted.turn.id));
+        expect(proposingTurn.status).toBe('completed');
+        requestItemId = accepted.item.id;
+        answerRequest = confirmTaskRequest(accepted.item, '0190f4c8-0000-7000-8000-000000000611');
+        const answer = await app.request(...answerRequest);
         expect(answer.status, await answer.clone().text()).toBe(200);
+        answerResult = await answer.json();
+        answerReceipt = structuredClone(
+          store.listCommandRequests().find((record) => record.command === 'user_input.answer')
+        );
+        expect(answerReceipt).toBeDefined();
         await vi.waitFor(() =>
           expect(
             listSchedulerAdmissionEntriesForWorkspace(coreDb, {
@@ -3144,6 +2657,61 @@ describe('Task durable admission response', () => {
       expect(store.getTurnById(turnId).items).toEqual(terminalItems);
       expect(executor.launches).toBe(1);
       if (entry === 'assistant') {
+        // Pending Resolve: exact replay preserves the recorded answer without another effect.
+        const answerReplay = await app.request(...answerRequest!);
+        expect(answerReplay.status, await answerReplay.clone().text()).toBe(200);
+        expect(await answerReplay.json()).toEqual(answerResult);
+        expect(
+          store.listCommandRequests().filter((record) => record.command === 'user_input.answer')
+        ).toEqual([answerReceipt]);
+        expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
+        expect(store.getTurnById(proposingTurn!.id)).toEqual(proposingTurn);
+        const receivingTurn = store.getTurnById(turnId);
+        expect(receivingTurn).toMatchObject({
+          agentId: setup.manifest.id,
+          triggerSource: { kind: 'handoff' },
+        });
+        expect(workerThreadId).not.toBe(scope.threadId);
+        expect(store.getThread(scope.workspaceId, workerThreadId)).toMatchObject({
+          visibility: 'workspace',
+          parentThreadId: scope.threadId,
+        });
+        const handoff = store
+          .listThreadItems(scope.workspaceId, scope.threadId)
+          .find((item) => item.type === 'status' && item.causationId === turnId);
+        expect(handoff).toMatchObject({ status: 'completed', threadId: scope.threadId });
+        expect(handoff!.turnId).not.toBe(proposingTurn!.id);
+        const outcomeTurn = store.getTurnById(handoff!.turnId);
+        expect(outcomeTurn).toMatchObject({
+          threadId: scope.threadId,
+          status: 'completed',
+          triggerSource: { kind: 'user-input' },
+        });
+        const sourceDb = openWorkspaceDb(dataRoot, scope.workspaceId);
+        try {
+          expect(
+            listThreadPendingRequests(sourceDb.sqlite, scope.workspaceId, scope.threadId)
+          ).toContainEqual(
+            expect.objectContaining({
+              raisingTurnId: proposingTurn!.id,
+              requestItemId,
+              requesterKind: 'assistant',
+              resolution: 'answered',
+              delivery: 'delivered',
+              deliveryCause: 'outcome',
+              deliveryTurnId: outcomeTurn.id,
+              assistantHandoff: {
+                kind: 'task',
+                targetWorkspaceId: scope.workspaceId,
+                input,
+                agentId: setup.manifest.id,
+              },
+            })
+          );
+        } finally {
+          sourceDb.sqlite.close();
+        }
+        expect(executor.launches).toBe(1);
         expect(provider.createResponses).toHaveBeenCalledTimes(2);
         expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toHaveLength(
           0
@@ -3187,9 +2755,7 @@ describe('Task durable admission response', () => {
 
 describe('Task terminal replay closeout ownership', () => {
   it.each([
-    { entry: 'direct', failCollection: false },
     { entry: 'direct', failCollection: true },
-    { entry: 'assistant', failCollection: false },
     { entry: 'assistant', failCollection: true },
   ] as const)('preserves $entry closeout ownership during exact replay (failure=$failCollection)', async ({
     entry,
