@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,9 @@ import { describe, expect, it } from 'vitest';
 
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
+import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -26,9 +29,11 @@ describe('NanoCore startup storage layout', () => {
 
     try {
       applyMigrations(coreDb);
-      ensureLocalUser(coreDb);
+      const userId = ensureLocalUser(coreDb);
+      const store = createTestStore({ dataRoot });
+      await ensureUserQuickChatWorkspace({ coreDb, store, userId });
 
-      const app = createApp({ coreDb, dataRoot });
+      const app = createApp({ coreDb, dataRoot, store });
       const res = await app.request('/api/app/operations/workspace.list', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -71,7 +76,9 @@ describe('NanoCore startup storage layout', () => {
         )
       ).toBe(false);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });

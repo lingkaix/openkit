@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { applyMigrations, listAppliedMigrationIds } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createDiagnosticsSnapshot } from './snapshot.js';
@@ -32,6 +32,7 @@ describe('createDiagnosticsSnapshot', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
     const coreDb = openCoreDb(dataRoot);
     try {
+      expect(listAppliedMigrationIds(coreDb)).toEqual([]);
       applyMigrations(coreDb);
       const snapshot = createDiagnosticsSnapshot({
         actor: { kind: 'local', userId: FIXTURE_LOCAL_USER_ID },
@@ -55,7 +56,8 @@ describe('createDiagnosticsSnapshot', () => {
         auth: { mode: 'local' },
         dataRoot: 'configured',
         migrations: {
-          applied: [
+          // Bootstrap requires applied-version evidence, not a fixed release inventory.
+          applied: expect.arrayContaining([
             'core_0000_setup',
             'core_0001_concurrent_turn_capacity',
             'core_0002_durable_recurring_schedules',
@@ -71,12 +73,14 @@ describe('createDiagnosticsSnapshot', () => {
             'core_0012_quarantined_workspace_retirement',
             'core_0013_control_store',
             'core_0014_execution_journal',
-          ],
+          ]),
         },
         mode: 'local',
         providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
         agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],
       });
+      // The snapshot must preserve the complete public migration-owner observation.
+      expect(snapshot.migrations.applied).toEqual(listAppliedMigrationIds(coreDb));
       expect(JSON.stringify(snapshot)).not.toContain(dataRoot);
       expect(JSON.stringify(snapshot)).not.toContain('SECRET_TOKEN');
       expect(JSON.stringify(snapshot)).not.toContain('user:password');

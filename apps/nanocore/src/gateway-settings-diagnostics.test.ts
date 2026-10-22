@@ -90,11 +90,14 @@ describe('Gateway settings active diagnostics', () => {
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     const body = AppDiagnosticsResponseSchema.parse(await response.json());
-    expect(body.providers.registry[0]).toMatchObject({
+    const provider = body.providers.registry.find((entry) => entry.id === 'codex');
+    expect(provider).toMatchObject({
       subscriptionAccount: { subscriptionProviderId: 'openai-codex', accountSlotId: 'work' },
       metadataKey: 'openai_codex',
     });
-    expect(body.providers.registry[0]?.modelDetails?.[0]).toMatchObject({
+    expect(
+      provider?.modelDetails?.find((entry) => entry.id === 'openai-codex/gpt-5')
+    ).toMatchObject({
       id: 'openai-codex/gpt-5',
       context: { value: 300000, source: 'deployment-extension' },
       output: { value: 128000, source: 'upstream-snapshot' },
@@ -104,7 +107,7 @@ describe('Gateway settings active diagnostics', () => {
       reasoningEffortLevels: { value: [], source: 'deployment-extension' },
       cost: { input: { value: 0, source: 'profile-override' } },
     });
-    expect(body.providers.registry[0]?.modelDetails?.[1]).toMatchObject({
+    expect(provider?.modelDetails?.find((entry) => entry.id === 'unlisted-model')).toMatchObject({
       output: { value: null, source: null },
       inputModalities: { value: null, source: null },
       reasoningEffortLevels: { value: [], source: 'deployment-extension' },
@@ -127,13 +130,18 @@ describe('Gateway settings active diagnostics', () => {
     writeFileSync(catalogPath, JSON.stringify(catalog));
     const reload = manager.reload({ mode: 'safe', dryRun: false });
     expect(reload.status).toBe('applied');
-    const body = await (await app.request(...operationRequest('diagnostics.app', {}))).json();
+    const response = await app.request(...operationRequest('diagnostics.app', {}));
+    expect(response.status).toBe(200);
+    const body = AppDiagnosticsResponseSchema.parse(await response.json());
+    const provider = body.providers.registry.find((entry) => entry.id === 'codex');
     expect(body.runtimeConfig.pendingRestart.map((entry: { path: string }) => entry.path)).toEqual([
       'modelCatalog',
       'providers',
     ]);
-    expect(body.providers.registry[0].subscriptionAccount.accountSlotId).toBe('work');
-    expect(body.providers.registry[0].modelDetails[0].context.value).toBe(300000);
+    expect(provider?.subscriptionAccount?.accountSlotId).toBe('work');
+    expect(
+      provider?.modelDetails?.find((entry) => entry.id === 'openai-codex/gpt-5')?.context.value
+    ).toBe(300000);
     expect(body.gateway.models[0]).toMatchObject({
       autoFailover: false,
       contract: { context: 300000, output: 128000, inputModalities: [], reasoning: false },
