@@ -187,7 +187,7 @@ async function fixture(
       transientProviderInstanceId: null,
     }),
     materialize: async (aep, context) => {
-      context?.beforeMaterialization?.();
+      await context?.beforeMaterialization?.();
       // The external materialization fixture publishes its exact live control registration.
       controlGateway.registerSession(aep);
       return {
@@ -583,14 +583,19 @@ describe('execution backend port through real Core coordination', () => {
         })
       );
       for (const collision of ['turn', 'thread', 'session'] as const) {
-        // Reuse A's admission for the same Turn; otherwise create actual matching product/admission lineage.
+        // Thread collision is negative-only Core input; it grants no product Turn authority.
         const entry =
           collision === 'turn'
             ? a
-            : await f.queue(
-                `collision-${collision}`,
-                collision === 'thread' ? a.threadId : 'th_00000000-0000-751d-bedc-6ab13a59afef'
-              );
+            : collision === 'thread'
+              ? createSchedulerAdmissionEntry(f.db, {
+                  ...a,
+                  queueEntryId: 'queue_port_collision-thread',
+                  requestId: testEntityId('tu', 'request_port_collision-thread').slice(3),
+                  turnId: testEntityId('tu', 'turn_port_collision-thread'),
+                  now: f.dispatchInput.now,
+                })
+              : await f.queue(`collision-${collision}`, 'th_00000000-0000-751d-bedc-6ab13a59afef');
         const candidate = candidateFor(
           entry,
           testEntityId('attempt', `competing-${collision}`),
