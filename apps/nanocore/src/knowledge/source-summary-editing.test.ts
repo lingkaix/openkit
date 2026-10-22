@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,11 +23,13 @@ import {
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareKnowledgeMaintenance } from './knowledge-agent-maintenance.js';
@@ -40,22 +42,24 @@ import { parseSourcePointer } from './source-pointers.js';
 let seed: Awaited<ReturnType<typeof fixture>>;
 let linkedSeed: Awaited<ReturnType<typeof fixture>>;
 let linkedSourceId: string;
-const retainedCleanup: Array<() => void> = [];
+const retainedCleanup: Array<() => Promise<void>> = [];
 
 // Capture once through native owners, then close SQLite before copying this immutable baseline.
 // Each case opens its own Store, databases and Git copy; audience and publication never leak.
 beforeAll(async () => {
   seed = await fixture(true);
+  await shutdownControlStoreWorkerClient();
   seed.workspaceDb.sqlite.close();
   seed.coreDb.sqlite.close();
   linkedSeed = await fixture(false, seed, true);
   linkedSourceId = await captureRelatedSource(linkedSeed);
   linkedSeed.baseRevision = linkedSeed.notebook.publishedRevision();
+  await shutdownControlStoreWorkerClient();
   linkedSeed.workspaceDb.sqlite.close();
   linkedSeed.coreDb.sqlite.close();
 }, 120_000);
-afterAll(() => {
-  for (const cleanup of retainedCleanup) cleanup();
+afterAll(async () => {
+  for (const cleanup of retainedCleanup) await cleanup();
 });
 
 /** Native capture, current admission, Git, Storage and Review; no Source is inserted as a curated Page. */
@@ -67,7 +71,8 @@ async function fixture(
     origin: { id: string };
     baseRevision: string;
   } = seed,
-  retain = false
+  retain = false,
+  privateOrigin = false
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-summary-editing-'));
   if (!initialize) cpSync(baseline.dataRoot, dataRoot, { recursive: true });
@@ -76,20 +81,22 @@ async function fixture(
   const userId = initialize ? ensureLocalUser(coreDb) : seed.userId;
   const store = new FsStore({ dataRoot });
   const workspace = initialize
-    ? store.createWorkspace('Source description correction')
+    ? await store.createWorkspace('Source description correction')
     : store.getWorkspace(baseline.workspace.id);
   if (initialize)
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   if (initialize) applyScopedMigrations(workspaceDb);
-  const cleanup = () => {
+  const cleanup = async () => {
+    await shutdownControlStoreWorkerClient();
     if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   };
   if (initialize || retain) retainedCleanup.push(cleanup);
   else onTestFinished(cleanup);
-  const app = createApp({ coreDb, dataRoot, store });
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+  const app = createApp({ coreDb, dataRoot, store, runtimeConfigManager });
   const call = async (operation: string, input: Record<string, unknown>, targetApp = app) => {
     const { requestId, ...body } = input;
     const response = await targetApp.request(`/api/app/operations/${operation}`, {
@@ -103,7 +110,13 @@ async function fixture(
     return { status: response.status, body: await response.json() };
   };
   const origin = initialize
-    ? store.createThread(workspace.id, 'Shared evidence')
+    ? await store.createThread(
+        workspace.id,
+        privateOrigin ? 'Private evidence' : 'Shared evidence',
+        undefined,
+        'conversation',
+        privateOrigin ? { visibility: 'private', privateOwnerUserId: userId } : undefined
+      )
     : store.getThread(workspace.id, baseline.origin.id);
   const original = 'Captured release facts.\r\nKeep exact \u03a9 \u96ea bytes.\n';
   if (initialize) {
@@ -167,6 +180,7 @@ async function fixture(
     store,
     workspace,
     app,
+    runtimeConfigManager,
     call,
     origin,
     original,
@@ -490,7 +504,10 @@ describe('ordinary SourceSummary editing through native owners', () => {
     'revoked',
   ])('uses the real Workspace KM editor and publisher under %s admission', async (mode) => {
     const linked = mode.endsWith('with linked Source');
-    const f = await fixture(false, linked ? linkedSeed : seed);
+    const f =
+      mode === 'private'
+        ? await fixture(true, seed, false, true)
+        : await fixture(false, linked ? linkedSeed : seed);
     await assertMaintenance(
       f,
       mode,
@@ -534,6 +551,18 @@ async function captureRelatedSource(f: Awaited<ReturnType<typeof fixture>>): Pro
   });
   expect(captured.status, JSON.stringify(captured.body)).toBe(200);
   return captured.body.source.id;
+}
+
+/** Narrows the current Source audience through the shared authored-Policy fixture and reload. */
+function restrictSourceThread(f: Awaited<ReturnType<typeof fixture>>): string {
+  const original = writeManagedThreadPolicyFixture({
+    dataRoot: f.dataRoot,
+    workspaceId: f.workspace.id,
+    threadId: f.origin.id,
+    userId: f.userId,
+  });
+  expect(f.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+  return original;
 }
 
 /** Includes unreachable candidates so a refused edit cannot hide a prepared commit. */
@@ -692,8 +721,8 @@ async function runMaintenance(
         writeRefused = true;
       }
     } else if (mode === 'revoked') {
-      // Current audience is a test-owned Thread fact, not a new visibility-transition API.
-      Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
+      // Narrow the admitted Source through current canonical Policy, without changing visibility.
+      restrictSourceThread(f);
       revokedReadRefused = await execute('knowledge.notebook-workspace.update', {
         script: `cat /notebook/${f.path}`,
       }).then(
@@ -760,15 +789,13 @@ async function runMaintenance(
         summary: 'Correct the selected Source for onboarding',
       });
     }
-    f.store.updateTurn(input.turn.id, {
+    await f.store.updateTurn(input.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
     return { turnId: input.turn.id, text: 'Completed the bounded Source edit attempt.' };
   };
-  if (mode === 'private')
-    Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
-  const prepared = prepareKnowledgeMaintenance(
+  const prepared = await prepareKnowledgeMaintenance(
     {
       store: f.store,
       coreDb: f.coreDb,
@@ -994,17 +1021,11 @@ async function assertMaintenance(
         });
       }
       if (stage === 'refusals') {
-        const forged = await f.call('knowledge.proposal.decide', {
-          ...tuple,
-          requestId: randomUUID(),
-          decision: 'accepted',
-          actor: { kind: 'user', id: f.userId },
-        });
-        expect(forged.status, JSON.stringify(forged.body)).toBe(403);
+        // Required Review remains unavailable to the KM Tools; this HTTP entry is a human.
         expect(f.store.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
         expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
         expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
-        Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
+        const originalConfig = restrictSourceThread(f);
         const denied = await f.call('knowledge.proposal.read', {
           proposalId: proposal.id,
           path: f.path,
@@ -1024,7 +1045,11 @@ async function assertMaintenance(
         expect(f.store.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
         expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
         expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
-        Object.assign(f.origin, { visibility: 'workspace', privateOwnerUserId: undefined });
+        writeFileSync(
+          join(f.dataRoot, 'workspaces', f.workspace.id, 'config', 'workspace.jsonc'),
+          originalConfig
+        );
+        expect(f.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
         const mismatched = await f.call('knowledge.proposal.decide', {
           ...tuple,
           proposalDigest: `sha256:${'b'.repeat(64)}`,
