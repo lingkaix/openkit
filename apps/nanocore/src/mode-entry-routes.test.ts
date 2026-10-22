@@ -67,6 +67,7 @@ import {
 } from './runtime/nanohost-harness-records.js';
 import type { NanoHostSessionEffectRequest } from './runtime/nanohost-session-dispatch.js';
 import { listThreadPendingRequests } from './runtime/pending-requests.js';
+import * as productOwners from './runtime/product-turn-start.js';
 import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
@@ -2286,7 +2287,20 @@ describe('reasoning effort admission and replay', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new CompletingTurnExecutor({ coreDb });
+    recordTestNativeRuntimeTarget(coreDb);
+    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
+    const executor = Object.assign(new SimulatedTurnExecutor({ coreDb, fileAdmission }), {
+      startContexts: [] as TurnStartRuntimeContext[],
+    });
+    const starts = vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      executor.startContexts.push(args[3]!);
+      return SimulatedTurnExecutor.prototype.startTurn.call(executor, ...args);
+    });
+    const products = vi.spyOn(productOwners, 'startProductTurn');
+    const loops = vi.spyOn(loopOwners, 'runWorkerTurnLoop');
+    const storeOwner = Object.getPrototypeOf(store) as FsStore;
+    const creates = vi.spyOn(storeOwner, 'createItem');
+    const updates = vi.spyOn(storeOwner, 'updateItem');
     const setup = createTestAgentSetup();
     const manifest = {
       ...setup.manifest,
@@ -2299,6 +2313,7 @@ describe('reasoning effort admission and replay', () => {
       createApp({
         coreDb,
         dataRoot,
+        fileAdmission,
         store: activeStore,
         agentManifests: [manifest],
         openKitConfig: { defaults: { defaultAgentId: manifest.id } },
@@ -2348,6 +2363,8 @@ describe('reasoning effort admission and replay', () => {
       const turn = entry === 'turn.start' ? accepted : accepted.turn;
       if (expected === undefined) expect(turn).not.toHaveProperty('reasoningEffort');
       else expect(turn).toHaveProperty('reasoningEffort', expected);
+      for (const owner of [products, loops, starts, creates, updates])
+        await Promise.all(owner.mock.results.map((result) => result.value));
       await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
       if (entry === 'conversation.submit')
         await waitForSelectedWorkerLoopCloseout({
@@ -2398,6 +2415,8 @@ describe('reasoning effort admission and replay', () => {
       const laterTurn = entry === 'turn.start' ? laterResponse : laterResponse.turn;
       expect(laterTurn).toHaveProperty('reasoningEffort', 'max');
       await vi.waitFor(() => expect(executor.startContexts).toHaveLength(launches + 1));
+      for (const owner of [products, loops, starts, creates, updates])
+        await Promise.all(owner.mock.results.map((result) => result.value));
       await vi.waitFor(() =>
         expect(
           observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === laterTurn.id)
@@ -2413,8 +2432,17 @@ describe('reasoning effort admission and replay', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
     } finally {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      // Join the real lifecycle and its final display publication before disposing native owners.
+      for (const owner of [products, loops, starts, creates, updates]) {
+        await Promise.allSettled(owner.mock.results.map((result) => result.value));
+        owner.mockRestore();
+      }
+      try {
+        await shutdownControlStoreWorkerClient();
+      } finally {
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
   }, 60_000);
 
