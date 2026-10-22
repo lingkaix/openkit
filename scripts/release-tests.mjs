@@ -426,6 +426,8 @@ export function rootSuite({ root = process.cwd() } = {}) {
     '--filter',
     '@openkit/core-client...',
     '--filter',
+    '@openkit/retrieval-kernel',
+    '--filter',
     '@openkit/nanocore...',
     '--workspace-concurrency=1',
     'build',
