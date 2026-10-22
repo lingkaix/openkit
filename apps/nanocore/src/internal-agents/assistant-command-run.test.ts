@@ -1079,21 +1079,17 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     'removed',
     'missing-version',
   ] as const)('refuses changed %s binding or current authority before dispatch', async (condition) => {
-    const f = await fixture();
+    const f = await fixture(true, undefined, condition === 'turn');
     let input = f.input;
     if (condition === 'actor')
       input = { ...input, actor: { kind: 'session', userId: FIXTURE_LOCAL_USER_ID } };
     if (condition === 'turn')
       input = {
         ...input,
-        turn: f.store.createTurn(
-          f.workspaceId,
-          f.threadId,
-          'Another turn.',
-          { kind: 'user', id: SKILL_READER_ID },
-          null,
-          { captureCoverage: { scope: 'server', value: 'off' } }
-        ),
+        // Reuse admitted history while the assembly stays bound to its current live Turn.
+        turn: f.store
+          .listThreadTurns(f.workspaceId, f.threadId)
+          .find((turn) => turn.id !== f.turn.id)!,
       };
     if (condition === 'cache-workspace')
       input = {
