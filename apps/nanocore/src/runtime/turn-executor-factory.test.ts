@@ -59,6 +59,7 @@ import {
   createTestNativeEnvironmentDb,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
@@ -4738,65 +4739,215 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('reuses the resident binding when supply is unchanged', async () => {
-    const admitted = await admitIdleSupplyResident('supply_same');
-    const { backend, coreDb, environmentPackage, settleNext } = admitted;
+    const coreDb = createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const workspaceId = testEntityId('ws', 'workspace_supply_same');
+    const threadId = testEntityId('th', 'thread_supply_same');
+    const agentSessionId = testEntityId('as', 'as_supply_same');
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const fixture = createDemoWorkspaceForUser(ownerUserId);
+    await store.importWorkspaceSnapshot({
+      workspace: {
+        ...fixture.workspace,
+        id: workspaceId,
+        counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
+      },
+      threads: [{ ...fixture.thread, id: threadId, owner: { kind: 'workspace', workspaceId } }],
+      turns: [],
+      knowledge: [],
+      agentSessions: [],
+      artifacts: [],
+      itemRevisions: [],
+      turnEvents: [],
+      ...notebookImportFixture({ workspaceId, knowledge: [], userId: ownerUserId }),
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    const setup = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+    const commands: harnessRecords.NanoHostHarnessCommand[] = [];
+    const authorities: string[] = [];
+    const accept = native.runtime.acceptNanoHostHarnessCommand;
+    const observation = vi
+      .spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
+      .mockImplementation((command) => {
+        const wire = accept(command);
+        const { agentSessionId, agentSessionRuntimeBindingId, turnId, leaseId, packageSnapshotId } =
+          wire.body;
+        commands.push({
+          ...wire,
+          body: {
+            agentSessionId,
+            agentSessionRuntimeBindingId,
+            turnId,
+            leaseId,
+            packageSnapshotId,
+          },
+        });
+        if (wire.operation === 'turn.start')
+          authorities.push(
+            ...['workerControlToken', 'inferenceToken', 'capabilityToken'].map((key) =>
+              createHash('sha256').update(String(wire.body[key])).digest('hex')
+            )
+          );
+        return wire;
+      });
+    const packages = new Map<string, string>();
+    let originalPackage: AgentEnvironmentPackage | undefined;
     try {
-      const nextPackage: AgentEnvironmentPackage = {
-        ...environmentPackage,
-        scope: {
-          ...environmentPackage.scope,
-          turnId: testEntityId('tu', 'turn_supply_same_next'),
-          requestId: `request:${testEntityId('tu', 'turn_supply_same_next')}`,
-        },
-        snapshotId: 'snapshot_supply_same_next',
-      };
-      expect(sessionCompatibilityDigest(nextPackage)).toBe(
-        sessionCompatibilityDigest(environmentPackage)
-      );
-      await expect(
-        backend.prepareAgentSessionContinuity?.({
-          agentSessionCompatibilityKey: sessionCompatibilityDigest(nextPackage),
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          environmentPackage: nextPackage,
-          reuseAllowed: true,
-          threadId: environmentPackage.scope.threadId,
-          workspaceId: environmentPackage.scope.workspaceId,
-        })
-      ).resolves.toBe('reusable');
-      await authorizeNanoHostPackage(coreDb, nextPackage);
-      bindNanoHostWorkerLineage(coreDb, nextPackage, {
-        attemptId: testEntityId('attempt', 'lease_supply_same_next'),
-        sandboxBindingRef: 'sandbox-binding:supply-same-next',
-      });
-      await anchorNanoHostMaterialization(coreDb, backend, nextPackage);
-      const nextLaunch = submitTestNanoHostTurn(
-        coreDb,
-        backend,
-        await backend.materialize(nextPackage, {
-          sandboxBindingRef: factoryPackageBinding(coreDb, nextPackage),
-          workspaceRoots: [],
-        })
-      );
-      const inspected = await settleNext('session.inspect', {
-        childState: 'running',
-        cleanupState: 'clean',
-        nativeHandleDigest: admitted.readyDigest,
-        nativeHandleState: 'ready',
-        state: 'open',
-      });
-      expect(inspected.body.agentSessionId).toBe(environmentPackage.scope.agentSessionId);
-      await settleNext('turn.start', {
-        nativeHandleDigest: admitted.readyDigest,
-        nativeHandleState: 'ready',
-        state: 'started',
-      });
-      await nextLaunch;
+      for (const [index, label] of ['supply_same', 'supply_same_next'].entries()) {
+        const turnId = testEntityId('tu', `turn_${label}`);
+        const attemptId = testEntityId('attempt', `lease_${label}`);
+        const entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${attemptId}`,
+          requestId: testEntityId('tu', `request_${label}`).slice(3),
+          requestedAgentId: setup.manifest.id,
+          workspaceId,
+          threadId,
+          turnId,
+          turnInput: index ? 'Run next fixture' : 'Run fixture',
+          triggerActor: { kind: 'user', id: ownerUserId },
+        });
+        await publishFactoryAdmission(store, entry);
+        const gate = native.executionFor(turnId);
+        const dispatch = runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          executionBackend: native.executor.executionBackend!,
+          agentManifests: [setup.manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          maxDispatches: 1,
+          createAttemptId: () => attemptId,
+          createAgentSessionId: () => testEntityId('as', `as_${label}`),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Supply fixture',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+        });
+        try {
+          await Promise.race([
+            gate.launched.promise,
+            dispatch.then((result) => {
+              if (result.startedTurns.length === 0)
+                throw new Error('Supply admission returned without dispatching its Turn.');
+              return gate.launched.promise;
+            }),
+          ]);
+          expect(store.getTurnById(turnId)).toMatchObject({ agentSessionId, status: 'running' });
+          const attempt = await vi.waitFor(() => {
+            const current = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+            expect(current).toMatchObject({
+              agentSessionId,
+              turnId,
+              threadId,
+              workspaceId,
+              phase: 'open',
+              disposition: 'accepted',
+            });
+            return current;
+          });
+          const pkg = requireAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            workspaceId,
+            attempt.inputRef!
+          ).snapshot;
+          expect(pkg.scope).toMatchObject({ agentSessionId, turnId, requestId: entry.requestId });
+          packages.set(attemptId, pkg.snapshotId);
+          const started = commands.find(
+            (c) => c.operation === 'turn.start' && c.body.turnId === turnId
+          );
+          expect(started?.body).toMatchObject({
+            agentSessionId,
+            agentSessionRuntimeBindingId: expect.any(String),
+            turnId,
+            leaseId: attemptId,
+            packageSnapshotId: pkg.snapshotId,
+          });
+          if (originalPackage) {
+            expect(sessionCompatibilityDigest(pkg)).toBe(
+              sessionCompatibilityDigest(originalPackage)
+            );
+            expect(pkg.snapshotId).not.toBe(originalPackage.snapshotId);
+          } else originalPackage = pkg;
+          gate.completion.resolve();
+          await gate.execution;
+          expect((await dispatch).startedTurns).toHaveLength(1);
+          expect(store.getTurnById(turnId).status).toBe('completed');
+          expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+            phase: 'closed',
+            fenceRef: expect.any(String),
+          });
+          expect(native.executor.releaseResults[index]).toMatchObject({
+            attemptId,
+            inputRef: pkg.snapshotId,
+            state: 'released',
+            fenceRef: expect.any(String),
+          });
+          expect(store.getAgentSession(agentSessionId)).toMatchObject({
+            status: 'idle',
+            nativeHandleDigest: 'a'.repeat(64),
+          });
+        } finally {
+          gate.completion.resolve();
+          await dispatch.catch(() => undefined);
+          if (native.executor.launches > index) await gate.execution.catch(() => undefined);
+        }
+      }
+      const operations: Record<string, number> = {};
+      for (const { operation } of commands) {
+        expect(['session.open', 'session.inspect', 'turn.start']).toContain(operation);
+        operations[operation] = (operations[operation] ?? 0) + 1;
+      }
+      expect(operations).toMatchObject({ 'session.open': 1, 'turn.start': 2 });
+      expect(new Set(commands.map((command) => command.operationId)).size).toBe(commands.length);
+      expect(new Set(commands.map((command) => command.harnessInstanceId)).size).toBe(1);
       expect(
-        coreDb.sqlite
-          .prepare('SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings')
-          .all()
-      ).toEqual([{ agentSessionId: environmentPackage.scope.agentSessionId }]);
+        new Set(commands.map((command) => command.body.agentSessionRuntimeBindingId)).size
+      ).toBe(1);
+      expect(commands.every((command) => command.body.agentSessionId === agentSessionId)).toBe(
+        true
+      );
+      expect(new Set(authorities).size).toBe(6);
+      expect(
+        store.listThreadAgentSessions(workspaceId, threadId).map((session) => session.id)
+      ).toEqual([agentSessionId]);
+      expect(native.executor.inputs).toEqual(['Run fixture', 'Run next fixture']);
+      const preparation = ['image.acquire', 'image.inspect', 'sandbox.create', 'bridge.open'];
+      const counts: Record<string, number> = {};
+      for (const effect of native.effects) {
+        counts[effect.kind] = (counts[effect.kind] ?? 0) + 1;
+        if (effect.kind === 'image.acquire') {
+          expect(effect.input.imageReference).toBe(`sha256:${'a'.repeat(64)}`);
+          expect(packages.has(String(effect.input.leaseId))).toBe(true);
+          expect(effect.input.packageSnapshotId).toBe(packages.get(String(effect.input.leaseId)));
+        } else if (effect.kind === 'image.inspect' || effect.kind === 'sandbox.create') {
+          expect(counts['image.acquire'] ?? 0).toBeGreaterThan(0);
+          if (effect.kind === 'image.inspect')
+            expect(effect.input.imageDigest).toBe(`sha256:${'a'.repeat(64)}`);
+          else expect(counts['image.inspect'] ?? 0).toBeGreaterThan(0);
+        }
+      }
+      expect(Object.keys(counts).sort()).toEqual(
+        [...preparation, 'reference.import', 'workspace.collect', 'file.export'].sort()
+      );
+      expect(counts['image.acquire']).toBeGreaterThan(0);
+      expect(counts).toMatchObject({ 'sandbox.create': 1, 'bridge.open': 1 });
+      expect(new Set(native.effects.map((effect) => effect.requestId)).size).toBe(
+        native.effects.length
+      );
     } finally {
+      observation.mockRestore();
+      native.restore();
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });

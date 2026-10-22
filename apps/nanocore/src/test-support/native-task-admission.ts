@@ -20,6 +20,7 @@ import {
 } from '../runtime/nanohost-harness-records.js';
 import type { NanoHostSessionEffectRequest } from '../runtime/nanohost-session-dispatch.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
+import type { TurnExecutor } from '../runtime/types.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus as readFinal } from '../runtime/worker-control-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -28,10 +29,10 @@ import { recordTestNativeRuntimeTarget } from './native-environment.js';
 
 /**
  * Models the peer; native owners fence delivery and release; interrupted finals follow real commands.
- * @param coreDb Caller-owned migrated Core database for the original execution.
+ * @param coreDb Caller-owned migrated Core database for this fixture lifetime.
  * @param store Caller-created Demo store sharing the same data root.
  * @param options Existing runtime configuration reader for the same admitted Task.
- * @returns Native executor, outside peer faults, actual capability token, admission, gateway and restoration.
+ * @returns Native executor, peer faults, per-Turn gates, effect trace, runtime, admission, gateway and stop.
  */
 export function createNativeTaskAdmissionFixture(
   coreDb: ReturnType<typeof openCoreDb>,
@@ -47,15 +48,58 @@ export function createNativeTaskAdmissionFixture(
   const completion = Promise.withResolvers<void>();
   const launched = Promise.withResolvers<void>();
   const observedExecution = Promise.withResolvers<void>();
-  let nativeInput = '';
-  let nativeLineage: Parameters<typeof workerControlGateway.recordFinalStatus>[0]['lineage'];
-  const nativeEvents: unknown[] = [];
+  type Lineage = Parameters<typeof workerControlGateway.recordFinalStatus>[0]['lineage'];
+  type Gate = ReturnType<typeof Promise.withResolvers<void>>;
+  const executions = new Map<
+    string,
+    {
+      completion: Gate;
+      launched: Gate;
+      observed: Gate;
+      input: string;
+      context?: Parameters<TurnExecutor['startTurn']>[3];
+      ownerStore?: FsStore;
+      lineage?: Lineage;
+      events: unknown[];
+      settled: boolean;
+      started: boolean;
+      acceptedStart?: boolean;
+      reportFinal?: (interrupted: boolean) => void;
+      reported?: boolean;
+      failure?: unknown;
+      interrupt?: Promise<void>;
+      delivery?: Promise<void>;
+    }
+  >();
+  /** Keeps separate ephemeral gates for the exact Turn that its real admission will execute. */
+  const executionFor = (turnId: string) => {
+    if (stopped) throw new Error('Native peer is stopped.');
+    let turn = executions.get(turnId);
+    if (!turn) {
+      store.getTurnById(turnId);
+      turn = {
+        completion: executions.size ? Promise.withResolvers<void>() : completion,
+        launched: executions.size ? Promise.withResolvers<void>() : launched,
+        observed: executions.size ? Promise.withResolvers<void>() : observedExecution,
+        input: '',
+        events: [],
+        settled: false,
+        started: false,
+      };
+      void turn.launched.promise.catch(() => undefined);
+      executions.set(turnId, turn);
+    }
+    return turn;
+  };
+  let stopped = false;
+  let peerFailure: unknown;
   // Failure and capture-loss selection belongs to the outside peer after native admission.
   const peerFaults = {
     failedFinal: false,
     failFileExport: false,
     failedExportPaths: [] as string[],
   };
+  const effects: NanoHostSessionEffectRequest[] = [];
   const journalRefs = new Map<string, ExecutionJournalRef>();
   const writeIntent = store.writeWorkspaceExecutionJournalIntent.bind(store);
   const journalObservation = vi
@@ -66,7 +110,7 @@ export function createNativeTaskAdmissionFixture(
       return invocation;
     });
   void launched.promise.catch(() => undefined);
-  let peerState = 'new';
+  const bindings = new Map<string, Map<string, { state: string; turnId: string | null }>>();
   let integrationBindingRef: string | undefined;
   const unsupported = () => Promise.reject(new Error('Native peer operation is not admitted.'));
   const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -84,7 +128,9 @@ export function createNativeTaskAdmissionFixture(
         })),
     nanoHostSessionDispatch: {
       async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
+        if (stopped) throw new Error('Native peer is stopped.');
         const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
         if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
         if (request.kind === 'image.inspect')
           return {
@@ -134,7 +180,11 @@ export function createNativeTaskAdmissionFixture(
               }
             : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'file.export') {
-          if (!nativeLineage) throw new Error('Native trial has no submitted Turn.');
+          const turn = [...executions.values()].find(
+            (candidate) => candidate.lineage?.packageSnapshotId === request.input.packageSnapshotId
+          );
+          if (!turn?.lineage) throw new Error('Native trial has no submitted Turn.');
+          const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = turn;
           if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
             peerFaults.failedExportPaths.push(String(request.input.relativePath));
             throw new Error('Controlled required native export loss.');
@@ -163,8 +213,10 @@ export function createNativeTaskAdmissionFixture(
             sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
           };
         }
-        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete')
+        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+          integrationBindingRef = undefined;
           return { state: 'deleted' };
+        }
         throw new Error(`Unexpected native Mode trial effect: ${request.kind}`);
       },
       poll: async () => null,
@@ -185,7 +237,7 @@ export function createNativeTaskAdmissionFixture(
     checkpointAtLaunch: null as ReturnType<typeof getWorkerCheckpoint>,
     execution: observedExecution.promise,
     failCloseout: false,
-    nativeLineage: null as typeof nativeLineage | null,
+    nativeLineage: null as Lineage | null,
     releaseResults: [] as Awaited<ReturnType<typeof release>>[],
     launches: 0,
     capabilityToken: '',
@@ -202,174 +254,239 @@ export function createNativeTaskAdmissionFixture(
   const startObservation = vi
     .spyOn(executor, 'startTurn')
     .mockImplementation(async (ownerStore, turnId, input, context) => {
-      nativeInput = input;
+      if (stopped || peerFailure) throw peerFailure ?? new Error('Native peer is stopped.');
+      const turn = executionFor(turnId);
+      if (turn.started) throw new Error('Native peer already observed this Turn execution.');
+      Object.assign(turn, { ownerStore, input, context, started: true });
       executor.launches += 1;
       executor.inputs.push(input);
-      let settled = false;
       const execution = start(ownerStore, turnId, input, context).finally(() => {
-        settled = true;
+        turn.settled = true;
       });
       void execution.catch((error: unknown) => {
-        launched.reject(error);
-        completion.resolve();
+        turn.launched.reject(error);
+        turn.completion.resolve();
       });
-      let failure: unknown;
-      let acceptedStart = false;
-      let finalSequence = 0;
-      let interrupt: Promise<void> | undefined;
-      let reportFinal: ((interrupted: boolean) => void) | undefined;
-      const peer = (async () => {
-        while (!settled) {
-          for (const integrationRef of integrationBindingRef ? [integrationBindingRef] : []) {
-            const command = dispatchNanoHostHarnessOperation(coreDb, {
-              sandboxIntegrationBindingRef: integrationRef,
-            });
-            if (!command) continue;
-            let commandSettled = false;
+      const joined = execution.finally(async () => {
+        await turn.delivery;
+        await turn.interrupt;
+        if (turn.failure) throw turn.failure;
+      });
+      turn.observed.resolve(joined);
+      await joined;
+    });
+  /** Retains the first peer fault and requests the existing interrupt owner after accepted launch. */
+  const failTurn = (turn: ReturnType<typeof executionFor>, error: unknown) => {
+    turn.failure ??= error;
+    turn.launched.reject(turn.failure);
+    if (
+      !stopped &&
+      !turn.settled &&
+      turn.acceptedStart &&
+      turn.lineage &&
+      !readFinal(coreDb, turn.lineage)
+    )
+      turn.interrupt ??= executor
+        .interruptTurn(turn.ownerStore!, turn.lineage.turnId)
+        .catch(() => undefined);
+  };
+  const peer = (async () => {
+    while (!stopped) {
+      for (const integrationRef of integrationBindingRef ? [integrationBindingRef] : []) {
+        if (stopped) break;
+        const command = dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: integrationRef,
+        });
+        if (!command) continue;
+        let commandSettled = false;
+        let turn: ReturnType<typeof executionFor> | undefined;
+        try {
+          const wire = runtime.acceptNanoHostHarnessCommand(command);
+          const agentSessionId = command.body.agentSessionId;
+          if (typeof agentSessionId !== 'string') throw new Error('Native command lacks Session.');
+          let harness = bindings.get(command.harnessInstanceId);
+          if (!harness) {
+            harness = new Map();
+            bindings.set(command.harnessInstanceId, harness);
+          }
+          let binding = harness.get(agentSessionId);
+          if (!binding && command.operation === 'session.open') {
+            binding = { state: 'new', turnId: null };
+            harness.set(agentSessionId, binding);
+          }
+          if (!binding) throw new Error('Native command lacks its opened Session.');
+          turn = executions.get(String(command.body.turnId ?? binding.turnId));
+          const ready = { nativeHandleState: 'ready', nativeHandleDigest: 'a'.repeat(64) };
+          const operations: Record<string, [string[], string, Record<string, unknown>]> = {
+            'session.open': [
+              ['new'],
+              'open',
+              { state: 'open', maxActiveTurns: command.body.maxActiveTurns, ...ready },
+            ],
+            'turn.start': [['open', 'completed'], 'running', { state: 'started', ...ready }],
+            'session.inspect': [
+              ['completed'],
+              'completed',
+              { state: 'open', childState: 'absent', cleanupState: 'clean', ...ready },
+            ],
+            'session.close': [
+              ['completed'],
+              'closed',
+              { state: 'closed', privateState: 'absent', childState: 'absent' },
+            ],
+            'turn.interrupt': [['running'], 'running', { state: 'interrupted' }],
+          };
+          const [required, next, body] = operations[command.operation] ?? [];
+          if (!body || !required!.includes(binding.state))
+            throw new Error(`Native peer state does not admit ${command.operation}.`);
+          if (command.operation === 'turn.start') {
+            const turnId = command.body.turnId;
+            if (turn?.acceptedStart) throw new Error('Native peer refuses Turn replay.');
+            if (typeof turnId !== 'string' || !turn?.started || !turn.ownerStore)
+              throw new Error('Native command lacks its actual Turn execution.');
+            const product = turn.ownerStore.getTurnById(turnId);
+            const nativeLineage: Lineage = {
+              agentSessionId,
+              packageSnapshotId: String(command.body.packageSnapshotId),
+              requestId: turn.context?.requestId ?? null,
+              workspaceId: workspaceIdForOwner(product.owner),
+              threadId: product.threadId,
+              turnId,
+            };
+            turn.lineage = nativeLineage;
+            binding.turnId = turnId;
+            const db = openWorkspaceDb(coreDb.dataRoot, nativeLineage.workspaceId);
             try {
-              const wire = runtime.acceptNanoHostHarnessCommand(command);
-              const ready = { nativeHandleState: 'ready', nativeHandleDigest: 'a'.repeat(64) };
-              const operations: Record<string, [string, string, Record<string, unknown>]> = {
-                'session.open': [
-                  'new',
-                  'open',
-                  { state: 'open', maxActiveTurns: command.body.maxActiveTurns, ...ready },
-                ],
-                'turn.start': ['open', 'running', { state: 'started', ...ready }],
-                'session.inspect': [
-                  'completed',
-                  'completed',
-                  { state: 'open', childState: 'absent', cleanupState: 'clean', ...ready },
-                ],
-                'session.close': [
-                  'completed',
-                  'closed',
-                  { state: 'closed', privateState: 'absent', childState: 'absent' },
-                ],
-                'turn.interrupt': ['running', 'running', { state: 'interrupted' }],
-              };
-              const [required, next, body] = operations[command.operation] ?? [];
-              if (!body || peerState !== required)
-                throw new Error(`Native peer state does not admit ${command.operation}.`);
-              if (command.operation === 'turn.start') {
-                const turn = ownerStore.getTurnById(turnId);
-                nativeLineage = {
-                  agentSessionId: String(command.body.agentSessionId),
-                  packageSnapshotId: String(command.body.packageSnapshotId),
-                  requestId: context?.requestId ?? null,
-                  workspaceId: workspaceIdForOwner(turn.owner),
-                  threadId: turn.threadId,
-                  turnId,
-                };
-                const db = openWorkspaceDb(coreDb.dataRoot, nativeLineage.workspaceId);
-                try {
-                  const checkpoint = getWorkerCheckpoint(db, db.workspaceId, turn.threadId, turnId);
-                  executor.checkpointAtLaunch = checkpoint;
-                  const ref = journalRefs.get(turnId);
-                  if (!ref) throw new Error('Native launch lacks its acknowledged journal.');
-                  const reader = createExecutionStepJournalReader(db, ref.owner);
-                  const root = await reader.readExecution(ref);
-                  expect(root).toMatchObject({ phase: 'open', workId: turnId });
-                  const open = await Promise.all(
-                    root.openSteps.map((step) => reader.readInvocation(step))
-                  );
-                  const ended = await reader.readEndedSteps(ref);
-                  expect([...open, ...ended].map((step) => step.control.kind)).toEqual(
-                    expect.arrayContaining(['materialize', 'terminal-publication', 'release'])
-                  );
-                } finally {
-                  db.sqlite.close();
-                }
-                reportFinal = (interrupted) => {
-                  const status = interrupted
-                    ? 'interrupted'
-                    : peerFaults.failedFinal
-                      ? 'failed'
-                      : 'completed';
-                  const stopReason = interrupted
-                    ? 'aborted'
-                    : peerFaults.failedFinal
-                      ? 'error'
-                      : 'completed';
-                  const data = { status, stopReason, evidenceManifestDigests: {} } as const;
-                  const sequence = ++finalSequence;
-                  nativeEvents.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
-                  expect(
-                    workerControlGateway.recordFinalStatus({
-                      authorization: `Bearer ${wire.body.workerControlToken}`,
-                      tokenFamily: 'worker-control',
-                      lineage: nativeLineage,
-                      sequence,
-                      ...data,
-                    }).accepted
-                  ).toBe(true);
-                  peerState = 'completed';
-                };
-              }
-              peerState = next!;
-              const result = {
-                schemaVersion: 2 as const,
+              const checkpoint = getWorkerCheckpoint(db, db.workspaceId, product.threadId, turnId);
+              executor.checkpointAtLaunch = checkpoint;
+              const ref = journalRefs.get(turnId);
+              if (!ref) throw new Error('Native launch lacks its acknowledged journal.');
+              const reader = createExecutionStepJournalReader(db, ref.owner);
+              const root = await reader.readExecution(ref);
+              if (stopped) return;
+              expect(root).toMatchObject({ phase: 'open', workId: turnId });
+              const open = await Promise.all(
+                root.openSteps.map((step) => reader.readInvocation(step))
+              );
+              if (stopped) return;
+              const ended = await reader.readEndedSteps(ref);
+              if (stopped) return;
+              expect([...open, ...ended].map((step) => step.control.kind)).toEqual(
+                expect.arrayContaining(['materialize', 'terminal-publication', 'release'])
+              );
+            } finally {
+              db.sqlite.close();
+            }
+            const original = turn;
+            const originalBinding = binding;
+            original.reportFinal = (interrupted) => {
+              if (stopped || original.settled || !original.acceptedStart || original.reported)
+                return;
+              original.reported = true;
+              const status = interrupted
+                ? 'interrupted'
+                : peerFaults.failedFinal
+                  ? 'failed'
+                  : 'completed';
+              const stopReason = interrupted
+                ? 'aborted'
+                : peerFaults.failedFinal
+                  ? 'error'
+                  : 'completed';
+              const data = { status, stopReason, evidenceManifestDigests: {} } as const;
+              const sequence = original.events.length + 1;
+              original.events.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
+              expect(
+                workerControlGateway.recordFinalStatus({
+                  authorization: `Bearer ${wire.body.workerControlToken}`,
+                  tokenFamily: 'worker-control',
+                  lineage: nativeLineage,
+                  sequence,
+                  ...data,
+                }).accepted
+              ).toBe(true);
+              originalBinding.state = 'completed';
+            };
+            original.delivery = original.completion.promise
+              .then(() => original.reportFinal!(false))
+              .catch((error: unknown) => failTurn(original, error));
+          }
+          binding.state = next!;
+          const result = {
+            schemaVersion: 2 as const,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            sequence: command.sequence,
+            disposition: 'succeeded' as const,
+            body,
+          };
+          settleNanoHostHarnessOperation(coreDb, {
+            result,
+            sandboxIntegrationBindingRef: integrationRef,
+            timestamp: new Date().toISOString(),
+          });
+          commandSettled = true;
+          runtime.acceptNanoHostHarnessResult(result);
+          if (command.operation === 'turn.start') {
+            turn!.acceptedStart = true;
+            executor.nativeLineage = turn!.lineage!;
+            executor.capabilityToken = String(wire.body.capabilityToken);
+            turn!.launched.resolve();
+          } else if (command.operation === 'turn.interrupt') {
+            if (!turn?.lineage) throw new Error('Native interrupt lacks its original execution.');
+            // Interrupt uses the original launch credential and lineage, never a new final identity.
+            turn.reportFinal!(true);
+            turn.completion.resolve();
+          }
+        } catch (error) {
+          if (stopped) return;
+          if (turn) failTurn(turn, error);
+          if (!commandSettled) {
+            settleNanoHostHarnessOperation(coreDb, {
+              sandboxIntegrationBindingRef: integrationRef,
+              result: {
+                schemaVersion: 2,
                 harnessInstanceId: command.harnessInstanceId,
                 operationId: command.operationId,
                 sequence: command.sequence,
-                disposition: 'succeeded' as const,
-                body,
-              };
-              settleNanoHostHarnessOperation(coreDb, {
-                result,
-                sandboxIntegrationBindingRef: integrationRef,
-                timestamp: new Date().toISOString(),
-              });
-              commandSettled = true;
-              runtime.acceptNanoHostHarnessResult(result);
-              if (command.operation === 'turn.start') {
-                acceptedStart = true;
-                executor.nativeLineage = nativeLineage;
-                executor.capabilityToken = String(wire.body.capabilityToken);
-                launched.resolve();
-                await completion.promise;
-                if (!settled) reportFinal!(false);
-              } else if (command.operation === 'turn.interrupt') reportFinal!(true);
-            } catch (error) {
-              failure ??= error;
-              launched.reject(failure);
-              if (!commandSettled) {
-                settleNanoHostHarnessOperation(coreDb, {
-                  sandboxIntegrationBindingRef: integrationRef,
-                  result: {
-                    schemaVersion: 2,
-                    harnessInstanceId: command.harnessInstanceId,
-                    operationId: command.operationId,
-                    sequence: command.sequence,
-                    disposition: 'unknown',
-                    body: { reasonCode: 'outcome_unknown' },
-                  },
-                  timestamp: new Date().toISOString(),
-                });
-                runtime.failNanoHostHarnessDelivery(command, failure);
-              } else if (acceptedStart && !readFinal(coreDb, nativeLineage)) {
-                interrupt ??= executor.interruptTurn(ownerStore, turnId).catch(() => undefined);
-              }
-            }
+                disposition: 'unknown',
+                body: { reasonCode: 'outcome_unknown' },
+              },
+              timestamp: new Date().toISOString(),
+            });
+            runtime.failNanoHostHarnessDelivery(command, error);
           }
-          if (!settled) await setImmediate();
         }
-        await interrupt;
-        if (failure) throw failure;
-      })();
-      const joined = Promise.allSettled([execution, peer]).then((results) => {
-        if (failure) throw failure;
-        for (const result of results) if (result.status === 'rejected') throw result.reason;
-      });
-      observedExecution.resolve(joined);
-      await joined;
-    });
+      }
+      if (!stopped) await setImmediate();
+    }
+  })();
+  void peer.catch((error: unknown) => {
+    peerFailure ??= error;
+    stopped = true;
+    for (const turn of executions.values()) {
+      turn.failure ??= peerFailure;
+      turn.launched.reject(peerFailure);
+      turn.completion.resolve();
+    }
+  });
   return {
     executor,
+    effects: effects as readonly NanoHostSessionEffectRequest[],
     fileAdmission,
     peerFaults,
     workerControlGateway,
+    runtime,
+    executionFor(turnId: string) {
+      const turn = executionFor(turnId);
+      return {
+        completion: turn.completion,
+        launched: turn.launched,
+        execution: turn.observed.promise,
+      };
+    },
     restore() {
+      stopped = true;
       startObservation.mockRestore();
       releaseSpy.mockRestore();
       journalObservation.mockRestore();
