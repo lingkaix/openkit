@@ -16,6 +16,7 @@ import {
   deriveNanoHostAgentSessionCompatibilityKey,
   dispatchNanoHostHarnessOperation,
   drainNanoHostHarnessAdmission,
+  inspectNanoHostAgentSessionContinuity,
   listNanoHostMeasuredHarnessIdentities,
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
@@ -284,6 +285,73 @@ describe('private NanoHost Harness records', () => {
       coreDb.sqlite.close();
     }
   }, 60_000);
+
+  it('admits idle sibling continuity and keeps exact live-attempt refusal', () => {
+    const coreDb = openActiveTurnDb('openkit-harness-idle-sibling-');
+    try {
+      const scope = {
+        agentSessionId: testEntityId('as', 'agent-session-2'),
+        threadId: testEntityId('th', 'thread-2'),
+        workspaceId: testEntityId('ws', 'workspace-1'),
+      };
+      const binding = {
+        ...scope,
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: 'codex',
+          adapterVersion: '0.153.4',
+          harnessCompatibilityKey: 'd'.repeat(64),
+          sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
+          threadId: scope.threadId,
+        }),
+        agentSessionRuntimeBindingId: 'agent-session-binding-2',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        timestamp: now,
+      };
+      openNanoHostAgentSessionBinding(coreDb, binding);
+      const { harnessInstanceId, timestamp, ...openBinding } = binding;
+      queueNanoHostHarnessOperation(coreDb, {
+        body: { ...sessionOpenBody(), ...openBinding },
+        harnessInstanceId,
+        operation: 'session.open',
+        timestamp,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      })!;
+      const ready = { nativeHandleState: 'ready', nativeHandleDigest: 'c'.repeat(64) };
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        timestamp,
+        result: {
+          schemaVersion: 2,
+          harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          disposition: 'succeeded',
+          body: { state: 'open', maxActiveTurns: 1, ...ready },
+        },
+      });
+      // Deliberate count fault: exact live-attempt refusal must remain independent.
+      coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
+      const active = {
+        ...scope,
+        agentSessionId: testEntityId('as', 'agent-session-1'),
+        threadId: testEntityId('th', 'thread-1'),
+      };
+      expect(() => inspectNanoHostAgentSessionContinuity(coreDb, active)).toThrow();
+      coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
+      expect(
+        inspectNanoHostAgentSessionContinuity(coreDb, {
+          ...scope,
+          agentSessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
+        })
+      ).toMatchObject({ reusable: true });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 
   it('reserves the shared Sandbox bound while another runtime Harness start is still queued', () => {
     const coreDb = openActiveTurnDb('cross-harness-queued-capacity-', 2);

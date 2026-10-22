@@ -1903,6 +1903,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let backendLifecycle: WorkerTurnBackendLifecycle | null = null;
     let backendCleanupRequired = false;
     let materializationPublished = false;
+    let existingAgentSession: ReturnType<FsStore['getAgentSession']> | undefined;
     let journalAdmitted = false;
     let closeoutAt: string | null = null;
     let environmentPackage: AgentEnvironmentPackage | null = null;
@@ -2137,7 +2138,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         workspaceIdForOwner(turn.owner),
         turn.threadId
       );
-      let existingAgentSession: ReturnType<FsStore['getAgentSession']> | undefined;
       try {
         existingAgentSession = store.getAgentSession(resolvedAgentSessionId);
       } catch {
@@ -2678,7 +2678,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               turnId: turn.id,
             });
           } else {
-            await this.failTurn(store, turn, agentSessionId, requestId, error, primaryError);
+            await this.failTurn(
+              store,
+              turn,
+              agentSessionId,
+              requestId,
+              error,
+              primaryError,
+              !submissionInvoked &&
+                failedAttempt.phase === 'closed' &&
+                failedAttempt.operationId === null &&
+                errors.length === 1 &&
+                !backendCleanupRequired &&
+                !!existingAgentSession?.nativeHandleDigest &&
+                existingAgentSession.id === agentSessionId &&
+                this.backend.readThreadAgentSessionBinding?.({
+                  threadId: turn.threadId,
+                  workspaceId: workspaceIdForOwner(turn.owner),
+                })?.agentSessionId === agentSessionId
+            );
           }
         } catch (failureError) {
           throw new AggregateError(

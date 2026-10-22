@@ -541,7 +541,6 @@ export function inspectNanoHostAgentSessionContinuity(
               h.adapter_version AS adapterVersion,
               h.lifecycle_state AS harnessLifecycleState,
               h.drain_state AS harnessDrainState,
-              h.active_turn_count AS activeTurnCount,
               h.operation_state AS operationState,
               s.lifecycle_state AS sandboxLifecycleState,
               s.health_state AS sandboxHealthState,
@@ -556,7 +555,6 @@ export function inspectNanoHostAgentSessionContinuity(
     | {
         readonly schemaVersion: unknown;
         readonly harnessSchemaVersion: unknown;
-        readonly activeTurnCount: number;
         readonly adapterId: string;
         readonly adapterVersion: string;
         readonly agentSessionCompatibilityKey: string;
@@ -607,7 +605,8 @@ export function inspectNanoHostAgentSessionContinuity(
     row.threadId !== input.threadId ||
     row.harnessLifecycleState !== 'open' ||
     row.harnessDrainState !== 'accepting' ||
-    row.activeTurnCount !== 0 ||
+    row.currentTurnId !== null ||
+    row.currentAttemptId !== null ||
     !['idle', 'settled'].includes(row.operationState) ||
     row.sandboxLifecycleState !== 'open' ||
     row.sandboxHealthState !== 'ready' ||

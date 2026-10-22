@@ -4,6 +4,10 @@ The default worker-control gateway commits final status synchronously in Core an
 
 Worker storage contributor admission reads current Workspace and Thread metadata through the existing Store owner for each check. It preserves live execution and audience checks without reconstructing unrelated Turn history or Knowledge content.
 
+Native AgentSession continuity checks its addressed binding and live attempt. Independent active Threads do not block an idle binding; aggregate Harness and Sandbox capacity still governs new Turn admission.
+
+A definite pre-submit failure keeps a previously proved AgentSession idle only after the no-effect attempt closes, cleanup succeeds and the same native binding survives. The incoming Turn remains failed; fresh, unproved or uncertain bindings gain no retention proof.
+
 Goal Coordinator retains admitted background execution, wake and boot work through the existing native client lifetime. Shutdown refuses unrelated new producers, drains accepted producers and their still-active nested publication, then closes the worker before listener teardown under the existing deadline. Capturing an unused lifetime starts no worker. Terminal hooks await their Goal wake admission before the command owner may issue another wake against the native Thread revision. A closed Core database leaves truthful retained nonterminal work for ordinary restart recovery; it supplies no terminal or release proof.
 
 NanoHost materialization awaits the existing `beforeMaterialization` callback after both no-effect capacity refusal routes and before any incoming reservation or effect. The callback acknowledges the original durable execution lineage; it supplies no execution, evidence or physical-release proof.
