@@ -43,6 +43,7 @@ import { isThreadVisible } from './auth/thread-visibility.js';
 import {
   finishCapabilityCall,
   recordUsage,
+  type StartCapabilityCallInput,
   type StartedCapabilityCall,
   stampCapabilityCallSchemaSnapshot,
   startCapabilityCall,
@@ -1865,9 +1866,11 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     terminalCommitted = true;
     status = terminalStatus === 'denied' ? 'declined' : 'failed';
-    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
-      code: normalized.code,
-    });
+    throw new ProtocolError(
+      ProtocolErrorCode.InvalidRequest,
+      normalized.message,
+      projectOperationError(normalized) ?? { code: normalized.code }
+    );
   } finally {
     if (terminalCommitted && publishTerminalItem) {
       try {
@@ -3019,7 +3022,7 @@ function finishMcpCallFailure(
   }
 }
 
-/** Starts one attributable MCP call through the shared durable ledger. */
+/** Starts the shared ledger call and projects storage refusal before SDK handling. */
 function startMcpCapabilityCall(input: {
   readonly callId?: string;
   readonly capabilityId: string;
@@ -3038,7 +3041,7 @@ function startMcpCapabilityCall(input: {
     input.operation,
     input.protocolRequestId
   );
-  return startCapabilityCall({
+  const callInput: StartCapabilityCallInput = {
     agentId: input.environmentPackage.agent.agentId,
     agentSessionId: input.environmentPackage.scope.agentSessionId,
     authorityActor: input.environmentPackage.scope.triggerActor,
@@ -3058,7 +3061,30 @@ function startMcpCapabilityCall(input: {
     turnId: input.environmentPackage.scope.turnId,
     workspaceDb: input.workspaceDb,
     workspaceId: input.environmentPackage.scope.workspaceId,
-  });
+  };
+  try {
+    return startCapabilityCall(callInput);
+  } catch (error) {
+    const classified = projectOperationError(error);
+    if (!classified) throw error;
+    const failure = new ProtocolError(
+      ProtocolErrorCode.InvalidRequest,
+      classified.message,
+      classified
+    );
+    // Preserve the trusted nested owner privately; SDK framing excludes this cause.
+    Object.defineProperty(failure, 'cause', {
+      configurable: true,
+      value:
+        error instanceof OperationError
+          ? error
+          : new OperationError(classified.code, classified.message, classified.status, {
+              cause: error,
+            }),
+      writable: true,
+    });
+    throw failure;
+  }
 }
 
 /**
@@ -3266,6 +3292,12 @@ function unavailableServer(): WorkerControlGatewayError {
 /** Maps one private route failure to the closed worker-visible vocabulary. */
 function normalizeWorkerMcpRouteError(error: unknown): WorkerControlGatewayError | OperationError {
   if (error instanceof WorkerControlGatewayError || error instanceof OperationError) return error;
+  if (error instanceof ProtocolError && error.cause instanceof OperationError) return error.cause;
+  const classified = projectOperationError(error);
+  if (classified)
+    return new OperationError(classified.code, classified.message, classified.status, {
+      cause: error,
+    });
   return new WorkerControlGatewayError('mcp-call-failed', 'MCP tool call failed.', 503);
 }
 

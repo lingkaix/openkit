@@ -50,6 +50,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from './auth/nanohost-transport-session.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
+import * as capabilityLedger from './capability/usage-ledger.js';
 import {
   finishCapabilityCall,
   listWorkspaceCapabilityCalls,
@@ -2862,6 +2863,46 @@ describe('worker MCP routes', () => {
         generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
       ).resolves.toMatchObject({ structuredContent: { items: [] } });
       expect(callTool).toHaveBeenCalledTimes(1);
+      if (fault === 'revocation') {
+        const blocker = openWorkspaceDb(dataRoot, workspaceId);
+        const submissions = callTool.mock.calls.length;
+        try {
+          // Control-store owner: genuine post-setup Main writer contention must stay a safe refusal.
+          blocker.sqlite.exec('BEGIN IMMEDIATE');
+          const refusal: unknown = await client
+            .callTool({
+              arguments: { message: 'contended admission must not reach echo' },
+              name: 'echo',
+            })
+            .then(
+              () => undefined,
+              (error: unknown) => error
+            );
+          expect(refusal).toMatchObject({
+            data: {
+              code: 'operation_storage_unavailable',
+              status: 503,
+              message: expect.stringMatching(/inspect.*(original|request|outcome)/i),
+            },
+          });
+          const received = refusal as { message: string; data: { message: string } };
+          expect(received.message).toContain(received.data.message);
+          const publicText = JSON.stringify({ message: received.message, data: received.data });
+          expect(publicText).not.toContain(dataRoot);
+          expect(publicText).not.toMatch(
+            /SQLITE|database is locked|capability_calls|permission_decisions|audit_events|INSERT|DELETE|SELECT|not.?committed|roll.?back|safe.{0,12}retry|automatic.{0,12}retry|retry.{0,12}automatic/i
+          );
+          expect(callTool).toHaveBeenCalledTimes(submissions);
+        } finally {
+          if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
+          blocker.sqlite.close();
+        }
+        // A fresh real read observes progress after release without replaying the refused echo.
+        await expect(
+          generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
+        ).resolves.toMatchObject({ structuredContent: { items: [] } });
+        expect(callTool).toHaveBeenCalledTimes(submissions);
+      }
       const allowed = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
         (call) =>
           call.turnId === turn.id &&
@@ -3145,6 +3186,83 @@ describe('worker MCP routes', () => {
           }
         )
       );
+      if (change === 'unchanged') {
+        const db = openWorkspaceDb(dataRoot, workspaceId);
+        recordMcpToolSchemaSnapshot({
+          environmentPackage,
+          serverId: 'echo',
+          source: 'live',
+          tools: [mcpEchoTool()],
+          schemaSnapshotId: 'nested-lock-schema',
+          workspaceDb: db,
+          workspaceId,
+        });
+        const before = new Set(
+          listWorkspaceCapabilityCalls(db, workspaceId).map((call) => call.id)
+        );
+        const start = capabilityLedger.startCapabilityCall;
+        let nativeFailure: unknown;
+        const discoveries = vi.spyOn(workerMcpGateway, 'listTools');
+        const admission = vi
+          .spyOn(capabilityLedger, 'startCapabilityCall')
+          .mockImplementation((input) => {
+            if (input.operation !== 'mcp.list-tools') return start(input);
+            expect(
+              listWorkspaceCapabilityCalls(db, workspaceId).filter((call) => !before.has(call.id))
+            ).toMatchObject([{ operation: 'mcp.call-tool', status: 'running' }]);
+            db.sqlite.exec('BEGIN IMMEDIATE');
+            try {
+              return start(input);
+            } catch (error) {
+              nativeFailure = error;
+              throw error;
+            } finally {
+              db.sqlite.exec('ROLLBACK');
+            }
+          });
+        try {
+          const refusal: unknown = await client
+            .callTool({
+              name: 'echo',
+              arguments: { message: 'nested storage refusal' },
+            })
+            .then(
+              () => undefined,
+              (error: unknown) => error
+            );
+          expect(nativeFailure).toMatchObject({ code: 'SQLITE_BUSY' });
+          expect(discoveries).not.toHaveBeenCalled();
+          expect(upstream).not.toHaveBeenCalled();
+          expect(
+            listWorkspaceCapabilityCalls(db, workspaceId).filter((call) => !before.has(call.id))
+          ).toMatchObject([
+            {
+              operation: 'mcp.call-tool',
+              status: 'failed',
+              errorCode: 'operation_storage_unavailable',
+            },
+          ]);
+          expect(refusal).toMatchObject({
+            data: {
+              code: 'operation_storage_unavailable',
+              status: 503,
+              message: expect.stringMatching(/inspect.*(original|request|outcome)/i),
+            },
+          });
+          const received = refusal as { message: string; data: { message: string } };
+          expect(received.message).toContain(received.data.message);
+          const publicText = JSON.stringify({ message: received.message, data: received.data });
+          expect(publicText).not.toContain(dataRoot);
+          expect(publicText).not.toMatch(
+            /SQLITE|database is locked|capability_calls|INSERT|SELECT|roll.?back|not.?committed/i
+          );
+        } finally {
+          admission.mockRestore();
+          discoveries.mockRestore();
+          if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+          db.sqlite.close();
+        }
+      }
       await client.listTools();
       const pending = await client.callTool({
         name: 'echo',
