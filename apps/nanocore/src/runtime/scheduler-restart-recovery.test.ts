@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,8 @@ import {
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { createBetterAuth } from '../auth/better-auth.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -55,7 +57,11 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import {
+  createDemoStore,
+  createDemoWorkspaceForUser,
+  seedRetainedPersonalWorkspace,
+} from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import {
@@ -63,10 +69,12 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
@@ -186,13 +194,17 @@ function fixtureRequestId(alias: string): string {
   return testEntityId('tu', `scheduler-request:${alias}`).slice(3);
 }
 
-/** Prepares original command facts for this fixture's actual native Turn admission. */
-function prepareTestReceipt(suffix: string, createdAt: string): IdempotentCommandReceipt {
+/** Prepares original command facts for the supplied or default Thread before native admission. */
+function prepareTestReceipt(
+  suffix: string,
+  createdAt: string,
+  threadId = testEntityId('th', `th_${suffix}`)
+): IdempotentCommandReceipt {
   const requestId = fixtureRequestId(`request_${suffix}`);
   const scope = {
     actorId: LOCAL_USER_ID,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    threadId: testEntityId('th', `th_${suffix}`),
+    threadId,
   };
   return {
     key: commandRequestKey('turn.start', requestId, scope),
@@ -2484,6 +2496,7 @@ function recordTestAgentEnvironmentPackage(
   workspaceDb: ReturnType<typeof openWorkspaceDb>,
   input: {
     readonly suffix: string;
+    readonly threadId?: string;
     readonly triggerActor?: ActorRef;
     readonly workspaceInputIds: readonly string[];
   }
@@ -2505,7 +2518,7 @@ function recordTestAgentEnvironmentPackage(
       turn: {
         id: testEntityId('tu', `turn_${input.suffix}`),
         owner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
-        threadId: testEntityId('th', `th_${input.suffix}`),
+        threadId: input.threadId ?? testEntityId('th', `th_${input.suffix}`),
         triggerActor,
         items: [],
         status: 'running',
@@ -2560,7 +2573,8 @@ function dispatchLease(
   suffix: string,
   triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID },
   submitted = true,
-  nativePrepared = true
+  nativePrepared = true,
+  threadId = testEntityId('th', `th_${suffix}`)
 ): void {
   const responsible =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -2588,7 +2602,7 @@ function dispatchLease(
     queueEntryId: `queue_${suffix}`,
     requestId: fixtureRequestId(`request_${suffix}`),
     requestedAgentId: 'agent_codex_host',
-    threadId: testEntityId('th', `th_${suffix}`),
+    threadId,
     turnId: testEntityId('tu', `turn_${suffix}`),
     turnInput: `Run ${suffix}`,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2643,9 +2657,10 @@ async function prepareReconnectLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
   postLaunch = true,
-  reconnectKey = reconnectKeyFor(suffix)
+  reconnectKey = reconnectKeyFor(suffix),
+  threadId = testEntityId('th', `th_${suffix}`)
 ): Promise<{ readonly lineage: WorkerControlLineage; readonly reconnectKey: string }> {
-  dispatchLease(coreDb, suffix);
+  dispatchLease(coreDb, suffix, undefined, true, true, threadId);
   const submitted = attempts.requireSchedulerExecutionAttempt(
     coreDb,
     testEntityId('attempt', `lease_${suffix}`)
@@ -2657,7 +2672,7 @@ async function prepareReconnectLease(
       deadline: submitted.deadline!,
     })
   );
-  recordBackendSession(coreDb, suffix, 'launching');
+  recordBackendSession(coreDb, suffix, 'launching', threadId);
   markWorkerBackendWorkspaceHandoffComplete(coreDb, {
     attemptId: testEntityId('attempt', `lease_${suffix}`),
     now: () => '2026-07-05T00:00:04.000Z',
@@ -2683,7 +2698,7 @@ async function prepareReconnectLease(
       agentSessionId: testEntityId('as', `as_${suffix}`),
       packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
       requestId: fixtureRequestId(`request_${suffix}`),
-      threadId: testEntityId('th', `th_${suffix}`),
+      threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
@@ -2701,7 +2716,8 @@ function testNanoHostBackendSessionId(suffix: string): string {
 function recordBackendSession(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
-  state: WorkerBackendSessionState = 'materializing'
+  state: WorkerBackendSessionState = 'materializing',
+  threadId = testEntityId('th', `th_${suffix}`)
 ): void {
   const existingRuntimeTarget = coreDb.sqlite
     .prepare('SELECT target_id FROM nanohost_runtime_targets LIMIT 1')
@@ -2735,7 +2751,7 @@ function recordBackendSession(
           `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
       )
     ) {
-      recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
+      recordTestAgentEnvironmentPackage(workspaceDb, { suffix, threadId, workspaceInputIds: [] });
     }
   } finally {
     workspaceDb.sqlite.close();
@@ -2754,7 +2770,7 @@ function recordBackendSession(
       transientProviderInstanceId: null,
     },
     lineage: {
-      threadId: testEntityId('th', `th_${suffix}`),
+      threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     },
@@ -6072,6 +6088,243 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
+  it('keeps retained private recovery history scoped to members and current administrators', async () => {
+    const coreDb = createMigratedCoreDb(false);
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const auth = createBetterAuth(coreDb, { env: {} });
+    const email = [randomUUID(), 'example.invalid'].join('@');
+    const signup = await auth.handler(
+      new Request('http://127.0.0.1:3000/api/auth/sign-up/email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, name: 'Recovery member', password: randomUUID() }),
+      })
+    );
+    expect(signup.status).toBe(200);
+    const otherUserId = ((await signup.json()) as { user: { id: string } }).user.id;
+    const cookie = signup.headers.get('set-cookie')?.split(';')[0];
+    if (!cookie) throw new Error('Original registration session is missing.');
+    const workspace = createDemoWorkspaceForUser(LOCAL_USER_ID).workspace;
+    const threads: ReturnType<FsStore['listThreads']> = [];
+    const origins: { threadId: string; marker: string }[] = [];
+    for (const [index, userId] of [LOCAL_USER_ID, otherUserId].entries()) {
+      const history = new FsStore();
+      const { retained } = await seedRetainedPersonalWorkspace(history, userId, workspace);
+      if (!retained) throw new Error('Canonical retained private history is missing.');
+      threads.push(...history.listThreads(workspace.id));
+      origins.push({ threadId: retained.id, marker: `PRIVATE_RECOVERY_${index}_715` });
+    }
+    await store.importWorkspaceSnapshot({
+      workspace,
+      threads,
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+      ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [] }),
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const joined = coreDb.sqlite.transaction(() => {
+      const invitation = createWorkspaceInvitation({
+        coreDb,
+        workspaceId: workspace.id,
+        inviterUserId: LOCAL_USER_ID,
+        inviteeEmail: email,
+      });
+      if (invitation.kind !== 'created') throw new Error('Real member invitation was refused.');
+      return acceptWorkspaceInvitation({
+        coreDb,
+        workspaceId: workspace.id,
+        inviteeUserId: otherUserId,
+        invitationId: invitation.invitation.invitationId,
+        expectedRevision: invitation.invitation.revision,
+      });
+    })();
+    expect(joined.kind).toBe('accepted');
+    const shared = await store.createThread(workspace.id, 'Shared recovery history');
+    origins.push({ threadId: shared.id, marker: 'SHARED_RECOVERY_715' });
+    const subjects: Awaited<ReturnType<typeof createFinalReviewRecoveryFixture>>[] = [];
+    const db = openWorkspaceDb(coreDb.dataRoot, workspace.id);
+    try {
+      for (const [index, origin] of origins.entries()) {
+        const suffix = `audience_original_715_${index}`;
+        const f = await createFinalReviewRecoveryFixture(suffix, 'running', {
+          coreDb,
+          store,
+          threadId: origin.threadId,
+        });
+        const original = requireSchedulerExecutionAttemptAdmissionContext(coreDb, f.attemptId);
+        const receipt = readCommandRequestRecordsFromSqlite(db.sqlite).find(
+          (record) => record.command === 'turn.start' && record.response.id === f.turnId
+        );
+        if (!receipt) throw new Error('Original Worker admission receipt is missing.');
+        expect(receipt.scope.threadId).toBe(origin.threadId);
+        expect(receipt.requestId).toBe(original.requestId);
+        const checkpoint = upsertWorkerCheckpoint(db, {
+          ...original,
+          requestId: receipt.requestId,
+          requestInputHash: receipt.inputHash,
+          workerSessionId: f.agentSessionId,
+          stage: 'running_worker',
+          iteration: 0,
+          diagnosticsSummary: origin.marker,
+        });
+        await recoverTestStartup(coreDb, f.input);
+        const armed = requireNanoHostExecutionAttempt(coreDb, f.attemptId);
+        if (!armed.recoveryDeadline) throw new Error('Restart did not arm exact reconnect.');
+        expect(
+          requireAgentEnvironmentPackageSnapshot(db, workspace.id, armed.inputRef).snapshot.scope
+            .threadId
+        ).toBe(origin.threadId);
+        f.clock.now = armed.recoveryDeadline;
+        await drainTestRecovery(coreDb, f.input);
+        expect(store.getTurnById(f.turnId).status).toBe('interrupted');
+        expect(store.getAgentSession(f.agentSessionId).status).toBe('interrupted');
+        expect(store.getThread(workspace.id, f.threadId)).toMatchObject(
+          index < 2
+            ? { visibility: 'private', privateOwnerUserId: [LOCAL_USER_ID, otherUserId][index] }
+            : { visibility: 'workspace' }
+        );
+        expect(requireNanoHostExecutionAttempt(coreDb, f.attemptId)).toMatchObject({
+          phase: 'closed',
+          fenceRef: expect.any(String),
+        });
+        expect(getWorkerBackendSession(coreDb, f.attemptId)).toMatchObject({
+          threadId: origin.threadId,
+          state: 'cleaned',
+          workspaceHandoffState: 'complete',
+          physicalCleanedAt: expect.any(String),
+        });
+        expect(() =>
+          adoptNanoHostAttemptReconnect(coreDb, {
+            acceptedAt: f.clock.now,
+            lineage: {
+              ...original,
+              agentSessionId: f.agentSessionId,
+              packageSnapshotId: armed.inputRef,
+            },
+            reconnectKey: reconnectKeyFor(suffix),
+            sandboxBindingRef: armed.bindingRef,
+            workerSequence: armed.lastWorkerSequence! + 1,
+          })
+        ).toThrow();
+        expect(resolveInterruptedWorkerRetryDecision(coreDb, store, db, checkpoint).status).toBe(
+          'eligible'
+        );
+        // Interrupted Retry Eligibility permits inspection of contradictory non-Goal lineage.
+        if (index < 2) upsertWorkerCheckpoint(db, { ...checkpoint, goalId: f.threadId });
+        subjects.push(f);
+      }
+      const tokens = [LOCAL_USER_ID, otherUserId].map((ownerUserId) =>
+        createOpenKitAccessTokenRecord(coreDb, {
+          ownerUserId,
+          scope: 'workspace',
+          workspaceIds: [workspace.id],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        })
+      );
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: otherUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const views = [
+        {
+          headers: new Headers({ authorization: `Bearer ${tokens[0]!.secret}` }),
+          visible: [0, 2],
+          hidden: 1,
+        },
+        {
+          headers: new Headers({ authorization: `Bearer ${tokens[1]!.secret}` }),
+          visible: [1, 2],
+          hidden: 0,
+        },
+        {
+          headers: new Headers({ authorization: `Bearer ${admin.secret}` }),
+          visible: [0, 1, 2],
+          hidden: null,
+        },
+        { headers: new Headers({ cookie }), visible: [0, 1, 2], hidden: null },
+      ];
+      const before = subjects.map((f) => ({
+        thread: store.getThread(workspace.id, f.threadId),
+        turn: store.getTurnById(f.turnId),
+        session: store.getAgentSession(f.agentSessionId),
+        checkpoint: getWorkerCheckpoint(db, workspace.id, f.threadId, f.turnId),
+      }));
+      const app = createApp({ auth, coreDb, dataRoot: coreDb.dataRoot, mode: 'server', store });
+      const getTurn = vi.spyOn(store, 'getTurn');
+      const getSession = vi.spyOn(store, 'getAgentSession');
+      try {
+        for (const view of views) {
+          getTurn.mockClear();
+          getSession.mockClear();
+          const response = await app.request(
+            ...operationRequest(
+              'recovery.worker-list',
+              {},
+              {
+                headers: view.headers,
+              }
+            )
+          );
+          expect(response.status, await response.clone().text()).toBe(200);
+          const text = await response.text();
+          const body = JSON.parse(text) as {
+            items: { threadId: string; turnId: string; choices: { kind: string }[] }[];
+          };
+          expect(body.items.map((row) => row.threadId).sort()).toEqual(
+            view.visible.map((index) => subjects[index]!.threadId).sort()
+          );
+          expect(body.items.map((row) => row.turnId).sort()).toEqual(
+            view.visible.map((index) => subjects[index]!.turnId).sort()
+          );
+          if (view.hidden !== null) {
+            const hidden = subjects[view.hidden]!;
+            for (const marker of [hidden.threadId, hidden.turnId, origins[view.hidden]!.marker])
+              expect(text).not.toContain(marker);
+            expect(getTurn.mock.calls.some(([, threadId]) => threadId === hidden.threadId)).toBe(
+              false
+            );
+            expect(getSession.mock.calls.some(([id]) => id === hidden.agentSessionId)).toBe(false);
+          }
+          for (const index of view.visible) {
+            const visible = subjects[index]!;
+            expect(text).toContain(origins[index]!.marker);
+            expect(getTurn.mock.calls.some(([, threadId]) => threadId === visible.threadId)).toBe(
+              true
+            );
+            expect(getSession.mock.calls.some(([id]) => id === visible.agentSessionId)).toBe(true);
+          }
+          for (const row of body.items)
+            expect(row.choices.some((choice) => choice.kind === 'retry')).toBe(
+              row.threadId === shared.id
+            );
+          for (const [index, f] of subjects.entries()) {
+            expect(store.getThread(workspace.id, f.threadId)).toEqual(before[index]!.thread);
+            expect(store.getTurnById(f.turnId)).toEqual(before[index]!.turn);
+            expect(store.getAgentSession(f.agentSessionId)).toEqual(before[index]!.session);
+            expect(getWorkerCheckpoint(db, workspace.id, f.threadId, f.turnId)).toEqual(
+              before[index]!.checkpoint
+            );
+          }
+        }
+      } finally {
+        getTurn.mockRestore();
+        getSession.mockRestore();
+      }
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it.each([
     'proved',
     'proved-interrupted',
@@ -6445,28 +6698,33 @@ function hasRecoveryFailure(error: unknown, expected: string | RegExp): boolean 
     : expected.test(error.message);
 }
 
-/** Retains exact product and Native crash facts, optionally with an unpublished read-only Context input. */
+/** Retains original product and Native crash facts; imported origins precede admission. */
 async function createFinalReviewRecoveryFixture(
   suffix: string,
-  boundary: 'running' | 'completed' | 'failed-start' | 'failed-preparation'
+  boundary: 'running' | 'completed' | 'failed-start' | 'failed-preparation',
+  retainedOriginal?: { coreDb: ReturnType<typeof openCoreDb>; store: FsStore; threadId: string }
 ) {
-  const coreDb = createMigratedCoreDb(false);
-  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  const coreDb = retainedOriginal?.coreDb ?? createMigratedCoreDb(false);
+  const store = retainedOriginal?.store ?? (await createDemoStore({ dataRoot: coreDb.dataRoot }));
+  if (retainedOriginal && boundary !== 'running') throw new Error('Expected running origin.');
+  if (store.getDataRoot() !== coreDb.dataRoot) throw new Error('Original Store and Core differ.');
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: LOCAL_USER_ID,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const threadId = testEntityId('th', `th_${suffix}`);
+  const threadId = retainedOriginal?.threadId ?? testEntityId('th', `th_${suffix}`);
+  if (retainedOriginal) store.getThread('ws_00000000-0000-7000-8000-000000000001', threadId);
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const agentSessionId = testEntityId('as', `as_${suffix}`);
   const attemptId = testEntityId('attempt', `lease_${suffix}`);
   const packageSnapshotId = `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`;
-  await store.createThread(
-    'ws_00000000-0000-7000-8000-000000000001',
-    'Recover exact worker',
-    threadId
-  );
+  if (!retainedOriginal)
+    await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Recover exact worker',
+      threadId
+    );
   await store.createAgentSession({
     id: agentSessionId,
     agentId: 'agent_codex_host',
@@ -6491,11 +6749,12 @@ async function createFinalReviewRecoveryFixture(
       status: 'pending',
       executorKind: 'worker',
       startedAt: '2026-07-05T00:00:01.000Z',
-      commandReceipt: prepareTestReceipt(suffix, '2026-07-05T00:00:01.000Z'),
+      commandReceipt: prepareTestReceipt(suffix, '2026-07-05T00:00:01.000Z', threadId),
     }
   );
   await store.updateTurn(turnId, { status: 'running' });
-  if (boundary === 'running') await prepareReconnectLease(coreDb, suffix);
+  if (boundary === 'running')
+    await prepareReconnectLease(coreDb, suffix, true, reconnectKeyFor(suffix), threadId);
   else {
     dispatchLease(coreDb, suffix, undefined, boundary !== 'failed-preparation');
     if (boundary === 'failed-preparation') {
