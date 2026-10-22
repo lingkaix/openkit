@@ -577,7 +577,7 @@ const candidateJobBaseline = {
 
 const shardJobBaseline = {
   'l0-l2-plan': '23d1b0909aa51ceafd306c2ff3471183a8dafdeaa3f6303b4ecac741be066f63',
-  'l0-l2-shards': '368fc0314a47da15771a82b025fa6b00dd203cc688f06ed47a6b498deb6c517f',
+  'l0-l2-shards': '3663155f967736d0ecc37d7ba1da122dc85ffb2fed24308db933afa202c07653',
   'l0-l2-coverage': '8c87089f4b629f9ac761e3ea2240fd15c0f4463f94f4ba035339db102cad2896',
   'l0-l2': 'b6457a2076a878e997a3416dc226a006e9e97098170798e9167edeb6f59eb1e0',
 };
@@ -664,8 +664,8 @@ test('only complete L0-L2 shards, whole-owner coverage and NanoCore e2e read exa
           : /--job "\$\{REUSE_JOB_NAME\}"/u
     );
     for (const later of job.steps.slice(2)) {
-      if (later.name.startsWith('Retain successful')) {
-        assert.equal(later.if, undefined);
+      if (later.uses?.startsWith('actions/upload-artifact@')) {
+        assert.equal(later.if, name === 'l0-l2-shards' ? 'always()' : undefined);
         assert.equal(later.with['if-no-files-found'], 'error');
       } else if (later.name === 'Restore exact-commit execution evidence') {
         assert.equal(later.if, "steps.reuse.outputs.reused == 'true'");
@@ -1420,8 +1420,11 @@ test('exact-job reuse restores attempt-bound reports instead of manufacturing su
   }
   const cache = step(workflow.jobs['l0-l2-shards'], 'Cache locked build inputs and outputs');
   assert.match(cache.uses, /^actions\/cache\/restore@[a-f0-9]{40}$/u);
+  const retained = workflow.jobs['l0-l2-shards'].steps.find((entry) =>
+    entry.uses?.startsWith('actions/upload-artifact@')
+  );
   assert.equal(
-    step(workflow.jobs['l0-l2-shards'], 'Retain successful shard evidence').with.name,
+    retained.with.name,
     `l0-l2-${actionExpression('matrix.id')}-attempt-${actionExpression('github.run_attempt')}`
   );
   assert.equal(

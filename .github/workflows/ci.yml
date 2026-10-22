@@ -334,7 +334,8 @@ jobs:
         run: |
           chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
           runuser -u node -- env HOME="${HOME}" node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"
-      - name: Retain successful shard evidence
+      - name: Retain shard execution evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: l0-l2-${{ matrix.id }}-attempt-${{ github.run_attempt }}
