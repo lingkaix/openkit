@@ -2517,7 +2517,7 @@ describe('worker MCP routes', () => {
       );
       commands.mockRestore();
       taskAdmissions.mockRestore();
-      native.restore();
+      await native.restore();
       await workerMcpGateway.close();
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
@@ -2839,7 +2839,7 @@ describe('worker MCP routes', () => {
           .map((result) => result.value.closeout)
       );
       taskAdmissions.mockRestore();
-      native.restore();
+      await native.restore();
       await workerMcpGateway.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
@@ -3148,7 +3148,7 @@ describe('worker MCP routes', () => {
           .map((result) => result.value.closeout)
       );
       taskAdmissions.mockRestore();
-      native.restore();
+      await native.restore();
       await workerMcpGateway.close();
       workspaceDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
@@ -3731,7 +3731,7 @@ describe('worker MCP routes', () => {
           .map((result) => result.value.closeout)
       );
       taskAdmissions.mockRestore();
-      native.restore();
+      await native.restore();
       await workerMcpGateway.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();

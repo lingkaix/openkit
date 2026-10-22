@@ -1129,7 +1129,7 @@ it.each([
       );
     } finally {
       admissions.mockRestore();
-      native?.restore();
+      await native?.restore();
       vi.restoreAllMocks();
       workspaceDb?.sqlite.close();
       await f.cleanup();
@@ -1627,7 +1627,7 @@ it.each([
         .map((result) => result.value.closeout)
     );
     admissions.mockRestore();
-    native?.restore();
+    await native?.restore();
     await gateway.close();
     await upstream.close();
     workspaceDb?.sqlite.close();

@@ -585,7 +585,7 @@ it.each([
     }
     loopObservation?.mockRestore();
     authorization.mockRestore();
-    interruptedNative?.restore();
+    await interruptedNative?.restore();
     await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     coreDb.sqlite.close();

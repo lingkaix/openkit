@@ -37,7 +37,8 @@ import { recordTestNativeRuntimeTarget } from './native-environment.js';
  * @param coreDb Caller-owned migrated Core database for this fixture lifetime.
  * @param store Caller-created Demo store sharing the same data root.
  * @param options Existing configuration reader shared by the runtime and admitted Turns.
- * @returns Native executor, peer faults, per-Turn gates, effect trace, runtime, admission, gateway and stop.
+ * @param outside Opaque outside peer facts retained across sequential stopped controllers.
+ * @returns Outside facts, native executor, per-Turn gates, effects, runtime, admission, gateway and stop.
  */
 export function createNativeTaskAdmissionFixture(
   coreDb: ReturnType<typeof openCoreDb>,
@@ -45,7 +46,21 @@ export function createNativeTaskAdmissionFixture(
   options: Pick<
     NonNullable<Parameters<typeof createConfiguredWorkerLifecycleRuntime>[0]>,
     'readRuntimeConfig'
-  > = {}
+  > = {},
+  outside = {
+    bindings: new Map<string, Map<string, { state: string; turnId: string | null }>>(),
+    integrationBindingRef: undefined as string | undefined,
+    transcripts: new Map<
+      string,
+      { input: string; events: unknown[]; lineage: Parameters<typeof readFinal>[1] }
+    >(),
+    effects: [] as NanoHostSessionEffectRequest[],
+    peerFaults: {
+      failedFinal: false,
+      failFileExport: false,
+      failedExportPaths: [] as string[],
+    },
+  }
 ) {
   recordTestNativeRuntimeTarget(coreDb);
   const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
@@ -99,13 +114,8 @@ export function createNativeTaskAdmissionFixture(
   };
   let stopped = false;
   let peerFailure: unknown;
-  // Failure and capture-loss selection belongs to the outside peer after native admission.
-  const peerFaults = {
-    failedFinal: false,
-    failFileExport: false,
-    failedExportPaths: [] as string[],
-  };
-  const effects: NanoHostSessionEffectRequest[] = [];
+  // The outside peer retains accepted facts across sequential stopped Core controllers.
+  const { bindings, transcripts, effects, peerFaults } = outside;
   const journalRefs = new Map<string, ExecutionJournalRef>();
   const writeIntent = store.writeWorkspaceExecutionJournalIntent.bind(store);
   const journalObservation = vi
@@ -116,8 +126,6 @@ export function createNativeTaskAdmissionFixture(
       return invocation;
     });
   void launched.promise.catch(() => undefined);
-  const bindings = new Map<string, Map<string, { state: string; turnId: string | null }>>();
-  let integrationBindingRef: string | undefined;
   const unsupported = () => Promise.reject(new Error('Native peer operation is not admitted.'));
   const runtime = createConfiguredWorkerLifecycleRuntime({
     coreDb,
@@ -170,7 +178,7 @@ export function createNativeTaskAdmissionFixture(
           const ref = request.input.sandboxIntegrationBindingRef;
           if (typeof ref !== 'string' || !ref)
             throw new Error('Native bridge request lacks its actual Integration binding.');
-          integrationBindingRef = ref;
+          outside.integrationBindingRef = ref;
           return { accepted: true, integrationReady: true, state: 'open' };
         }
         if (request.kind === 'reference.import') return { state: 'imported' };
@@ -186,11 +194,11 @@ export function createNativeTaskAdmissionFixture(
               }
             : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'file.export') {
-          const turn = [...executions.values()].find(
-            (candidate) => candidate.lineage?.packageSnapshotId === request.input.packageSnapshotId
+          const transcript = [...transcripts.values()].find(
+            (candidate) => candidate.lineage.packageSnapshotId === request.input.packageSnapshotId
           );
-          if (!turn?.lineage) throw new Error('Native trial has no submitted Turn.');
-          const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = turn;
+          if (!transcript) throw new Error('Native trial has no submitted Turn.');
+          const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = transcript;
           if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
             peerFaults.failedExportPaths.push(String(request.input.relativePath));
             throw new Error('Controlled required native export loss.');
@@ -220,7 +228,7 @@ export function createNativeTaskAdmissionFixture(
           };
         }
         if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
-          integrationBindingRef = undefined;
+          outside.integrationBindingRef = undefined;
           return { state: 'deleted' };
         }
         throw new Error(`Unexpected native Mode trial effect: ${request.kind}`);
@@ -311,7 +319,9 @@ export function createNativeTaskAdmissionFixture(
   };
   const peer = (async () => {
     while (!stopped) {
-      for (const integrationRef of integrationBindingRef ? [integrationBindingRef] : []) {
+      for (const integrationRef of outside.integrationBindingRef
+        ? [outside.integrationBindingRef]
+        : []) {
         if (stopped) break;
         const command = dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integrationRef,
@@ -344,12 +354,12 @@ export function createNativeTaskAdmissionFixture(
             ],
             'turn.start': [['open', 'completed'], 'running', { state: 'started', ...ready }],
             'session.inspect': [
-              ['completed'],
-              'completed',
+              ['open', 'completed'],
+              binding.state,
               { state: 'open', childState: 'absent', cleanupState: 'clean', ...ready },
             ],
             'session.close': [
-              ['completed'],
+              ['open', 'completed'],
               'closed',
               { state: 'closed', privateState: 'absent', childState: 'absent' },
             ],
@@ -360,7 +370,8 @@ export function createNativeTaskAdmissionFixture(
             throw new Error(`Native peer state does not admit ${command.operation}.`);
           if (command.operation === 'turn.start') {
             const turnId = command.body.turnId;
-            if (turn?.acceptedStart) throw new Error('Native peer refuses Turn replay.');
+            if (turn?.acceptedStart || transcripts.has(String(turnId)))
+              throw new Error('Native peer refuses Turn replay.');
             if (typeof turnId !== 'string' || !turn?.started || !turn.ownerStore)
               throw new Error('Native command lacks its actual Turn execution.');
             const product = turn.ownerStore.getTurnById(turnId);
@@ -448,6 +459,12 @@ export function createNativeTaskAdmissionFixture(
           runtime.acceptNanoHostHarnessResult(result);
           if (command.operation === 'turn.start') {
             turn!.acceptedStart = true;
+            // Export history retains peer data, without the stopped controller's gates or callbacks.
+            transcripts.set(turn!.lineage!.turnId, {
+              input: turn!.input,
+              events: turn!.events,
+              lineage: turn!.lineage!,
+            });
             turn!.observed.resolve(turn!.execution!);
             executor.nativeLineage = turn!.lineage!;
             executor.capabilityToken = String(wire.body.capabilityToken);
@@ -491,6 +508,7 @@ export function createNativeTaskAdmissionFixture(
     }
   });
   return {
+    outside,
     executor,
     effects: effects as readonly NanoHostSessionEffectRequest[],
     fileAdmission,
@@ -581,11 +599,13 @@ export function createNativeTaskAdmissionFixture(
         throw error;
       }
     },
+    /** Stops this controller after caller joins work; returns its existing pump completion. */
     restore() {
       stopped = true;
       startObservation.mockRestore();
       releaseSpy.mockRestore();
       journalObservation.mockRestore();
+      return peer;
     },
   };
 }

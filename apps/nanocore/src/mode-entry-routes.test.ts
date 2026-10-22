@@ -860,7 +860,7 @@ describe('conversation.submit worker storage choice', () => {
         publicationObservation.mockRestore();
         loopObservation.mockRestore();
         await shutdownControlStoreWorkerClient();
-        native.restore();
+        await native.restore();
         coreDb.sqlite.close();
         rmSync(dataRoot, { force: true, recursive: true });
       }
@@ -1418,7 +1418,7 @@ describe('conversation.submit worker acceptance wait', () => {
         publicationObservation.mockRestore();
         loopObservation.mockRestore();
         await shutdownControlStoreWorkerClient();
-        native.restore();
+        await native.restore();
         coreDb.sqlite.close();
         rmSync(dataRoot, { force: true, recursive: true });
       }
@@ -1760,7 +1760,7 @@ describe('conversation.submit worker acceptance wait', () => {
         publicationObservation.mockRestore();
         loopObservation.mockRestore();
         await shutdownControlStoreWorkerClient();
-        native.restore();
+        await native.restore();
         coreDb.sqlite.close();
         rmSync(dataRoot, { force: true, recursive: true });
       }
@@ -2953,7 +2953,7 @@ describe('Task durable admission response', () => {
       checkpointDeletion.mockRestore();
       loopObservation.mockRestore();
       collectionObservation.mockRestore();
-      native.restore();
+      await native.restore();
       coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
@@ -3301,7 +3301,7 @@ describe('Task terminal replay closeout ownership', () => {
       admissions.mockRestore();
       loopCloseout?.mockRestore();
       collector.mockRestore();
-      native.restore();
+      await native.restore();
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -4046,7 +4046,7 @@ describe('route B queued Task receipts', () => {
       );
       submitObservation.mockRestore();
       admissions.mockRestore();
-      native.restore();
+      await native.restore();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });

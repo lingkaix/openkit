@@ -452,7 +452,7 @@ async function createNativeTurnFixture(slug: string) {
       } catch (error) {
         failures.push(error);
       } finally {
-        native.restore();
+        await native.restore();
         admissions.mockRestore();
         submissions.mockRestore();
         try {
