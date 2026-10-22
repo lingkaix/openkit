@@ -61,6 +61,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import { seedRetainedPersonalWorkspace } from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -93,24 +94,23 @@ function answer(): OpenAICompatibleResponsesResponse {
 }
 
 /** Composes actual Assistant, Pending Request, Task, scheduler, identity and setup owners. */
-async function fixture(targetWorkspaceId?: string) {
+async function fixture(
+  targetWorkspaceId?: string,
+  privateThreadNames: readonly ['Timeline', ...string[]] = ['Timeline']
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-semantic-handoff-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = await store.createWorkspace('Semantic Task handoff');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
-  const thread = await store.createThread(
-    workspace.id,
-    'Private Assistant',
-    undefined,
-    'conversation',
-    {
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    }
+  const workspace = await new FsStore().createWorkspace('Semantic Task handoff');
+  const { timeline: thread } = await seedRetainedPersonalWorkspace(
+    store,
+    LOCAL_USER_ID,
+    workspace,
+    privateThreadNames
   );
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const old = await store.createTurn(workspace.id, thread.id, 'Private prior context.', {
     kind: 'user',
     id: LOCAL_USER_ID,
@@ -658,7 +658,11 @@ describe('Assistant semantic Task handoff', () => {
     const answered = await answer();
     expect(answered.status, await answered.clone().text()).toBe(200);
     const answerBody = await answered.json();
-    await vi.waitFor(() => expect(f.admissions()).toHaveLength(1));
+    await vi.waitFor(() => {
+      expect(f.admissions()).toHaveLength(1);
+      const delivered = readPendingRequest(f.workspaceDb.sqlite, request.userInputRequestId)!;
+      expect(f.store.getTurnById(delivered.deliveryTurnId!)).toMatchObject({ status: 'completed' });
+    });
     expect(f.requests).toHaveLength(2);
     const [admission] = f.admissions();
     expect(admission).toMatchObject({
@@ -836,7 +840,10 @@ describe('Assistant semantic Task handoff', () => {
     'missing',
     'other-thread',
   ] as const)('keeps an Assistant command with a %s receipt pointer in recovery without rerouting or redispatch', async (damage) => {
-    const f = await fixture();
+    const f = await fixture(
+      undefined,
+      damage === 'other-thread' ? ['Timeline', 'Retained history'] : ['Timeline']
+    );
     const submitted = await f.submit();
     expect(submitted.status).toBe(202);
     const accepted = SubmitConversationResponseSchema.parse(await submitted.json());
@@ -846,16 +853,9 @@ describe('Assistant semantic Task handoff', () => {
         .prepare('DELETE FROM idempotency_requests WHERE request_key = ?')
         .run(original.key);
     } else {
-      const other = await f.store.createThread(
-        f.workspace.id,
-        'Other retained conversation',
-        undefined,
-        'conversation',
-        {
-          visibility: 'private',
-          privateOwnerUserId: LOCAL_USER_ID,
-        }
-      );
+      const other = f.store
+        .listThreads(f.workspace.id)
+        .find((thread) => thread.name === 'Retained history')!;
       const unrelated = await f.store.createTurn(f.workspace.id, other.id, 'Other input', {
         kind: 'user',
         id: LOCAL_USER_ID,

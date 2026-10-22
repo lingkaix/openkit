@@ -163,20 +163,24 @@ export async function createDemoStore(
 
 /**
  * Cold-imports earlier extra private history without admitting a new duplicate.
- * @param store Fresh unpublished personal Workspace destination; its native writer is stopped first.
- * @param userId Canonical User owning both retained private conversations.
- * @returns After validated native import; no original-release or live command ACK is claimed.
+ * @param store Fresh unpublished Workspace destination; its native writer is stopped first.
+ * @param userId Canonical User owning the retained private conversations.
+ * @param projectWorkspace Optional unpublished project Workspace; defaults to Quick Chat.
+ * @param privateThreadNames Explicit retained history, with its continuing Timeline first.
+ * @returns Imported private Thread identities; no original-release or live command ACK is claimed.
  */
 export async function seedRetainedPersonalWorkspace(
   store: FsStore,
-  userId = FIXTURE_LOCAL_USER_ID
+  userId = FIXTURE_LOCAL_USER_ID,
+  projectWorkspace?: WorkspaceRecord,
+  privateThreadNames: readonly ['Timeline', ...string[]] = ['Timeline', 'Retained history']
 ) {
   await shutdownControlStoreWorkerClient();
   const demo = createDemoWorkspaceForUser(userId);
-  const workspace = await new FsStore().ensureQuickChatWorkspace(userId);
+  const workspace = projectWorkspace ?? (await new FsStore().ensureQuickChatWorkspace(userId));
   await store.importWorkspaceSnapshot({
     workspace,
-    threads: ['Timeline', 'Retained history'].map((name, index) => ({
+    threads: privateThreadNames.map((name, index) => ({
       ...demo.thread,
       id: allocateEntityId('th'),
       owner: { kind: 'workspace' as const, workspaceId: workspace.id },
@@ -194,6 +198,10 @@ export async function seedRetainedPersonalWorkspace(
     turnEvents: [],
     ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [], userId }),
   });
+  return {
+    timeline: store.listThreads(workspace.id).find((thread) => thread.name === 'Timeline')!,
+    retained: store.listThreads(workspace.id).find((thread) => thread.name === 'Retained history'),
+  };
 }
 
 /**

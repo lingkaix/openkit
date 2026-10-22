@@ -203,21 +203,21 @@ type WorkspaceReviewOriginKind = 'visible' | 'private' | 'imported';
  * @param store Product store owned by the test.
  * @param workspaceId Workspace that owns the review.
  * @param input Artifact identity and origin kind.
- * @returns Thread and Turn ids when a turn-output origin exists.
+ * @returns After actual Artifact publication, Thread and Turn ids when a turn-output origin exists.
  */
-function createWorkspaceReviewBackingArtifact(
-  store: ReturnType<typeof createDemoStore>,
+async function createWorkspaceReviewBackingArtifact(
+  store: Awaited<ReturnType<typeof createDemoStore>>,
   workspaceId: string,
   input: {
     readonly artifactId: string;
     readonly origin: WorkspaceReviewOriginKind;
   }
-): { readonly threadId?: string; readonly turnId?: string; readonly turnRef: string } {
+): Promise<{ readonly threadId?: string; readonly turnId?: string; readonly turnRef: string }> {
   const artifactRequestId = `action-center-${input.origin}-workspace-review-1`;
   const artifactBody = `{"review":"${input.origin}"}`;
   const contentDigest = `sha256:${createHash('sha256').update(artifactBody, 'utf8').digest('hex')}`;
   if (input.origin === 'imported') {
-    store.createArtifact({
+    await store.createArtifact({
       id: input.artifactId,
       workspaceId,
       threadId: null,
@@ -245,7 +245,7 @@ function createWorkspaceReviewBackingArtifact(
     return { turnRef: 'tu_00000000-0000-7063-9e7a-b90df6c45c01' };
   }
 
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspaceId,
     `${input.origin} origin conversation`,
     undefined,
@@ -254,7 +254,7 @@ function createWorkspaceReviewBackingArtifact(
       ? { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
       : undefined
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspaceId,
     thread.id,
     `Produce ${input.origin} workspace changes`,
@@ -268,7 +268,7 @@ function createWorkspaceReviewBackingArtifact(
     null,
     { turnId: testEntityId('tu', `turn_${input.origin}_origin`) }
   );
-  store.createArtifact({
+  await store.createArtifact({
     id: input.artifactId,
     workspaceId,
     threadId: thread.id,
@@ -449,15 +449,6 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const questionTurn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Request a secret',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
     const approval = store.createApproval({
       id: 'ap_action_center',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -470,28 +461,15 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    const approvalItem = await store.createItem({
-      id: 'it_00000000-0000-7a4e-a3f7-f8716b2eab5f',
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      threadId: thread.id,
-      turnId: approvalTurn.id,
-      type: 'approval-request',
-      status: 'completed',
-      approvalRequestId: approval.id,
-      title: approval.title,
-      description: approval.description,
-      kind: approval.kind,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
+    const approvalItemId = 'it_00000000-0000-7a4e-a3f7-f8716b2eab5f';
     const approvalDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      raiseRecordedPendingRequest(store, approvalDb.sqlite, {
+      await raiseRecordedPendingRequest(store, approvalDb.sqlite, {
         requestId: approval.id,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         raisingTurnId: approvalTurn.id,
-        requestItemId: approvalItem.id,
+        requestItemId: approvalItemId,
         kind: 'approval',
         requesterKind: 'worker',
         agentId: 'agent_demo',
@@ -502,6 +480,19 @@ describe('action center app API', () => {
     } finally {
       approvalDb.sqlite.close();
     }
+    await store.completeTurn(approvalTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const questionTurn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Request a secret',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const questionItem = await store.createItem({
       id: 'it_00000000-0000-786f-8510-7bf50e243b95',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
@@ -527,22 +518,31 @@ describe('action center app API', () => {
     });
     const questionDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      raiseRecordedPendingRequest(store, questionDb.sqlite, {
-        requestId: questionItem.userInputRequestId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        raisingTurnId: questionTurn.id,
-        requestItemId: questionItem.id,
-        kind: 'user-input',
-        requesterKind: 'assistant',
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        questions: questionItem.questions,
-        questionDigest: 'digest-action-center',
-        now: timestamp,
-      });
+      await raiseRecordedPendingRequest(
+        store,
+        questionDb.sqlite,
+        {
+          requestId: questionItem.userInputRequestId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          raisingTurnId: questionTurn.id,
+          requestItemId: questionItem.id,
+          kind: 'user-input',
+          requesterKind: 'assistant',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          questions: questionItem.questions,
+          questionDigest: 'digest-action-center',
+          now: timestamp,
+        },
+        questionItem
+      );
     } finally {
       questionDb.sqlite.close();
     }
+    await store.completeTurn(questionTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     const toolUseTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
@@ -596,7 +596,7 @@ describe('action center app API', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
         turnId: approvalTurn.id,
-        itemId: approvalItem.id,
+        itemId: approvalItemId,
         title: 'Approve command',
         severity: 'needs_input',
         source: expect.objectContaining({ type: 'approval', approvalRequestId: approval.id }),
@@ -683,15 +683,6 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       }
     );
-    const questionTurn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Request responsible input',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
-      }
-    );
     const approval = store.createApproval({
       id: 'ap_actor_scoped',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -704,38 +695,39 @@ describe('action center app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    const approvalItem = await store.createItem({
-      id: 'it_00000000-0000-785a-bff3-9cad41a613f3',
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+    const approvalItemId = 'it_00000000-0000-785a-bff3-9cad41a613f3';
+    const approvalRequest = {
+      requestId: approval.id,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
-      turnId: approvalTurn.id,
-      type: 'approval-request',
-      status: 'completed',
-      approvalRequestId: approval.id,
-      title: approval.title,
-      description: approval.description,
-      kind: approval.kind,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
+      raisingTurnId: approvalTurn.id,
+      requestItemId: approvalItemId,
+      kind: 'approval',
+      requesterKind: 'person',
+      responsibleUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      approval: { kind: 'permission', title: approval.title, description: approval.description },
+      governedIntent: { action: 'review.apply' },
+      now: timestamp,
+    } as const;
     const approvalDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      raiseRecordedPendingRequest(store, approvalDb.sqlite, {
-        requestId: approval.id,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        raisingTurnId: approvalTurn.id,
-        requestItemId: approvalItem.id,
-        kind: 'approval',
-        requesterKind: 'person',
-        responsibleUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        approval: { kind: 'permission', title: approval.title, description: approval.description },
-        governedIntent: { action: 'review.apply' },
-        now: timestamp,
-      });
+      await raiseRecordedPendingRequest(store, approvalDb.sqlite, approvalRequest);
     } finally {
       approvalDb.sqlite.close();
     }
+    await store.completeTurn(approvalTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const questionTurn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Request responsible input',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
+      }
+    );
     const questionItem = await store.createItem({
       id: 'it_00000000-0000-7474-b15d-84d3b876c505',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
@@ -759,21 +751,22 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
+    const questionRequest = {
+      requestId: questionItem.userInputRequestId,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: thread.id,
+      raisingTurnId: questionTurn.id,
+      requestItemId: questionItem.id,
+      kind: 'user-input',
+      requesterKind: 'assistant',
+      responsibleUserId: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
+      questions: questionItem.questions,
+      questionDigest: 'digest-actor-scoped',
+      now: timestamp,
+    } as const;
     const questionDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      raiseRecordedPendingRequest(store, questionDb.sqlite, {
-        requestId: questionItem.userInputRequestId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        raisingTurnId: questionTurn.id,
-        requestItemId: questionItem.id,
-        kind: 'user-input',
-        requesterKind: 'assistant',
-        responsibleUserId: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
-        questions: questionItem.questions,
-        questionDigest: 'digest-actor-scoped',
-        now: timestamp,
-      });
+      await raiseRecordedPendingRequest(store, questionDb.sqlite, questionRequest, questionItem);
     } finally {
       questionDb.sqlite.close();
     }
@@ -938,10 +931,62 @@ describe('action center app API', () => {
         }
       }
 
-      await store.updateThread('ws_00000000-0000-7000-8000-000000000001', thread.id, {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
-      });
+      const privateThread = await store.createThread(
+        approval.workspaceId,
+        'Foreign private requests',
+        undefined,
+        'conversation',
+        { visibility: 'private', privateOwnerUserId: questionItem.responsibleUserId }
+      );
+      const privateTurn = await store.createTurn(
+        approval.workspaceId,
+        privateThread.id,
+        'Request private decisions',
+        approvalTurn.triggerActor
+      );
+      const privateApprovalRequestId = 'ap_actor_scoped_private';
+      const privateQuestionItem = {
+        ...questionItem,
+        id: testEntityId('it', 'private-actor-question'),
+        threadId: privateThread.id,
+        turnId: privateTurn.id,
+        userInputRequestId: 'ui_actor_scoped_private',
+      };
+      const privateDb = openTestWorkspaceDb(coreDb, approval.workspaceId);
+      try {
+        await raiseRecordedPendingRequest(store, privateDb.sqlite, {
+          ...approvalRequest,
+          requestId: privateApprovalRequestId,
+          threadId: privateThread.id,
+          raisingTurnId: privateTurn.id,
+          requestItemId: testEntityId('it', 'private-actor-approval'),
+        });
+        await store.completeTurn(privateTurn.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
+        const privateQuestionTurn = await store.createTurn(
+          approval.workspaceId,
+          privateThread.id,
+          'Request private input',
+          questionTurn.triggerActor
+        );
+        privateQuestionItem.turnId = privateQuestionTurn.id;
+        await raiseRecordedPendingRequest(
+          store,
+          privateDb.sqlite,
+          {
+            ...questionRequest,
+            requestId: privateQuestionItem.userInputRequestId,
+            threadId: privateThread.id,
+            raisingTurnId: privateQuestionTurn.id,
+            requestItemId: privateQuestionItem.id,
+          },
+          privateQuestionItem
+        );
+      } finally {
+        privateDb.sqlite.close();
+      }
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         scope: 'server-admin',
@@ -962,8 +1007,8 @@ describe('action center app API', () => {
         )
       ).toEqual(
         expect.arrayContaining([
-          `approval:${approval.id}`,
-          `question:${questionItem.userInputRequestId}`,
+          `approval:${privateApprovalRequestId}`,
+          `question:${privateQuestionItem.userInputRequestId}`,
         ])
       );
     } finally {
@@ -1607,19 +1652,24 @@ describe('action center app API', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
-        requestId: questionItem.userInputRequestId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        raisingTurnId: turn.id,
-        requestItemId: questionItem.id,
-        kind: 'user-input',
-        requesterKind: 'assistant',
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        questions: questionItem.questions,
-        questionDigest: 'digest-question-route',
-        now: timestamp,
-      });
+      await raiseRecordedPendingRequest(
+        store,
+        workspaceDb.sqlite,
+        {
+          requestId: questionItem.userInputRequestId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          raisingTurnId: turn.id,
+          requestItemId: questionItem.id,
+          kind: 'user-input',
+          requesterKind: 'assistant',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          questions: questionItem.questions,
+          questionDigest: 'digest-question-route',
+          now: timestamp,
+        },
+        questionItem
+      );
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -1794,7 +1844,7 @@ describe('action center app API', () => {
     const workspace = await store.createWorkspace(`${origin} workspace review origin`);
 
     try {
-      const backing = createWorkspaceReviewBackingArtifact(store, workspace.id, {
+      const backing = await createWorkspaceReviewBackingArtifact(store, workspace.id, {
         artifactId,
         origin,
       });

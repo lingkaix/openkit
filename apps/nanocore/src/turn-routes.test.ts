@@ -794,7 +794,7 @@ describe('generic turn routes', () => {
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
       await setImmediate();
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
-      const requestItem = await fixture.store.createItem({
+      const requestItem: Parameters<FsStore['createItem']>[0] = {
         id: testEntityId('it', `it_responsible_user_${turn.id}`),
         owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
@@ -816,26 +816,31 @@ describe('generic turn routes', () => {
         ],
         createdAt: acceptedAt,
         completedAt: acceptedAt,
-      });
+      };
       const workspaceDb = openWorkspaceDb(
         fixture.dataRoot,
         'ws_00000000-0000-7000-8000-000000000001'
       );
       try {
         applyScopedMigrations(workspaceDb);
-        raiseRecordedPendingRequest(fixture.store, workspaceDb.sqlite, {
-          requestId: requestItem.userInputRequestId,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          raisingTurnId: turn.id,
-          requestItemId: requestItem.id,
-          kind: 'user-input',
-          requesterKind: 'assistant',
-          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          questions: requestItem.type === 'user-input-request' ? requestItem.questions : [],
-          questionDigest: 'digest-responsible-user',
-          now: acceptedAt,
-        });
+        await raiseRecordedPendingRequest(
+          fixture.store,
+          workspaceDb.sqlite,
+          {
+            requestId: requestItem.userInputRequestId,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            raisingTurnId: turn.id,
+            requestItemId: requestItem.id,
+            kind: 'user-input',
+            requesterKind: 'assistant',
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            questions: requestItem.type === 'user-input-request' ? requestItem.questions : [],
+            questionDigest: 'digest-responsible-user',
+            now: acceptedAt,
+          },
+          requestItem
+        );
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -957,9 +962,10 @@ describe('generic turn routes', () => {
             requestId
           )
         );
-        await vi.waitFor(() =>
-          expect(readTurnAttempt(fixture.coreDb, accepted.id)?.phase).toBe('closed')
-        );
+        await vi.waitFor(() => {
+          expect(readTurnAttempt(fixture.coreDb, accepted.id)?.phase).toBe('closed');
+          expect(fixture.store.getTurnById(accepted.id).status).toBe('failed');
+        });
         expect(fixture.store.getTurnById(accepted.id)).toMatchObject({
           status: 'failed',
           error: { code: 'worker_preparation_failed', message: expect.any(String) },

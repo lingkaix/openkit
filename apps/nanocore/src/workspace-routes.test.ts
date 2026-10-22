@@ -12,7 +12,10 @@ import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createTestStore } from './test-support/store.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import {
+  ensureUserQuickChatWorkspace,
+  recordWorkspaceOwnerMembership,
+} from './workspace-membership.js';
 
 const ownedDatabases: Array<ReturnType<typeof openCoreDb>> = [];
 afterEach(() => {
@@ -40,6 +43,11 @@ describe('workspace routes', () => {
     ownedDatabases.push(coreDb);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    await ensureUserQuickChatWorkspace({
+      coreDb,
+      store,
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

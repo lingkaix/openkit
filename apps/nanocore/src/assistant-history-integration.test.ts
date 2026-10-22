@@ -22,6 +22,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { seedRetainedPersonalWorkspace } from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -67,7 +68,8 @@ async function retainMessage(
   text: string,
   completeTurn = true
 ) {
-  const turn = await store.createTurn(workspaceId, threadId, text, {
+  // Keep bounded Turn metadata separate from the exact canonical Item payload indexed below.
+  const turn = await store.createTurn(workspaceId, threadId, 'Retain canonical history message.', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
@@ -100,7 +102,9 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = await store.createWorkspace('History integration');
+  const workspace = await new FsStore().createWorkspace('History integration');
+  const retained = await seedRetainedPersonalWorkspace(store, LOCAL_USER_ID, workspace);
+  const past = retained.retained!;
   const otherWorkspace = await store.createWorkspace('Other history ownership');
   for (const entry of [workspace, otherWorkspace]) {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: LOCAL_USER_ID });
@@ -125,7 +129,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
 
   const requests: OpenAICompatibleResponsesRequest[] = [];
   const scriptErrors: unknown[] = [];
-  let beforeAnswer: (() => void) | undefined;
+  let beforeAnswer: (() => void | Promise<void>) | undefined;
   let answerText = 'The history query is complete.';
   const app = createApp({
     coreDb,
@@ -164,7 +168,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
         requests.push(structuredClone(request));
         if (requests.length > 1) {
           try {
-            beforeAnswer?.();
+            await beforeAnswer?.();
           } catch (error) {
             // Public failure handling must not turn a failed fixture assertion into a passing refusal.
             scriptErrors.push(error);
@@ -218,16 +222,6 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
     `${CURRENT_QUERY} ${CURRENT_DETAIL}`
   );
   // Retained earlier conversations remain independent canonical history after the Timeline cutover.
-  const past = await store.createThread(
-    workspace.id,
-    'Past private history',
-    undefined,
-    'conversation',
-    {
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    }
-  );
   const privateItem = await retainMessage(
     store,
     workspace.id,
@@ -330,7 +324,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
     crossWorkspaceItem,
     reasoning,
     otherUserId,
-    beforeAnswer: (callback: () => void, text: string) => {
+    beforeAnswer: (callback: () => void | Promise<void>, text: string) => {
       beforeAnswer = callback;
       answerText = text;
     },

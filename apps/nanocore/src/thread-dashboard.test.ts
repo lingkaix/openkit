@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProductTurnSchema } from '@openkit/protocol';
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import * as evidenceBundles from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import * as database from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
@@ -44,14 +45,14 @@ async function ordinaryActivityFixture() {
 }
 
 /** Publishes actual restricted assistant bytes with a deliberately independent native message reference. */
-function publishActivityBody(
+async function publishActivityBody(
   db: database.WorkspaceDb,
   threadId: string,
   turnId: string,
   messageRef: string
-) {
+): Promise<void> {
   const bytes = Buffer.from('Restricted raw canary.');
-  workObservations.appendWorkObservation(db, {
+  await workObservations.appendWorkObservation(db, {
     threadId,
     turnId,
     observation: {
@@ -89,12 +90,10 @@ describe('thread dashboard app API', () => {
   it('projects each interleaved Turn latest admitted reply without a native message association or raw read', async () => {
     const f = await ordinaryActivityFixture();
     const thread = await f.store.createThread(f.workspaceId, 'Ordinary source boundary');
-    const turns = ['First', 'Second', 'No Item', 'Capture off'].map(
-      async (title, index) =>
-        await f.store.createTurn(f.workspaceId, thread.id, title, f.actor, null, {
-          captureCoverage: { scope: 'server', value: index === 3 ? 'off' : 'on' },
-        })
-    );
+    const turns: Awaited<ReturnType<typeof f.store.createTurn>>[] = [];
+    turns[0] = await f.store.createTurn(f.workspaceId, thread.id, 'First', f.actor, null, {
+      captureCoverage: { scope: 'server', value: 'on' },
+    });
     const addReply = async (turnIndex: number, name: string, second: number) => {
       const item = {
         id: testEntityId('it', name),
@@ -111,9 +110,7 @@ describe('thread dashboard app API', () => {
       return item;
     };
     const old = await addReply(0, 'Earlier first reply.', 10);
-    const second = await addReply(1, 'Second Turn ordinary canary.', 20);
     const latest = await addReply(0, 'Latest first Turn ordinary canary.', 30);
-    const off = await addReply(3, 'Capture-off ordinary canary.', 40);
     await f.store.createItem({
       id: testEntityId('it', 'later-user-input'),
       owner: { kind: 'workspace', workspaceId: f.workspaceId },
@@ -126,12 +123,38 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-09-22T00:00:50.000Z',
       completedAt: '2026-09-22T00:00:50.000Z',
     });
+    let second: typeof old;
+    let off: typeof old;
     const db = database.openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
-      // Neither a matching old Item id nor an Item id from another Turn supplies an association.
-      publishActivityBody(db, thread.id, turns[0]!.id, old.id);
-      publishActivityBody(db, thread.id, turns[1]!.id, latest.id);
-      publishActivityBody(db, thread.id, turns[2]!.id, latest.id);
+      // Authored reply times interleave; live Core-local Turns do not.
+      await publishActivityBody(db, thread.id, turns[0]!.id, old.id);
+      await f.store.completeTurn(turns[0]!.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      turns[1] = await f.store.createTurn(f.workspaceId, thread.id, 'Second', f.actor, null, {
+        captureCoverage: { scope: 'server', value: 'on' },
+      });
+      second = await addReply(1, 'Second Turn ordinary canary.', 20);
+      await publishActivityBody(db, thread.id, turns[1]!.id, latest.id);
+      await f.store.completeTurn(turns[1]!.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      turns[3] = await f.store.createTurn(f.workspaceId, thread.id, 'Capture off', f.actor, null, {
+        captureCoverage: { scope: 'server', value: 'off' },
+      });
+      off = await addReply(3, 'Capture-off ordinary canary.', 40);
+      await f.store.completeTurn(turns[3]!.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      turns[2] = await f.store.createTurn(f.workspaceId, thread.id, 'No Item', f.actor, null, {
+        captureCoverage: { scope: 'server', value: 'on' },
+      });
+      // Wrong native message references cannot supply ordinary excerpts or terminal proof.
+      await publishActivityBody(db, thread.id, turns[2]!.id, latest.id);
     } finally {
       db.sqlite.close();
     }
@@ -195,12 +218,18 @@ describe('thread dashboard app API', () => {
           /Restricted raw canary|Earlier first reply|native-source|native-origin|Later user message/
         );
       expect
-        .soft(body.turns.every((turn: { status: string }) => turn.status === 'running'))
-        .toBe(true);
+        .soft(
+          turns.map(
+            (turn) =>
+              body.turns.find((projected: { id: string }) => projected.id === turn.id)?.status
+          )
+        )
+        .toEqual(['completed', 'completed', 'running', 'completed']);
       expect.soft(body.workStatus.pendingApprovalCount).toBe(0);
       expect.soft(body.pendingRequests).toEqual([]);
     } finally {
       rawRead.mockRestore();
+      await shutdownControlStoreWorkerClient();
       f.coreDb.sqlite.close();
       rmSync(f.dataRoot, { recursive: true, force: true });
     }
@@ -248,7 +277,7 @@ describe('thread dashboard app API', () => {
       });
       const db = database.openWorkspaceDb(f.dataRoot, workspaceId);
       try {
-        publishActivityBody(db, thread.id, turn.id, itemId);
+        await publishActivityBody(db, thread.id, turn.id, itemId);
       } finally {
         db.sqlite.close();
       }
@@ -307,46 +336,23 @@ describe('thread dashboard app API', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       'Group conversation'
     );
-    await store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'My input', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Other input',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-      }
-    );
-    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Missing profile',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
-      }
-    );
     const foreign = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Unrelated conversation'
     );
-    await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      foreign.id,
-      'Unrelated input',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-76a2-91eb-629d90835e80',
-      }
-    );
-    for (const candidate of [
-      ...store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id),
-      ...store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', foreign.id),
-    ]) {
+    for (const [threadId, input, actorId, agentId] of [
+      [thread.id, 'My input', 'usr_00000000-0000-7000-8000-000000000001', null],
+      [thread.id, 'Missing profile', 'usr_00000000-0000-7241-80d8-0d46cb74b40d', null],
+      [thread.id, 'Other input', 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'agent_codex_host'],
+      [foreign.id, 'Unrelated input', 'usr_00000000-0000-76a2-91eb-629d90835e80', null],
+    ] as const) {
+      const candidate = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        threadId,
+        input,
+        { kind: 'user', id: actorId }
+      );
+      if (agentId) await store.updateTurn(candidate.id, { agentId });
       await store.createItem({
         id: testEntityId('it', `message_${candidate.id}`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
@@ -359,7 +365,13 @@ describe('thread dashboard app API', () => {
         createdAt: candidate.startedAt!,
         completedAt: candidate.startedAt,
       });
+      if (!agentId)
+        await store.completeTurn(candidate.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
     }
+
     const app = createApp({
       coreDb,
       dataRoot,
@@ -444,7 +456,7 @@ describe('thread dashboard app API', () => {
     );
     try {
       const observedAt = '2026-09-22T00:00:00.000Z';
-      workObservations.appendWorkObservation(workspaceDb, {
+      await workObservations.appendWorkObservation(workspaceDb, {
         threadId: thread.id,
         turnId: turn.id,
         bodies: [],
@@ -511,33 +523,35 @@ describe('thread dashboard app API', () => {
         createdAt: timestamp,
         resolvedAt: null,
       });
-      await store.createItem({
-        id: 'it_00000000-0000-74cd-8ec9-23e9d64367b4',
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        threadId: thread.id,
-        turnId: turn.id,
-        type: 'approval-request',
-        status: 'completed',
-        approvalRequestId: approval.id,
-        title: approval.title,
-        description: approval.description,
-        kind: approval.kind,
-        createdAt: timestamp,
-        completedAt: timestamp,
-      });
-      appendFileSync(
-        join(
-          dataRoot,
-          'workspaces',
-          'ws_00000000-0000-7000-8000-000000000001',
-          'threads',
-          thread.id,
-          'turns',
-          turn.id,
-          'observations.jsonl'
-        ),
-        'corrupt restricted diagnostic\n'
-      );
+      const faultDb = database.openWorkspaceDb(dataRoot, approval.workspaceId);
+      try {
+        await raiseRecordedPendingRequest(store, faultDb.sqlite, {
+          requestId: approval.id,
+          workspaceId: approval.workspaceId,
+          threadId: thread.id,
+          raisingTurnId: turn.id,
+          requestItemId: 'it_00000000-0000-74cd-8ec9-23e9d64367b4',
+          kind: 'approval',
+          requesterKind: 'person',
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          approval: {
+            kind: approval.kind,
+            title: approval.title,
+            description: approval.description,
+          },
+          now: timestamp,
+        });
+        await shutdownControlStoreWorkerClient();
+        // Fault only the already acknowledged canonical observation, never valid native state.
+        expect(
+          faultDb.sqlite
+            .prepare('UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND id=?')
+            .run(JSON.stringify({ bad: 'corrupt restricted diagnostic' }), turn.id, 'obs_child')
+            .changes
+        ).toBe(1);
+      } finally {
+        faultDb.sqlite.close();
+      }
       const unavailable = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -561,6 +575,7 @@ describe('thread dashboard app API', () => {
       expect(unavailableBody.turns[0]).toMatchObject({ status: 'running' });
       expect(JSON.stringify(unavailableBody)).not.toContain('corrupt restricted diagnostic');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
