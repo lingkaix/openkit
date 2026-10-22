@@ -42,6 +42,7 @@ import {
   removeWorkspaceMember,
   transferWorkspaceOwnership,
 } from '../workspace-sharing.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   admitExternalTriggerEvent,
   type ExternalTriggerServiceInput,
@@ -49,6 +50,8 @@ import {
 import { inspectExternalTriggerAdmission } from './external-trigger-source.js';
 import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
 import type { TurnExecutor } from './types.js';
+import { prepareWorkerTurnJournalIntents } from './worker-governance-turn-executor.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 // This suite decides source admission and durable publication only. Dispatch has its own real-owner suite.
 vi.mock('./scheduler-dispatch-loop.js', () => ({
@@ -160,6 +163,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
       }
     );
     const environmentPackage = resolveAgentEnvironmentPackage({
+      coreDb: db,
       agentSetup,
       agentSessionId,
       triggerActor: schedule.actor,
@@ -172,7 +176,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
       workspaceRoots: [],
     });
     const packageSnapshotId = environmentPackage.snapshotId;
-    recordTestExecutionAttempt(db, {
+    const attempt = recordTestExecutionAttempt(db, {
       entry,
       attemptId: testEntityId('attempt', entry.turnId),
       agentSessionId,
@@ -181,6 +185,18 @@ async function fixture(options: { privateSource?: boolean } = {}) {
       sessionCompatibilityKey: 'sha256:fixture',
       now: () => instant,
     });
+    const ws = openWorkspaceDb(root, workspace.id);
+    try {
+      recordAgentEnvironmentPackageSnapshot(ws, { environmentPackage, createdAt: instant });
+      await store.updateAgentSession(agentSessionId, {
+        environmentPackageSnapshotId: packageSnapshotId,
+      });
+      // Admit original obligations before this source can request an outside effect.
+      const journalIntents = prepareWorkerTurnJournalIntents(ws, environmentPackage, attempt, null);
+      await store.updateTurn(entry.turnId, { agentSessionId }, { journalIntents });
+    } finally {
+      ws.sqlite.close();
+    }
     return {
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -810,9 +826,15 @@ describe('bounded scheduled poll event admission', () => {
     if (reason === 'stale-package') source = { ...source, packageSnapshotId: 'stale-package' };
     if (reason === 'stale-session') source = { ...source, agentSessionId: allocateEntityId('as') };
     if (reason === 'ended-turn')
-      await f.store.updateTurn(source.turnId, {
-        status: 'completed',
+      await terminalizeGovernedWorkerTurn({
+        store: f.store,
+        turnId: source.turnId,
+        agentSessionId: source.agentSessionId,
+        requestId: 'req_external_poll',
+        outcome: 'interrupted',
         completedAt: '2026-10-18T00:01:00.000Z',
+        errorCode: 'test_poll_interrupted',
+        message: 'The source poll was interrupted before runtime submission.',
       });
     if (reason === 'different-actor')
       source = {

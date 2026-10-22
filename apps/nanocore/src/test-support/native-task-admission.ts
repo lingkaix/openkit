@@ -12,6 +12,8 @@ import {
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
+import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { createExecutionStepJournalReader } from '../runtime/execution-journal.js';
 import type { ExecutionJournalRef } from '../runtime/execution-step-journal.js';
 import {
@@ -19,10 +21,12 @@ import {
   settleNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness-records.js';
 import type { NanoHostSessionEffectRequest } from '../runtime/nanohost-session-dispatch.js';
+import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus as readFinal } from '../runtime/worker-control-records.js';
+import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { recordTestNativeRuntimeTarget } from './native-environment.js';
@@ -31,7 +35,7 @@ import { recordTestNativeRuntimeTarget } from './native-environment.js';
  * Models the peer; native owners fence delivery and release; interrupted finals follow real commands.
  * @param coreDb Caller-owned migrated Core database for this fixture lifetime.
  * @param store Caller-created Demo store sharing the same data root.
- * @param options Existing runtime configuration reader for the same admitted Task.
+ * @param options Existing configuration reader shared by the runtime and admitted Turns.
  * @returns Native executor, peer faults, per-Turn gates, effect trace, runtime, admission, gateway and stop.
  */
 export function createNativeTaskAdmissionFixture(
@@ -484,6 +488,81 @@ export function createNativeTaskAdmissionFixture(
         launched: turn.launched,
         execution: turn.observed.promise,
       };
+    },
+    /**
+     * Joins real native admission after the caller publishes its pending Turn and receipt.
+     * @param entry Actual scheduler entry already published through the canonical Store owner.
+     * @param input Exact attempt, expected Session and offered Session identity.
+     * @returns Acknowledged attempt/package, actual work and explicit completion/cleanup joins.
+     */
+    async admitTurn(
+      entry: ReturnType<typeof createSchedulerAdmissionEntry>,
+      input: { attemptId: string; agentSessionId: string; candidateAgentSessionId: string }
+    ) {
+      const configuration = options.readRuntimeConfig?.();
+      if (!configuration) throw new Error('Native admission requires its runtime configuration.');
+      const { workspaceId, threadId, turnId } = entry;
+      const turn = executionFor(turnId);
+      const dispatch = runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend,
+        agentManifests: configuration.agentManifests,
+        gatewayConfig: configuration.gatewayConfig,
+        providerRegistry: configuration.providerRegistry,
+        workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
+        maxDispatches: 1,
+        createAttemptId: () => input.attemptId,
+        createAgentSessionId: () => input.candidateAgentSessionId,
+      });
+      const cleanup = async () => {
+        turn.completion.resolve();
+        await dispatch.catch(() => undefined);
+        if (turn.started) await turn.observed.promise.catch(() => undefined);
+      };
+      try {
+        await Promise.race([
+          turn.launched.promise,
+          dispatch.then((result) => {
+            if (!result.startedTurns.length)
+              throw new Error('Native admission returned without its Turn.');
+            return turn.launched.promise;
+          }),
+        ]);
+        const attempt = await vi.waitFor(() => {
+          const current = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+          expect(current).toMatchObject({
+            workspaceId,
+            threadId,
+            turnId,
+            agentSessionId: input.agentSessionId,
+            phase: 'open',
+            disposition: 'accepted',
+          });
+          return current;
+        });
+        const db = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+        try {
+          return {
+            attempt,
+            pkg: requireAgentEnvironmentPackageSnapshot(db, workspaceId, attempt.inputRef!)
+              .snapshot,
+            execution: turn.observed.promise,
+            async complete() {
+              turn.completion.resolve();
+              await turn.observed.promise;
+              return await dispatch;
+            },
+            cleanup,
+          };
+        } finally {
+          db.sqlite.close();
+        }
+      } catch (error) {
+        await cleanup();
+        throw error;
+      }
     },
     restore() {
       stopped = true;

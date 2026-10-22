@@ -831,7 +831,7 @@ it.each([
       workspaceId: source.workspaceId,
     });
     const current = resolveWorkspaceMcpServer({ catalog, serverId: 'review-echo' });
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
+    let snapshot = createInMemoryRuntimeConfigSnapshot({
       dataRoot: f.dataRoot,
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: new ProviderRegistry([
@@ -857,9 +857,16 @@ it.each([
         },
       ],
     });
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: null,
+      initialSnapshot: snapshot,
+    });
+    vi.spyOn(runtimeConfigManager, 'current').mockImplementation(() => snapshot);
     native = createNativeTaskAdmissionFixture(f.coreDb, f.store, {
       readRuntimeConfig: () => snapshot,
     });
+    const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+    const results = vi.spyOn(native.runtime, 'acceptNanoHostHarnessResult');
     const app = createApp({
       coreDb: f.coreDb,
       store: f.store,
@@ -867,10 +874,7 @@ it.each([
       fileAdmission: native.fileAdmission,
       turnExecutor: native.executor,
       workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager: createRuntimeConfigManager({
-        dataRoot: null,
-        initialSnapshot: snapshot,
-      }),
+      runtimeConfigManager,
     });
     const started = await app.request(
       ...operationRequest(
@@ -1031,6 +1035,20 @@ it.each([
     expect(f.store.getTurnById(turn.id).status).toBe('running');
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
     expect(JSON.stringify(response)).not.toContain('synthetic-resolution-canary');
+    // A native process setting requires genuine replacement without changing the MCP selection.
+    const manifest = snapshot.agentManifests[0]!;
+    snapshot = createInMemoryRuntimeConfigSnapshot({
+      ...snapshot,
+      agentManifests: [
+        {
+          ...manifest,
+          runtime: {
+            ...manifest.runtime,
+            environment: { VAULT_FIXTURE_BINDING: 'successor' },
+          },
+        },
+      ],
+    });
     // The next admission must follow the actual first execution and its owning Task closeout.
     first.completion.resolve();
     await first.execution;
@@ -1052,6 +1070,24 @@ it.each([
     );
     expect(laterTurn.id).not.toBe(turn.id);
     expect(laterPackage.scope.agentSessionId).not.toBe(sessionId);
+    const closes = commands.mock.calls
+      .map(([command]) => command)
+      .filter(
+        (command) =>
+          command.operation === 'session.close' && command.body.agentSessionId === sessionId
+      );
+    expect(closes).toHaveLength(1);
+    expect(results.mock.calls.map(([result]) => result)).toContainEqual(
+      expect.objectContaining({
+        harnessInstanceId: closes[0]!.harnessInstanceId,
+        operationId: closes[0]!.operationId,
+        sequence: closes[0]!.sequence,
+        disposition: 'succeeded',
+        body: expect.objectContaining({ state: 'closed', privateState: 'absent' }),
+      })
+    );
+    expect(native.executor.launches).toBe(2);
+    expect(f.store.listThreadAgentSessions(source.workspaceId, source.threadId)).toHaveLength(2);
     expect(laterPackage.scope).toMatchObject({
       workspaceId: source.workspaceId,
       threadId: source.threadId,
@@ -1094,6 +1130,7 @@ it.each([
     } finally {
       admissions.mockRestore();
       native?.restore();
+      vi.restoreAllMocks();
       workspaceDb?.sqlite.close();
       await f.cleanup();
     }
