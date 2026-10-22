@@ -117,6 +117,7 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { getWorkspaceMember, removeWorkspaceMember } from './workspace-sharing.js';
 
 const STORAGE_REF = 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
 const SELECTED_CHOICE = {
@@ -4853,6 +4854,32 @@ async function assistantWiringFixture(
   };
 }
 
+/** Revokes current private-recipient eligibility without changing immutable Thread ownership. */
+function revokeAssistantMemberAccess(f: Awaited<ReturnType<typeof assistantWiringFixture>>) {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const member = getWorkspaceMember(f.coreDb, workspaceId, f.actorUserId);
+  expect(member).toMatchObject({ status: 'active', isOwner: false });
+  const removal = f.coreDb.sqlite
+    .transaction(() =>
+      removeWorkspaceMember({
+        coreDb: f.coreDb,
+        workspaceId,
+        actorUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        memberUserId: f.actorUserId,
+        expectedRevision: member!.revision,
+      })
+    )
+    .immediate();
+  expect(removal).toMatchObject({
+    kind: 'removed',
+    member: { userId: f.actorUserId, status: 'removed', revision: member!.revision + 1 },
+  });
+  expect(f.store.getThread(workspaceId, f.thread.id)).toMatchObject({
+    visibility: 'private',
+    privateOwnerUserId: f.actorUserId,
+  });
+}
+
 /** Observes the real native crossing and optionally corrupts only its trusted handoff. */
 function observePrivateSkillInvocation(
   options: {
@@ -5733,22 +5760,25 @@ describe('#144 real Assistant command wiring', () => {
     'interrupted',
   ] as const)('refuses partial or uncertain %s attempt recovery with zero added inference', async (status) => {
     const f = await assistantWiringFixture();
-    const publish = f.store.createItem.bind(f.store);
-    // Lose publication after the real Provider effect; no successful receipt can then admit replay.
-    const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (input) => {
-      if (input.type === 'assistant-message') {
-        if (status === 'interrupted')
-          await f.store.updateTurn(input.turnId!, {
-            status: 'interrupted',
-            completedAt: new Date().toISOString(),
-          });
-        throw new Error('Modeled loss after inference and before command publication.');
-      }
-      return await publish(input);
-    });
+    const publish = f.store.completeTurn.bind(f.store);
+    // Refuse the actual answer tuple after inference; retain no successful command receipt.
+    const publication = vi
+      .spyOn(f.store, 'completeTurn')
+      .mockImplementation(async (turnId, patch, terminal) => {
+        if (terminal?.items?.some((item) => item.type === 'assistant-message')) {
+          if (status === 'interrupted')
+            await publish(turnId, {
+              status: 'interrupted',
+              completedAt: new Date().toISOString(),
+            });
+          throw new Error('Modeled loss after inference and before command publication.');
+        }
+        return await publish(turnId, patch, terminal);
+      });
     try {
       const first = await f.submit();
       expect(first.status).toBeGreaterThanOrEqual(400);
+      expect(publication).toHaveBeenCalledOnce();
       publication.mockRestore();
       expect(
         f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
@@ -5927,10 +5957,7 @@ describe('#144 real Assistant command wiring', () => {
               "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
             )
             .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
-        if (condition === 'audience')
-          Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
-            privateOwnerUserId: allocateEntityId('usr'),
-          });
+        if (condition === 'audience') revokeAssistantMemberAccess(f);
         if (condition === 'removed') {
           const catalog = loadWorkspaceResourceCatalog(
             f.dataRoot,
@@ -5952,7 +5979,7 @@ describe('#144 real Assistant command wiring', () => {
       const response = await f.submit();
       expect(native.invoked).toHaveBeenCalledOnce();
       expect(bodyReads()).toEqual([]);
-      if (condition === 'membership') {
+      if (condition === 'membership' || condition === 'audience') {
         expect(
           f.coreDb.sqlite
             .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
@@ -6236,17 +6263,27 @@ describe('#144 real Assistant command wiring', () => {
       .mockResolvedValueOnce(selectedSkillCall(f))
       .mockImplementationOnce(async (...args) => {
         const result = await final(...args);
-        Object.assign(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', f.thread.id), {
-          privateOwnerUserId: allocateEntityId('usr'),
-        });
+        revokeAssistantMemberAccess(f);
         return result;
       });
     try {
       const response = await f.submit();
+      await expect(native.results[0]).resolves.toMatchObject({
+        skillId: 'alpha',
+        versionId: f.imported!.version.digest,
+        path: 'SKILL.md',
+        text: expect.stringContaining('# Original retained entry guidance.'),
+      });
+      expect(
+        getWorkspaceMember(f.coreDb, 'ws_00000000-0000-7000-8000-000000000001', f.actorUserId)
+      ).toMatchObject({ status: 'removed', isOwner: false });
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(native.invoked).toHaveBeenCalledOnce();
       expect(native.dispatched).toHaveBeenCalledOnce();
       expect(f.dispatchCount()).toBe(2);
+      expect(f.store.listCommandRequests().filter((row) => row.requestId === f.requestId)).toEqual(
+        []
+      );
       expect(
         f.store
           .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
