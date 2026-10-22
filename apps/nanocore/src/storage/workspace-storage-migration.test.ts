@@ -30,7 +30,10 @@ import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook
 import { AgentEnvironmentSnapshotReadError } from '../runtime/aep-snapshot-ledger.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { inventoryRegularFiles, verifyDataRootBackupManifest } from './data-root-backup.js';
 import { type CoreDb, openWorkspaceDbAtRoot } from './db.js';
 import { resolveDataRootPath } from './fs-layout.js';
@@ -124,6 +127,42 @@ function createOwnerNestedWorkspaceRoot(
     },
   });
   return workspaceRoot;
+}
+
+/** Creates supported native authority before arranging its cold bytes as physical V1 input. */
+async function createNativeLayoutSource(
+  workspaceRoot: string,
+  workspaceId: string,
+  ownerUserId: string
+): Promise<void> {
+  const workspaceBytes = readFileSync(join(workspaceRoot, 'workspace.json'));
+  const configBytes = readFileSync(join(workspaceRoot, 'config', 'workspace.jsonc'));
+  const config = WorkspaceConfigSchema.parse(parseJsoncObject(configBytes.toString('utf8')));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-layout-source-'));
+  try {
+    const store = createTestStore({ dataRoot });
+    await store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId, userId: ownerUserId, knowledge: [] }),
+      workspace: JSON.parse(workspaceBytes.toString('utf8')),
+      defaultKnowledgeBaseId: KnowledgeBaseIdSchema.parse(config.workspace.defaultKnowledgeBaseId),
+      threads: [],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+    });
+    await shutdownControlStoreWorkerClient();
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    cpSync(join(dataRoot, 'workspaces', workspaceId), workspaceRoot, { recursive: true });
+    // Preserve V1 projection/configuration input; native authority already exists in the cold database.
+    writeFileSync(join(workspaceRoot, 'workspace.json'), workspaceBytes);
+    writeFileSync(join(workspaceRoot, 'config', 'workspace.jsonc'), configBytes);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -470,9 +509,10 @@ describe('workspace storage migration', () => {
     ).toMatchObject({ layoutVersion: 1 });
   });
 
-  it('refuses a V1 AEP snapshot without changing the predecessor or publishing the target root', () => {
+  it('refuses a V1 AEP snapshot without changing the predecessor or publishing the target root', async () => {
     const fixture = createMigrationFixture();
     const workspaceRoot = sourceWorkspaceRoot(fixture);
+    await createNativeLayoutSource(workspaceRoot, fixture.workspaceId, fixture.ownerUserId);
     const workspaceDb = openWorkspaceDbAtRoot({
       dataRoot: fixture.dataRoot,
       workspaceId: fixture.workspaceId,
@@ -653,7 +693,37 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(readFileSync(configPath)).toEqual(invalidConfigBytes);
   });
 
-  it('publishes two Workspaces as one root and retains one verified external predecessor backup', () => {
+  it('refuses a file-only predecessor before publication and preserves its verified backup', () => {
+    const fixture = createMigrationFixture();
+    const sourceRoot = sourceWorkspaceRoot(fixture);
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-file-only-layout-refusal-'));
+    const backupRoot = join(backupParent, 'backup');
+    fixture.coreDb.sqlite.close();
+    const predecessor = inventoryRegularFiles(fixture.dataRoot);
+    const markerPath = join(fixture.dataRoot, 'server', 'layout.json');
+    const markerBytes = readFileSync(markerPath);
+    try {
+      expect(() =>
+        migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow();
+      expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
+      expect(existsSync(sourceRoot)).toBe(true);
+      expect(readFileSync(markerPath)).toEqual(markerBytes);
+      expect(
+        inventoryRegularFiles(fixture.dataRoot).filter((entry) =>
+          predecessor.some((original) => original.path === entry.path)
+        )
+      ).toEqual(predecessor);
+      const backup = verifyDataRootBackupManifest({ backupRoot });
+      expect(backup.manifest.sourceDeploymentId).toBe(predecessorDeploymentId);
+      expect(backup.manifest.contentInventory).toEqual(predecessor);
+    } finally {
+      rmSync(fixture.dataRoot, { recursive: true, force: true });
+      rmSync(backupParent, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes two Workspaces as one root and retains one verified external predecessor backup', async () => {
     const fixture = createMigrationFixture();
     const secondWorkspaceId = 'ws_00000000-0000-768f-80f6-8bbf108cc9a9';
     const firstSourceRoot = sourceWorkspaceRoot(fixture);
@@ -661,6 +731,12 @@ process.kill(process.pid, 'SIGKILL');`,
       fixture,
       'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       secondWorkspaceId
+    );
+    await createNativeLayoutSource(firstSourceRoot, fixture.workspaceId, fixture.ownerUserId);
+    await createNativeLayoutSource(
+      secondSourceRoot,
+      secondWorkspaceId,
+      'usr_00000000-0000-73d4-904a-d4c4b905df7c'
     );
     const backupRoot = join(
       mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retention-')),
@@ -693,6 +769,9 @@ process.kill(process.pid, 'SIGKILL');`,
     });
 
     for (const source of sourceConfigurations) {
+      expect(
+        createTestStore({ dataRoot: fixture.dataRoot }).getWorkspace(source.workspaceId).id
+      ).toBe(source.workspaceId);
       expect(
         readFileSync(
           join(fixture.dataRoot, 'workspaces', source.workspaceId, 'config', 'workspace.jsonc')
@@ -770,11 +849,16 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(reportText).toMatch(/sha256:[a-f0-9]{64}/);
   });
 
-  it('rebuilds a current derived index set while migrating a Workspace', () => {
+  it('rebuilds a current derived index set while migrating a Workspace', async () => {
     const fixture = createMigrationFixture();
+    await createNativeLayoutSource(
+      sourceWorkspaceRoot(fixture),
+      fixture.workspaceId,
+      fixture.ownerUserId
+    );
     const seededAt = '1999-01-01T00:00:00.000Z';
     const indexesRoot = join(sourceWorkspaceRoot(fixture), 'indexes');
-    mkdirSync(indexesRoot);
+    mkdirSync(indexesRoot, { recursive: true });
     const header = {
       schemaVersion: 1,
       workspaceId: fixture.workspaceId,

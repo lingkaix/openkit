@@ -21,6 +21,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import { parseJsoncObject } from '../config/jsonc.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
 import {
   assertBackupMatchesPredecessor,
   assertExternalColdBackupDestination as assertExternalBackupDestination,
@@ -358,6 +359,17 @@ export function migrateWorkspaceStorage(
       try {
         migrateStagedWorkspaceMetadata(stagedWorkspaceRoot, source.workspaceId);
         applyScopedMigrations(workspaceDb);
+        // Verify successor authority before publication can remove the predecessor paths.
+        const reader = openControlStoreProductReadHandle(
+          join(stagedWorkspaceRoot, 'db', 'workspace.sqlite'),
+          { kind: 'workspace', workspaceId: source.workspaceId }
+        );
+        try {
+          if (!reader.get('workspace', source.workspaceId))
+            throw new Error(`Native Workspace metadata is missing: ${source.workspaceId}`);
+        } finally {
+          reader.close();
+        }
         stage = 'aep-snapshots';
         // Layout movement preserves current package evidence; the native ledger rejects unsupported versions.
         listExportableAgentEnvironmentPackageSnapshots(workspaceDb, source.workspaceId);
