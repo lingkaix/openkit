@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, openSync, readFileSync } from 'node:fs';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -665,11 +666,11 @@ export interface PreparedControlGoalCommand {
   }[];
 }
 /** Verifies actual immutable references before the caller enters its SQL savepoint; never runs file I/O inside SQL. */
-export function prepareControlGoalCommand(
+export async function prepareControlGoalCommand(
   db: WorkspaceDb,
   input: ControlGoalCommandInput,
   mount?: ControlProductContentMount
-): PreparedControlGoalCommand {
+): Promise<PreparedControlGoalCommand> {
   if (db.sqlite.inTransaction)
     throw new GoalCommandError('invalid_request', 'Goal content preparation must precede SQL.');
   const owner = { kind: 'workspace', workspaceId: db.workspaceId } as const;
@@ -685,7 +686,7 @@ export function prepareControlGoalCommand(
   for (const evidence of candidate?.evidence ?? [])
     if (evidence.kind === 'item') ids.add(evidence.id);
   const binding = mount ?? (input.pendingItem || ids.size > 0 ? goalContentMount(db) : undefined);
-  const entries = prepareControlEntries(
+  const entries = await prepareControlEntries(
     owner,
     binding,
     input.pendingItem ? [input.pendingItem.entry] : []
@@ -707,18 +708,18 @@ export function prepareControlGoalCommand(
       expectedRevision: row.revision - 1,
       content: JSON.parse(row.content_json),
     });
-    prepareControlEntries(owner, binding, [entry]);
+    await prepareControlEntries(owner, binding, [entry]);
     if (!binding)
       throw new GoalCommandError('recovery_required', 'Goal Item content mount is unavailable.');
-    const fd = openSync(
+    const fd = await open(
       join(binding.root, entry.content.reference.locator.path),
       constants.O_RDONLY | constants.O_NOFOLLOW
     );
     let bytes: Buffer;
     try {
-      bytes = readFileSync(fd);
+      bytes = await fd.readFile();
     } finally {
-      closeSync(fd);
+      await fd.close();
     }
     if (
       `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
@@ -755,7 +756,7 @@ export function prepareControlGoalCommand(
         'invalid_request',
         'Pending admission requires the exact proposal Turn.'
       );
-    pendingAdmission = prepareControlPendingCommands(
+    pendingAdmission = await prepareControlPendingCommands(
       db,
       input.pendingAdmission.pending,
       binding,

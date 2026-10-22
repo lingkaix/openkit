@@ -1384,11 +1384,11 @@ export function assertArtifactReviewPublication(
 }
 
 /** Synchronizes and verifies the complete submitted reference and event payloads before SQL starts. */
-export function prepareControlReviewCommand(
+export async function prepareControlReviewCommand(
   db: WorkspaceDb,
   value: ControlReviewCommandInput,
   mount: ControlProductContentMount | undefined
-): PreparedControlReviewCommand {
+): Promise<PreparedControlReviewCommand> {
   const input = ControlReviewCommandInputSchema.parse(value);
   if (input.mode === 'decide' && input.input.artifactOriginal) {
     const proof = input.input.artifactOriginal;
@@ -1476,7 +1476,7 @@ export function prepareControlReviewCommand(
     input.transition.products.length !== 0
   )
     throw reviewError('invalid_request', 'Artifact submission authority is invalid.');
-  const entries = prepareControlEntries(owner, mount, input.transition.entries);
+  const entries = await prepareControlEntries(owner, mount, input.transition.entries);
   const items = entries.filter((entry) => entry.input.kind === 'item');
   const events = entries.filter((entry) => entry.input.kind === 'event');
   if (items.length !== 1 || events.length !== 3 || entries.length !== 4)

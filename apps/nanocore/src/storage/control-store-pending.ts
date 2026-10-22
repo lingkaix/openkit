@@ -74,13 +74,13 @@ export const ControlPendingTransitionSchema = z
 export type ControlPendingTransition = z.infer<typeof ControlPendingTransitionSchema>;
 
 /** Prepares only immutable Item proof outside SQL; retained descriptors never become new writes. The optional verified entries are the existing terminal owner's native-local preparation, including its terminal event. */
-export function prepareControlPendingCommands(
+export async function prepareControlPendingCommands(
   db: WorkspaceDb,
   commands: readonly ControlPendingCommandInput[],
   mount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
   preparedEntries?: readonly PreparedControlEntry[]
-): PreparedControlPendingCommand {
+): Promise<PreparedControlPendingCommand> {
   if (db.sqlite.inTransaction)
     throw new PendingRequestCommandError(
       'invalid_request',
@@ -88,7 +88,7 @@ export function prepareControlPendingCommands(
       400
     );
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
-  const prepared = preparedEntries ?? prepareControlEntries(owner, mount, entries);
+  const prepared = preparedEntries ?? (await prepareControlEntries(owner, mount, entries));
   if (
     prepared.length !== entries.length ||
     prepared.some((entry, index) => !isDeepStrictEqual(entry.input, entries[index]))
@@ -154,10 +154,10 @@ export function prepareControlPendingCommands(
 }
 
 /** Prepares the current canonical Item context after earlier queued transitions commit, before archive SQL. */
-export function prepareControlPendingArchive(
+export async function prepareControlPendingArchive(
   db: WorkspaceDb,
   mount: ControlProductContentMount | undefined
-): PreparedControlPendingCommand {
+): Promise<PreparedControlPendingCommand> {
   if (db.sqlite.inTransaction) throw new Error('Archive immutable preparation must precede SQL.');
   const rows = db.sqlite
     .prepare("SELECT DISTINCT id FROM control_product_entries WHERE kind='item'")
@@ -171,12 +171,12 @@ export function prepareControlPendingArchive(
 }
 
 /** Reuses exact retained descriptors as proof, never as new product writes. */
-function prepareRetainedPendingItems(
+async function prepareRetainedPendingItems(
   db: WorkspaceDb,
   mount: ControlProductContentMount | undefined,
   prepared: readonly PreparedControlEntry[],
   ids: Iterable<string>
-): PreparedControlPendingCommand {
+): Promise<PreparedControlPendingCommand> {
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   const supplied = new Set(
     prepared.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
@@ -217,7 +217,7 @@ function prepareRetainedPendingItems(
       expectedRevision: row.revision - 1,
       content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
     };
-    const [entry] = prepareControlEntries(owner, mount, [input]);
+    const [entry] = await prepareControlEntries(owner, mount, [input]);
     if (!entry || entry.id !== id)
       throw new PendingRequestCommandError(
         'recovery_required',

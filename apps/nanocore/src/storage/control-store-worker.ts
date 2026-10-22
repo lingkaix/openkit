@@ -303,29 +303,47 @@ function flush(owner: OwnedDatabase): void {
       ? Math.min(nextArchive, CONTROL_WORKER_LIMITS.batchTransitions)
       : CONTROL_WORKER_LIMITS.batchTransitions;
   if (archiveIndex === 0 && owner.scopeDb?.scope === 'workspace') {
+    // Keep the head stable while any admitted immutable proof is still being prepared.
+    if (owner.preparations.size) {
+      void Promise.all([...owner.preparations]).then(() => schedule(owner));
+      return;
+    }
     const first = owner.pending[0]!;
+    // Both synchronous receipt reads and asynchronous proof failures stay with this scope.
+    const refuse = (error: unknown) => {
+      owner.pending.shift();
+      const code = failureCode(error);
+      if (code === 'integrity') owner.poisoned = true;
+      if (owner.poisoned) {
+        for (const request of owner.pending.splice(0)) reply(failure(request.id, 'unavailable'));
+      } else if (owner.pending.length) schedule(owner);
+      const domain = domainRefusal(first.operation, error);
+      reply(domain ? { ...failure(first.id, 'precondition'), domain } : failure(first.id, code));
+    };
+    // Exact replay needs no new immutable proof; admission still verifies the original receipt.
+    let retainedReceipt: unknown;
     try {
-      // Receipt inspection precedes any new immutable dependency; the admission owner still validates exact replay.
-      const retainedReceipt =
+      retainedReceipt =
         first.operation === 'transition' &&
         owner.sqlite
           .prepare('SELECT 1 FROM idempotency_requests WHERE request_key=? AND expires_at>?')
           .get(first.transition.receipt.key, first.transition.receipt.createdAt);
-      owner.pending[0] = {
-        ...first,
-        preparedPending: retainedReceipt
-          ? undefined
-          : prepareControlPendingArchive(owner.scopeDb, owner.contentMount),
-      };
     } catch (error) {
-      owner.pending.shift();
-      const domain = domainRefusal(first.operation, error);
-      reply(
-        domain
-          ? { ...failure(first.id, 'precondition'), domain }
-          : failure(first.id, failureCode(error))
-      );
-      if (owner.pending.length) owner.immediate = setImmediate(() => flush(owner));
+      refuse(error);
+      return;
+    }
+    if (!retainedReceipt && !first.preparedPending) {
+      let preparation: Promise<void>;
+      preparation = prepareControlPendingArchive(owner.scopeDb, owner.contentMount)
+        .then((preparedPending) => {
+          if (owner.poisoned || databases.get(first.database) !== owner)
+            throw new ControlProductPreconditionError();
+          owner.pending[0] = { ...first, preparedPending };
+          schedule(owner);
+        })
+        .catch(refuse)
+        .finally(() => owner.preparations.delete(preparation));
+      owner.preparations.add(preparation);
       return;
     }
   }
@@ -591,8 +609,16 @@ function schedule(owner: OwnedDatabase): void {
 }
 
 /** Drains accepted local work before an ordered close or maintenance request. */
-function drain(owner: OwnedDatabase): void {
-  while (owner.pending.length > 0) flush(owner);
+async function drain(owner: OwnedDatabase): Promise<void> {
+  // A queued archive can start preparation during flush, so one snapshot cannot drain this owner.
+  while (owner.pending.length || owner.preparations.size) {
+    await Promise.all([...owner.preparations]);
+    while (owner.pending.length) {
+      const count = owner.pending.length;
+      flush(owner);
+      if (owner.pending.length === count) break;
+    }
+  }
   unschedule(owner);
 }
 
@@ -602,9 +628,9 @@ function maintainDatabase(
   owner: OwnedDatabase
 ): void {
   if (request.operation === 'close') owner.closing = true;
-  const finish = () => {
+  const finish = async () => {
     try {
-      drain(owner);
+      await drain(owner);
       if (request.operation === 'close') {
         owner.sqlite.close();
         databases.delete(request.database);
@@ -638,22 +664,17 @@ function maintainDatabase(
       reply(failure(request.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
     }
   };
-  if (owner.preparations.size) void Promise.all([...owner.preparations]).then(finish);
-  else finish();
+  void finish();
 }
 
 /** Stops new admission and drains every accepted preparation and SQL body before closing the actual worker. */
 function shutdownWorker(id: number): void {
   stopping = true;
-  const preparations: Promise<void>[] = [];
-  for (const owner of databases.values()) {
-    owner.closing = true;
-    preparations.push(...owner.preparations);
-  }
-  const finish = () => {
+  for (const owner of databases.values()) owner.closing = true;
+  const finish = async () => {
     try {
       for (const owner of databases.values()) {
-        drain(owner);
+        await drain(owner);
         owner.sqlite.close();
       }
       databases.clear();
@@ -666,8 +687,7 @@ function shutdownWorker(id: number): void {
       reply(failure(id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
     }
   };
-  if (preparations.length) void Promise.all(preparations).then(finish);
-  else finish();
+  void finish();
 }
 
 /** Refuses stored conflict/trigger semantics that can undo successful batch siblings. */
@@ -842,15 +862,17 @@ function receive(value: unknown): void {
             value.input.terminal,
             owner.contentMount
           )
-            .then((preparedTerminal) => {
+            .then(async (preparedTerminal) => {
               if (owner.poisoned || databases.get(value.database) !== owner)
                 throw new ControlProductPreconditionError();
-              const preparedPending = prepareControlPendingCommands(
+              const preparedPending = await prepareControlPendingCommands(
                 db,
                 [value.input.input],
                 owner.contentMount,
                 []
               );
+              if (owner.poisoned || databases.get(value.database) !== owner)
+                throw new ControlProductPreconditionError();
               owner.pending.push({ ...value, preparedTerminal, preparedPending });
               schedule(owner);
             })
@@ -888,94 +910,106 @@ function receive(value: unknown): void {
           owner.preparations.add(preparation);
           return;
         }
-        let preparedPublication: PreparedControlPublication | undefined;
-        let preparedEntries: WriteRequest['preparedEntries'];
-        let preparedPending: PreparedControlPendingCommand | undefined;
-        let preparedGoal: PreparedControlGoalCommand | undefined;
-        let preparedMaterial: ControlMaterialCommandInput | undefined;
-        let preparedReview: PreparedControlReviewCommand | undefined;
-        try {
-          if (value.operation === 'publication') {
-            if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
-            preparedPublication = prepareControlPublication(
-              owner.scopeDb,
-              value.input,
-              owner.contentMount
-            );
-          }
-          if (value.operation === 'pending') {
-            if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner)
-              throw new ControlProductPreconditionError();
-            preparedPending = prepareControlPendingCommands(
-              owner.scopeDb,
-              [value.input.input],
-              owner.contentMount,
-              value.input.entries
-            );
-            preparedEntries = preparedPending.entries;
-          }
-          if (value.operation === 'material') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            preparedMaterial = prepareControlMaterialCommand(value.input, value.content);
-          }
-          if (value.operation === 'review') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            preparedReview = prepareControlReviewCommand(
-              owner.scopeDb,
-              value.input,
-              owner.contentMount
-            );
-          }
-          if (value.operation === 'goal') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            preparedGoal = prepareControlGoalCommand(
-              owner.scopeDb,
-              value.input,
-              owner.contentMount
-            );
-          }
-          if (value.operation === 'transition' || value.operation === 'products') {
-            if (!owner.productOwner) throw new ControlProductPreconditionError();
-            preparedEntries = prepareControlEntries(
-              owner.productOwner,
-              owner.contentMount,
-              value.transition.entries
-            );
-            if (value.transition.pending?.length) {
-              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-              preparedPending = prepareControlPendingCommands(
+        // Archive must not overtake an earlier admitted producer while its bytes synchronize.
+        const earlier = archivedThreads(value).length ? [...owner.preparations] : [];
+        const prepare = async () => {
+          if (earlier.length) await Promise.all(earlier);
+          let preparedPublication: PreparedControlPublication | undefined;
+          let preparedEntries: WriteRequest['preparedEntries'];
+          let preparedPending: PreparedControlPendingCommand | undefined;
+          let preparedGoal: PreparedControlGoalCommand | undefined;
+          let preparedMaterial: ControlMaterialCommandInput | undefined;
+          let preparedReview: PreparedControlReviewCommand | undefined;
+          try {
+            if (value.operation === 'publication') {
+              if (!owner.scopeDb || !owner.productOwner)
+                throw new ControlProductPreconditionError();
+              preparedPublication = await prepareControlPublication(
                 owner.scopeDb,
-                value.transition.pending,
-                owner.contentMount,
-                value.transition.entries,
-                preparedEntries
+                value.input,
+                owner.contentMount
               );
             }
+            if (value.operation === 'pending') {
+              if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner)
+                throw new ControlProductPreconditionError();
+              preparedPending = await prepareControlPendingCommands(
+                owner.scopeDb,
+                [value.input.input],
+                owner.contentMount,
+                value.input.entries
+              );
+              preparedEntries = preparedPending.entries;
+            }
+            if (value.operation === 'material') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedMaterial = prepareControlMaterialCommand(value.input, value.content);
+            }
+            if (value.operation === 'review') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedReview = await prepareControlReviewCommand(
+                owner.scopeDb,
+                value.input,
+                owner.contentMount
+              );
+            }
+            if (value.operation === 'goal') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedGoal = await prepareControlGoalCommand(
+                owner.scopeDb,
+                value.input,
+                owner.contentMount
+              );
+            }
+            if (value.operation === 'transition' || value.operation === 'products') {
+              if (!owner.productOwner) throw new ControlProductPreconditionError();
+              preparedEntries = await prepareControlEntries(
+                owner.productOwner,
+                owner.contentMount,
+                value.transition.entries
+              );
+              if (value.transition.pending?.length && archivedThreads(value).length === 0) {
+                if (owner.scopeDb?.scope !== 'workspace')
+                  throw new ControlProductPreconditionError();
+                preparedPending = await prepareControlPendingCommands(
+                  owner.scopeDb,
+                  value.transition.pending,
+                  owner.contentMount,
+                  value.transition.entries,
+                  preparedEntries
+                );
+              }
+            }
+            if (owner.poisoned || databases.get(value.database) !== owner)
+              throw new ControlProductPreconditionError();
+          } catch (error) {
+            // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
+            const domain = domainRefusal(value.operation, error);
+            reply(
+              domain
+                ? { ...failure(value.id, 'precondition'), domain }
+                : failure(value.id, failureCode(error), 'not-committed')
+            );
+            return;
           }
-        } catch (error) {
-          // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
-          const domain = domainRefusal(value.operation, error);
-          reply(
-            domain
-              ? { ...failure(value.id, 'precondition'), domain }
-              : failure(value.id, failureCode(error), 'not-committed')
-          );
-          return;
-        }
-        if (value.operation === 'material') {
-          const { content: _content, ...framing } = value;
-          owner.pending.push({ ...framing, preparedMaterial });
-        } else {
-          owner.pending.push({
-            ...value,
-            preparedEntries,
-            preparedGoal,
-            preparedReview,
-            preparedPending,
-            preparedPublication,
-          });
-        }
-        schedule(owner);
+          if (value.operation === 'material') {
+            const { content: _content, ...framing } = value;
+            owner.pending.push({ ...framing, preparedMaterial });
+          } else {
+            owner.pending.push({
+              ...value,
+              preparedEntries,
+              preparedGoal,
+              preparedReview,
+              preparedPending,
+              preparedPublication,
+            });
+          }
+          schedule(owner);
+        };
+        let preparation: Promise<void>;
+        preparation = prepare().finally(() => owner.preparations.delete(preparation));
+        owner.preparations.add(preparation);
       }
       return;
     }

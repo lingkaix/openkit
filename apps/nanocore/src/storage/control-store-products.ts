@@ -1,14 +1,6 @@
 import { createHash } from 'node:crypto';
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  fsyncSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-} from 'node:fs';
+import { constants, lstatSync, realpathSync } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
@@ -622,20 +614,20 @@ function appendProductEntry(sqlite: Database.Database, entry: PreparedControlEnt
 }
 
 /** Verifies and synchronizes actual immutable bytes BEFORE SQL; no boolean durability claim is accepted. */
-export function prepareControlEntries(
+export async function prepareControlEntries(
   owner: ControlProductOwner,
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[]
-): PreparedControlEntry[] {
+): Promise<PreparedControlEntry[]> {
   return prepareEntries(owner, contentMount, entries);
 }
 
 /** Verifies a scoped immutable object and synchronizes its bytes and directory before any deciding transaction. */
-function synchronizeControlContent(
+async function synchronizeControlContent(
   owner: ControlProductOwner,
   contentMount: ControlProductContentMount | undefined,
   content: ControlProductEntry['content']
-): Buffer {
+): Promise<Buffer> {
   if (isMainThread || !contentMount || content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
     throw new ControlProductPreconditionError();
   const reference = content.reference;
@@ -647,49 +639,50 @@ function synchronizeControlContent(
     reference.locator.mount !== contentMount.mount
   )
     throw new ControlProductPreconditionError();
-  const root = realpathSync(contentMount.root);
+  const root = await realpath(contentMount.root);
   const path = resolve(root, reference.locator.path);
   const rel = relative(root, path);
-  if (rel.startsWith('..') || isAbsolute(rel) || realpathSync(dirname(path)) !== dirname(path))
+  if (rel.startsWith('..') || isAbsolute(rel) || (await realpath(dirname(path))) !== dirname(path))
     throw new ControlProductPreconditionError();
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let bytes: Buffer;
   try {
-    const metadata = fstatSync(fd);
+    const metadata = await fd.stat();
     if (!metadata.isFile() || metadata.size !== content.byteLength)
       throw new ControlProductPreconditionError();
-    bytes = readFileSync(fd);
+    bytes = await fd.readFile();
     if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== reference.contentDigest)
       throw new ControlProductPreconditionError();
-    fsyncSync(fd);
+    await fd.sync();
   } finally {
-    closeSync(fd);
+    await fd.close();
   }
-  const directory = openSync(
+  const directory = await open(
     dirname(path),
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
   );
   try {
-    fsyncSync(directory);
+    await directory.sync();
   } finally {
-    closeSync(directory);
+    await directory.close();
   }
   return bytes;
 }
 
 /** Reads and synchronizes immutable content before SQL; the terminal identity is private to complete preparation. */
-function prepareEntries(
+async function prepareEntries(
   owner: ControlProductOwner,
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
   terminal?: Record<string, unknown>,
   sealedTurn?: Record<string, unknown>
-): PreparedControlEntry[] {
+): Promise<PreparedControlEntry[]> {
   if (isMainThread) throw new ControlProductPreconditionError();
-  return entries.map((input) => {
+  const result: PreparedControlEntry[] = [];
+  for (const input of entries) {
     const value: unknown = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(
-        synchronizeControlContent(owner, contentMount, input.content)
+        await synchronizeControlContent(owner, contentMount, input.content)
       )
     );
     if (input.kind === 'item') {
@@ -709,7 +702,8 @@ function prepareEntries(
       const prepared = { input, id: item.id, identityJson: JSON.stringify(identity) };
       preparedPayloads.set(prepared, item);
       preparedOriginals.set(prepared, value);
-      return prepared;
+      result.push(prepared);
+      continue;
     }
     const event = readRetainedV1(value, () =>
       owner.kind === 'server'
@@ -787,8 +781,9 @@ function prepareEntries(
     };
     preparedPayloads.set(prepared, event);
     preparedOriginals.set(prepared, value);
-    return prepared;
-  });
+    result.push(prepared);
+  }
+  return result;
 }
 
 /** Closed existing Item/event admissions; each category keeps its accepted equality rule. */
@@ -824,11 +819,11 @@ const publicationPreparations = new WeakMap<
 >();
 
 /** Verifies entry bytes and retained Item dependencies before the deciding savepoint. */
-export function prepareControlPublication(
+export async function prepareControlPublication(
   db: CoreDb | WorkspaceDb,
   value: ControlPublicationInput,
   mount: ControlProductContentMount | undefined
-): PreparedControlPublication {
+): Promise<PreparedControlPublication> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   const input = ControlPublicationInputSchema.parse(value);
   const owner: ControlProductOwner =
@@ -841,7 +836,7 @@ export function prepareControlPublication(
     ['pending', 'running'].includes(String(turn.record.status))
   )
     throw new ControlProductPreconditionError();
-  const entries = prepareEntries(owner, mount, input.entries, turn.record, turn.record);
+  const entries = await prepareEntries(owner, mount, input.entries, turn.record, turn.record);
   if (entries.some((entry) => entry.input.turnId !== input.turnId))
     throw new ControlProductPreconditionError();
   const ids = new Set(
@@ -877,7 +872,7 @@ export function prepareControlPublication(
     if (!row) continue;
     if (row.turn_id !== input.turnId || row.schema_version !== 1 || row.revision < 1)
       throw new ControlProductPreconditionError();
-    const [entry] = prepareEntries(
+    const [entry] = await prepareEntries(
       owner,
       mount,
       [
@@ -908,28 +903,37 @@ export function prepareControlPublication(
         (preparedPayloads.get(entry) as { data: { type: string } }).data.type === 'turn-completed'
     )
   ) {
-    // Existing events have immutable sequence identities. Capture their census so a queued append cannot evade this scan.
-    const rows = db.sqlite
-      .prepare(
-        "SELECT schema_version,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? ORDER BY sequence"
-      )
-      .iterate(input.turnId) as Iterable<{ schema_version: number; content_json: string }>;
-    for (const row of rows) {
-      if (row.schema_version !== 1) throw new ControlProductPreconditionError();
-      const bytes = synchronizeControlContent(
-        owner,
-        mount,
-        ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json))
-      );
-      const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-      const event = readRetainedV1(value, () =>
-        owner.kind === 'server'
-          ? StoredServerEventV1Schema.parse(value)
-          : StoredEventV1Schema.parse(value)
-      );
-      if (event.data.type === 'turn-completed') {
-        hasCompletion = true;
-        break;
+    // End each bounded read before I/O; SQL rechecks this finite immutable sequence census.
+    let sequence = 0;
+    while (!hasCompletion && sequence < (eventCensus.sequence ?? 0)) {
+      const rows = db.sqlite
+        .prepare(
+          "SELECT sequence,schema_version,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?"
+        )
+        .all(input.turnId, sequence, eventCensus.sequence, CONTROL_PRODUCT_LIMITS.entries) as {
+        sequence: number;
+        schema_version: number;
+        content_json: string;
+      }[];
+      if (!rows.length) break;
+      for (const row of rows) {
+        sequence = row.sequence;
+        if (row.schema_version !== 1) throw new ControlProductPreconditionError();
+        const bytes = await synchronizeControlContent(
+          owner,
+          mount,
+          ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json))
+        );
+        const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+        const event = readRetainedV1(value, () =>
+          owner.kind === 'server'
+            ? StoredServerEventV1Schema.parse(value)
+            : StoredEventV1Schema.parse(value)
+        );
+        if (event.data.type === 'turn-completed') {
+          hasCompletion = true;
+          break;
+        }
       }
     }
   }
@@ -1351,13 +1355,13 @@ export async function prepareControlTerminal(
   )
     throw new ControlProductPreconditionError();
   for (const content of input.evidenceContent)
-    synchronizeControlContent(input.owner, contentMount, content);
+    await synchronizeControlContent(input.owner, contentMount, content);
   const before = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
   const sealedTurn =
     before && !['pending', 'running'].includes(String(before.record.status))
       ? before.record
       : undefined;
-  const entries = prepareEntries(input.owner, contentMount, input.entries, turn, sealedTurn);
+  const entries = await prepareEntries(input.owner, contentMount, input.entries, turn, sealedTurn);
   if (entries.some((entry) => entry.input.turnId !== turn.id))
     throw new ControlProductPreconditionError();
   const terminalEvents = entries.filter((entry) => {
@@ -1410,7 +1414,7 @@ export async function prepareControlTerminal(
     let hasCompletion = false;
     for (const row of retained) {
       if (row.schema_version !== 1) throw new ControlProductPreconditionError();
-      const [entry] = prepareEntries(
+      const [entry] = await prepareEntries(
         input.owner,
         contentMount,
         [
@@ -1458,7 +1462,7 @@ export async function prepareControlTerminal(
         | { sequence: number; revision: number; content_json: string }
         | undefined;
       if (!row) throw new ControlProductPreconditionError();
-      prepared = prepareEntries(
+      const [entry] = await prepareEntries(
         input.owner,
         contentMount,
         [
@@ -1471,7 +1475,8 @@ export async function prepareControlTerminal(
           },
         ],
         turn
-      )[0]!;
+      );
+      prepared = entry!;
       dependencies.push({ entry: prepared, contentJson: row.content_json, revision: row.revision });
     }
     if (
@@ -1542,7 +1547,13 @@ export async function prepareControlTerminal(
     entries,
     pending:
       db.scope === 'workspace' && input.pending?.length
-        ? prepareControlPendingCommands(db, input.pending, contentMount, input.entries, entries)
+        ? await prepareControlPendingCommands(
+            db,
+            input.pending,
+            contentMount,
+            input.entries,
+            entries
+          )
         : undefined,
     dependencies,
     evidenceBundles,

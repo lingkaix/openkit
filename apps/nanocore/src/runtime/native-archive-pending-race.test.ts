@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -27,6 +28,52 @@ import {
   validateCanonicalLoad,
 } from './pending-requests.js';
 
+const archiveReadFault = vi.hoisted(() => ({
+  gate: undefined as Int32Array | undefined,
+  workers: 0,
+}));
+
+// Private interception runs the actual entry and fails a real read only after owner initialization.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        archiveReadFault.workers++;
+        if (!archiveReadFault.gate) {
+          super(filename, options);
+          return;
+        }
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(
+          `const {workerData} = require('node:worker_threads');
+        const Database = require(workerData.databaseModule);
+        const original = Database.prototype.prepare;
+        Database.prototype.prepare = function(sql) {
+          if (sql === 'SELECT 1 FROM idempotency_requests WHERE request_key=? AND expires_at>?' &&
+              Atomics.compareExchange(workerData.gate, 0, 1, 0) === 1) {
+            Atomics.add(workerData.gate, 1, 1);
+            return original.call(this, 'SELECT * FROM temp.__archive_receipt_read_fault__');
+          }
+          return original.call(this, sql);
+        };` + entry,
+          {
+            ...options,
+            eval: true,
+            workerData: {
+              databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+              gate: archiveReadFault.gate,
+            },
+          }
+        );
+      }
+    },
+  };
+});
+
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const actor = { kind: 'local', userId } as const;
 const roots: string[] = [];
@@ -36,6 +83,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const reader of readers.splice(0)) reader.close();
   await shutdownControlStoreWorkerClient();
+  archiveReadFault.gate = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -145,6 +193,51 @@ function committedRows(reader: ReturnType<typeof openControlStoreProductReadHand
 }
 
 describe('native standalone archive and concurrent Pending raise', () => {
+  it('contains a scheduled archive receipt read failure before effects and keeps a sibling Workspace usable', async () => {
+    archiveReadFault.gate = new Int32Array(new SharedArrayBuffer(8));
+    const f = await fixture();
+    const siblingWorkspace = await f.store.createWorkspace('Healthy sibling Workspace');
+    const before = committedRows(f.reader);
+    const originalThread = structuredClone(f.store.getThread(f.workspace.id, f.thread.id));
+    const workersBefore = archiveReadFault.workers;
+    // Owner-created authority is valid before this one-shot SQLite read fault is armed.
+    Atomics.store(archiveReadFault.gate, 0, 1);
+    // Expected RED: the scheduled pre-effect read escapes and loses local settlement/worker service.
+    await expect(archiveThread(f.archive, f.dependencies, actor)).rejects.toMatchObject({
+      code: 'sql-failed',
+      commit: 'not-committed',
+    });
+    expect(Atomics.load(archiveReadFault.gate, 1)).toBe(1);
+    expect(committedRows(f.reader)).toEqual(before);
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).toEqual(originalThread);
+    const siblingInput = {
+      requestId: randomUUID(),
+      workspaceId: siblingWorkspace.id,
+      name: 'After archive read refusal',
+      visibility: 'workspace' as const,
+    };
+    const sibling = await createThread(siblingInput, f.dependencies, userId);
+    expect(sibling).toMatchObject({ status: 'active', name: siblingInput.name });
+    const scope = nativeProductScope(f.root, {
+      kind: 'workspace',
+      workspaceId: siblingWorkspace.id,
+    });
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    readers.push(reader);
+    const receipts = readCommandRequestRecordsFromSqlite(reader.sqlite);
+    expect(receipts).toMatchObject([
+      {
+        command: 'thread.create',
+        requestId: siblingInput.requestId,
+        response: { kind: 'thread', id: sibling.id },
+      },
+    ]);
+    expect(await createThread(siblingInput, f.dependencies, userId)).toEqual(sibling);
+    expect(readCommandRequestRecordsFromSqlite(reader.sqlite)).toEqual(receipts);
+    expect(committedRows(f.reader)).toEqual(before);
+    expect(archiveReadFault.workers).toBe(workersBefore);
+  });
+
   it('refuses archive when an unseen real raise commits after the empty Main census', async () => {
     const f = await fixture();
     const originalTurn = structuredClone(f.store.getTurnById(f.turn.id));
@@ -248,7 +341,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(committedRows(f.reader)).toEqual(beforeRaise);
   });
 
-  it('refuses an archive queued after the actual Pending producer packet and keeps a sibling usable', async () => {
+  it('settles a queued Pending raise and archive refusal before ordered close and keeps a sibling usable', async () => {
     const f = await fixture();
     const client = getControlStoreWorkerClient();
     const nativePending = client.pendingCommand.bind(client);
@@ -257,6 +350,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     const archivePacket = Promise.withResolvers<Parameters<typeof nativeArchive>>();
     const pendingResult = Promise.withResolvers<Awaited<ReturnType<typeof nativePending>>>();
     const archiveResult = Promise.withResolvers<Awaited<ReturnType<typeof nativeArchive>>>();
+    const closeResult = Promise.withResolvers<void>();
     const originalThread = structuredClone(f.store.getThread(f.workspace.id, f.thread.id));
     const originalTurn = structuredClone(f.store.getTurnById(f.turn.id));
     const beforeQueue = committedRows(f.reader);
@@ -300,11 +394,16 @@ describe('native standalone archive and concurrent Pending raise', () => {
       // The existing hold admits both real envelopes in this order without posting either one yet.
       void nativePending(...pendingArgs).then(pendingResult.resolve, pendingResult.reject);
       void nativeArchive(...archiveArgs).then(archiveResult.resolve, archiveResult.reject);
+      // Ordered close must retain work whose archive preparation starts during its own drain.
+      void client.close(archiveArgs[0]).then(closeResult.resolve, closeResult.reject);
       expect(committedRows(f.reader)).toEqual(beforeQueue);
     } finally {
       resume();
     }
 
+    // Read at close ACK, before joining the producers; the complete tuple must already be decided.
+    await closeResult.promise;
+    const atClose = committedRows(f.reader);
     const raised = await raiseAttempt;
     expect(raised.status).toBe('fulfilled');
     if (raised.status !== 'fulfilled') throw raised.reason;
@@ -318,6 +417,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     archiveBoundary.mockRestore();
 
     const afterArchive = committedRows(f.reader);
+    expect(afterArchive).toEqual(atClose);
     for (const table of [
       'control_workspaces',
       'control_threads',

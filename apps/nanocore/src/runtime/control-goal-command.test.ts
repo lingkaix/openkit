@@ -72,7 +72,7 @@ async function fixture() {
         kind: 'workspace', expectedRevision: 0,
         record: { schemaVersion: 1, id: workerData.workspaceId, kind: 'general', status: 'active', createdAt: at, updatedAt: at },
       }], []))();
-      parentPort.on('message', ({ id, command, input }) => {
+      parentPort.on('message', async ({ id, command, input }) => {
         try {
           let result;
           if (command === 'reject') db.sqlite.exec("CREATE TRIGGER reject_goal_receipt BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='goal.create' BEGIN SELECT RAISE(ABORT, 'goal receipt rejected'); END;");
@@ -82,7 +82,7 @@ async function fixture() {
           else if (command === 'reopen') { db.sqlite.close(); db = storage.openWorkspaceDb(workerData.root, workerData.workspaceId); }
           else {
             const admitted = goal.ControlGoalCommandInputSchema.parse(input);
-            const prepared = goal.prepareControlGoalCommand(db, admitted, workerData.mount);
+            const prepared = await goal.prepareControlGoalCommand(db, admitted, workerData.mount);
             result = db.sqlite.transaction(() => goal.applyControlGoalCommand(db, admitted, prepared))();
           }
           parentPort.postMessage({ id, result });

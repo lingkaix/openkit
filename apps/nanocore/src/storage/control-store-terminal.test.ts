@@ -68,7 +68,7 @@ function nativeBody(
       const {root, input, mount, mode, prepareInput} = workerData;
       const db = input.owner.kind === 'server' ? handles.openCoreDb(root) : handles.openWorkspaceDb(root, input.owner.workspaceId);
       try {
-        if (mode === 'generic-entries') p.prepareControlEntries(input.owner, mount, input.entries);
+        if (mode === 'generic-entries') await p.prepareControlEntries(input.owner, mount, input.entries);
         const prepared = mode === 'generic-products' ? null : await p.prepareControlTerminal(db, prepareInput, mount);
         const result = db.sqlite.transaction(() => {
           db.sqlite.exec('SAVEPOINT terminal_body');
