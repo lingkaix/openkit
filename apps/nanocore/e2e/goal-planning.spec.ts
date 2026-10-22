@@ -1,8 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import type { GoalView } from '@openkit/app-api-schemas';
+import type { GoalView, ThreadDashboardResponse } from '@openkit/app-api-schemas';
+import { isSealedTurnTerminal } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { testGoalDomainProposal } from '../dist/test-support/goal-domain.js';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  type NanoCoreHarness,
+  readTurnEventsUntil,
+  removeDataRoot,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
 afterEach(async () => {
@@ -15,7 +21,7 @@ afterEach(async () => {
 describe('Goal atomic cutover e2e', () => {
   it('uses derived commands for one continuous intent, exact proposed Plan, human resolution, cards and cancellation', async () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
-    async function operation(id: string, input: Record<string, unknown>): Promise<GoalView> {
+    async function operation<T = GoalView>(id: string, input: Record<string, unknown>): Promise<T> {
       const response = await fetch(`${harness!.baseUrl}/api/app/operations/${id}`, {
         method: 'POST',
         headers: {
@@ -25,7 +31,7 @@ describe('Goal atomic cutover e2e', () => {
         body: JSON.stringify(input),
       });
       expect(response.status, await response.clone().text()).toBe(200);
-      return (await response.json()) as GoalView;
+      return (await response.json()) as T;
     }
     const created = await operation('goal.create', {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -52,7 +58,38 @@ describe('Goal atomic cutover e2e', () => {
       description: 'Design schema with examples',
       priority: 2,
     });
-    const read = await operation('goal.read', scope);
+    const selector = { workspaceId: scope.workspaceId, threadId: scope.threadId };
+    let dashboard = await operation<ThreadDashboardResponse>('thread.dashboard', selector);
+    let read: GoalView;
+    for (;;) {
+      const coordinator =
+        dashboard.turns.find((turn) => !isSealedTurnTerminal(turn.status)) ??
+        dashboard.turns.at(-1);
+      expect(coordinator).toMatchObject({ agentId: 'goal-coordinator', threadId: scope.threadId });
+      const events = await readTurnEventsUntil(
+        harness.baseUrl,
+        scope.workspaceId,
+        scope.threadId,
+        coordinator!.id,
+        (event) => event.event === 'turn.completed'
+      );
+      expect(events.at(-1)).toMatchObject({
+        event: 'turn.completed',
+        threadId: scope.threadId,
+        turnId: coordinator!.id,
+        data: { type: 'turn-completed', turn: { id: coordinator!.id } },
+      });
+      const before = await operation('goal.read', scope);
+      dashboard = await operation<ThreadDashboardResponse>('thread.dashboard', selector);
+      read = await operation('goal.read', scope);
+      if (
+        before.goal!.changeRevision === read.goal!.changeRevision &&
+        before.goal!.consideredRevision === read.goal!.consideredRevision &&
+        read.goal!.consideredRevision === read.goal!.changeRevision &&
+        dashboard.turns.every((turn) => isSealedTurnTerminal(turn.status))
+      )
+        break;
+    }
     const proposed = await operation('goal.plan.propose', {
       ...scope,
       expectedRevision: read.goal!.changeRevision,

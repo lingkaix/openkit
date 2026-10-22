@@ -343,7 +343,12 @@ describe('registered native producer lifetime during shutdown', () => {
   });
 });
 
-it('automatically retains the detached HTTP Goal Coordinator through its real terminal ACK', async () => {
+it.each([
+  ['completed', 'acknowledged'],
+  ['failed', 'acknowledged'],
+  ['completed', 'lost'],
+  ['failed', 'lost'],
+] as const)('retains HTTP Goal through %s/%s terminal ACK', async (status, acknowledgement) => {
   const root = mkdtempSync(join(tmpdir(), 'http-goal-producer-lifetime-'));
   roots.push(root);
   const coreDb = openCoreDb(root);
@@ -356,6 +361,7 @@ it('automatically retains the detached HTTP Goal Coordinator through its real te
     releaseModel = resolve;
   });
   let terminalAck: ReturnType<typeof holdReply> | undefined;
+  let detach: (() => void) | undefined;
   try {
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
@@ -370,6 +376,7 @@ it('automatically retains the detached HTTP Goal Coordinator through its real te
     const dispatch = vi.fn(async () => {
       enterModel();
       await modelHeld;
+      if (status === 'failed') throw new Error('The bounded Goal provider failed.');
       return {
         id: randomUUID(),
         object: 'response',
@@ -418,30 +425,70 @@ it('automatically retains the detached HTTP Goal Coordinator through its real te
     expect(admitted).toHaveLength(1);
     const turn = admitted[0]!;
     expect(turn).toMatchObject({ agentId: 'goal-coordinator', status: 'running' });
+    const terminals: ReturnType<FsStore['getTurnEvents']> = [];
+    detach = store.addTurnListener(turn.id, (event) => {
+      if (event.event === 'turn.completed' || event.data.type === 'turn-completed')
+        terminals.push(event);
+    });
 
     // No manual runOperation registration: the app's actual Coordinator owns this detached work.
     const order: string[] = [];
-    const shutdown = observe(getControlStoreWorkerClient().shutdown()).then((result) => {
-      order.push('shutdown');
-      return result;
-    });
+    const shutdown =
+      acknowledgement === 'acknowledged'
+        ? observe(getControlStoreWorkerClient().shutdown()).then((result) => {
+            order.push('shutdown');
+            return result;
+          })
+        : undefined;
     await nextTurn();
     expect(order).toEqual([]);
     terminalAck = holdReply('terminal');
     releaseModel();
     const next = await Promise.race([
       terminalAck.reached.then(() => ({ status: 'terminal-ack' as const })),
-      shutdown.then((result) => ({ status: 'early-shutdown' as const, result })),
+      ...(shutdown
+        ? [shutdown.then((result) => ({ status: 'early-shutdown' as const, result }))]
+        : []),
     ]);
     expect(next).toEqual({ status: 'terminal-ack' });
     expect(order).toEqual([]);
     expect(db.sqlite.prepare('SELECT status FROM control_turns WHERE id=?').get(turn.id)).toEqual({
-      status: 'completed',
+      status,
     });
-    terminalAck.release();
-    order.push('terminal-ack');
-    expect(await shutdown).toMatchObject({ status: 'ok' });
-    expect(order).toEqual(['terminal-ack', 'shutdown']);
+    const canonical = store.getTurnEventsForExport(turn.id).slice(-1);
+    expect(canonical).toHaveLength(1);
+    expect(canonical[0]).toMatchObject({
+      event: 'turn.completed',
+      workspaceId: workspace.id,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      data: {
+        type: 'turn-completed',
+        stopReason: status === 'completed' ? 'completed' : 'error',
+        turn: {
+          id: turn.id,
+          threadId: turn.threadId,
+          owner: { kind: 'workspace', workspaceId: workspace.id },
+          status,
+        },
+      },
+    });
+    await nextTurn();
+    expect(terminals).toEqual([]);
+    if (acknowledgement === 'acknowledged') {
+      terminalAck.release();
+      order.push('terminal-ack');
+      expect(await shutdown).toMatchObject({ status: 'ok' });
+      expect(order).toEqual(['terminal-ack', 'shutdown']);
+      expect(terminals).toEqual(canonical);
+    } else {
+      // Drop the real post-COMMIT reply; terminate its actual Worker to reject the native await.
+      terminalAck.discard();
+      await transport.workers.at(-1)!.terminate();
+      await nextTurn();
+      await shutdownControlStoreWorkerClient();
+      expect(terminals).toEqual([]);
+    }
 
     db.sqlite.close();
     readers.splice(readers.indexOf(db), 1);
@@ -449,22 +496,23 @@ it('automatically retains the detached HTTP Goal Coordinator through its real te
     readers.push(coldDb);
     const reopened = new FsStore({ dataRoot: root });
     expect(reopened.listThreadTurns(workspace.id, created.goal!.threadId)).toEqual([
-      expect.objectContaining({ id: turn.id, status: 'completed', error: null }),
-    ]);
-    expect(reopened.getTurnById(turn.id).items).toContainEqual(
       expect.objectContaining({
-        type: 'assistant-message',
-        text: 'Finished this bounded Goal Turn.',
-      })
-    );
-    expect(
-      reopened.getTurnEventsForExport(turn.id).filter((event) => event.event === 'turn.completed')
-    ).toEqual([
-      expect.objectContaining({
-        turnId: turn.id,
-        data: expect.objectContaining({ type: 'turn-completed', stopReason: 'completed' }),
+        id: turn.id,
+        status,
+        error: status === 'completed' ? null : expect.any(Object),
       }),
     ]);
+    if (status === 'completed') {
+      expect(reopened.getTurnById(turn.id).items).toContainEqual(
+        expect.objectContaining({
+          type: 'assistant-message',
+          text: 'Finished this bounded Goal Turn.',
+        })
+      );
+    }
+    expect(
+      reopened.getTurnEventsForExport(turn.id).filter((event) => event.event === 'turn.completed')
+    ).toEqual(canonical);
     expect(
       coldDb.sqlite
         .prepare('SELECT command_name,response_id FROM idempotency_requests WHERE request_id=?')
@@ -472,6 +520,7 @@ it('automatically retains the detached HTTP Goal Coordinator through its real te
     ).toEqual([{ command_name: 'goal.create', response_id: created.goal!.goalId }]);
     expect(dispatch).toHaveBeenCalledTimes(1);
   } finally {
+    detach?.();
     releaseModel();
     terminalAck?.release();
     try {
