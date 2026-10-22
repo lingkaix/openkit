@@ -1,13 +1,5 @@
 // openkit-test-platform: posix
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -28,8 +20,8 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVerifiedWorkspaceExport } from '../storage/workspace-transfer-routes.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
@@ -44,13 +36,13 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Every check crosses the real canonical file boundary in an isolated data root. */
+/** Publishes acknowledged history through shared setup and the real native owners. */
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-owner-boundary-'));
   roots.push(dataRoot);
-  const store = createTestStore({ dataRoot });
-  const workspace = await store.createWorkspace('Workspace-owned history');
-  const thread = await store.createThread(workspace.id, 'Workspace work');
+  const store = await createDemoStore({ dataRoot });
+  const workspace = store.getWorkspace(DEMO_WORKSPACE_ID);
+  const thread = store.getThread(workspace.id, DEMO_THREAD_ID);
   const turn = await store.createTurn(workspace.id, thread.id, 'Workspace input', actor);
   const serverThread = await store.createServerThread('Server-owned history');
   const serverTurn = await store.createServerTurn(serverThread.id, 'Server input', actor);
@@ -78,17 +70,18 @@ function message(
 }
 
 describe('canonical work owner and retained storage boundaries', () => {
-  it('rejects a Server owner supplied through Workspace Thread audience fields without polluting the Workspace cache', async () => {
-    const store = new FsStore();
-    const workspace = await store.createWorkspace('Workspace');
-    expect(() =>
+  it('rejects a Server owner supplied through Workspace Thread audience fields without publishing history', async () => {
+    const { store, workspace } = await fixture();
+    const threads = store.listThreads(workspace.id);
+    const serverThreads = store.listServerThreads();
+    await expect(
       store.createThread(workspace.id, 'Wrong owner', undefined, 'conversation', {
         owner: { kind: 'server' },
         visibility: 'server',
       } as never)
-    ).toThrow();
-    expect(store.listThreads(workspace.id)).toEqual([]);
-    expect(store.listServerThreads()).toEqual([]);
+    ).rejects.toThrow();
+    expect(store.listThreads(workspace.id)).toEqual(threads);
+    expect(store.listServerThreads()).toEqual(serverThreads);
   });
 
   it('publishes explicit owners and reloads both families through the same schema', async () => {
@@ -103,7 +96,7 @@ describe('canonical work owner and retained storage boundaries', () => {
       expect(record).not.toHaveProperty('workspaceId');
     }
     const item = await f.store.createItem(message(f.owner, f.thread.id, f.turn.id));
-    const serverItem = f.store.createServerItem(
+    const serverItem = await f.store.createServerItem(
       message({ kind: 'server' }, f.serverThread.id, f.serverTurn.id)
     );
     const reopened = new FsStore({ dataRoot: f.dataRoot });
@@ -118,18 +111,6 @@ describe('canonical work owner and retained storage boundaries', () => {
     expect(reopened.listThreads(f.workspace.id).map(({ id }) => id)).toEqual([f.thread.id]);
     expect(() => reopened.getTurnById(f.serverTurn.id)).toThrow();
     expect(() => reopened.getServerTurnById(f.turn.id)).toThrow();
-    const workspacePath = join(f.dataRoot, 'workspaces', f.workspace.id, 'threads', f.thread.id);
-    const serverPath = join(f.dataRoot, 'server', 'threads', f.serverThread.id);
-    expect(JSON.parse(readFileSync(join(workspacePath, 'thread.json'), 'utf8'))).toMatchObject({
-      owner: f.owner,
-    });
-    expect(JSON.parse(readFileSync(join(serverPath, 'thread.json'), 'utf8'))).toMatchObject({
-      owner: { kind: 'server' },
-    });
-    expect(
-      existsSync(join(f.dataRoot, 'workspaces', f.workspace.id, 'threads', f.serverThread.id))
-    ).toBe(false);
-    expect(existsSync(join(f.dataRoot, 'server', 'threads', f.thread.id))).toBe(false);
   });
 
   it('refuses foreign owner Items before appending and preserves the accepted owner after reopen', async () => {
@@ -139,24 +120,30 @@ describe('canonical work owner and retained storage boundaries', () => {
       { kind: 'server' },
       { kind: 'workspace', workspaceId: allocateEntityId('ws') },
     ] as const) {
-      expect(() => f.store.createItem({ ...item, id: allocateEntityId('it'), owner })).toThrow();
-      expect(() => f.store.updateItem(item.id, { owner } as never)).toThrow();
+      await expect(
+        f.store.createItem({ ...item, id: allocateEntityId('it'), owner })
+      ).rejects.toThrow();
+      await expect(f.store.updateItem(item.id, { owner } as never)).rejects.toThrow();
     }
-    const serverItem = f.store.createServerItem(
+    const serverItem = await f.store.createServerItem(
       message({ kind: 'server' }, f.serverThread.id, f.serverTurn.id)
     );
-    expect(() =>
+    await expect(
       f.store.createServerItem({
         ...serverItem,
         id: allocateEntityId('it'),
         owner: f.owner,
       } as never)
-    ).toThrow();
-    expect(() =>
+    ).rejects.toThrow();
+    await expect(
       f.store.updateThread(f.workspace.id, f.thread.id, { owner: { kind: 'server' } } as never)
-    ).toThrow();
-    expect(() => f.store.updateTurn(f.turn.id, { owner: { kind: 'server' } } as never)).toThrow();
-    expect(() => f.store.updateServerTurn(f.serverTurn.id, { owner: f.owner } as never)).toThrow();
+    ).rejects.toThrow();
+    await expect(
+      f.store.updateTurn(f.turn.id, { owner: { kind: 'server' } } as never)
+    ).rejects.toThrow();
+    await expect(
+      f.store.updateServerTurn(f.serverTurn.id, { owner: f.owner } as never)
+    ).rejects.toThrow();
     const reopened = new FsStore({ dataRoot: f.dataRoot });
     expect(reopened.getTurnById(f.turn.id).items).toEqual([item]);
     expect(reopened.getServerTurnById(f.serverTurn.id).items).toEqual([serverItem]);
@@ -181,30 +168,34 @@ describe('canonical work owner and retained storage boundaries', () => {
         invalidOwner === undefined || invalidOwner.kind === 'user'
           ? await f.store.createWorkspace('Healthy unsupported-owner sibling')
           : undefined;
-      const path = join(
-        f.dataRoot,
-        'workspaces',
-        f.workspace.id,
-        'threads',
-        f.thread.id,
-        'turns',
-        f.turn.id,
-        'turn.json'
+      await shutdownControlStoreWorkerClient();
+      const database = openWorkspaceDb(f.dataRoot, f.workspace.id);
+      databases.push(database);
+      // Deliberately damage acknowledged authority after stopping its live writer.
+      const raw = JSON.parse(
+        (
+          database.sqlite
+            .prepare('SELECT record_json FROM control_turns WHERE id=?')
+            .get(f.turn.id) as { record_json: string }
+        ).record_json
       );
-      const raw = JSON.parse(readFileSync(path, 'utf8'));
       if (invalidOwner === undefined) delete raw.owner;
       else raw.owner = invalidOwner;
       const corrupted = JSON.stringify(raw);
-      writeFileSync(path, corrupted);
+      database.sqlite
+        .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+        .run(corrupted, f.turn.id);
       if (healthy) {
         const workspaceRoot = join(f.dataRoot, 'workspaces', f.workspace.id);
         const entries = readdirSync(workspaceRoot, { recursive: true }).sort();
-        const database = readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'));
+        const before = database.sqlite.serialize();
         const reopened = new FsStore({ dataRoot: f.dataRoot });
         const refusal = expect.objectContaining({ code: 'recovery_required' });
         expect(() => reopened.getWorkspace(f.workspace.id)).toThrow(refusal);
         expect(() => reopened.getTurn(f.workspace.id, f.thread.id, f.turn.id)).toThrow(refusal);
-        expect(() => reopened.createThread(f.workspace.id, 'Must not publish')).toThrow(refusal);
+        await expect(reopened.createThread(f.workspace.id, 'Must not publish')).rejects.toThrow(
+          refusal
+        );
         expect(reopened.getServerTurnById(f.serverTurn.id)).toEqual(
           f.store.getServerTurnById(f.serverTurn.id)
         );
@@ -213,43 +204,41 @@ describe('canonical work owner and retained storage boundaries', () => {
         expect(new FsStore({ dataRoot: f.dataRoot }).getThread(healthy.id, added.id)).toEqual(
           added
         );
-        expect(readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
+        expect(database.sqlite.serialize()).toEqual(before);
         expect(readdirSync(workspaceRoot, { recursive: true }).sort()).toEqual(entries);
       } else {
         expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow();
       }
-      expect(readFileSync(path, 'utf8')).toBe(corrupted);
+      expect(
+        database.sqlite.prepare('SELECT record_json FROM control_turns WHERE id=?').get(f.turn.id)
+      ).toEqual({ record_json: corrupted });
     });
   }
 
   it('refuses malformed Server Turn authority globally without rewriting its bytes', async () => {
     const f = await fixture();
-    const path = join(
-      f.dataRoot,
-      'server',
-      'threads',
-      f.serverThread.id,
-      'turns',
-      f.serverTurn.id,
-      'turn.json'
+    await shutdownControlStoreWorkerClient();
+    const database = openCoreDb(f.dataRoot);
+    databases.push(database);
+    // The missing owner is a retained authority fault, not a successful publication.
+    const raw = JSON.parse(
+      (
+        database.sqlite
+          .prepare('SELECT record_json FROM control_turns WHERE id=?')
+          .get(f.serverTurn.id) as { record_json: string }
+      ).record_json
     );
-    const raw = JSON.parse(readFileSync(path, 'utf8'));
     delete raw.owner;
     const corrupted = JSON.stringify(raw);
-    writeFileSync(path, corrupted);
+    database.sqlite
+      .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+      .run(corrupted, f.serverTurn.id);
     expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow();
-    expect(readFileSync(path, 'utf8')).toBe(corrupted);
-  });
-
-  it('refuses an intact Workspace Thread moved to a different owner directory', async () => {
-    const f = await fixture();
-    const otherWorkspace = await f.store.createWorkspace('Other owner');
-    const source = join(f.dataRoot, 'workspaces', f.workspace.id, 'threads', f.thread.id);
-    const target = join(f.dataRoot, 'workspaces', otherWorkspace.id, 'threads', f.thread.id);
-    const original = readFileSync(join(source, 'thread.json'), 'utf8');
-    renameSync(source, target);
-    expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow();
-    expect(readFileSync(join(target, 'thread.json'), 'utf8')).toBe(original);
+    expect(
+      database.sqlite
+        .prepare('SELECT record_json FROM control_turns WHERE id=?')
+        .get(f.serverTurn.id)
+    ).toEqual({ record_json: corrupted });
   });
 
   it('reopens calls in their owning database and excludes Server history from Workspace export', async () => {
@@ -290,14 +279,13 @@ describe('canonical work owner and retained storage boundaries', () => {
     workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
     coreDb = openCoreDb(f.dataRoot);
     databases.push(workspaceDb, coreDb);
-    const [retainedWorkspaceCall] = listWorkspaceCapabilityCalls(workspaceDb, f.workspace.id);
-    const [retainedServerCall] = listServerCapabilityCalls(coreDb);
-    expect(workspaceDb.sqlite.prepare('SELECT call_id FROM capability_calls').all()).toEqual([
-      { call_id: workspaceCall.id },
-    ]);
-    expect(coreDb.sqlite.prepare('SELECT call_id FROM capability_calls').all()).toEqual([
-      { call_id: serverCall.id },
-    ]);
+    const workspaceCalls = listWorkspaceCapabilityCalls(workspaceDb, f.workspace.id);
+    const serverCalls = listServerCapabilityCalls(coreDb);
+    const [retainedWorkspaceCall] = workspaceCalls;
+    const [retainedServerCall] = serverCalls;
+    // Audit Usage Evidence Records: CapabilityCall has one home in its admitted scope.
+    expect(workspaceCalls.map(({ id }) => id)).toEqual([workspaceCall.id]);
+    expect(serverCalls.map(({ id }) => id)).toEqual([serverCall.id]);
     const exported = createVerifiedWorkspaceExport({
       authorityUserId: actor.id,
       authorityActor: actor,

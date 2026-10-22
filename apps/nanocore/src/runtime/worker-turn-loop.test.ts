@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
@@ -1331,7 +1331,7 @@ function cancelledLoopInput(
   coreDb: CoreDb,
   workspaceDb: WorkspaceDb,
   store: import('../lib/store.js').FsStore,
-  mutate: () => void = () => {}
+  mutate: () => void | Promise<void> = () => {}
 ): RunWorkerTurnLoopInput {
   return {
     coreDb,
@@ -1350,7 +1350,7 @@ function cancelledLoopInput(
       try {
         return cancelledWorker(coreDb, 'req_refusal')(input);
       } catch (error) {
-        mutate();
+        await mutate();
         throw error;
       }
     },
@@ -1364,7 +1364,6 @@ it.each([
   'lease',
   'turn',
   'global-turn',
-  'input',
   'session',
   'backend',
   'control',
@@ -1416,21 +1415,6 @@ it.each([
         { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         undefined,
         { turnId: 'tu_00000000-0000-7952-9279-bc2b017e274b' }
-      );
-    }
-    if (kind === 'input') {
-      const root = join(
-        coreDb.dataRoot,
-        'workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/turns/tu_00000000-0000-7952-9279-bc2b017e274b'
-      );
-      mkdirSync(root, { recursive: true });
-      writeFileSync(
-        join(root, 'items.jsonl'),
-        JSON.stringify({
-          id: 'it_00000000-0000-79e5-b46f-51c3d69f418f',
-          type: 'user-message',
-          text: 'Accepted input',
-        })
       );
     }
     if (kind === 'session') {
@@ -1580,7 +1564,7 @@ it.each([
         reopenedCore.sqlite.close();
       }
     }
-    if (!['plan', 'lease', 'session', 'global-turn', 'input', 'turn'].includes(kind)) {
+    if (!['lease', 'session', 'global-turn', 'turn'].includes(kind)) {
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
           coreDb,

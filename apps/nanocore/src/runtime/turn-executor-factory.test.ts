@@ -9,6 +9,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   planSessionWorkspaceMaterialization,
+  resolveWorkspaceMcpServer,
   type SessionWorkspaceMaterializationPlan,
   sessionStaticControl,
   WORKSPACE_RESOURCE_POLICY_FEATURE,
@@ -24,7 +25,13 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
-import { importWorkspaceSkill, skillSnapshotPath } from '../catalog/resource-catalog.js';
+import {
+  createMcpConfig,
+  importWorkspaceSkill,
+  loadResourceCatalog,
+  skillSnapshotPath,
+  updateMcpBinding,
+} from '../catalog/resource-catalog.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   loadRuntimeConfig,
@@ -40,6 +47,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -4510,62 +4518,6 @@ describe('createConfiguredTurnExecutor', () => {
     ).sessionWorkspace.compatibilityKey.digest;
   }
 
-  function packageWithAddedMcp(
-    environmentPackage: AgentEnvironmentPackage,
-    scope: AgentEnvironmentPackage['scope'],
-    snapshotId: string
-  ): AgentEnvironmentPackage {
-    return {
-      ...environmentPackage,
-      scope,
-      snapshotId,
-      supply: {
-        ...environmentPackage.supply,
-        mcpServers: [
-          ...environmentPackage.supply.mcpServers,
-          {
-            allowedTools: ['echo'],
-            catalogDigest: `sha256:${'b'.repeat(64)}`,
-            id: 'added-mcp',
-            pinnedSchemaSnapshotId: null,
-            schemaPolicy: 'tracking',
-          },
-        ],
-      },
-    };
-  }
-
-  /** Builds a new immutable effective map and its ordinary session compatibility projection. */
-  function packageWithChangedNative(
-    environmentPackage: AgentEnvironmentPackage,
-    scope: AgentEnvironmentPackage['scope'],
-    snapshotId: string
-  ): AgentEnvironmentPackage {
-    const next = {
-      ...environmentPackage,
-      scope,
-      snapshotId,
-      runtime: {
-        ...environmentPackage.runtime,
-        environment: {
-          ...environmentPackage.runtime.environment!,
-          values: { NATIVE_SETTING: 'changed', EMPTY: '' },
-        },
-      },
-    };
-    const plan = planSessionWorkspaceMaterialization({ environmentPackage: next });
-    return {
-      ...next,
-      extensions: {
-        ...next.extensions,
-        openkit: {
-          ...(next.extensions.openkit as Record<string, unknown>),
-          sessionWorkspace: plan,
-        },
-      },
-    };
-  }
-
   it.each([
     'unavailable',
     'stale',
@@ -4738,13 +4690,30 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('reuses the resident binding when supply is unchanged', async () => {
+  it.each([
+    ['reuses the resident binding when supply is unchanged', 'same'],
+    [
+      'replaces the resident binding when only mcp changes and resumes its exact recorded pair',
+      'mcp',
+    ],
+    [
+      'replaces the resident binding when only native changes and resumes its exact recorded pair',
+      'native',
+    ],
+  ] as const)('%s', async (_title, change) => {
     const coreDb = createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
-    const workspaceId = testEntityId('ws', 'workspace_supply_same');
-    const threadId = testEntityId('th', 'thread_supply_same');
-    const agentSessionId = testEntityId('as', 'as_supply_same');
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const environment = { NATIVE_SETTING: 'changed', EMPTY: '' };
+    const labels =
+      change === 'same'
+        ? ['supply_same', 'supply_same_next']
+        : ['supply_mcp', 'supply_mcp_successor'];
+    const workspaceId = testEntityId('ws', `workspace_${labels[0]}`);
+    const threadId = testEntityId('th', `thread_${labels[0]}`);
+    const originalId = testEntityId('as', `as_${labels[0]}`);
+    const successorId = testEntityId('as', `as_${labels[1]}`);
+    const store = new FsStore({ dataRoot });
     const fixture = createDemoWorkspaceForUser(ownerUserId);
     await store.importWorkspaceSnapshot({
       workspace: {
@@ -4762,21 +4731,43 @@ describe('createConfiguredTurnExecutor', () => {
       ...notebookImportFixture({ workspaceId, knowledge: [], userId: ownerUserId }),
     });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
-    const setup = createTestAgentSetup({
+    let manifest = createTestAgentSetup({
       imageRef: `sha256:${'a'.repeat(64)}`,
       requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    let configuration = createInMemoryRuntimeConfigSnapshot({ dataRoot });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
     });
-    const native = createNativeTaskAdmissionFixture(coreDb, store);
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const commands: harnessRecords.NanoHostHarnessCommand[] = [];
+    const results: Parameters<typeof native.runtime.acceptNanoHostHarnessResult>[0][] = [];
     const authorities: string[] = [];
+    const loopbackAuthorities: string[] = [];
+    let predecessorAtOpen: ReturnType<FsStore['getAgentSession']> | undefined;
+    let closeAtOpen: (typeof results)[number] | undefined;
+    const acceptResult = native.runtime.acceptNanoHostHarnessResult;
+    const resultObservation = vi
+      .spyOn(native.runtime, 'acceptNanoHostHarnessResult')
+      .mockImplementation((result) => {
+        acceptResult(result);
+        results.push(result);
+      });
     const accept = native.runtime.acceptNanoHostHarnessCommand;
     const observation = vi
       .spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
       .mockImplementation((command) => {
         const wire = accept(command);
-        const { agentSessionId, agentSessionRuntimeBindingId, turnId, leaseId, packageSnapshotId } =
-          wire.body;
+        // Keep credentials out of the retained command observation.
+        const {
+          agentSessionId,
+          agentSessionRuntimeBindingId,
+          turnId,
+          leaseId,
+          packageSnapshotId,
+          resume,
+          nativeEnvironment,
+        } = wire.body;
         commands.push({
           ...wire,
           body: {
@@ -4785,8 +4776,24 @@ describe('createConfiguredTurnExecutor', () => {
             turnId,
             leaseId,
             packageSnapshotId,
+            resume,
+            nativeEnvironment,
           },
         });
+        if (wire.operation === 'session.open' && agentSessionId === successorId) {
+          predecessorAtOpen = store.getAgentSession(originalId);
+          closeAtOpen = results.find(
+            (result) =>
+              result.operationId ===
+              commands.find((c) => c.operation === 'session.close')?.operationId
+          );
+        }
+        if (wire.operation === 'session.open')
+          loopbackAuthorities.push(
+            ...['capabilityLoopbackCredential', 'inferenceLoopbackCredential'].map((key) =>
+              createHash('sha256').update(String(wire.body[key])).digest('hex')
+            )
+          );
         if (wire.operation === 'turn.start')
           authorities.push(
             ...['workerControlToken', 'inferenceToken', 'capabilityToken'].map((key) =>
@@ -4797,15 +4804,58 @@ describe('createConfiguredTurnExecutor', () => {
       });
     const packages = new Map<string, string>();
     let originalPackage: AgentEnvironmentPackage | undefined;
+    let resume: { locator: string; digest: string } | undefined;
     try {
-      for (const [index, label] of ['supply_same', 'supply_same_next'].entries()) {
+      for (const [index, label] of labels.entries()) {
+        if (index && change !== 'same') {
+          if (change === 'mcp') {
+            const owner = { kind: 'workspace' as const, workspaceId };
+            const created = createMcpConfig({
+              dataRoot,
+              owner,
+              id: 'added-mcp',
+              displayName: 'Added MCP',
+              selectCurrent: true,
+              declaration: { kind: 'http', endpoint: 'https://mcp.example.invalid/mcp' },
+              allowedTools: ['echo'],
+              expectedRevision: loadResourceCatalog(dataRoot, owner).revision,
+              createdAt: new Date().toISOString(),
+            });
+            updateMcpBinding({
+              dataRoot,
+              owner,
+              entryId: 'added-mcp',
+              expectedRevision: created.catalog.revision,
+              binding: {
+                ...created.catalog.mcp.bindings.find((binding) => binding.entryId === 'added-mcp')!,
+                enabled: true,
+              },
+            });
+            manifest = { ...manifest, mcp: [...manifest.mcp, { id: 'added-mcp' }] };
+          } else manifest = { ...manifest, runtime: { ...manifest.runtime, environment } };
+        }
+        configuration = createInMemoryRuntimeConfigSnapshot({
+          ...loadRuntimeConfig(dataRoot),
+          agentManifests: [manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Supply fixture',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+        });
         const turnId = testEntityId('tu', `turn_${label}`);
         const attemptId = testEntityId('attempt', `lease_${label}`);
+        const candidateId = index ? successorId : originalId;
+        const agentSessionId = change === 'same' ? originalId : candidateId;
         const entry = createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
           queueEntryId: `queue:${attemptId}`,
           requestId: testEntityId('tu', `request_${label}`).slice(3),
-          requestedAgentId: setup.manifest.id,
+          requestedAgentId: manifest.id,
           workspaceId,
           threadId,
           turnId,
@@ -4819,19 +4869,13 @@ describe('createConfiguredTurnExecutor', () => {
           store,
           turnExecutor: native.executor,
           executionBackend: native.executor.executionBackend!,
-          agentManifests: [setup.manifest],
-          gatewayConfig: createTestGatewayConfig(),
+          agentManifests: configuration.agentManifests,
+          gatewayConfig: configuration.gatewayConfig,
+          providerRegistry: configuration.providerRegistry,
+          workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
           maxDispatches: 1,
           createAttemptId: () => attemptId,
-          createAgentSessionId: () => testEntityId('as', `as_${label}`),
-          providerRegistry: new ProviderRegistry([
-            {
-              id: 'agent-openrouter',
-              displayName: 'Supply fixture',
-              kind: 'local',
-              models: ['openai/gpt-5.2'],
-            },
-          ]),
+          createAgentSessionId: () => candidateId,
         });
         try {
           await Promise.race([
@@ -4862,26 +4906,95 @@ describe('createConfiguredTurnExecutor', () => {
           ).snapshot;
           expect(pkg.scope).toMatchObject({ agentSessionId, turnId, requestId: entry.requestId });
           packages.set(attemptId, pkg.snapshotId);
+          const opened = commands.find(
+            (c) => c.operation === 'session.open' && c.body.agentSessionId === agentSessionId
+          )!;
           const started = commands.find(
             (c) => c.operation === 'turn.start' && c.body.turnId === turnId
-          );
-          expect(started?.body).toMatchObject({
+          )!;
+          expect(opened.body.agentSessionRuntimeBindingId).toEqual(expect.any(String));
+          expect(started.body).toMatchObject({
             agentSessionId,
-            agentSessionRuntimeBindingId: expect.any(String),
+            agentSessionRuntimeBindingId: opened.body.agentSessionRuntimeBindingId,
             turnId,
             leaseId: attemptId,
             packageSnapshotId: pkg.snapshotId,
           });
+          expect(commands.indexOf(opened)).toBeLessThan(commands.indexOf(started));
+          expect(opened.body.resume).toEqual(index && change !== 'same' ? resume : null);
+          expect(opened.body.nativeEnvironment).toEqual(
+            index && change === 'native' ? environment : {}
+          );
+          expect(pkg.runtime.environment?.values).toEqual(opened.body.nativeEnvironment);
           if (originalPackage) {
-            expect(sessionCompatibilityDigest(pkg)).toBe(
-              sessionCompatibilityDigest(originalPackage)
-            );
             expect(pkg.snapshotId).not.toBe(originalPackage.snapshotId);
+            if (change === 'same')
+              expect(sessionCompatibilityDigest(pkg)).toBe(
+                sessionCompatibilityDigest(originalPackage)
+              );
+            else {
+              // Core AgentSession Replacement: retirement and exact resume precede successor work.
+              expect(predecessorAtOpen).toMatchObject({
+                id: originalId,
+                status: 'closed',
+                nativeHandleDigest: resume!.digest,
+              });
+              expect(closeAtOpen).toMatchObject({
+                disposition: 'succeeded',
+                body: { state: 'closed', privateState: 'absent' },
+              });
+              expect(store.getAgentSession(originalId)).toMatchObject({
+                status: 'closed',
+                retainedStorage: store.getAgentSession(successorId).retainedStorage,
+              });
+              expect(started.body.agentSessionRuntimeBindingId).not.toBe(
+                commands[0]!.body.agentSessionRuntimeBindingId
+              );
+            }
+            expect(pkg.agent).toEqual(originalPackage.agent);
+            const runtime = originalPackage.runtime;
+            const expectedEnvironment =
+              change === 'native'
+                ? { ...runtime.environment!, values: environment }
+                : runtime.environment;
+            expect(pkg.runtime).toEqual({ ...runtime, environment: expectedEnvironment });
+            if (change !== 'mcp') expect(pkg.supply).toEqual(originalPackage.supply);
+            else {
+              const selected = resolveWorkspaceMcpServer({
+                catalog: configuration.workspaceMcpServerCatalogs.find(
+                  (catalog) => catalog.workspaceId === workspaceId
+                )!.catalog,
+                serverId: 'added-mcp',
+              });
+              expect(pkg.supply).toEqual({
+                ...originalPackage.supply,
+                mcpServers: expect.arrayContaining([
+                  ...originalPackage.supply.mcpServers,
+                  {
+                    id: 'added-mcp',
+                    allowedTools: ['echo'],
+                    catalogDigest: selected.catalogDigest,
+                    pinnedSchemaSnapshotId: null,
+                    schemaPolicy: 'tracking',
+                  },
+                ]),
+              });
+            }
+            if (change === 'mcp')
+              expect(pkg.supply.mcpServers).toHaveLength(
+                originalPackage.supply.mcpServers.length + 1
+              );
+            expect(
+              store
+                .listThreadAgentSessions(workspaceId, threadId)
+                .filter((session) => isCurrentAgentSessionStatus(session.status))
+                .map((session) => session.id)
+            ).toEqual([agentSessionId]);
           } else originalPackage = pkg;
           gate.completion.resolve();
           await gate.execution;
           expect((await dispatch).startedTurns).toHaveLength(1);
-          expect(store.getTurnById(turnId).status).toBe('completed');
+          expect(store.getTurnById(turnId)).toMatchObject({ agentSessionId, status: 'completed' });
           expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
             phase: 'closed',
             fenceRef: expect.any(String),
@@ -4892,36 +5005,67 @@ describe('createConfiguredTurnExecutor', () => {
             state: 'released',
             fenceRef: expect.any(String),
           });
-          expect(store.getAgentSession(agentSessionId)).toMatchObject({
+          const resident = store.getAgentSession(agentSessionId);
+          expect(resident).toMatchObject({
             status: 'idle',
             nativeHandleDigest: 'a'.repeat(64),
+            retainedStorage: expect.any(Object),
           });
+          if (!index) resume = { locator: resident.id, digest: resident.nativeHandleDigest! };
         } finally {
           gate.completion.resolve();
           await dispatch.catch(() => undefined);
           if (native.executor.launches > index) await gate.execution.catch(() => undefined);
         }
       }
+      const sessionIds = change === 'same' ? [originalId] : [originalId, successorId];
       const operations: Record<string, number> = {};
-      for (const { operation } of commands) {
-        expect(['session.open', 'session.inspect', 'turn.start']).toContain(operation);
-        operations[operation] = (operations[operation] ?? 0) + 1;
+      for (const command of commands) {
+        expect(
+          change === 'same'
+            ? ['session.open', 'session.inspect', 'turn.start']
+            : ['session.open', 'session.inspect', 'session.close', 'turn.start']
+        ).toContain(command.operation);
+        expect(sessionIds).toContain(command.body.agentSessionId);
+        const started = commands.find(
+          (c) =>
+            c.operation === 'turn.start' && c.body.agentSessionId === command.body.agentSessionId
+        )!;
+        expect(command.harnessInstanceId).toBe(started.harnessInstanceId);
+        expect(command.body.agentSessionRuntimeBindingId).toBe(
+          started.body.agentSessionRuntimeBindingId
+        );
+        operations[command.operation] = (operations[command.operation] ?? 0) + 1;
       }
-      expect(operations).toMatchObject({ 'session.open': 1, 'turn.start': 2 });
+      expect(operations).toMatchObject(
+        change === 'same'
+          ? { 'session.open': 1, 'turn.start': 2 }
+          : { 'session.open': 2, 'session.close': 1, 'turn.start': 2 }
+      );
+      if (change !== 'same')
+        expect(
+          commands.find((command) => command.operation === 'session.close')!.body
+        ).toMatchObject({
+          agentSessionId: originalId,
+          agentSessionRuntimeBindingId: commands[0]!.body.agentSessionRuntimeBindingId,
+        });
       expect(new Set(commands.map((command) => command.operationId)).size).toBe(commands.length);
-      expect(new Set(commands.map((command) => command.harnessInstanceId)).size).toBe(1);
+      if (change !== 'mcp')
+        expect(new Set(commands.map((command) => command.harnessInstanceId)).size).toBe(1);
       expect(
         new Set(commands.map((command) => command.body.agentSessionRuntimeBindingId)).size
-      ).toBe(1);
-      expect(commands.every((command) => command.body.agentSessionId === agentSessionId)).toBe(
-        true
-      );
+      ).toBe(change === 'same' ? 1 : 2);
       expect(new Set(authorities).size).toBe(6);
-      expect(
-        store.listThreadAgentSessions(workspaceId, threadId).map((session) => session.id)
-      ).toEqual([agentSessionId]);
+      expect(new Set(loopbackAuthorities).size).toBe(change === 'same' ? 2 : 4);
+      expect(store.getTurnById(testEntityId('tu', `turn_${labels[0]}`)).status).toBe('completed');
+      expect(store.getAgentSession(originalId)).toMatchObject({
+        status: change === 'same' ? 'idle' : 'closed',
+        nativeHandleDigest: resume!.digest,
+      });
+      const sessions = store.listThreadAgentSessions(workspaceId, threadId);
+      expect(sessions.map((session) => session.id).sort()).toEqual(sessionIds.sort());
       expect(native.executor.inputs).toEqual(['Run fixture', 'Run next fixture']);
-      const preparation = ['image.acquire', 'image.inspect', 'sandbox.create', 'bridge.open'];
+      // R280: acquisition is authorized point-of-use work; inspection has no incidental count cap.
       const counts: Record<string, number> = {};
       for (const effect of native.effects) {
         counts[effect.kind] = (counts[effect.kind] ?? 0) + 1;
@@ -4937,7 +5081,15 @@ describe('createConfiguredTurnExecutor', () => {
         }
       }
       expect(Object.keys(counts).sort()).toEqual(
-        [...preparation, 'reference.import', 'workspace.collect', 'file.export'].sort()
+        [
+          'image.acquire',
+          'image.inspect',
+          'sandbox.create',
+          'bridge.open',
+          'reference.import',
+          'workspace.collect',
+          'file.export',
+        ].sort()
       );
       expect(counts['image.acquire']).toBeGreaterThan(0);
       expect(counts).toMatchObject({ 'sandbox.create': 1, 'bridge.open': 1 });
@@ -4946,162 +5098,9 @@ describe('createConfiguredTurnExecutor', () => {
       );
     } finally {
       observation.mockRestore();
+      resultObservation.mockRestore();
       native.restore();
       workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'mcp',
-    'native',
-  ] as const)('replaces the resident binding when only %s changes and resumes its exact recorded pair', async (change) => {
-    const admitted = await admitIdleSupplyResident(
-      'supply_mcp',
-      change === 'native' ? { nativeValues: {} } : {}
-    );
-    const withChange = change === 'native' ? packageWithChangedNative : packageWithAddedMcp;
-    const { backend, coreDb, environmentPackage, readyDigest, settleNext } = admitted;
-    try {
-      const decisionPackage = withChange(
-        environmentPackage,
-        {
-          ...environmentPackage.scope,
-          turnId: testEntityId('tu', 'turn_supply_mcp_next'),
-        },
-        'snapshot_supply_mcp_next'
-      );
-      if (change === 'mcp')
-        expect(sessionCompatibilityDigest(decisionPackage)).toBe(
-          sessionCompatibilityDigest(environmentPackage)
-        );
-      else
-        expect(sessionCompatibilityDigest(decisionPackage)).not.toBe(
-          sessionCompatibilityDigest(environmentPackage)
-        );
-      await expect(
-        backend.prepareAgentSessionContinuity?.({
-          agentSessionCompatibilityKey: sessionCompatibilityDigest(decisionPackage),
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          reuseAllowed: true,
-          threadId: environmentPackage.scope.threadId,
-          workspaceId: environmentPackage.scope.workspaceId,
-        })
-      ).resolves.toBe('replacement-required');
-      await expect(
-        backend.prepareAgentSessionContinuity?.({
-          agentSessionCompatibilityKey: sessionCompatibilityDigest(decisionPackage),
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          environmentPackage: decisionPackage,
-          reuseAllowed: true,
-          threadId: environmentPackage.scope.threadId,
-          workspaceId: environmentPackage.scope.workspaceId,
-        })
-      ).resolves.toBe('replacement-required');
-      const closing = backend.prepareAgentSessionContinuity?.({
-        agentSessionCompatibilityKey: sessionCompatibilityDigest(decisionPackage),
-        agentSessionId: environmentPackage.scope.agentSessionId,
-        environmentPackage: decisionPackage,
-        reuseAllowed: false,
-        threadId: environmentPackage.scope.threadId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      });
-      const closeCommand = await settleNext('session.close', {
-        privateState: 'absent',
-        state: 'closed',
-      });
-      expect(closeCommand.body).toMatchObject({
-        agentSessionId: environmentPackage.scope.agentSessionId,
-      });
-      await expect(closing).resolves.toBe('closed');
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
-      ).toEqual({ count: 0 });
-      const successorPackage = withChange(
-        environmentPackage,
-        {
-          ...environmentPackage.scope,
-          agentSessionId: testEntityId('as', 'as_supply_mcp_successor'),
-          turnId: testEntityId('tu', 'turn_supply_mcp_successor'),
-          requestId: `request:${testEntityId('tu', 'turn_supply_mcp_successor')}`,
-        },
-        'snapshot_supply_mcp_successor'
-      );
-      // A successor gets fresh disposable paths while retaining the authorized native pair.
-      const successorPaths = workerSessionInputPaths(successorPackage.scope.agentSessionId);
-      successorPackage.workspace.outputs = successorPackage.workspace.outputs.map((output) =>
-        output.id === 'turn-output-root'
-          ? { ...output, path: `${successorPaths.root}/outputs` }
-          : output
-      );
-      successorPackage.workspace.generatedFiles = successorPackage.workspace.generatedFiles.map(
-        (file) =>
-          file.id === 'agent-environment-package'
-            ? { ...file, target: successorPaths.packagePath }
-            : file
-      );
-      successorPackage.policy.filesystem!.rules = successorPackage.policy.filesystem!.rules.map(
-        (rule) =>
-          rule.id === 'openkit-context-package'
-            ? { ...rule, workerPath: successorPaths.contextRoot }
-            : rule
-      );
-      (successorPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
-        planSessionWorkspaceMaterialization({ environmentPackage: successorPackage });
-      const resume = { digest: readyDigest, locator: environmentPackage.scope.agentSessionId };
-      await authorizeNanoHostPackage(coreDb, successorPackage);
-      bindNanoHostWorkerLineage(coreDb, successorPackage, {
-        attemptId: testEntityId('attempt', 'lease_supply_mcp_successor'),
-        sandboxBindingRef: 'sandbox-binding:supply-mcp-successor',
-      });
-      await anchorNanoHostMaterialization(coreDb, backend, successorPackage);
-      const successorMaterialization = await backend.materialize(successorPackage, {
-        sandboxBindingRef: factoryPackageBinding(coreDb, successorPackage),
-        nativeResume: resume,
-        workspaceRoots: [],
-      });
-      await backend.bindNativeHandleRecorder(successorPackage.snapshotId, () => undefined);
-      const successorLaunch = submitTestNanoHostTurn(coreDb, backend, successorMaterialization);
-      const opened = await settleNext('session.open', {
-        maxActiveTurns: 20,
-        nativeHandleDigest: readyDigest,
-        nativeHandleState: 'ready',
-        state: 'open',
-      });
-      expect(opened.body.resume).toEqual(resume);
-      if (change === 'native') {
-        expect(opened.body.nativeEnvironment).toEqual({ NATIVE_SETTING: 'changed', EMPTY: '' });
-        expect(
-          coreDb.sqlite
-            .prepare(
-              'SELECT native_environment_applied AS applied FROM agent_session_runtime_bindings'
-            )
-            .get()
-        ).toEqual({ applied: 0 });
-        expect(
-          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
-        ).toEqual({ count: 1 });
-      }
-      await settleNext('turn.start', {
-        nativeHandleDigest: readyDigest,
-        nativeHandleState: 'ready',
-        state: 'started',
-      });
-      await successorLaunch;
-      if (change === 'native')
-        expect(
-          coreDb.sqlite
-            .prepare(
-              'SELECT native_environment_applied AS applied FROM agent_session_runtime_bindings'
-            )
-            .get()
-        ).toEqual({ applied: 1 });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings')
-          .all()
-      ).toEqual([{ agentSessionId: testEntityId('as', 'as_supply_mcp_successor') }]);
-    } finally {
       coreDb.sqlite.close();
     }
   });
