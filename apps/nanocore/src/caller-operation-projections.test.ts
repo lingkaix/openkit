@@ -14,6 +14,7 @@ import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError } from './operation-error.js';
+import * as goalCoordinator from './runtime/goal-coordinator.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -248,9 +249,26 @@ async function mcpRead(f: Awaited<ReturnType<typeof fixture>>, secret: string, i
 describe('caller operation projections', () => {
   it('returns only current local, session and bearer metadata without provisioning or enumerating work', async () => {
     requireCallerDefinition();
+    // Join real startup before observing request-only enumeration and effects.
+    const createCoordinator = goalCoordinator.createGoalCoordinator;
+    const coordinators = vi
+      .spyOn(goalCoordinator, 'createGoalCoordinator')
+      .mockImplementation((options) => {
+        const coordinator = createCoordinator(options);
+        vi.spyOn(coordinator, 'boot');
+        return coordinator;
+      });
     const f = await fixture();
     const admin = f.token();
     const localApp = f.makeApp(f.store, 'local');
+    expect(coordinators).toHaveBeenCalledTimes(2);
+    for (const { value: coordinator } of coordinators.mock.results) {
+      const boot = vi.mocked(coordinator.boot);
+      expect(boot).toHaveBeenCalledOnce();
+      await boot.mock.results[0]!.value;
+      boot.mockRestore();
+    }
+    coordinators.mockRestore();
     const list = vi.spyOn(f.store, 'listWorkspaces');
     const threads = vi.spyOn(f.store, 'listThreads');
     const turns = vi.spyOn(f.store, 'listThreadTurns');

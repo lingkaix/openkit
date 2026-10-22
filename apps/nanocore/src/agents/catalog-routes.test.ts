@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import * as goalCoordinator from '../runtime/goal-coordinator.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -59,6 +60,15 @@ describe('agent.list and agent.read operations', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: allowedWorkspace.id,
     });
+    // Join real startup before observing request-only enumeration and effects.
+    const createCoordinator = goalCoordinator.createGoalCoordinator;
+    const coordinators = vi
+      .spyOn(goalCoordinator, 'createGoalCoordinator')
+      .mockImplementation((options) => {
+        const coordinator = createCoordinator(options);
+        vi.spyOn(coordinator, 'boot');
+        return coordinator;
+      });
     const app = createApp({
       store,
       coreDb,
@@ -67,6 +77,14 @@ describe('agent.list and agent.read operations', () => {
           .manifest,
       ],
     });
+    expect(coordinators).toHaveBeenCalledOnce();
+    for (const { value: coordinator } of coordinators.mock.results) {
+      const boot = vi.mocked(coordinator.boot);
+      expect(boot).toHaveBeenCalledOnce();
+      await boot.mock.results[0]!.value;
+      boot.mockRestore();
+    }
+    coordinators.mockRestore();
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Agent catalog must not discover physical Workspaces.');
     });
@@ -567,5 +585,6 @@ describe('agent.list and agent.read operations', () => {
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
+  vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
 });
