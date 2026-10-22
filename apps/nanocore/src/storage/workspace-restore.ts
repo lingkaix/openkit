@@ -12,8 +12,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import {
   allocateEntityId,
-  deriveEntityId,
   PROTOCOL_VERSION,
+  SEALED_TURN_TERMINALS,
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -31,6 +31,7 @@ import {
   listThreadPendingRequests,
   renderPendingOutcomeItems,
 } from '../runtime/pending-requests.js';
+import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -56,6 +57,8 @@ import {
 } from './workspace-backup-bundle.js';
 import { completeCapture } from './workspace-capture-protection.js';
 import {
+  assertCanonicalDirectory,
+  ensureCanonicalDirectory,
   loadWorkspaceFileRecords,
   nativeProductScope,
   syncCanonicalDirectory,
@@ -76,6 +79,7 @@ import {
   recoveryReport,
   refuseRecovery,
   withRecoveryRoot,
+  workspaceRecoveryPredecessorRoot,
 } from './workspace-recovery-admissions.js';
 import type {
   WorkspaceRecoveryCliArgs,
@@ -140,12 +144,7 @@ async function finishTarget(
   const map = mapping(core, input, owned);
   const workspaceId = owned.workspace_id;
   const final = join(core.dataRoot, 'workspaces', workspaceId);
-  // This unregistered recovery slot retains original identities and is never a published Workspace.
-  const predecessor = join(
-    core.dataRoot,
-    'workspaces',
-    deriveEntityId('ws', `workspace-recovery:predecessor:${owned.admission_id}`)
-  );
+  const predecessor = workspaceRecoveryPredecessorRoot(owned);
   const candidate = existsSync(owned.candidate_ref) ? owned.candidate_ref : final;
   if (!owned.proof.candidateDigest || candidateDigest(candidate) !== owned.proof.candidateDigest)
     refuseRecovery('recovery-required');
@@ -159,7 +158,11 @@ async function finishTarget(
     deps.atBoundary?.('before-target-rename');
     if (input.command === 'restore' && existsSync(final)) {
       if (existsSync(predecessor)) refuseRecovery('recovery-required');
+      assertCanonicalDirectory(dirname(dirname(owned.candidate_ref)));
+      ensureCanonicalDirectory(dirname(dirname(predecessor)));
+      ensureCanonicalDirectory(dirname(predecessor));
       renameSync(final, predecessor);
+      syncCanonicalDirectory(dirname(predecessor));
     } else if (existsSync(final)) refuseRecovery('identity-collision');
     mkdirSync(dirname(final), { recursive: true, mode: 0o700 });
     renameSync(candidate, final);
@@ -357,14 +360,11 @@ export async function abandonWorkspaceRecovery(
         refuseRecovery('recovery-required');
       renameSync(candidate, retired);
     }
-    const predecessor = join(
-      core.dataRoot,
-      'workspaces',
-      deriveEntityId('ws', `workspace-recovery:predecessor:${owned.admission_id}`)
-    );
+    const predecessor = workspaceRecoveryPredecessorRoot(owned);
     if (existsSync(predecessor)) {
       if (existsSync(final)) refuseRecovery('recovery-required');
       renameSync(predecessor, final);
+      syncCanonicalDirectory(dirname(predecessor));
     }
     syncCanonicalDirectory(dirname(final));
     syncCanonicalDirectory(dirname(retired));
@@ -597,7 +597,7 @@ async function bindTargetCandidate(
         restrictedRecovery: restricted,
       }),
     });
-    await closeImportedPendingRequests(db, root, records);
+    await interruptImportedHistory(db, root, records);
     owned.proof.result = { ...owned.proof.result, restrictedRecovery: restricted };
   } finally {
     sqlite.close();
@@ -605,7 +605,7 @@ async function bindTargetCandidate(
 }
 
 /** Duplicates FsStore native publication preparation until a shared owner exists. */
-async function closeImportedPendingRequests(
+async function interruptImportedHistory(
   db: ReturnType<typeof bindWorkspaceSqlite>,
   root: string,
   records: NonNullable<ReturnType<typeof loadWorkspaceFileRecords>[number]>
@@ -628,6 +628,79 @@ async function closeImportedPendingRequests(
     contentMount: mount,
   });
   try {
+    // Captured execution is historical: publish interruption, never infer physical cleanup or replay.
+    for (const before of records.turns.filter((turn) => !SEALED_TURN_TERMINALS[turn.status])) {
+      const now = new Date().toISOString();
+      const turn = {
+        ...before,
+        status: 'interrupted' as const,
+        completedAt: now,
+        error: {
+          code: 'workspace_recovered',
+          message: 'Captured work was interrupted by offline recovery.',
+        },
+      };
+      const sequence = Number(
+        db.sqlite
+          .prepare(
+            "SELECT COALESCE(MAX(sequence),0)+1 FROM control_product_entries WHERE kind='event' AND turn_id=?"
+          )
+          .pluck()
+          .get(before.id)
+      );
+      const governed = db.sqlite
+        .prepare('SELECT 1 FROM control_executions WHERE work_id=?')
+        .get(before.id)
+        ? await workerTurnTerminalPublication(db, before.id, 'interrupted')
+        : undefined;
+      await client.terminal(database, {
+        owner,
+        turn: {
+          kind: 'turn',
+          expectedRevision: Number(
+            db.sqlite
+              .prepare('SELECT revision FROM control_turns WHERE id=?')
+              .pluck()
+              .get(before.id)
+          ),
+          record: writeRetainedV1({
+            ...turn,
+            items: [],
+            captureCoverage: records.turnCaptureCoverage?.get(before.id),
+          }),
+        },
+        products: [],
+        entries: [
+          {
+            kind: 'event',
+            turnId: before.id,
+            sequence,
+            expectedRevision: 0,
+            content: await publishImmutableProductJson(
+              mount,
+              owner,
+              join(root, 'runtime/staging'),
+              writeRetainedV1({
+                protocolVersion: PROTOCOL_VERSION,
+                workspaceId: db.workspaceId,
+                threadId: before.threadId,
+                turnId: before.id,
+                requestId: null,
+                timestamp: now,
+                sequence,
+                event: 'turn.completed',
+                data: { type: 'turn-completed', stopReason: 'aborted', turn },
+              })
+            ),
+          },
+        ],
+        reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
+        evidence: governed?.evidence ?? [],
+        evidenceContent: [],
+        command: null,
+        execution: governed?.execution ?? null,
+      });
+    }
     for (const thread of records.threads) {
       const pending = () => listThreadPendingRequests(db.sqlite, db.workspaceId, thread.id);
       const sources = () =>

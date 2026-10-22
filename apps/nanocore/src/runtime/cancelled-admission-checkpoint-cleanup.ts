@@ -30,6 +30,7 @@ import {
   readPublishedAgentSessionIds,
   readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
+import { listWorkspaceRecoveryPredecessors } from '../storage/workspace-recovery-admissions.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
   listSchedulerExecutionAttemptsForTurn,
@@ -368,7 +369,11 @@ interface CleanupTurnIdentity {
 }
 
 type CleanupHistoryRead =
-  | { readonly status: 'readable'; readonly turns: readonly CleanupTurnIdentity[] }
+  | {
+      readonly status: 'readable';
+      readonly turns: readonly CleanupTurnIdentity[];
+      readonly receipts: ReadableReceipts;
+    }
   | { readonly status: 'unreadable' };
 
 /** Validates complete native work history before absence can authorize checkpoint deletion. */
@@ -389,9 +394,19 @@ function readCleanupHistory(dataRoot: string, coreDb: CoreDb): CleanupHistoryRea
       .all() as { workspace_id: string }[];
     if (retained.some((row) => !workspaceIds.includes(row.workspace_id)))
       return { status: 'unreadable' };
-    for (const workspaceId of workspaceIds) {
+    const predecessors = listWorkspaceRecoveryPredecessors(coreDb);
+    const receipts: ReadableReceipts[number][] = [];
+    for (const predecessor of predecessors) {
+      const read = readDurableCommandRequestRecords(predecessor.dataRoot);
+      if (read.status === 'unreadable') return { status: 'unreadable' };
+      receipts.push(...read.records);
+    }
+    for (const { workspaceId, dataRoot: historyRoot } of [
+      ...workspaceIds.map((workspaceId) => ({ workspaceId, dataRoot })),
+      ...predecessors,
+    ]) {
       assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-      const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+      const scope = nativeProductScope(historyRoot, { kind: 'workspace', workspaceId });
       assertCanonicalDirectory(dirname(dirname(scope.path)));
       assertCanonicalDirectory(dirname(scope.path));
       assertCanonicalRegularFile(scope.path);
@@ -408,13 +423,13 @@ function readCleanupHistory(dataRoot: string, coreDb: CoreDb): CleanupHistoryRea
         const turnId = row.record.id as string;
         const threadId = row.record.threadId as string;
         if (!threads.has(threadId)) return { status: 'unreadable' };
-        const history = readPublishedTurnFileRecords(dataRoot, workspaceId, threadId, turnId);
+        const history = readPublishedTurnFileRecords(historyRoot, workspaceId, threadId, turnId);
         if (!history) return { status: 'unreadable' };
         readNativeTurnEvents(scope, history.turn);
         turns.push({ owner: scope.owner, threadId, turnId });
       }
     }
-    return { status: 'readable', turns };
+    return { status: 'readable', turns, receipts };
   } catch {
     return { status: 'unreadable' };
   }
@@ -492,7 +507,7 @@ function classifyCheckpoint(input: {
     coreDb: input.coreDb,
     dataRoot: input.dataRoot,
     lease: leases[0],
-    receipts: input.receipts,
+    receipts: [...input.receipts, ...input.history.receipts],
     workspaceDb: input.workspaceDb,
   });
   if (evidence) return evidence;

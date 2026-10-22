@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstatSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { configureOwnedSqlite } from './control-store.js';
@@ -14,6 +16,7 @@ import {
   parseWorkspaceBackupManifest,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
+import { assertCanonicalDirectory } from './workspace-file-records.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
@@ -37,6 +40,45 @@ export interface RecoveryAdmission {
   readonly revision: number;
   readonly candidate_ref: string;
   readonly proof: RecoveryProof;
+}
+/** Keeps original identities under the existing private recovery container, outside live discovery. */
+export function workspaceRecoveryPredecessorRoot(owned: RecoveryAdmission): string {
+  return join(
+    dirname(dirname(owned.candidate_ref)),
+    'predecessor',
+    'workspaces',
+    owned.workspace_id
+  );
+}
+
+/** Selects preserved predecessor history only through retained recovery ownership, never directory discovery. */
+export function listWorkspaceRecoveryPredecessors(
+  core: CoreDb
+): readonly { dataRoot: string; workspaceId: string }[] {
+  const predecessors: { dataRoot: string; workspaceId: string }[] = [];
+  const ids = core.sqlite
+    .prepare('SELECT admission_id FROM workspace_recovery_admissions')
+    .all() as { admission_id: string }[];
+  for (const { admission_id: id } of ids) {
+    const owned = readRecoveryAdmission(core, id)!;
+    if (owned.proof.input.command !== 'restore') continue;
+    if (!RequestIdSchema.safeParse(owned.admission_id).success) refuseRecovery('recovery-required');
+    const container = `${resolve(core.dataRoot)}.workspace-recovery-${owned.admission_id}`;
+    if (owned.candidate_ref !== join(container, 'workspaces', owned.workspace_id))
+      refuseRecovery('recovery-required');
+    const root = workspaceRecoveryPredecessorRoot(owned);
+    let present = true;
+    for (const path of [container, dirname(dirname(root)), dirname(root), root]) {
+      if (!lstatSync(path, { throwIfNoEntry: false })) {
+        present = false;
+        break;
+      }
+      assertCanonicalDirectory(path);
+    }
+    if (present)
+      predecessors.push({ dataRoot: dirname(dirname(root)), workspaceId: owned.workspace_id });
+  }
+  return predecessors;
 }
 /** Produces a bounded refusal without storage paths or packaged text. */
 export function refuseRecovery(code: WorkspaceRecoveryErrorCode): never {
