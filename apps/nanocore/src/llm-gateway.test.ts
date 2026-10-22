@@ -1079,13 +1079,13 @@ describe('OpenAI-compatible agent gateway', () => {
   it('denies an attributed Gateway call when current Workspace authority is revoked before provider dispatch', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-current-authority-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Gateway current authority');
     const providerOptions = createOllamaProviderOptions();
     let upstreamCalls = 0;
 
     try {
-      applyMigrations(coreDb);
       recordLocalGatewayAuthority(coreDb, workspace.id);
       const baseRuntimeConfigManager = createRuntimeConfigManager({
         dataRoot,
@@ -1167,6 +1167,7 @@ describe('OpenAI-compatible agent gateway', () => {
   ])('rejects foreign private Turn capture hints on %s before dispatch', async (path) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Private capture');
     const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
@@ -1179,7 +1180,6 @@ describe('OpenAI-compatible agent gateway', () => {
     });
     const upstream = vi.fn();
     try {
-      applyMigrations(coreDb);
       recordLocalGatewayAuthority(coreDb, workspace.id);
       const app = createApp({
         coreDb,
@@ -1213,6 +1213,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('records durable usage for attributed Anthropic Chat Completions through pi-ai', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-usage-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Gateway usage');
     await store.createThread(workspace.id, 'Gateway usage', testEntityId('th', 'thread_1'));
@@ -1253,7 +1254,6 @@ describe('OpenAI-compatible agent gateway', () => {
     };
 
     try {
-      applyMigrations(coreDb);
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
@@ -1407,12 +1407,12 @@ describe('OpenAI-compatible agent gateway', () => {
   it('persists a pre-adapter system-prompt digest on attributed family llm CapabilityCall rows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-system-prompt-digest-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Gateway system-prompt digest');
     const defaultLiteral = 'You are a helpful assistant.';
 
     try {
-      applyMigrations(coreDb);
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
@@ -1503,11 +1503,11 @@ describe('OpenAI-compatible agent gateway', () => {
   it('opens no CapabilityCall for a public Gateway request that has a workspace database but no lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-unattributed-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Unattributed gateway');
 
     try {
-      applyMigrations(coreDb);
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
@@ -1564,6 +1564,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('records durable usage for attributed native OpenAI-compatible Chat Completions', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-openai-compatible-usage-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Native OpenAI usage');
     await store.createThread(
@@ -1573,7 +1574,6 @@ describe('OpenAI-compatible agent gateway', () => {
     );
 
     try {
-      applyMigrations(coreDb);
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
