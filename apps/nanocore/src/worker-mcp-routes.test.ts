@@ -2955,6 +2955,7 @@ describe('worker MCP routes', () => {
     const generativeClient = new Client({ name: 'admin-generative-route-test', version: '1.0.0' });
     const lineageClient = new Client({ name: 'admin-lineage-route-test', version: '1.0.0' });
     const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    const submitObservation = vi.spyOn(native.executor.executionBackend!, 'submit');
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       const registered = await auth.handler(
@@ -2992,6 +2993,21 @@ describe('worker MCP routes', () => {
       expect(firstAdmission?.serverAdminTokenId === issued.tokenId).toBe(true);
       expect(firstAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
       expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+      // Start this authority scenario after its own original native submit completes.
+      const firstAttempt = listSchedulerExecutionAttemptsForTurn(
+        coreDb,
+        environmentPackage.scope
+      ).find((row) => row.inputRef === environmentPackage.snapshotId && row.phase === 'open');
+      expect(firstAttempt).toBeDefined();
+      const submissions = submitObservation.mock.calls.flatMap(([input], index) =>
+        input.attemptId === firstAttempt!.attemptId &&
+        input.inputRef === environmentPackage.snapshotId
+          ? [submitObservation.mock.results[index]]
+          : []
+      );
+      expect(submissions).toHaveLength(1);
+      expect(submissions[0]?.type).toBe('return');
+      await submissions[0]!.value;
       await client.connect(transport('echo'));
       await generativeClient.connect(transport('openkit-generative'));
       await expect(
@@ -3148,6 +3164,7 @@ describe('worker MCP routes', () => {
           .map((result) => result.value.closeout)
       );
       taskAdmissions.mockRestore();
+      submitObservation.mockRestore();
       await native.restore();
       await workerMcpGateway.close();
       workspaceDb.sqlite.close();
