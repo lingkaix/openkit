@@ -1614,7 +1614,8 @@ describe('Core Turn durable admission response', () => {
       return response;
     });
     try {
-      await vi.waitFor(() => expect(responseObserved).toBe(true));
+      await pending;
+      expect(responseObserved).toBe(true);
       expect(executor.completionObserved).toBe(false);
       const response = await pending;
       expect(response.status).toBe(token ? 200 : 202);
@@ -1668,7 +1669,8 @@ describe('Core Turn durable admission response', () => {
           replayObserved = true;
           return r;
         });
-        await vi.waitFor(() => expect(replayObserved).toBe(true));
+        await closingReplay;
+        expect(replayObserved).toBe(true);
         // D119: this terminal owner tuple still lacks release proof. Replay refuses without waiting or resubmitting.
         const closingResponse = await closingReplay;
         expect(closingResponse.status).toBe(token ? 200 : 409);
