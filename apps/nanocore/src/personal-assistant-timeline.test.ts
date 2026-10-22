@@ -4,37 +4,50 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS, type OperationId } from '@openkit/app-api-schemas';
 import { allocateEntityId, ThreadSchema } from '@openkit/protocol';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { seedRetainedPersonalWorkspace } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import {
+  ensureUserQuickChatWorkspace,
+  recordWorkspaceOwnerMembership,
+} from './workspace-membership.js';
 
 /** Keeps real public admission, file records and Core relationships in one disposable root. */
-function fixture() {
+async function fixture(retainedHistory = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'personal-assistant-timeline-'));
   const databases: ReturnType<typeof openCoreDb>[] = [];
   onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     for (const database of databases) {
       if (database.sqlite.open) database.sqlite.close();
     }
-    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const open = () => {
+  const open = async () => {
     const coreDb = openCoreDb(dataRoot);
     databases.push(coreDb);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
+    let store = new FsStore({ dataRoot });
+    if (retainedHistory && databases.length === 1) {
+      await seedRetainedPersonalWorkspace(store);
+      store = new FsStore({ dataRoot });
+    }
+    await ensureUserQuickChatWorkspace({
+      coreDb,
+      store,
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, store });
     return { app, coreDb, store };
   };
-  return { ...open(), reopen: open };
+  return { ...(await open()), reopen: open };
 }
 
 /** Calls the definition-derived public binding with an explicit command identity when supplied. */
@@ -106,7 +119,7 @@ function insertUser(coreDb: ReturnType<typeof openCoreDb>, userId: string) {
 
 describe('Personal Assistant Timeline admission', () => {
   it('keeps Timeline identity separate for each authenticated User and Workspace', async () => {
-    const current = fixture();
+    const current = await fixture();
     const workspace = await current.store.createWorkspace('Shared project');
     const otherWorkspace = await current.store.createWorkspace('Other project');
     for (const entry of [workspace, otherWorkspace]) {
@@ -152,7 +165,7 @@ describe('Personal Assistant Timeline admission', () => {
   });
 
   it('admits no second ordinary private conversation across distinct commands, concurrent delivery and restart', async () => {
-    const current = fixture();
+    const current = await fixture();
     const workspace = await current.store.createWorkspace('Project Timeline');
     recordWorkspaceOwnerMembership({
       coreDb: current.coreDb,
@@ -183,8 +196,9 @@ describe('Personal Assistant Timeline admission', () => {
     expect(conflict.status).toBe(409);
     expect(conflict.body).toMatchObject({ code: 'idempotency_key_conflict' });
 
+    await shutdownControlStoreWorkerClient();
     current.coreDb.sqlite.close();
-    const restarted = current.reopen();
+    const restarted = await current.reopen();
     const replayAfterRestart = await request(restarted.app, 'thread.create', input);
     expect(replayAfterRestart.status).toBe(200);
     expect(ThreadSchema.parse(replayAfterRestart.body).id).toBe(timeline.id);
@@ -214,7 +228,7 @@ describe('Personal Assistant Timeline admission', () => {
   });
 
   it('keeps retained private history and exact create receipts readable after restart', async () => {
-    const current = fixture();
+    const current = await fixture();
     const workspace = current.store.listWorkspaces()[0]!;
     const input = {
       workspaceId: workspace.id,
@@ -237,9 +251,10 @@ describe('Personal Assistant Timeline admission', () => {
       workspace.id,
       administration.id
     );
+    await shutdownControlStoreWorkerClient();
     current.coreDb.sqlite.close();
 
-    const restarted = current.reopen();
+    const restarted = await current.reopen();
     expect(restarted.store.getThread(workspace.id, administration.id)).toEqual(
       current.store.getThread(workspace.id, administration.id)
     );
@@ -267,33 +282,11 @@ describe('Personal Assistant Timeline admission', () => {
   });
 
   it('keeps retained extra private conversations readable but refuses new submissions before inference', async () => {
-    const current = fixture();
+    const current = await fixture(true);
     const workspace = current.store.listWorkspaces()[0]!;
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-10-15T00:00:00.000Z'));
-    onTestFinished(() => vi.useRealTimers());
-    const timeline = await current.store.createThread(
-      workspace.id,
-      'Timeline',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
-    vi.advanceTimersByTime(1);
-    const retained = await current.store.createThread(
-      workspace.id,
-      'Retained history',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
-    vi.useRealTimers();
+    const threads = current.store.listThreads(workspace.id);
+    const timeline = threads.find((thread) => thread.name === 'Timeline')!;
+    const retained = threads.find((thread) => thread.name === 'Retained history')!;
     const history = await retainExchange(current.store, workspace.id, retained.id);
     const before = current.store.listThreadTurns(workspace.id, retained.id);
     const submitted = await request(current.app, 'conversation.submit', {
@@ -321,13 +314,14 @@ describe('Personal Assistant Timeline admission', () => {
     expect(read.body.items).toEqual(history);
   });
 
-  it('provisions one ordinary personal Workspace and reuses its owner relationship after restart', () => {
-    const current = fixture();
+  it('provisions one ordinary personal Workspace and reuses its owner relationship after restart', async () => {
+    const current = await fixture();
     const homes = current.store.listWorkspaces();
     expect(homes).toHaveLength(1);
     const home = homes[0]!;
+    await shutdownControlStoreWorkerClient();
     current.coreDb.sqlite.close();
-    const restarted = current.reopen();
+    const restarted = await current.reopen();
     expect(restarted.store.listWorkspaces()).toEqual([home]);
     expect(
       restarted.coreDb.sqlite
@@ -343,7 +337,7 @@ describe('Personal Assistant Timeline admission', () => {
   });
 
   it('admits a Goal with a shared execution Thread inside the personal Workspace', async () => {
-    const current = fixture();
+    const current = await fixture();
     const home = current.store.listWorkspaces()[0]!;
     const input = {
       workspaceId: home.id,
@@ -365,7 +359,7 @@ describe('Personal Assistant Timeline admission', () => {
   });
 
   it('refuses member invitation before changing owner-only membership or invitation records', async () => {
-    const current = fixture();
+    const current = await fixture();
     const home = current.store.listWorkspaces()[0]!;
     const inviteeEmail = insertUser(current.coreDb, 'usr_00000000-0000-78b9-8b32-6a5ac623024f');
     const membersBefore = current.coreDb.sqlite

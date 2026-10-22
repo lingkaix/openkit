@@ -14,10 +14,12 @@ import {
   type WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { coreDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { FIXTURE_LOCAL_USER_ID } from './local-user.js';
+import { notebookImportFixture } from './notebook-import.js';
 
 const userFixtures = new Map<string, { workspaceId: string; threadId: string }>();
 /** Explicit canonical IDs retained by the ordinary Demo fixture. */
@@ -155,4 +157,39 @@ export async function createDemoStore(
   await store.ensureQuickChatWorkspace(fixtureUserId);
   await seedDemoWorkspace(store, fixtureUserId);
   return store;
+}
+
+/**
+ * Cold-imports earlier extra private history without admitting a new duplicate.
+ * @param store Fresh unpublished personal Workspace destination; its native writer is stopped first.
+ * @param userId Canonical User owning both retained private conversations.
+ * @returns After validated native import; no original-release or live command ACK is claimed.
+ */
+export async function seedRetainedPersonalWorkspace(
+  store: FsStore,
+  userId = FIXTURE_LOCAL_USER_ID
+) {
+  await shutdownControlStoreWorkerClient();
+  const demo = createDemoWorkspaceForUser(userId);
+  const workspace = await new FsStore().ensureQuickChatWorkspace(userId);
+  await store.importWorkspaceSnapshot({
+    workspace,
+    threads: ['Timeline', 'Retained history'].map((name, index) => ({
+      ...demo.thread,
+      id: allocateEntityId('th'),
+      owner: { kind: 'workspace' as const, workspaceId: workspace.id },
+      name,
+      visibility: 'private' as const,
+      privateOwnerUserId: userId,
+      createdAt: new Date(Date.parse(workspace.createdAt) + index).toISOString(),
+      updatedAt: new Date(Date.parse(workspace.createdAt) + index).toISOString(),
+    })),
+    turns: [],
+    knowledge: [],
+    itemRevisions: [],
+    artifacts: [],
+    agentSessions: [],
+    turnEvents: [],
+    ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [], userId }),
+  });
 }
