@@ -71,6 +71,7 @@ import {
   type WorkerCoordinatorCandidate,
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
+import { NotebookError } from './knowledge/notebook.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import {
   type CommandRequestRecord,
@@ -94,6 +95,7 @@ import {
 import { OperationError } from './operation-error.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
+import { RetrievalServiceError } from './retrieval-service.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
   isSchedulerExecutionBusyRefusal,
@@ -173,6 +175,7 @@ import {
   type FileStorageAdmission,
 } from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
+import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
@@ -1973,9 +1976,27 @@ function hasClosedDirectTaskGateReceipt(store: FsStore, turn: z.infer<typeof Tur
  * Creates the strict recovery error shared by direct Task replay and closeout.
  *
  * @param message Product-safe owner contradiction.
+ * @param cause Optional preparation failure whose owner classification stays in process diagnostics.
  * @returns Typed recovery-required error.
  */
-function directTaskModeRecoveryError(message: string): TurnStartValidationError {
+function directTaskModeRecoveryError(message: string, cause?: unknown): TurnStartValidationError {
+  if (cause !== undefined) {
+    try {
+      const diagnostic =
+        cause instanceof OperationError
+          ? { errorClass: 'OperationError', errorCode: cause.code }
+          : cause instanceof ControlStoreWorkerError
+            ? { errorClass: 'ControlStoreWorkerError', errorCode: cause.code }
+            : cause instanceof RetrievalServiceError
+              ? { errorClass: 'RetrievalServiceError', errorCode: cause.code }
+              : cause instanceof NotebookError
+                ? { errorClass: 'NotebookError', errorCode: cause.code }
+                : { errorClass: 'Error', errorCode: null };
+      console.error('task.knowledge.preparation_refused', diagnostic);
+    } catch {
+      // Optional diagnostics cannot replace the original recovery refusal.
+    }
+  }
   return new TurnStartValidationError('recovery_required', message, 409);
 }
 
@@ -3476,7 +3497,8 @@ export function createConversationService({
                   throw directTaskModeRecoveryError(
                     error instanceof OperationError && error.code === 'idempotency_key_conflict'
                       ? 'Task Knowledge retrieval exists without a provable worker owner.'
-                      : 'Task Knowledge retrieval could not establish one coherent selection.'
+                      : 'Task Knowledge retrieval could not establish one coherent selection.',
+                    error
                   );
                 }
                 if (filePayloadPaths) files!.assertCurrent();
@@ -5158,7 +5180,8 @@ export function createTaskStartOperation({
                 throw directTaskModeRecoveryError(
                   error instanceof OperationError && error.code === 'idempotency_key_conflict'
                     ? 'Task Knowledge retrieval exists without a provable worker owner.'
-                    : 'Task Knowledge retrieval could not establish one coherent selection.'
+                    : 'Task Knowledge retrieval could not establish one coherent selection.',
+                  error
                 );
               }
 
