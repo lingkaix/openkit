@@ -268,18 +268,10 @@ describe('native role Source authority and Worker raw exposure', () => {
       { visibility: 'workspace' }
     );
     const sessionId = allocateEntityId('as');
-    const turn = await f.store.createTurn(
-      f.workspace.id,
-      thread.id,
-      'Inspect exact meaning.',
-      human,
-      null,
-      { agentId: 'agent_codex_host', agentSessionId: sessionId }
-    );
     const now = new Date().toISOString();
     const session = await f.store.createAgentSession({
       id: sessionId,
-      agentId: turn.agentId!,
+      agentId: 'agent_codex_host',
       workspaceId: f.workspace.id,
       threadId: thread.id,
       status: 'busy',
@@ -287,6 +279,14 @@ describe('native role Source authority and Worker raw exposure', () => {
       createdAt: now,
       updatedAt: now,
     });
+    const turn = await f.store.createTurn(
+      f.workspace.id,
+      thread.id,
+      'Inspect exact meaning.',
+      human,
+      null,
+      { agentId: session.agentId, agentSessionId: session.id }
+    );
     // Use the exact current Worker fields projected by native Kernel and context assembly.
     const access: KnowledgeRetrievalAccess = {
       store: f.store,

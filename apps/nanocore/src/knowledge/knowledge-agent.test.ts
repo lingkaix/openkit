@@ -27,6 +27,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import {
   admitKnowledgeRetrieval,
+  knowledgeSourceAudienceReadable,
   readAuthorizedServerNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
@@ -39,6 +40,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -187,8 +189,6 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     },
     publicationRequest
   );
-  // A valid shared publication does not retain disclosure authority after its Source becomes private.
-  Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: userId });
   if (emptyOverview) {
     const baseRevision = notebook.publishedRevision();
     const candidateRevision = notebook.prepare({
@@ -657,6 +657,16 @@ it('keeps real Workspace and Server selections distinct while reading exact page
 
 it('binds Worker dispatch to its package Workspace and shared audience, refusing private-source reads with visible uncertainty', async () => {
   const f = await fixture();
+  const sourceAccess = { workspaceId: f.workspace.id, access: f.access };
+  expect(knowledgeSourceAudienceReadable(sourceAccess, f.sourceId)).toBe(true);
+  // Restrict the Source after publication through its current originating Thread Policy.
+  writeManagedThreadPolicyFixture({
+    dataRoot: f.dataRoot,
+    workspaceId: f.workspace.id,
+    threadId: f.sourceThread.id,
+    userId: f.userId,
+  });
+  expect(knowledgeSourceAudienceReadable(sourceAccess, f.sourceId)).toBe(false);
   const thread = await f.store.createThread(f.workspace.id, 'Shared Worker output');
   const turn = await f.store.createTurn(f.workspace.id, thread.id, 'Ask knowledge', f.actor);
   // This fixture proves the dispatch binding after admission; it does not simulate an authenticated MCP transport or CapabilityCall delivery.

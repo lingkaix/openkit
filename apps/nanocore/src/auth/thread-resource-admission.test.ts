@@ -161,6 +161,17 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', async
   const thread = await store.createThread(workspace.id, 'Worker resource');
   const actor = { kind: 'user' as const, id: FIXTURE_LOCAL_USER_ID };
   const agentSessionId = allocateEntityId('as');
+  const timestamp = new Date().toISOString();
+  await store.createAgentSession({
+    id: agentSessionId,
+    agentId: 'researcher',
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    status: 'busy',
+    message: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
   const turn = await store.createTurn(workspace.id, thread.id, 'Request access', actor, null, {
     agentId: 'researcher',
     agentSessionId,
@@ -270,14 +281,14 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', async
     store.setWorkspaceResourcePolicyProjection(() =>
       managedThreadPolicy({ workspaceId: workspace.id, threadId: thread.id, userId: actor.id })
     );
-    expect(() =>
+    await expect(
       admitOperation(
         KERNEL_REMAINING_OPERATION_DEFINITIONS['kernel.records.get'],
         lightAppInput,
         worker,
         { coreDb: db, store, workspaceMutationAdmission: new WorkspaceMutationAdmission() }
       )
-    ).toThrow('Thread not found.');
+    ).rejects.toThrow('Thread not found.');
   } finally {
     kernel.mockRestore();
     db.sqlite.close();

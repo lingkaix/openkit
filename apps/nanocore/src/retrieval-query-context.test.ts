@@ -48,6 +48,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ACTOR = {
@@ -515,7 +516,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'Private source',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: ACTOR.id }
+      { visibility: 'workspace' }
     );
     const material = 'revocation source private bytes';
     const source = await captureWorkspaceSourceFixture({
@@ -552,7 +553,12 @@ describe('retrieval query context, references, and query-owned traces', () => {
     });
     expect(selection.retrievalTraceRef).toBeDefined();
 
-    Object.assign(sourceThread, { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
+    writeManagedThreadPolicyFixture({
+      dataRoot: fixture.dataRoot,
+      workspaceId: fixture.workspaceId,
+      threadId: sourceThread.id,
+      userId: ACTOR.id,
+    });
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
         dataRoot: fixture.dataRoot,
@@ -761,7 +767,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'Private source',
       undefined,
       'conversation',
-      { visibility: 'private', privateOwnerUserId: ACTOR.id }
+      { visibility: 'workspace' }
     );
     const material = 'stale source reference private material';
     const source = await captureWorkspaceSourceFixture({
@@ -819,7 +825,12 @@ describe('retrieval query context, references, and query-owned traces', () => {
     expect(currentPageBytes).toContain(`source_refs: ${JSON.stringify([sourceReference])}`);
     const withoutFormerSource = currentPageBytes.replace(/^source_refs: .+$/m, 'source_refs: []');
     publishFixturePage(fixture, page.id, withoutFormerSource);
-    Object.assign(sourceThread, { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' });
+    writeManagedThreadPolicyFixture({
+      dataRoot: fixture.dataRoot,
+      workspaceId: fixture.workspaceId,
+      threadId: sourceThread.id,
+      userId: ACTOR.id,
+    });
 
     let caught: unknown;
     try {
