@@ -24,8 +24,12 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  publishImmutableProductJson,
+  readImmutableProductJson,
+} from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
+import { nativeProductScope, turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -127,6 +131,17 @@ async function submissionFixture(turnInputs: Buffer[] = []) {
     workspaceCwd: '/workspace/output',
     workspaceRoots: [],
   });
+  await store.createAgentSession({
+    id: environmentPackage.scope.agentSessionId,
+    agentId: environmentPackage.agent.agentId,
+    workspaceId: workspaceIdForOwner(turn.owner),
+    threadId: turn.threadId,
+    status: 'busy',
+    message: null,
+    environmentPackageSnapshotId: environmentPackage.snapshotId,
+    createdAt: environmentPackage.createdAt,
+    updatedAt: environmentPackage.createdAt,
+  });
   await store.updateTurn(turn.id, {
     status: 'running',
     agentId: environmentPackage.agent.agentId,
@@ -136,6 +151,7 @@ async function submissionFixture(turnInputs: Buffer[] = []) {
   applyScopedMigrations(workspaceDb);
   onTestFinished(async () => {
     await closeRetrievalServices();
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -450,7 +466,7 @@ describe('synchronous Worker file submission', () => {
     });
   });
 
-  it('publishes nothing when the Turn seals during capture', async () => {
+  it('refuses a terminal authority reread after capture (L1 dependency fault)', async () => {
     const fixture = await submissionFixture();
     const clean = await fixture.captureArtifact({
       packageSnapshotId: '',
@@ -459,16 +475,26 @@ describe('synchronous Worker file submission', () => {
       maxByteLength: 0,
     });
     fixture.captureArtifact.mockClear();
+    const readTurn = fixture.store.getTurnById.bind(fixture.store);
+    const authorityRead = vi.spyOn(fixture.store, 'getTurnById');
+    onTestFinished(() => authorityRead.mockRestore());
     fixture.captureArtifact.mockImplementation(async () => {
-      await fixture.store.updateTurn(fixture.turn.id, {
-        status: 'interrupted',
-        completedAt: '2026-10-05T01:00:00.000Z',
+      // L1 admission-read fault only: the real native Turn stays running; no sealing is claimed.
+      authorityRead.mockClear();
+      authorityRead.mockImplementation((turnId) => {
+        const turn = readTurn(turnId);
+        return turnId === fixture.turn.id
+          ? { ...turn, status: 'interrupted', completedAt: '2026-10-05T01:00:00.000Z' }
+          : turn;
       });
       return clean;
     });
     await expect(fixture.submit()).rejects.toMatchObject({
       code: 'turn_not_active',
     });
+    expect(authorityRead).toHaveBeenCalledWith(fixture.turn.id);
+    authorityRead.mockRestore();
+    expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
@@ -622,12 +648,26 @@ describe('submission authority and byte evidence', () => {
   ] as const)('refuses replay when canonical source %s contradicts the original AEP', async (field) => {
     const fixture = await submissionFixture();
     await fixture.submit();
-    await fixture.store.updateTurn(fixture.turn.id, {
-      [field]:
-        field === 'agentSessionId'
-          ? testEntityId('as', 'contradictory-source')
-          : 'contradictory-source',
-    });
+    if (field === 'agentSessionId') {
+      const contradictoryId = testEntityId('as', 'contradictory-source');
+      await fixture.store.createAgentSession({
+        ...fixture.store.getAgentSession(fixture.environmentPackage.scope.agentSessionId),
+        id: contradictoryId,
+        status: 'closed',
+      });
+      await shutdownControlStoreWorkerClient();
+      // Inject coherent at-rest corruption, not a supported live reassignment of immutable lineage.
+      expect(
+        fixture.workspaceDb.sqlite
+          .prepare(
+            "UPDATE control_turns SET agent_session_id=?, record_json=json_set(record_json,'$.agentSessionId',?) WHERE id=?"
+          )
+          .run(contradictoryId, contradictoryId, fixture.turn.id).changes
+      ).toBe(1);
+      expect(fixture.store.getTurnById(fixture.turn.id).agentSessionId).toBe(contradictoryId);
+    } else {
+      await fixture.store.updateTurn(fixture.turn.id, { [field]: 'contradictory-source' });
+    }
     await expect(fixture.submit()).rejects.toMatchObject({ code: 'recovery_required' });
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
@@ -810,26 +850,59 @@ describe('submission publication and handled rollback', () => {
       createdAt: '2026-10-05T00:00:00.000Z',
       completedAt: '2026-10-05T00:00:00.000Z',
     });
-    const historyPath = join(
-      fixture.dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'threads',
-      'th_00000000-0000-7000-8000-000000000001',
-      'turns',
-      fixture.turn.id,
-      'items.jsonl'
+    await shutdownControlStoreWorkerClient();
+    const scope = nativeProductScope(fixture.dataRoot, fixture.turn.owner);
+    const entries = () =>
+      fixture.workspaceDb.sqlite
+        .prepare('SELECT * FROM control_product_entries WHERE turn_id=? ORDER BY kind,sequence')
+        .all(fixture.turn.id);
+    const prior = fixture.workspaceDb.sqlite
+      .prepare(
+        "SELECT sequence,content_json FROM control_product_entries WHERE kind='item' AND id=?"
+      )
+      .get('it_00000000-0000-767c-97eb-d0af46940f44') as {
+      sequence: number;
+      content_json: string;
+    };
+    const annotated = {
+      ...(readImmutableProductJson(
+        scope.contentMount,
+        scope.owner,
+        JSON.parse(prior.content_json)
+      ) as Record<string, unknown>),
+      futureExtension: { retained: true },
+    };
+    const content = await publishImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      join(fixture.dataRoot, 'workspaces', fixture.workspaceDb.workspaceId, 'runtime', 'staging'),
+      annotated
     );
-    const priorRow = JSON.parse(readFileSync(historyPath, 'utf8'));
-    priorRow.futureExtension = { retained: true };
-    const priorBytes = `${JSON.stringify(priorRow)}\n`;
-    writeFileSync(historyPath, priorBytes);
-    const fail = vi.spyOn(fixture.store, 'recordCommandRequest').mockImplementation(() => {
-      throw new Error('Receipt I/O failure.');
+    // Seed a descriptive addition with new immutable bytes before its stopped SQL reference.
+    expect(
+      fixture.workspaceDb.sqlite
+        .prepare(
+          "UPDATE control_product_entries SET content_json=? WHERE turn_id=? AND kind='item' AND sequence=?"
+        )
+        .run(JSON.stringify(content), fixture.turn.id, prior.sequence).changes
+    ).toBe(1);
+    const priorEntries = entries();
+    const priorPath = join(scope.contentMount.root, content.reference.locator.path);
+    const priorBytes = readFileSync(priorPath);
+    fixture.workspaceDb.sqlite.exec(
+      "CREATE TRIGGER refuse_submission_receipt BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='artifact.submit' BEGIN SELECT RAISE(ABORT, 'private receipt failure'); END"
+    );
+    await expect(fixture.submit()).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
     });
-    await expect(fixture.submit()).rejects.toThrow('Receipt I/O failure.');
+    await shutdownControlStoreWorkerClient();
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
-    expect(readFileSync(historyPath, 'utf8')).toBe(priorBytes);
+    expect(entries()).toEqual(priorEntries);
+    expect(readFileSync(priorPath)).toEqual(priorBytes);
+    expect(readImmutableProductJson(scope.contentMount, scope.owner, content)).toMatchObject({
+      futureExtension: { retained: true },
+    });
     const reopened = new FsStore({ dataRoot: fixture.dataRoot });
     expect(
       reopened
@@ -845,7 +918,7 @@ describe('submission publication and handled rollback', () => {
         .filter((item) => item.turnId === fixture.turn.id && item.type === 'artifact-reference')
     ).toHaveLength(0);
     expect(fixture.store.getTurnEvents(fixture.turn.id)).toHaveLength(0);
-    fail.mockRestore();
+    fixture.workspaceDb.sqlite.exec('DROP TRIGGER refuse_submission_receipt');
     acknowledgedArtifactId(await fixture.submit('corrected-after-io'));
   });
 });
