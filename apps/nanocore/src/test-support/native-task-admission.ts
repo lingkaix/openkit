@@ -36,7 +36,7 @@ import { recordTestNativeRuntimeTarget } from './native-environment.js';
  * Models the peer; native owners fence delivery and release; interrupted finals follow real commands.
  * @param coreDb Caller-owned migrated Core database for this fixture lifetime.
  * @param store Caller-created Demo store sharing the same data root.
- * @param options Existing configuration reader shared by the runtime and admitted Turns.
+ * @param options Shared runtime configuration and optional outside peer Git checkout report.
  * @param outside Opaque outside peer facts retained across sequential stopped controllers.
  * @returns Outside facts, native executor, per-Turn gates, effects, runtime, admission, gateway and stop.
  */
@@ -46,7 +46,10 @@ export function createNativeTaskAdmissionFixture(
   options: Pick<
     NonNullable<Parameters<typeof createConfiguredWorkerLifecycleRuntime>[0]>,
     'readRuntimeConfig'
-  > = {},
+  > & {
+    /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
+    workspaceGitBaseline?: { commit: string; tree: string };
+  } = {},
   outside = {
     bindings: new Map<string, Map<string, { state: string; turnId: string | null }>>(),
     integrationBindingRef: undefined as string | undefined,
@@ -58,6 +61,7 @@ export function createNativeTaskAdmissionFixture(
     peerFaults: {
       failedFinal: false,
       failFileExport: false,
+      closeRefusal: undefined as 'cleanup_required' | 'conflict' | undefined,
       failedExportPaths: [] as string[],
     },
   }
@@ -350,7 +354,14 @@ export function createNativeTaskAdmissionFixture(
             'session.open': [
               ['new'],
               'open',
-              { state: 'open', maxActiveTurns: command.body.maxActiveTurns, ...ready },
+              {
+                state: 'open',
+                maxActiveTurns: command.body.maxActiveTurns,
+                ...ready,
+                ...(options.workspaceGitBaseline
+                  ? { workspaceGitBaseline: options.workspaceGitBaseline }
+                  : {}),
+              },
             ],
             'turn.start': [['open', 'completed'], 'running', { state: 'started', ...ready }],
             'session.inspect': [
@@ -441,14 +452,16 @@ export function createNativeTaskAdmissionFixture(
               .then(() => original.reportFinal!(false))
               .catch((error: unknown) => failTurn(original, error));
           }
-          binding.state = next!;
+          const closeRefusal =
+            command.operation === 'session.close' ? peerFaults.closeRefusal : undefined;
+          if (!closeRefusal) binding.state = next!;
           const result = {
             schemaVersion: 2 as const,
             harnessInstanceId: command.harnessInstanceId,
             operationId: command.operationId,
             sequence: command.sequence,
-            disposition: 'succeeded' as const,
-            body,
+            disposition: closeRefusal ? ('refused' as const) : ('succeeded' as const),
+            body: closeRefusal ? { reasonCode: closeRefusal } : body,
           };
           settleNanoHostHarnessOperation(coreDb, {
             result,
