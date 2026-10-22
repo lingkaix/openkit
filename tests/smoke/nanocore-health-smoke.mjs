@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { ensureLocalUser } from '../../apps/nanocore/dist/auth/identity.js';
 import { FsStore } from '../../apps/nanocore/dist/lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../../apps/nanocore/dist/storage/control-store-worker-client.js';
 import { openCoreDb } from '../../apps/nanocore/dist/storage/db.js';
 import { applyMigrations } from '../../apps/nanocore/dist/storage/migrate.js';
 import { createWorkspaceDeletionRequest } from '../../apps/nanocore/dist/workspace-deletion-request.js';
@@ -24,7 +25,7 @@ async function main() {
   const appPort = await findOpenPort();
   const nanoHostPort = await findOpenPort();
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-nano-smoke-'));
-  const deletion = seedWorkspaceDeletionRequest(dataRoot);
+  const deletion = await seedWorkspaceDeletionRequest(dataRoot);
   await writeNanoHostConfig(dataRoot, nanoHostPort);
   const child = spawn(process.execPath, [join(repoRoot, 'apps/nanocore/dist/index.js')], {
     cwd: join(repoRoot, 'apps/nanocore'),
@@ -140,13 +141,13 @@ async function main() {
 }
 
 /** Seeds one active Workspace and pre-listener deletion request in the disposable data root. */
-function seedWorkspaceDeletionRequest(dataRoot) {
+async function seedWorkspaceDeletionRequest(dataRoot) {
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     const localUserId = ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Deletion recovery smoke');
+    const workspace = await store.createWorkspace('Deletion recovery smoke');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: localUserId,
@@ -167,6 +168,7 @@ function seedWorkspaceDeletionRequest(dataRoot) {
     return { request, workspaceId: workspace.id };
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
   }
 }
 

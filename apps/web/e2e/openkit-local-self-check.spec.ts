@@ -319,10 +319,12 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${threadId}`);
   // 202 admits the Turn. The simulator question is published with the Context Package snapshot.
   await expect(async () => {
-    const snapshot = await getJson<{ contextPackageDigest: string | null }>(
+    const snapshot = await getJson<{ status: string; contextPackageDigest: string | null }>(
       '/api/app/operations/turn.read',
       { workspaceId, threadId, turnId: submission.turn.id }
     );
+    // The question can be visible before the simulator's separate terminal commit.
+    expect(snapshot.status).toBe('completed');
     expect(snapshot.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
     expect(
       await page.getByText('Which summary tone should the simulator use?').count()

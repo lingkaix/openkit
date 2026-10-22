@@ -10,7 +10,8 @@ import type {
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
-import { seedDemoWorkspaceDataRoot } from './_lib/demo-data.js';
+import { shutdownControlStoreWorkerClient } from '../../nanocore/dist/storage/control-store-worker-client.js';
+import { seedDemoWorkspaceDataRoot, seedSyntheticLocalSchedulerTarget } from './_lib/demo-data.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 let stack: IsolatedWebStack | null = null;
@@ -18,6 +19,7 @@ let fixtureRoot: string | null = null;
 test.afterEach(async () => {
   await stack?.stop();
   stack = null;
+  await shutdownControlStoreWorkerClient();
   if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
   fixtureRoot = null;
 });
@@ -58,7 +60,12 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   const workspaceDb = openWorkspaceDb(fixtureRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   const actor = { kind: 'user' as const, id: users[0]!.id };
-  const turn = store.createTurn(workspaceId, threadId, 'Native Generative browser proof', actor);
+  const turn = await store.createTurn(
+    workspaceId,
+    threadId,
+    'Native Generative browser proof',
+    actor
+  );
   const context = {
     store,
     workspaceDb,
@@ -82,6 +89,8 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   let appId: string;
   let recordId: string;
   let notePresentationId: string;
+  const finish = Promise.withResolvers<void>();
+  let execution: Promise<void> | undefined;
   try {
     const schema: LightAppSchemaInput = {
       format: 'openkit.light-app',
@@ -107,15 +116,16 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     };
     let app: CreateLightAppResponse;
     let record: LightAppRecord;
-    // The local capability transport uses production token and attempt admission. Only image and backend acceptance evidence are synthetic; no provider or host runs.
+    // Production admission uses the native Simulator; no Provider or physical Host runs.
     const requireCore = createRequire(new URL('../../nanocore/package.json', import.meta.url));
     const [
       { Hono },
       { Client, StreamableHTTPClientTransport },
       { loadRuntimeConfig },
       { resolveAgentSetup },
-      { resolveAgentEnvironmentPackage },
-      { recordAgentEnvironmentPackageSnapshot },
+      { resolveAgentEnvironmentPackageMetadata, resolveAgentSessionCompatibilityKey },
+      { requireAgentEnvironmentPackageSnapshot },
+      { SimulatedTurnExecutor },
       { createSchedulerAdmissionEntry },
       attempts,
       nativeAttempts,
@@ -130,6 +140,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       import('../../nanocore/dist/agents/setup-resolver.js'),
       import('../../nanocore/dist/runtime/agent-environment.js'),
       import('../../nanocore/dist/runtime/aep-snapshot-ledger.js'),
+      import('../../nanocore/dist/lib/simulator.js'),
       import('../../nanocore/dist/scheduler-records.js'),
       import('../../nanocore/dist/runtime/execution-attempt-records.js'),
       import('../../nanocore/dist/runtime/nanohost-attempt-records.js'),
@@ -144,38 +155,28 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     expect(resolved.setup).not.toBeNull();
     const agentSessionId = allocateEntityId('as');
     const createdAt = new Date().toISOString();
-    store.createAgentSession({
-      id: agentSessionId,
+    const workerTurn = await store.updateTurn(turn.id, {
       agentId: resolved.setup!.manifest.id,
-      workspaceId,
-      threadId,
-      status: 'busy',
-      message: null,
-      createdAt,
-      updatedAt: createdAt,
     });
-    const workerTurn = store.updateTurn(turn.id, {
-      agentId: resolved.setup!.manifest.id,
-      agentSessionId,
-    });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const preparation = {
       coreDb,
       agentSetup: resolved.setup!,
       agentSessionId,
-      backend: { kind: 'openshell' },
-      captureCoverage: { scope: 'server', value: 'off' },
+      backend: { kind: 'openshell' as const },
       createdAt,
       requestId: randomUUID(),
       triggerActor: actor,
       turn: workerTurn,
+      turnInput: 'Update the retained local note.',
       workspaceCwd: '/workspace',
       workspaceRoots: [],
-    });
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage, createdAt });
+    };
+    const preparedPackage = resolveAgentEnvironmentPackageMetadata(preparation);
+    const sessionCompatibilityKey = resolveAgentSessionCompatibilityKey(preparation);
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `generative-browser-${randomUUID()}`,
-      requestId: environmentPackage.scope.requestId!,
+      requestId: preparedPackage.scope.requestId!,
       triggerActor: actor,
       workspaceId,
       threadId,
@@ -195,24 +196,46 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     nativeAttempts.bindNanoHostAttemptPreparation(coreDb, {
       attemptId: attempt.attemptId,
       agentSessionId,
-      inputRef: environmentPackage.snapshotId,
+      inputRef: preparedPackage.snapshotId,
       bindingRef: sandboxBindingRef,
-      sessionCompatibilityKey: 'generative-browser-local',
+      sessionCompatibilityKey,
     });
-    const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
+    await seedSyntheticLocalSchedulerTarget(fixtureRoot);
+    const entered = Promise.withResolvers<void>();
+    const simulator = new SimulatedTurnExecutor({ coreDb });
+    const submit = simulator.submit.bind(simulator);
+    // Hold only continuation after the original native producer accepts this exact attempt.
+    simulator.submit = async (request) => {
+      const observation = await submit(request);
+      expect(attempts.acceptSchedulerExecutionObservation(coreDb, observation)?.disposition).toBe(
+        'accepted'
+      );
+      entered.resolve();
+      await finish.promise;
+      return observation;
+    };
+    execution = simulator.startTurn(store, turn.id, 'Update the retained local note.', {
+      agentSetup: resolved.setup!,
+      agentSessionId,
       attemptId: attempt.attemptId,
-      operationId: `generative-browser-${randomUUID()}`,
-      submission: true,
+      requestId: preparedPackage.scope.requestId,
+      sessionCompatibilityKey,
+      triggerActor: actor,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
     });
-    expect(
-      attempts.acceptSchedulerExecutionObservation(coreDb, {
-        ...attempts.schedulerExecutionCorrelation(submitted),
-        disposition: 'accepted',
-        execution: 'running',
-        fenceRef: null,
-        outcomeRef: null,
-      })?.disposition
-    ).toBe('accepted');
+    await Promise.race([entered.promise, execution]);
+    expect(store.getTurnById(turn.id).agentSessionId).toBe(agentSessionId);
+    const current = attempts.requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    const environmentPackage = requireAgentEnvironmentPackageSnapshot(
+      workspaceDb,
+      workspaceId,
+      current.inputRef!
+    ).snapshot;
+    expect(environmentPackage.observability.captureCoverage).toEqual({
+      scope: 'server',
+      value: 'off',
+    });
     const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
     const registration = workerControlGateway.registerSession(environmentPackage, {
       sandboxBindingRef,
@@ -363,7 +386,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     );
     notePresentationId = notePresentation.id;
     const text = 'External source observation: 3 matches.';
-    const source = store.createItem({
+    const source = await store.createItem({
       id: 'it_00000000-0000-7000-8000-000000000059',
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
@@ -397,31 +420,29 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
         actions: [],
       }
     );
-    // This fixture created no Worker process or external stream. Its awaited native calls and revoked route are complete; cancel the modeled Turn and release only that local attempt before normal Core boot.
-    store.updateTurn(turn.id, { status: 'cancelled', completedAt: new Date().toISOString() });
-    const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
-      attemptId: attempt.attemptId,
-      cause: 'local-capability-fixture-ended',
-    });
-    expect(
-      attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
-        correlation: attempts.schedulerExecutionCorrelation(closing),
-        proof: {
-          terminalHandoff: true,
-          output: true,
-          evidence: true,
-          outsideWorkspaceCollection: true,
-          integrationDrain: true,
-          routesRevoked: true,
-        },
-        fenceRef: 'local-capability-fixture:no-worker-process',
-      }).phase
-    ).toBe('closed');
+    finish.resolve();
+    await execution;
+    expect(store.getTurnById(turn.id).status).toBe('completed');
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).phase).toBe(
+      'closed'
+    );
   } finally {
-    workspaceDb.sqlite.close();
-    coreDb.sqlite.close();
+    finish.resolve();
+    try {
+      // The original promise is checked before MCP and on normal completion; keep primary failures.
+      await execution?.catch(() => {
+        console.error('generative-native-execution-drain-refusal');
+      });
+    } finally {
+      try {
+        workspaceDb.sqlite.close();
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
   }
 
+  await shutdownControlStoreWorkerClient();
   stack = await startIsolatedWebStack({ mode: 'local', dataRoot: fixtureRoot, useSimulator: true });
   const coreUrl = stack.coreUrl;
   const operation = async (name: string, input: unknown) => {
