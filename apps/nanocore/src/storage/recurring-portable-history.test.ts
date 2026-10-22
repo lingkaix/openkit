@@ -13,6 +13,7 @@ import {
 } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import {
   insertExternalTriggerAdmission,
@@ -38,24 +39,25 @@ describe('recurring portable history', () => {
   let store: AutomationStore;
   let instant: string;
   let files: FsStore;
-  let workspace: ReturnType<FsStore['createWorkspace']>;
-  let thread: ReturnType<FsStore['createThread']>;
-  beforeEach(() => {
+  let workspace: Awaited<ReturnType<FsStore['createWorkspace']>>;
+  let thread: Awaited<ReturnType<FsStore['createThread']>>;
+  beforeEach(async () => {
     dataRoot = mkdtempSync(join(tmpdir(), 'recurrence-portable-'));
     coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     localUserId = ensureLocalUser(coreDb);
     files = new FsStore({ dataRoot });
-    workspace = files.createWorkspace('Portable history');
-    thread = files.createThread(workspace.id, 'Existing target');
+    workspace = await files.createWorkspace('Portable history');
+    thread = await files.createThread(workspace.id, 'Existing target');
     instant = '2026-10-16T00:00:00.000Z';
     store = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  function acceptedHistory(publish = true) {
+  async function acceptedHistory(publish = true) {
     const schedule = store.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -84,7 +86,7 @@ describe('recurring portable history', () => {
     const accepted = store.getOccurrence(occurrence.id);
     if (publish) {
       const entry = requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
-      files.createTurn(
+      await files.createTurn(
         entry.workspaceId,
         entry.threadId,
         entry.turnInput,
@@ -121,8 +123,8 @@ describe('recurring portable history', () => {
     expect(names.map((row) => row.name)).toEqual([...RECURRING_PORTABLE_CORE_TABLES].sort());
   });
 
-  it('exports the whitelist graph with an actually retained canonical Turn', () => {
-    const { schedule, occurrence } = acceptedHistory();
+  it('exports the whitelist graph with an actually retained canonical Turn', async () => {
+    const { schedule, occurrence } = await acceptedHistory();
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     expect(graph.schedules).toEqual([
       expect.objectContaining({
@@ -154,8 +156,8 @@ describe('recurring portable history', () => {
     validateRecurringPortableHistory(JSON.stringify(graph));
   });
 
-  it('retains a Turn reference only when the exact exported Thread owns it', () => {
-    const { occurrence } = acceptedHistory();
+  it('retains a Turn reference only when the exact exported Thread owns it', async () => {
+    const { occurrence } = await acceptedHistory();
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, [
       { id: occurrence.turnId!, threadId: thread.id },
     ]);
@@ -167,8 +169,8 @@ describe('recurring portable history', () => {
     ).toThrow();
   });
 
-  it('rewrites only admitted import-map identities and keeps source authority inert across repeated transfer', () => {
-    const { schedule, occurrence } = acceptedHistory();
+  it('rewrites only admitted import-map identities and keeps source authority inert across repeated transfer', async () => {
+    const { schedule, occurrence } = await acceptedHistory();
     const source = exportRecurringPortableHistory(coreDb, workspace.id, null, [
       { id: occurrence.turnId!, threadId: thread.id },
     ]);
@@ -228,9 +230,9 @@ describe('recurring portable history', () => {
       ).toEqual({ n: 0 });
   });
 
-  it('preserves external event joins as remapped inert history without target queue authority', () => {
-    const { schedule, occurrence } = acceptedHistory();
-    const targetThread = files.createThread(
+  it('preserves external event joins as remapped inert history without target queue authority', async () => {
+    const { schedule, occurrence } = await acceptedHistory();
+    const targetThread = await files.createThread(
       workspace.id,
       'Isolated case',
       undefined,
@@ -296,15 +298,15 @@ describe('recurring portable history', () => {
     ).toThrow('repeats or contradicts');
   });
 
-  it('refuses a reserved accepted Turn without published canonical evidence', () => {
-    acceptedHistory(false);
+  it('refuses a reserved accepted Turn without published canonical evidence', async () => {
+    await acceptedHistory(false);
     expect(() =>
       exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns())
     ).toThrow('requires inspection');
   });
 
-  it('imports the three-file graph as reminted inert history through the real snapshot reader', () => {
-    const { schedule, occurrence } = acceptedHistory();
+  it('imports the three-file graph as reminted inert history through the real snapshot reader', async () => {
+    const { schedule, occurrence } = await acceptedHistory();
     // One long-interval range exercises all three portable families without expanding missed work.
     store.updateAutomation(localUserId, schedule.id, { expectedRevision: 2, status: 'paused' });
     store.updateAutomation(localUserId, schedule.id, {
@@ -424,8 +426,8 @@ describe('recurring portable history', () => {
       ).toEqual({ n: 0 });
   });
 
-  it('rejects duplicate tuples, contradictory range arithmetic, overlapping coverage and attempt violations', () => {
-    acceptedHistory();
+  it('rejects duplicate tuples, contradictory range arithmetic, overlapping coverage and attempt violations', async () => {
+    await acceptedHistory();
     instant = '2026-10-16T02:00:00.000Z';
     store.collectScanCandidates(instant);
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
@@ -444,8 +446,8 @@ describe('recurring portable history', () => {
     expect(() => validateRecurringPortableHistory(JSON.stringify(attempt))).toThrow();
   });
 
-  it('rejects origin ownership, missing graph references and contradictory accepted attempts', () => {
-    acceptedHistory();
+  it('rejects origin ownership, missing graph references and contradictory accepted attempts', async () => {
+    await acceptedHistory();
     const source = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     const ownership = structuredClone(source);
     ownership.schedules[0]!.originActor.id = 'another-origin';
@@ -471,12 +473,20 @@ describe('recurring portable history', () => {
     ).toThrow('Thread reference');
   });
 
-  it('rejects different occurrences claiming the same retained Turn', () => {
-    const first = acceptedHistory();
-    const second = acceptedHistory();
+  it('rejects different occurrences claiming the same retained Turn', async () => {
+    const first = await acceptedHistory();
+    const firstThread = thread;
+    thread = await files.createThread(workspace.id, 'Second target');
+    const second = await acceptedHistory();
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, [
-      { id: first.occurrence.turnId!, threadId: thread.id },
-      { id: second.occurrence.turnId!, threadId: thread.id },
+      readPublishedTurnFileRecords(
+        dataRoot,
+        workspace.id,
+        firstThread.id,
+        first.occurrence.turnId!
+      )!.turn,
+      readPublishedTurnFileRecords(dataRoot, workspace.id, thread.id, second.occurrence.turnId!)!
+        .turn,
     ]);
     graph.occurrences[1]!.turnId = graph.occurrences[0]!.turnId;
     expect(() => validateRecurringPortableHistory(JSON.stringify(graph))).toThrow(
@@ -484,8 +494,8 @@ describe('recurring portable history', () => {
     );
   });
 
-  it('rejects exact range coverage of an already materialized individual instant', () => {
-    acceptedHistory();
+  it('rejects exact range coverage of an already materialized individual instant', async () => {
+    await acceptedHistory();
     instant = '2026-10-16T02:00:00.000Z';
     store.collectScanCandidates(instant);
     const source = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
@@ -543,8 +553,8 @@ describe('recurring portable history', () => {
     expect(() => validateRecurringPortableHistory(JSON.stringify(nominal))).toThrow();
   });
 
-  it('rejects unsupported required semantics and reads descriptive additions without exporting them', () => {
-    acceptedHistory();
+  it('rejects unsupported required semantics and reads descriptive additions without exporting them', async () => {
+    await acceptedHistory();
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     expect(() =>
       validateRecurringPortableHistory(
