@@ -36,7 +36,6 @@ import {
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type CoreDb, openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
@@ -1383,7 +1382,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               currentWorkerStorageAudienceAuthorizer(
                 this.coreDb,
                 input.environmentPackage,
-                this.readRuntimeConfig
+                this.readRuntimeConfig,
+                this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
               )
             )
           );
@@ -1452,7 +1452,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           currentWorkerStorageAudienceAuthorizer(
             this.coreDb,
             input.environmentPackage,
-            this.readRuntimeConfig
+            this.readRuntimeConfig,
+            this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
           )
         )
       );
@@ -1500,7 +1501,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           currentWorkerStorageAudienceAuthorizer(
             this.coreDb,
             environmentPackage,
-            this.readRuntimeConfig
+            this.readRuntimeConfig,
+            this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
           )
         )!
       );
@@ -2754,7 +2756,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
       environmentPackage,
-      this.readRuntimeConfig
+      this.readRuntimeConfig,
+      this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
     );
     const replacementSelection = this.workerStorageReplacementSelection(
       environmentPackage,
@@ -5452,7 +5455,8 @@ function requireAttachedWorkerStorageBinding(
 function currentWorkerStorageAudienceAuthorizer(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackagePreview,
-  readRuntimeConfig: (() => PublicNetworkConfiguration) | undefined
+  readRuntimeConfig: (() => PublicNetworkConfiguration) | undefined,
+  store: FsStore
 ): (contributor: WorkerStorageContributor) => boolean {
   const { scope } = environmentPackage;
   const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
@@ -5502,14 +5506,13 @@ function currentWorkerStorageAudienceAuthorizer(
       });
       if (live.status !== 'accepted' || live.attempt.attemptId !== native.attemptId) return false;
     }
-    const records = loadWorkspaceFileRecords(coreDb.dataRoot).find(
-      (records) => records.workspace.id === scope.workspaceId
-    );
-    const thread = records?.threads.find((thread) => thread.id === contributor.threadId);
-    if (!records || !thread || workspaceIdForOwner(thread.owner) !== scope.workspaceId)
-      return false;
+    // These Store readers recheck committed metadata without reconstructing unrelated content.
+    const workspace = store.getWorkspace(scope.workspaceId);
+    const threads = store.listThreads(scope.workspaceId);
+    const thread = threads.find((thread) => thread.id === contributor.threadId);
+    if (!thread || workspaceIdForOwner(thread.owner) !== scope.workspaceId) return false;
     const audienceOwner = {
-      getWorkspace: () => records.workspace,
+      getWorkspace: () => workspace,
       getWorkspaceResourceAccess: (workspaceId: string) => {
         if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
         const loaded = readRuntimeConfig().workspaceConfigs.find(
@@ -5533,7 +5536,7 @@ function currentWorkerStorageAudienceAuthorizer(
       canDiscloseThreadToAudience(
         audienceOwner,
         thread,
-        records.threads.find((candidate) => candidate.id === scope.threadId) ?? null
+        threads.find((candidate) => candidate.id === scope.threadId) ?? null
       )
     );
   };

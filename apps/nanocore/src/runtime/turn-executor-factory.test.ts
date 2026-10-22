@@ -37,6 +37,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -15469,6 +15470,82 @@ describe('createConfiguredTurnExecutor', () => {
       ).toEqual([fixture.adminUserId]);
     } finally {
       fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('admits canonical shared Thread storage without opening unrelated Knowledge', async () => {
+    const coreDb = createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+    const manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    admitTestNativeEnvironment(coreDb, manifest);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(coreDb.dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Storage audience fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    const backend = native.executor.executionBackend as WorkerGovernanceBackend;
+    const materialize = backend.materialize.bind(backend);
+    let openedNotebook = false;
+    const materialization = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      // Knowledge is a separate family; its content cannot decide storage audience eligibility.
+      const notebook = vi.spyOn(KnowledgeNotebook.prototype, 'publishedRevision');
+      notebook.mockImplementation(() => {
+        openedNotebook = true;
+        throw new Error('Unrelated Knowledge is unavailable.');
+      });
+      try {
+        return await materialize(...args);
+      } finally {
+        notebook.mockRestore();
+      }
+    });
+    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    try {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'queue:storage-audience-metadata',
+        requestId: '00000000-0000-4000-8000-00000000e800',
+        requestedAgentId: manifest.id,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: DEMO_THREAD_ID,
+        turnId: testEntityId('tu', 'storage_audience_metadata'),
+        turnInput: 'Use the current shared Thread audience.',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const agentSessionId = testEntityId('as', 'storage_audience_metadata');
+      const admission = native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', 'storage_audience_metadata'),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      admitted = await admission.catch(() => undefined);
+      expect(openedNotebook, 'Storage audience admission opened unrelated Knowledge.').toBe(false);
+      expect(admitted).toBeDefined();
+      expect((await admitted!.complete()).startedTurns).toHaveLength(1);
+      expect(store.getTurnById(entry.turnId).status).toBe('completed');
+    } finally {
+      await admitted?.cleanup();
+      materialization.mockRestore();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
     }
   });
 
