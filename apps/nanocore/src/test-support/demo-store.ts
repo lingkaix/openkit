@@ -102,22 +102,28 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
  *
  * @param store Store that should receive the demo fixture.
  * @param userId User id namespace for the fixture ids.
+ * @param knowledgePages Explicit authored pages; omission retains the default Demo page.
  * @returns After the native fixture import is durably acknowledged.
  */
 export async function seedDemoWorkspace(
   store: FsStore,
-  userId = FIXTURE_LOCAL_USER_ID
+  userId = FIXTURE_LOCAL_USER_ID,
+  knowledgePages?: readonly KnowledgeNotebookPage[]
 ): Promise<void> {
   const demo = createDemoWorkspaceForUser(userId);
+  const knowledge = knowledgePages ?? demo.knowledge;
 
   try {
     store.getWorkspace(demo.workspace.id);
     return;
   } catch {
     await store.importWorkspaceSnapshot({
-      workspace: demo.workspace,
+      workspace: {
+        ...demo.workspace,
+        counts: { ...demo.workspace.counts, knowledgeEntryCount: knowledge.length },
+      },
       threads: [demo.thread],
-      knowledge: demo.knowledge,
+      knowledge,
       turns: [],
       itemRevisions: [],
       artifacts: [],
@@ -128,9 +134,7 @@ export async function seedDemoWorkspace(
         producer: { kind: 'user', id: userId },
         instructionReference: 'test-fixture:demo-workspace',
       },
-      initialNotebookFiles: Object.fromEntries(
-        demo.knowledge.map((page) => [page.path, page.content])
-      ),
+      initialNotebookFiles: Object.fromEntries(knowledge.map((page) => [page.path, page.content])),
     });
   }
 }
@@ -138,14 +142,15 @@ export async function seedDemoWorkspace(
 /**
  * Creates a test store with Quick Chat plus the explicit Demo Workspace fixture.
  *
- * @param options Store options.
+ * @param options Store options and optional authored Demo Knowledge pages.
  * @param fixtureUserId User namespace used only to derive deterministic fixture ids.
  * @returns Promise for the Store after its native Workspace fixtures are durably acknowledged.
  */
 export async function createDemoStore(
-  options: FsStoreOptions = {},
+  options: FsStoreOptions & { knowledge?: readonly KnowledgeNotebookPage[] } = {},
   fixtureUserId = FIXTURE_LOCAL_USER_ID
 ): Promise<FsStore> {
+  const { knowledge, ...storeOptions } = options;
   // File-backed native product readers require their actual Core schema before Store construction.
   if (options.dataRoot && !existsSync(coreDbPath(options.dataRoot))) {
     const coreDb = openCoreDb(options.dataRoot);
@@ -155,9 +160,9 @@ export async function createDemoStore(
       coreDb.sqlite.close();
     }
   }
-  const store = new FsStore(options);
+  const store = new FsStore(storeOptions);
   await store.ensureQuickChatWorkspace(fixtureUserId);
-  await seedDemoWorkspace(store, fixtureUserId);
+  await seedDemoWorkspace(store, fixtureUserId, knowledge);
   return store;
 }
 

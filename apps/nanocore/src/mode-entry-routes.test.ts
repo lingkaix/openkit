@@ -3825,7 +3825,7 @@ describe('route B queued Task receipts', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot, knowledge: [] });
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
