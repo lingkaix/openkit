@@ -7,7 +7,7 @@ kind: process
 
 ## Owns
 
-This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, deterministic gate policy, test data and fixture hygiene, smoke and artifact health posture, real-provider opt-in rules, and the relationship between AI-assisted story tests and lower-level regression coverage.
+This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, test authority and lifecycle including test retirement, deterministic gate policy, test data and fixture hygiene, smoke and artifact health posture, real-provider opt-in rules, and the relationship between AI-assisted story tests and lower-level regression coverage.
 
 ## Does Not Own
 
@@ -84,6 +84,22 @@ The normal test gate must not require real OpenAI, ChatGPT subscription, Codex l
 
 Opt-in tests may use real providers or real local host tools, but they must be explicitly named and skipped by default.
 
+## Test Authority And Lifecycle
+
+A test is a projection of an accepted owner and holds no authority of its own. Its expected values are an oracle under `docs/verification-instruments.md`; an expected value read from the implementation instead of derived from an owner fails the Prior property there and confirms the artifact instead of testing it. A production change cites the owner clause it implements. A passing test afterwards is evidence, never the reason. When a failing test demands behavior that no owner requires, the test is the suspect, and the conflict goes to a test author instead of into production code.
+
+A check constrains either behavior or implementation. A behavior-constraining check fails only when an owner-required observable changes: a returned result, a persisted fact read through its owner, a public status, an event a consumer relies on, or a refusal. An implementation-constraining check also fails when a correct refactor changes something no owner names, such as internal call order, the exact number of queries or writes, private table or column layout, helper names, the order of an unordered result, diagnostic wording, or byte-exact output. Write behavior-constraining checks by default. Pin an exact byte, count, order, or wording only where an owner requires it, and name that clause beside the assertion. Where a return value cannot prove a responsibility such as recovery, a check may observe internals, and it asserts that responsibility rather than the mechanism that currently provides it.
+
+Test setup reaches state through the owners production uses. Outside an owning module's own tests, setup does not write raw SQL, call private setters, hand-assemble durable records or receipts, or depend on another module's storage layout; it calls the owner's operations directly or through a shared builder in the package's test-support module. When an owner changes how state is produced, the builder changes once instead of every test. A test that needs a valid state no owner can produce has found a missing owner operation or an impossible state, and reports it instead of fabricating that state. Deliberate fault injection after valid setup, such as damaging stored bytes or interrupting a step to prove a required refusal or recovery, remains required where the risk-proportional rules above call for it; it never fabricates a successful durable record or receipt.
+
+New behavior is proven primarily at its public seam, through contract and black-box checks at the lowest layer that can observe it. A white-box check is added only for a responsibility that no public result reveals, and it names that responsibility. Before adding a check, inspect existing coverage and apply the one-primary-regression rule above: extend or replace an existing primary regression of the same invariant instead of adding a parallel one at the same layer.
+
+A test is rewritten or retired, not preserved, when one of three conditions holds: it constrains an internal mechanism that has been removed or replaced; another passing check at an equal or lower sufficient layer already proves the same owner clause; or it contradicts an accepted owner. A test author independent of the builder decides, and records for each rewritten or retired test either the owner clause and the check that now proves it, or the retired mechanism. The builder whose change fails a test never decides that test's retirement. Deleting a test without a recorded disposition is the weakening root `AGENTS.md` forbids; deleting one with a disposition is ordinary maintenance. Replacing a test with one regenerated from the new implementation is a deletion without a disposition, because its expected values confirm the new code instead of an owner.
+
+Test code is maintained cost. A landing report states the test and production lines it changed, and a ratio above three to one states its reason, such as a new public seam or a recovery matrix. The ratio informs review; it is neither a target nor a gate.
+
+After a refactor, each failing test is first classified as setup-only, when the test reaches the same scenario, preconditions, and injected faults through a seam that moved; a test defect, when it constrains implementation or contradicts an owner; or a product defect. `docs/change-execution.md` owns how each class is executed. A change that must modify an existing test brings that test under these rules; existing tests the change does not need stay with their tracked cleanup work. The decision and its reason are recorded in [a decision record](../decisions/20261022-test_authority_and_retirement.md).
+
 ## Test Taxonomy
 
 | Layer | Name | Primary question | Default gate | Main tools |
@@ -147,7 +163,17 @@ L0 failures should not require browser traces or process logs because they are u
 
 ## L1 Package And App Unit Tests
 
-Every package and app must own local unit tests for its public behavior and high-risk private logic.
+A unit is a module's public interface, not a function or a class. A module is tested through the operations its callers use, so an internal refactor that preserves behavior leaves its tests passing. A behavior-preserving refactor that fails a unit test has found a test defect, handled under Test Authority And Lifecycle.
+
+Every package and app must own local unit tests for its public behavior. Private logic is tested directly only when it is pure and its own interface is a stable contract, or when no public result reveals a high-risk responsibility.
+
+Test weight follows the kind of code:
+
+- Pure logic, such as parsers, schemas, reducers, converters, and algorithms, gets fine-grained unit tests, because its interface is its behavior.
+- Stateful owners, such as storage, scheduling, durable execution, and recovery, are tested at the owning module's boundary with their real in-process store, such as a temporary SQLite database, rather than with doubles of their internal collaborators.
+- Glue and adapter code is proven by contract or boundary tests rather than per-function unit tests.
+
+Doubles stand in for effects the subject does not own, such as providers, networks, clocks, and external processes, not for the subject's own collaborators.
 
 Package tests should run without booting NanoCore unless the package itself is NanoCore.
 
@@ -155,11 +181,11 @@ Schema packages should test strict accepts, strict rejects, error paths, and gen
 
 Client packages should test request construction, response parsing, SSE parsing, retry semantics, terminal status handling, and error normalization against fake transports.
 
-NanoCore unit tests should cover route builders, service logic, storage migrations, auth middleware decisions, provider registries, gateway converters, runtime config parsing, readiness checks, and adapter normalization with fakes.
+NanoCore unit tests should cover route builders, service logic, storage migrations, auth middleware decisions, provider registries, gateway converters, runtime config parsing, readiness checks, and adapter normalization, using real in-process storage for storage, scheduling, and recovery behavior and fakes for providers, workers, and other effects NanoCore does not own.
 
 Web unit tests should cover state reducers, hooks, component rendering, accessibility-visible labels, optimistic states, error states, and event-to-UI mapping.
 
-Unit tests may use mocks, fakes, and in-memory stores, but they must not assert behavior that only a real process, browser, or network boundary can prove.
+Unit tests may use fakes for effects their subject does not own, and an in-memory store only where durability, recovery, and concurrency are not the behavior under test. They must not assert behavior that only a real process, browser, or network boundary can prove.
 
 ## L2 Contract And Conformance Tests
 
@@ -339,7 +365,7 @@ Terminal failure classification is derived only from a parsed public Gateway ter
 
 ## Coverage Expectations
 
-Coverage thresholds are useful for regression pressure, but they are not the testing strategy.
+Coverage thresholds are useful for regression pressure, but they are not the testing strategy. A suite's value is its power to detect injected faults, which `docs/specs/20260719-verification_calibration.md` measures, not its line count or line coverage.
 
 The repository should keep coverage gates for deterministic package tests where they are stable.
 
@@ -384,6 +410,10 @@ Mitigation: Add schema and core-client tests before browser tests, and keep rout
 Risk: Smoke tests grow into slow e2e suites.
 
 Mitigation: Limit smoke tests to boot, health, route availability, and minimal render checks.
+
+Risk: The suite pins implementation, so correct refactors fail many tests and builders bend production to satisfy them.
+
+Mitigation: Apply Test Authority And Lifecycle: behavior-constraining assertions, setup through owners and shared builders, retirement by an independent test author, and the reported test-to-production ratio.
 
 Risk: Release gates become too expensive for normal development.
 
