@@ -10,10 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { type CommandRequestRecord, commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import {
-  readCommandRequestRecordsFromSqlite,
-  recordCommandRequestRecordInDb,
-} from './command-request-records.js';
+import { readCommandRequestRecordsFromSqlite } from './command-request-records.js';
 import {
   applyControlAdmission,
   type ControlAdmission,
@@ -43,10 +40,11 @@ vi.mock('node:worker_threads', async (importOriginal) => {
     Worker: class extends native.Worker {
       constructor(filename: string | URL, options?: WorkerOptions) {
         if (instrumentation.prelude) {
-          if (!options?.eval || typeof filename !== 'string') {
-            throw new Error('Native SQL observation requires the source worker entrypoint.');
-          }
-          super(`${instrumentation.prelude}\n${filename}`, options);
+          const entry =
+            options?.eval && typeof filename === 'string'
+              ? filename
+              : `import(${JSON.stringify(String(filename))});`;
+          super(`${instrumentation.prelude}\n${entry}`, { ...options, eval: true });
         } else {
           super(filename, options);
         }
@@ -144,17 +142,17 @@ async function observeNative(f: ReturnType<typeof fixture>) {
   let client: ReturnType<typeof getControlStoreWorkerClient>;
   try {
     client = getControlStoreWorkerClient();
+    disposals.push(() => client.shutdown());
+    await client.open({
+      database: 'owned',
+      path: f.db.sqlite.name,
+      create: false,
+      initialize: f.db.scope,
+      productOwner: f.owner,
+    });
   } finally {
     instrumentation.prelude = '';
   }
-  disposals.push(() => client.shutdown());
-  await client.open({
-    database: 'owned',
-    path: f.db.sqlite.name,
-    create: false,
-    initialize: f.db.scope,
-    productOwner: f.owner,
-  });
   const initialization = readFileSync(tracePath, 'utf8');
   expect(initialization.length, 'native instrumentation must be installed').toBeGreaterThan(0);
   main.length = 0;
@@ -217,15 +215,27 @@ function receipt(
   };
 }
 
-/** Freezes only Date during synchronous fixture publication because the legacy owner prunes against wall time. Worker clocks and scheduling timers remain real. */
+/** Seeds retained bytes before this fresh fixture opens its native writer; this is not command acceptance. */
 function retainReceipt(f: ReturnType<typeof fixture>, record: CommandRequestRecord) {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  try {
-    vi.setSystemTime(new Date(createdAt));
-    recordCommandRequestRecordInDb(f.db, record);
-  } finally {
-    vi.useRealTimers();
-  }
+  f.db.sqlite
+    .prepare(`INSERT INTO idempotency_requests
+      (schema_version, request_key, command_name, request_id, scope_json, input_hash,
+       response_kind, response_id, response_json, created_at, expires_at)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      record.key,
+      record.command,
+      record.requestId,
+      JSON.stringify(record.scope),
+      record.inputHash,
+      record.response.kind,
+      record.response.id,
+      record.response.conversationMetadata === undefined
+        ? null
+        : JSON.stringify(record.response.conversationMetadata),
+      record.createdAt,
+      record.expiresAt
+    );
 }
 
 /** Uses existing Audit producers only before native ownership observation starts. */
@@ -492,8 +502,8 @@ describe.each(['server', 'workspace'] as const)('prepared %s family ownership', 
     disposals.push(() => reader.close());
     const before = retainedRows(reader.sqlite);
     const input = admission(f);
-    input.products[0]!.record = thread({ kind: 'workspace', workspaceId: allocateEntityId('ws') });
-    // Wrong owner is refused after real pruning, before any dependency on withheld product journals.
+    // Valid ownership reaches the product refusal after real receipt pruning.
+    input.products[0]!.expectedRevision = 1;
     await expect(observed.client.transition('owned', input)).rejects.toMatchObject({
       code: 'precondition',
       commit: 'not-committed',
