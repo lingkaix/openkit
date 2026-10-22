@@ -392,18 +392,28 @@ describe('runtime config reload API', () => {
       predecessorFenced: true,
       ready: true,
     });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = await createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup({
       logicalModelId: 'reasoning',
       privateRoute: {
         providerProfileId: 'agent-openrouter',
         providerModel: 'openai/gpt-5.1',
       },
+    });
+    const completion = Promise.withResolvers<void>();
+    void completion.promise.catch(() => undefined);
+    let running: Promise<void> | undefined;
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    vi.spyOn(executor, 'startTurn').mockImplementation((...args) => {
+      const run = SimulatedTurnExecutor.prototype.startTurn.call(executor, ...args);
+      running = run;
+      completion.resolve(run);
+      return run;
     });
     const app = createApp({
       agentManifests: [agentSetup.manifest],
@@ -444,7 +454,7 @@ describe('runtime config reload API', () => {
       providerCredentialResolver: (secretRef) =>
         secretRef === 'env:OPENKIT_RELOAD_FIXTURE_KEY' ? 'test-only-reload-key' : null,
       store,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+      turnExecutor: executor,
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-runtime-reload-repository-'));
 
@@ -472,6 +482,7 @@ describe('runtime config reload API', () => {
       expect(turnRes.status, JSON.stringify(turn)).toBe(202);
       expect(turn.configVersion, JSON.stringify(turn)).toBe(1);
       expect(turn).not.toHaveProperty('agentSessionId');
+      await completion.promise;
       await vi.waitFor(() => {
         expect(store.getTurnById(turn.id).status).toBe('completed');
         expect(
@@ -539,6 +550,7 @@ describe('runtime config reload API', () => {
           .some((item) => item.status === 'interrupted')
       ).toBe(false);
     } finally {
+      await running?.catch(() => undefined);
       coreDb.sqlite.close();
     }
   });
