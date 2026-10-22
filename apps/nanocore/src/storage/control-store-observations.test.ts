@@ -318,11 +318,26 @@ describe.each(['server', 'workspace'] as const)('native %s WorkObservation SQL b
       ],
     };
     append(f, { ...value, observation });
-    const before = (
-      f.sqlite.prepare('SELECT record_json FROM control_work_observations').get() as {
-        record_json: string;
-      }
-    ).record_json;
+    const admitted = JSON.parse(
+      (
+        f.sqlite.prepare('SELECT record_json FROM control_work_observations').get() as {
+          record_json: string;
+        }
+      ).record_json
+    );
+    expect(admitted).not.toHaveProperty('annotation');
+    expect(admitted.payload).not.toHaveProperty('annotation');
+    expect(admitted.refs[0]).not.toHaveProperty('annotation');
+    // Seed retained descriptive additions separately from untrusted live admission.
+    const before = JSON.stringify({
+      ...admitted,
+      annotation: observation.annotation,
+      payload: { ...admitted.payload, annotation: observation.payload.annotation },
+      refs: [{ ...admitted.refs[0], annotation: observation.refs[0].annotation }],
+    });
+    expect(
+      f.sqlite.prepare('UPDATE control_work_observations SET record_json=?').run(before).changes
+    ).toBe(1);
     expect(JSON.parse(before)).toMatchObject({
       annotation: { ignored: true },
       payload: { annotation: ['keep', 7] },
@@ -336,7 +351,10 @@ describe.each(['server', 'workspace'] as const)('native %s WorkObservation SQL b
         }
       ).record_json
     ).toBe(before);
-    expect(readControlWorkObservations(f.sqlite, f.owner, f)[0]).not.toHaveProperty('annotation');
+    const projected = readControlWorkObservations(f.sqlite, f.owner, f)[0];
+    expect(projected).not.toHaveProperty('annotation');
+    expect(projected?.payload).not.toHaveProperty('annotation');
+    expect(projected?.refs?.[0]).not.toHaveProperty('annotation');
   });
 
   it('refuses unknown core values, required semantics, missing owners, and contradictory indexed lineage', () => {

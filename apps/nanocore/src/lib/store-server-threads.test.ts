@@ -178,7 +178,6 @@ describe('Server-owned canonical history', () => {
         ).record_json
       );
       rawThread.note = 'retained';
-      rawThread.owner.note = 'retained owner description';
       expect(
         coreDb.sqlite
           .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
@@ -213,7 +212,7 @@ describe('Server-owned canonical history', () => {
         )
       ).toMatchObject({
         note: 'retained',
-        owner: { note: 'retained owner description' },
+        owner: { kind: 'server' },
       });
       expect(
         JSON.parse(
@@ -257,6 +256,15 @@ describe('Server-owned canonical history', () => {
           },
         })
       ).rejects.toThrow('is terminal and does not admit this write');
+      // WorkOwner carries immutable authority; unknown fields must fail closed.
+      rawThread.owner.note = 'retained owner description';
+      expect(
+        coreDb.sqlite
+          .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+          .run(JSON.stringify(rawThread), thread.id).changes
+      ).toBe(1);
+      expect(() => new FsStore({ dataRoot })).toThrow();
+      delete rawThread.owner.note;
       rawThread.owner.kind = 'workspace';
       expect(
         coreDb.sqlite

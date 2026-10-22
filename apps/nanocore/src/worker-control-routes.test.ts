@@ -56,7 +56,6 @@ import {
   listBackendWorkspaceHandles,
   recordWorkspaceInputSnapshots,
   recordWorkspaceMaterializationRecords,
-  updateBackendWorkspaceHandleCleanupStatus,
 } from './runtime/workspace-sync-records.js';
 import {
   createSchedulerAdmissionEntry,
@@ -1919,6 +1918,15 @@ describe('worker control routes', () => {
       },
     });
 
+    const pendingHandles = listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId);
+    expect(pendingHandles).toEqual([
+      expect.objectContaining({
+        cleanupStatus: 'pending',
+        id: 'bwh_wmr_final_status',
+        packageSnapshotId: lineage.packageSnapshotId,
+        workerSessionId: 'sandbox_final_status',
+      }),
+    ]);
     coreDb.sqlite.exec(`
       CREATE TRIGGER reject_final_status_release
       BEFORE UPDATE OF phase ON scheduler_execution_attempts
@@ -1953,6 +1961,7 @@ describe('worker control routes', () => {
       .all(lineage.turnId);
 
     expect(failed.status).toBe(500);
+    expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
     expect.soft(recordsAfterFailure).toEqual([]);
     expect.soft(fingerprintsAfterFailure).toEqual([]);
     expect(['open', 'closing']).toContain(
@@ -2040,14 +2049,8 @@ describe('worker control routes', () => {
       )?.phase
     ).toBe('closing');
 
-    expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
-      expect.objectContaining({
-        cleanupStatus: 'retained',
-        id: 'bwh_wmr_final_status',
-        packageSnapshotId: lineage.packageSnapshotId,
-        workerSessionId: 'sandbox_final_status',
-      }),
-    ]);
+    // Core final-status acceptance does not acknowledge Workspace collection or cleanup.
+    expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
     expect(
       resolveNanoHostAttemptTokenBinding(coreDb, {
         sandboxBindingRef: 'lease-binding:lease_final_status',
@@ -2072,6 +2075,7 @@ describe('worker control routes', () => {
       now: () => new Date(Date.now() + 60_000).toISOString(),
     });
     expect(reconcileAcceptedFinalStatus).toHaveBeenCalledOnce();
+    expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
     expect(listWorkspaceReconciliationRecords(workspaceDb, lineage.workspaceId)).toEqual([]);
     expect(
       observeExecutionAttempts(coreDb).find(
@@ -2092,7 +2096,7 @@ describe('worker control routes', () => {
     };
     markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
     // This route-level fixture supplies settled handoff barriers after checking the accepted
-    // transcript and retained Workspace handle; executor integration tests prove their producers.
+    // transcript and unchanged Workspace handle; executor integration tests prove their producers.
     attemptActionOwners.markSchedulerAttemptForTerminalTurn(coreDb, completedTurn);
     const closing = attemptActionOwners.requireSchedulerExecutionAttempt(
       coreDb,
@@ -2390,20 +2394,13 @@ describe('worker control routes', () => {
         method: 'POST' as const,
       };
       const absoluteDeadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
+      const pendingHandles = listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId);
+      expect(pendingHandles).toEqual([expect.objectContaining({ cleanupStatus: 'pending' })]);
       const response = await app.request('/api/worker-control/final-status', request);
 
       expect(response.status).toBe(200);
-      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
-        expect.objectContaining({ cleanupStatus: 'retained' }),
-      ]);
+      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
 
-      updateBackendWorkspaceHandleCleanupStatus(
-        workspaceDb,
-        lineage.workspaceId,
-        lineage.packageSnapshotId,
-        'pending',
-        '2026-06-16T00:00:02.000Z'
-      );
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       const restartedApp = createApp({
         coreDb,
@@ -2416,9 +2413,7 @@ describe('worker control routes', () => {
 
       expect(absoluteAttemptDeadline(coreDb, lineage.turnId)).toBe(absoluteDeadline);
       expect(replay.status).toBe(200);
-      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual([
-        expect.objectContaining({ cleanupStatus: 'retained' }),
-      ]);
+      expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
 
       markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
       const releasingLease = requireNanoHostExecutionAttempt(
