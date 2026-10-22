@@ -11,6 +11,7 @@ import {
   seedDemoWorkspaceDataRoot,
 } from '../../../tests/support/demo-data.mjs';
 import { parseOkfDocument } from '../dist/knowledge/okf.js';
+import { shutdownControlStoreWorkerClient } from '../dist/storage/control-store-worker-client.js';
 import { serializeKnowledgePageFixture } from '../dist/test-support/knowledge-page.js';
 import {
   type NanoCoreHarness,
@@ -120,6 +121,7 @@ async function runSource(outputDir: string): Promise<void> {
     await writeFile(join(outputDir, SEMANTICS_FILE), serializedSemantics, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ archiveSha256: digest, mode, status: 'ok' })}\n`);
   } finally {
+    await shutdownControlStoreWorkerClient();
     if (harness) {
       await stopHarness(harness);
     } else {
@@ -242,7 +244,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
   const actor = { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' } as const;
   const startedAt = '2026-09-02T00:00:00.000Z';
   const completedAt = '2026-09-02T00:00:01.000Z';
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     WORKSPACE_ID,
     'th_00000000-0000-7000-8000-000000000001',
     'Preserve this complete source Turn history across the portable archive.',
@@ -250,7 +252,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
     null,
     { startedAt, turnId: 'tu_00000000-0000-7194-a67c-32b07effe4b8' }
   );
-  const userItem = store.createItem({
+  const userItem = await store.createItem({
     actor,
     completedAt: startedAt,
     createdAt: startedAt,
@@ -262,7 +264,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
     type: 'user-message',
     owner: { kind: 'workspace', workspaceId: WORKSPACE_ID },
   });
-  const assistantItem = store.createItem({
+  const assistantItem = await store.createItem({
     completedAt,
     createdAt: completedAt,
     id: 'it_00000000-0000-7fd6-ab8f-4ceab3394f63',
@@ -275,7 +277,7 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
   });
 
   for (const item of [userItem, assistantItem]) {
-    store.emitTurnEvent(turn.id, {
+    await store.persistTurnEvent(turn.id, {
       data: { item, itemId: item.id, type: 'item-completed' },
       event: 'item.completed',
       requestId: '00000000-0000-4000-8000-00000000c801',
@@ -284,15 +286,11 @@ async function seedSourceHistory(dataRoot: string): Promise<void> {
       workspaceId: WORKSPACE_ID,
     });
   }
-  const completed = store.updateTurn(turn.id, { completedAt, status: 'completed' });
-  store.emitTurnEvent(turn.id, {
-    data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
-    event: 'turn.completed',
-    requestId: '00000000-0000-4000-8000-00000000c801',
-    threadId: 'th_00000000-0000-7000-8000-000000000001',
-    turnId: turn.id,
-    workspaceId: WORKSPACE_ID,
-  });
+  await store.completeTurn(
+    turn.id,
+    { completedAt, status: 'completed' },
+    { requestId: '00000000-0000-4000-8000-00000000c801' }
+  );
 }
 
 /** Seeds one source-bound non-secret Vault reference before the isolated server starts. */
