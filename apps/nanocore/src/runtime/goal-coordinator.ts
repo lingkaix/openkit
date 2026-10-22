@@ -35,7 +35,7 @@ import {
   internalContextFailure,
   prepareInternalAgentContext,
 } from '../internal-agents/rolling-context.js';
-import type { FsStore } from '../lib/store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -593,9 +593,19 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
   const active = new Set<string>();
   /** Binds detached execution and its terminal publication to the existing writer shutdown owner. */
   function startTurn(store: FsStore, turnId: string): Promise<void> {
-    return client.runOperation(() => executeTurn(store, turnId));
+    return client.runOperation(async () => {
+      const turn = await executeTurn(store, turnId);
+      const event = turn && store.getTurnEvents(turnId).find((e) => e.event === 'turn.completed');
+      if (!event) return;
+      const acknowledged = await store.persistTurnEvent(
+        turnId,
+        event,
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
+      store.emitTurnEvent(turnId, acknowledged);
+    });
   }
-  async function executeTurn(store: FsStore, turnId: string): Promise<void> {
+  async function executeTurn(store: FsStore, turnId: string) {
     if (active.has(turnId)) return;
     active.add(turnId);
     const turn = store.getTurnById(turnId);
@@ -877,7 +887,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             });
         }
       );
-      await store.updateTurn(turnId, {
+      return await store.updateTurn(turnId, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -890,7 +900,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
           );
           return;
         }
-        await store.updateTurn(turnId, {
+        return await store.updateTurn(turnId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
           error: internalContextFailure(error) ?? {
