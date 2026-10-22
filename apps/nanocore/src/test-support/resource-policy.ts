@@ -1,4 +1,8 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import type { PolicyDocumentV1 } from '@openkit/protocol';
+import { applyEdits, modify, parse } from 'jsonc-parser';
 
 /** Produces a current-format managed Thread fixture without supplying runtime authority. */
 export function managedThreadPolicy(input: {
@@ -43,4 +47,39 @@ export function managedThreadPolicy(input: {
         : { kind: 'ordinary' },
     });
   return { schemaVersion: 1, statements };
+}
+
+/**
+ * Authors an explicit managed Thread Policy fixture while preserving other configuration inputs.
+ * Returns the original bytes for tests that must restore this fixture before a separate refusal.
+ * This supplies no runtime admission, confirmation or author authority.
+ */
+export function writeManagedThreadPolicyFixture(
+  input: Parameters<typeof managedThreadPolicy>[0] & { readonly dataRoot: string }
+): string {
+  const path = join(input.dataRoot, 'workspaces', input.workspaceId, 'config', 'workspace.jsonc');
+  const original = readFileSync(path, 'utf8');
+  const authored = parse(original);
+  const config = WorkspaceConfigSchema.parse(authored);
+  const features = [
+    ...new Set([...(config.requiredFeatures ?? []), 'openkit.workspace-resource-policy.v1']),
+  ];
+  const withFeature = applyEdits(original, modify(original, ['requiredFeatures'], features, {}));
+  const mediation = authored.workspace.policy?.mediation ?? { schemaVersion: 1, statements: [] };
+  writeFileSync(
+    path,
+    applyEdits(
+      withFeature,
+      modify(
+        withFeature,
+        ['workspace', 'policy', 'mediation'],
+        {
+          ...mediation,
+          statements: [...mediation.statements, ...managedThreadPolicy(input).statements],
+        },
+        {}
+      )
+    )
+  );
+  return original;
 }

@@ -26,6 +26,7 @@ import {
   serializeKnowledgePageFixture,
 } from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -419,9 +420,11 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       expect.arrayContaining([sourcePage.id, control.id])
     );
 
-    Object.assign(sourceThread, {
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+    writeManagedThreadPolicyFixture({
+      dataRoot: fixture.dataRoot,
+      workspaceId: fixture.workspaceId,
+      threadId: sourceThread.id,
+      userId: fixture.userId,
     });
     const after = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),

@@ -12,6 +12,7 @@ import {
 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { type KnowledgeRetrievalAccess, threadReadable } from '../retrieval-knowledge-adapter.js';
@@ -19,6 +20,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -142,7 +144,7 @@ describe('pinned raw Source meaning receiver', () => {
     writeFileSync(saved.rawPath, content);
     expect.soft(await f.read(saved.reference)).toMatchObject({ status: 'available', content });
     // The same retained URI cannot keep Server authority after its current actor is disabled.
-    f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(f.userId);
+    f.coreDb.db.transaction(() => disableCanonicalUser(f.coreDb, f.userId));
     expect(await f.read(saved.reference)).toEqual(unavailable(saved.reference));
   });
 
@@ -225,7 +227,12 @@ describe('pinned raw Source meaning receiver', () => {
       contentDigest: digest,
       notebookRevision: saved.revision,
     });
-    Object.assign(origin, { visibility: 'private', privateOwnerUserId: allocateEntityId('usr') });
+    const originalConfig = writeManagedThreadPolicyFixture({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspace.id,
+      threadId: origin.id,
+      userId: f.userId,
+    });
     expect(threadReadable({ workspaceId: f.workspace.id, access: f.access }, origin.id)).toBe(
       false
     );
@@ -236,7 +243,10 @@ describe('pinned raw Source meaning receiver', () => {
     const publicReference = retained(f, scope, otherSource.id).reference;
     expect.soft(await f.read(publicReference)).toMatchObject({ status: 'available', content });
     expect(await f.read(saved.reference)).toEqual(unavailable(saved.reference));
-    Object.assign(origin, { visibility: 'workspace', privateOwnerUserId: undefined });
+    writeFileSync(
+      join(f.dataRoot, 'workspaces', f.workspace.id, 'config', 'workspace.jsonc'),
+      originalConfig
+    );
     // A descriptive pointer edit cannot turn a shared meaning read into confidential inspection.
     const confidential = updateOkfFrontmatter({
       path: `sources/${source.id}.md`,

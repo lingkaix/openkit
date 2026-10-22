@@ -61,3 +61,5 @@ The HTTP MCP fixture exposes server-observed header snapshots for exact bearer a
 `entity-ids.ts` allocates shared-codec IDs once for process-local fixture keys. Setup and assertions share those exact allocations. It declares no owner derivation and supplies no cross-process replay authority; process-boundary tests pass the recorded IDs explicitly.
 
 `mcp-tool-policy.ts` constructs explicit synthetic human Tool conditions for tests of the common Policy/Goal/agent pipeline. It neither admits production authority nor reads retired catalog permission lists.
+
+`resource-policy.ts` builds explicit managed Thread Policy inputs. `writeManagedThreadPolicyFixture` authors that fixture in the existing Workspace configuration, preserves required features and authored siblings, and returns the original bytes for optional fixture restoration. Callers provide the current User, Workspace and Thread; the fixture grants no runtime admission or human confirmation.

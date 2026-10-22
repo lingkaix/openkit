@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, formatReferenceUri, type KnowledgeOwnerScope } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
@@ -13,6 +14,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
@@ -175,7 +177,7 @@ describe('exact governed Knowledge meaning receiver', () => {
     );
     expect(await resolve(f, uri)).toEqual(unavailable(uri));
     publish(f, f.notebook, content);
-    f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(f.userId);
+    f.coreDb.db.transaction(() => disableCanonicalUser(f.coreDb, f.userId));
     expect(await resolve(f, uri)).toEqual(unavailable(uri));
   });
 
@@ -221,9 +223,11 @@ describe('exact governed Knowledge meaning receiver', () => {
     publish(f, f.notebook, content);
     const uri = reference(f, f.ownerScope, content);
     expect((await resolve(f, uri)).status).toBe('available');
-    Object.assign(sourceThread, {
-      visibility: 'private',
-      privateOwnerUserId: allocateEntityId('usr'),
+    writeManagedThreadPolicyFixture({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspace.id,
+      threadId: sourceThread.id,
+      userId: f.userId,
     });
     expect(await resolve(f, uri)).toEqual(unavailable(uri));
   });

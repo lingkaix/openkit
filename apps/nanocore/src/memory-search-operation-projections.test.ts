@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
@@ -26,24 +27,24 @@ async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-search-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const userIds = [
-    testEntityId('usr', 'memory-search-alice'),
-    testEntityId('usr', 'memory-search-bob'),
-  ];
+  const auth = createBetterAuth(coreDb, { env: {} });
+  const userIds: string[] = [];
+  const credentials: ReturnType<typeof createOpenKitAccessTokenRecord>[] = [];
   const now = '2026-10-17T00:00:00.000Z';
-  const credentials = userIds.map((userId) => {
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, 'human', 'Memory search fixture', ?, 0, ?, ?, 'active')"
-      )
-      .run(userId, `${userId}@example.invalid`, now, now);
-    return createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: userId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
+  for (const name of ['Alice', 'Bob']) {
+    const { user } = await auth.api.signUpEmail({
+      body: { name, email: [randomUUID(), 'example.invalid'].join('@'), password: randomUUID() },
     });
-  });
+    userIds.push(user.id);
+    credentials.push(
+      createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: user.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })
+    );
+  }
   const store = new FsStore({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
   const workspace = await store.createWorkspace('Memory query context', {
@@ -216,7 +217,7 @@ describe('public self Memory search', () => {
     // Workers fail the real credential gate before any unproved package lineage can be consumed.
     const definition = OPERATION_DEFINITIONS['memory.search'];
     expect(definition.credentials).not.toContain('worker-package');
-    expect(() =>
+    await expect(
       admitOperation(
         definition,
         request,
@@ -235,7 +236,9 @@ describe('public self Memory search', () => {
         },
         { coreDb: f.coreDb, store: f.store }
       )
-    ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied', status: 403 }));
+    ).rejects.toThrowError(
+      expect.objectContaining({ code: 'workspace_access_denied', status: 403 })
+    );
     expect(readdirSync(tracesRoot).sort()).toEqual(traceFiles);
     expect(notebook.publishedRevision()).toBe(baseRevision);
     expect(f.store.listThreadTurns(f.workspace.id, timeline.id)).toEqual([]);
