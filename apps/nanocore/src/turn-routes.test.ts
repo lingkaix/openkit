@@ -15,7 +15,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+  loadRuntimeConfig,
+} from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -28,6 +32,7 @@ import {
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import * as productTurnOwners from './runtime/product-turn-start.js';
 import { startSchedulerDispatchRetryService } from './runtime/scheduler-dispatch-service.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
@@ -47,6 +52,7 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -368,6 +374,99 @@ async function createSchedulerFixture(
     workerPlacement,
   });
   return { app, coreDb, dataRoot, store };
+}
+
+/**
+ * Creates public Turn operations over real native admission and a controlled outside peer.
+ * @param slug Unique temporary-root label for the scenario.
+ * @returns Real product owners, the native peer, and explicit execution/cleanup joins.
+ */
+async function createNativeTurnFixture(slug: string) {
+  const dataRoot = mkdtempSync(join(tmpdir(), `openkit-native-turn-${slug}-`));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = await createDemoStore({ dataRoot, coreDb });
+  const manifest = createTestAgentSetup({
+    requiredCapabilities: ['trusted-worker-inference-relay'],
+  }).manifest;
+  const config = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: testProviderRegistry(),
+    }),
+  });
+  const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    readRuntimeConfig: () => config.current(),
+  });
+  const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
+  const submissions = vi.spyOn(native.executor.executionBackend!, 'submit');
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    turnExecutor: native.executor,
+    runtimeConfigManager: config,
+    fileAdmission: native.fileAdmission,
+    workerControlGateway: native.workerControlGateway,
+  });
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_ACTOR.id, workspaceId });
+  return {
+    app,
+    coreDb,
+    dataRoot,
+    store,
+    native,
+    async waitForLaunch(turnId: string) {
+      await native.executionFor(turnId).launched.promise;
+      const session = store.getAgentSession(store.getTurnById(turnId).agentSessionId!);
+      const index = submissions.mock.calls.findIndex(
+        ([input]) => input.inputRef === session.environmentPackageSnapshotId
+      );
+      expect(index).toBeGreaterThanOrEqual(0);
+      const result = submissions.mock.results[index]!;
+      if (result.type !== 'return') throw new Error('Native submit did not return its promise.');
+      // Join real submit: peer acceptance precedes the native delivery journal acknowledgement.
+      expect(await result.value).toMatchObject({ disposition: 'accepted' });
+    },
+    async finish() {
+      await Promise.all(
+        admissions.mock.results.filter((r) => r.type === 'return').map((r) => r.value.closeout)
+      );
+    },
+    async cleanup() {
+      const failures: unknown[] = [];
+      try {
+        for (const thread of store.listThreads(workspaceId))
+          for (const turn of store.listThreadTurns(workspaceId, thread.id))
+            native.executionFor(turn.id).completion.resolve();
+        const settled = await Promise.allSettled(
+          admissions.mock.results.filter((r) => r.type === 'return').map((r) => r.value.closeout)
+        );
+        for (const result of settled)
+          if (result.status === 'rejected') failures.push(result.reason);
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        native.restore();
+        admissions.mockRestore();
+        submissions.mockRestore();
+        try {
+          await shutdownControlStoreWorkerClient();
+          coreDb.sqlite.close();
+          rmSync(dataRoot, { recursive: true, force: true });
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      // Report cleanup separately so the original assertion remains the primary failure.
+      expect.soft(failures, 'Native Turn fixture cleanup failures').toEqual([]);
+    },
+  };
 }
 
 /** Creates session authentication from one test-only user header. */
@@ -1158,68 +1257,68 @@ describe('generic turn routes', () => {
     }
   });
 
-  it('closes the execution attempt after a supported interrupt', async () => {
-    const executor = new RecordingTurnExecutor({ completeStarts: false });
-    const fixture = await createSchedulerFixture(executor, 'interrupt-lease');
-
+  it('releases the exact native Turn after a supported interrupt', async () => {
+    const fixture = await createNativeTurnFixture('interrupt');
+    const { app, store, native } = fixture;
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
+    const input = {
+      ...scope,
+      agentId: 'agent_codex_host',
+      input: 'Wait for Stop.',
+      requestId: '00000000-0000-4000-8000-000000000302',
+    };
     try {
-      const startResponse = await fixture.app.request(
+      const started = await app.request(
+        ...operationRequest('turn.start', {}, { body: JSON.stringify(input) })
+      );
+      expect(started.status).toBe(202);
+      const original = ProductTurnSchema.parse(await started.json());
+      await fixture.waitForLaunch(original.id);
+      const history = structuredClone(
+        store.getTurnById(original.id).items.filter((item) => item.status === 'completed')
+      );
+      expect(history.length).toBeGreaterThan(0);
+      const interrupted = await app.request(
+        ...operationRequest(
+          'turn.interrupt',
+          { ...scope, turnId: original.id },
+          {
+            body: JSON.stringify({
+              ...scope,
+              turnId: original.id,
+              requestId: '00000000-0000-4000-8000-000000000303',
+            }),
+          }
+        )
+      );
+      expect(interrupted.status).toBe(200);
+      expect(ProductTurnSchema.parse(await interrupted.json()).id).toBe(original.id);
+      await native.executionFor(original.id).execution;
+      await fixture.finish();
+      expect(store.getTurnById(original.id).status).toBe('interrupted');
+      // Protocol Turn Interruption: finalized history survives; fresh work needs settled exclusion.
+      expect(store.getTurnById(original.id).items).toEqual(expect.arrayContaining(history));
+      expect(native.executor.launches).toBe(1);
+      const successor = await app.request(
         ...operationRequest(
           'turn.start',
           {},
           {
-            method: 'POST',
-            body: JSON.stringify({
-              agentId: 'agent_codex_host',
-              input: 'Keep running until interrupted',
-              requestId: '00000000-0000-4000-8000-000000000302',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            }),
-            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...input, requestId: '00000000-0000-4000-8000-000000000305' }),
           }
         )
       );
-      const startedTurn = TurnSchema.parse(await startResponse.json());
-      await vi.waitFor(() => expect(executor.startCalls).toBe(1));
-      await setImmediate();
-      const interruptResponse = await fixture.app.request(
-        ...operationRequest(
-          'turn.interrupt',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: startedTurn.id,
-          },
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000303',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: startedTurn.id,
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const interruptedTurn = TurnSchema.parse(await interruptResponse.json());
-
-      expect({
-        interruptCalls: executor.interruptCalls,
-        interruptStatus: interruptResponse.status,
-        attempt: readTurnAttempt(fixture.coreDb, startedTurn.id),
-        startStatus: startResponse.status,
-        turnStatus: interruptedTurn.status,
-      }).toEqual({
-        interruptCalls: 1,
-        interruptStatus: 200,
-        attempt: { phase: 'closed' },
-        startStatus: 202,
-        turnStatus: 'interrupted',
-      });
+      expect(successor.status).toBe(202);
+      const next = ProductTurnSchema.parse(await successor.json());
+      expect(next.id).not.toBe(original.id);
+      await fixture.waitForLaunch(next.id);
+      expect(store.getTurnById(original.id).status).toBe('interrupted');
+      expect(native.executor.launches).toBe(2);
     } finally {
-      fixture.coreDb.sqlite.close();
+      await fixture.cleanup();
     }
   });
 
@@ -1642,14 +1741,8 @@ describe('Core Turn receipt recovery boundary', () => {
     'wrong-kind',
     'missing-turn',
   ] as const)('refuses %s replay authority without changing the receipt or launching another Turn', async (fault) => {
-    const executor = new HoldingTurnExecutor(false);
-    const { app, coreDb, dataRoot, store } = await createSchedulerFixture(
-      executor,
-      fault,
-      'local',
-      createTestAgentSetup().manifest,
-      true
-    );
+    const fixture = await createNativeTurnFixture(fault);
+    const { app, coreDb, dataRoot, store, native } = fixture;
     const scope = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1667,10 +1760,13 @@ describe('Core Turn receipt recovery boundary', () => {
       const response = await submit();
       expect(response.status).toBe(202);
       const turn = ProductTurnSchema.parse(await response.json());
-      await executor.launched.promise;
+      await fixture.waitForLaunch(turn.id);
       const receipt = store.getCommandRequest('turn.start', input.requestId, scope)!;
       expect(receipt.response).toEqual({ kind: 'turn', id: turn.id });
-      // Change only one result-pointer component; request identity and hash still select replay.
+      const validReplay = await submit();
+      expect(validReplay.status).toBe(202);
+      expect(ProductTurnSchema.parse(await validReplay.json()).id).toBe(turn.id);
+      // Change only the result pointer; request identity and hash still select replay.
       const corrupted = {
         ...receipt,
         response:
@@ -1682,15 +1778,26 @@ describe('Core Turn receipt recovery boundary', () => {
               }
             : { ...receipt.response, id: testEntityId('tu', 'missing-turn') },
       };
-      store.recordCommandRequest(corrupted);
+      // Deliberate scoped fault after native publication; never manufacture the original receipt.
+      const db = openWorkspaceDb(dataRoot, scope.workspaceId);
+      try {
+        expect(
+          db.sqlite
+            .prepare(`UPDATE idempotency_requests SET response_kind = ?, response_id = ?
+            WHERE request_key = ? AND response_kind = 'turn' AND response_id = ?`)
+            .run(corrupted.response.kind, corrupted.response.id, receipt.key, turn.id).changes
+        ).toBe(1);
+      } finally {
+        db.sqlite.close();
+      }
       const turns = store.listThreadTurns(scope.workspaceId, scope.threadId);
       const admissions = schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
         workspaceId: scope.workspaceId,
         statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
       });
       const replay = await submit();
-      expect(executor.startCalls).toBe(1);
-      expect(executor.completionObserved).toBe(false);
+      expect(native.executor.launches).toBe(1);
+      expect(['pending', 'running']).toContain(store.getTurnById(turn.id).status);
       expect(store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turns);
       expect(
         schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
@@ -1711,22 +1818,7 @@ describe('Core Turn receipt recovery boundary', () => {
         code: 'recovery_required',
       });
     } finally {
-      executor.completion.resolve();
-      executor.cleanup.resolve();
-      if (executor.startCalls) {
-        await executor.finished.promise;
-        await vi.waitFor(() =>
-          expect(
-            store
-              .listThreadTurns(scope.workspaceId, scope.threadId)
-              .every((turn) => readTurnAttempt(coreDb, turn.id)?.phase === 'closed')
-          ).toBe(true)
-        );
-      }
-      await setImmediate();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await fixture.cleanup();
     }
   });
 });
