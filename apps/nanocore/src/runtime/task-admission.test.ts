@@ -14,6 +14,7 @@ import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
+  loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
@@ -26,6 +27,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
+  listSchedulerAdmissionEntriesForWorkspace,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -35,29 +37,25 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
-  acceptSchedulerExecutionObservation,
-  closeSchedulerExecutionAttemptWithFence,
-  markSchedulerExecutionAttemptClosing,
-  recordSchedulerExecutionOperation,
-  schedulerExecutionCorrelation,
+  listSchedulerExecutionAttemptsByTurnId,
+  listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
-import type { TurnStartRuntimeContext } from './types.js';
 import { listThreadWorkerCheckpoints } from './worker-checkpoints.js';
-import { bindWorkerCheckpointToPreparedSession } from './worker-turn-loop.js';
+import * as workerTurnLoop from './worker-turn-loop.js';
 
 it.each([
   'admitted',
@@ -111,6 +109,20 @@ it.each([
   const selectedAgentId = createTestAgentSetup().manifest.id;
   const originalAuthorize = operationAuthorizer.authorizeWorkspace;
   const authorization = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
+  let interruptedNative: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+  let drainingInterruptedPeer = false;
+  const enteredWorkerStarts: Promise<void>[] = [];
+  const enteredWorkerLoops: Promise<unknown>[] = [];
+  const connectionClosures: Promise<void>[] = [];
+  const runWorkerLoop = workerTurnLoop.runWorkerTurnLoop;
+  const loopObservation =
+    outcome === 'interrupted'
+      ? vi.spyOn(workerTurnLoop, 'runWorkerTurnLoop').mockImplementation((args) => {
+          const execution = runWorkerLoop(args);
+          if (args.store === store) enteredWorkerLoops.push(execution);
+          return execution;
+        })
+      : undefined;
   const startWorker = vi.fn(
     async (input: Parameters<import('./task-admission.js').TaskWorkerStarter>[0]) => {
       if (outcome === 'refused')
@@ -145,120 +157,58 @@ it.each([
           409
         );
       }
-      const manifest = createTestAgentSetup().manifest;
+      const manifest = createTestAgentSetup(
+        outcome === 'interrupted'
+          ? { requiredCapabilities: ['trusted-worker-inference-relay'] }
+          : {}
+      ).manifest;
       admitTestNativeEnvironment(coreDb, manifest);
       recordTestNativeRuntimeTarget(coreDb);
-      const turnExecutor = new SimulatedTurnExecutor({
-        coreDb,
-        fileAdmission: new FileStorageAdmission(root, () => 1_000_000_000n),
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        workspaceConfigs: outcome === 'interrupted' ? loadRuntimeConfig(root).workspaceConfigs : [],
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Fixture',
+            kind: 'local',
+            defaultModel: 'openai/gpt-5.2',
+            models: ['openai/gpt-5.2'],
+            modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
+          },
+        ]),
       });
-      let result: Awaited<ReturnType<FsStore['createTurn']>> | undefined;
-      // The interrupted variant models an admitted product interruption with no collected AEP;
-      // its checkpoint must remain inspectable. Successful closeout uses the complete real simulator.
-      if (outcome === 'interrupted')
-        turnExecutor.startTurn = async (
-          _store: FsStore,
-          turnId: string,
-          _prompt: string,
-          context?: TurnStartRuntimeContext
-        ) => {
-          const turn = store.getTurnById(turnId);
-          const at = turn.startedAt!;
-          expect(context?.attemptId).toBeTypeOf('string');
-          bindWorkerCheckpointToPreparedSession({
-            coreDb,
-            workspaceDb: db,
-            store,
-            workspaceId: ws.id,
-            threadId: input.threadId,
-            turnId,
-            requestId: input.requestId,
-            agentSessionId: context!.agentSessionId!,
-            attemptId: context!.attemptId!,
-          });
-          const submitted = recordSchedulerExecutionOperation(coreDb, {
-            attemptId: context!.attemptId!,
-            operationId: `task-fixture:${turnId}`,
-            submission: true,
-          });
-          acceptSchedulerExecutionObservation(
-            coreDb,
-            await turnExecutor.submit({
-              ...schedulerExecutionCorrelation(submitted),
-              deadline: submitted.deadline!,
-            })
-          );
-          context!.onSubmissionSettled?.();
-          await store.createAgentSession({
-            id: context!.agentSessionId!,
-            agentId: manifest.id,
-            workspaceId: ws.id,
-            threadId: input.threadId,
-            status: 'busy',
-            message: null,
-            createdAt: at,
-            updatedAt: at,
-          });
-          await store.createItem({
-            id: testEntityId('it', `it_user_${turnId}`),
-            owner: { kind: 'workspace', workspaceId: ws.id },
-            threadId: input.threadId,
-            turnId,
-            type: 'user-message',
-            status: 'completed',
-            text: input.prompt,
-            actor: input.triggerActor,
-            createdAt: at,
-            completedAt: at,
-          });
-          result = await store.updateTurn(turnId, {
-            agentSessionId: context!.agentSessionId!,
-          });
-          await turnExecutor.interruptTurn(store, turnId, { requestId: input.requestId });
-          result = store.getTurnById(turnId);
-          const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
-            attemptId: submitted.attemptId,
-            cause: `turn-${result!.status}`,
-            outcomeRef: `task-fixture:${result!.id}:${result!.status}`,
-          });
-          // This modeled executor owns no Native output, evidence stream or physical resident.
-          const proof = {
-            terminalHandoff: true,
-            output: true,
-            evidence: true,
-            outsideWorkspaceCollection: true,
-            integrationDrain: true,
-            routesRevoked: true,
-          } as const;
-          const correlation = schedulerExecutionCorrelation(attempt);
-          const released = await turnExecutor.release({ ...correlation, proof });
-          closeSchedulerExecutionAttemptWithFence(coreDb, {
-            correlation,
-            proof,
-            fenceRef: released.fenceRef!,
-          });
+      // The shared peer holds the admitted Turn until the actual interrupt owner stops it.
+      if (outcome === 'interrupted') {
+        const native = createNativeTaskAdmissionFixture(coreDb, store, {
+          readRuntimeConfig: () => snapshot,
+        });
+        interruptedNative = native;
+        const start = native.executor.startTurn.bind(native.executor);
+        native.executor.startTurn = (...args) => {
+          const execution = start(...args);
+          enteredWorkerStarts.push(execution);
+          // A late start during failure cleanup must release only its entered peer hold.
+          if (drainingInterruptedPeer && native.executor.launches > 0)
+            native.executor.completion.resolve();
+          return execution;
         };
+      }
+      const turnExecutor =
+        interruptedNative?.executor ??
+        new SimulatedTurnExecutor({
+          coreDb,
+          fileAdmission: new FileStorageAdmission(root, () => 1_000_000_000n),
+        });
       const ended = await startProductTurn({
         ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
         coreDb,
         store,
         triggerActor: input.triggerActor,
         requestActor: input.requestActor,
-        snapshot: createInMemoryRuntimeConfigSnapshot({
-          agentManifests: [manifest],
-          dataRoot: null,
-          gatewayConfig: createTestGatewayConfig(),
-          providerRegistry: new ProviderRegistry([
-            {
-              id: 'agent-openrouter',
-              displayName: 'Fixture',
-              kind: 'local',
-              defaultModel: 'openai/gpt-5.2',
-              models: ['openai/gpt-5.2'],
-              modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
-            },
-          ]),
-        }),
+        snapshot,
         providerCredentialResolver: () => null,
         reservedTurnId: input.reservedTurnId,
         input: {
@@ -373,7 +323,6 @@ it.each([
       services
     );
     const connections: ReturnType<typeof openWorkspaceDb>[] = [];
-    const connectionClosures: Promise<void>[] = [];
     const taskTool = createCoordinatorTaskTool({
       store,
       coreDb,
@@ -430,6 +379,23 @@ it.each([
       },
       { callId: 'task', toolOccurrence: 1, signal: new AbortController().signal }
     );
+    if (outcome === 'interrupted') {
+      await interruptedNative!.executor.launched.promise;
+      const worker = startWorker.mock.calls[0]![0];
+      await vi.waitFor(() => {
+        expect(
+          listSchedulerExecutionAttemptsForTurn(coreDb, {
+            workspaceId: worker.workspaceId,
+            threadId: worker.threadId,
+            turnId: worker.reservedTurnId,
+          })
+        ).toContainEqual(expect.objectContaining({ phase: 'open', disposition: 'accepted' }));
+      });
+      await interruptedNative!.executor.interruptTurn(store, worker.reservedTurnId, {
+        requestId: worker.requestId,
+      });
+      await interruptedNative!.executor.execution;
+    }
     expect(authorization).toHaveBeenCalledWith(
       coreDb,
       actor,
@@ -523,13 +489,17 @@ it.each([
       if (outcome === 'cancelled') {
         expect(checkpoints).toEqual([]);
         expect(
-          coreDb.sqlite
-            .prepare('SELECT status FROM scheduler_admission_entries WHERE thread_id=?')
-            .get(task.threadId)
-        ).toEqual({ status: 'cancelled' });
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: ws.id,
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          }).find((entry) => entry.threadId === task.threadId)?.status
+        ).toBe('cancelled');
         expect(
-          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_execution_attempts').get()
-        ).toEqual({ count: 0 });
+          listSchedulerExecutionAttemptsByTurnId(
+            coreDb,
+            startWorker.mock.calls[0]![0].reservedTurnId
+          )
+        ).toEqual([]);
       } else
         expect(checkpoints).toMatchObject([
           {
@@ -563,15 +533,33 @@ it.each([
       { status: outcome === 'interrupted' ? 'interrupted' : 'completed' },
     ]);
     const checkpoints = listThreadWorkerCheckpoints(db, ws.id, linked.tasks[0]!.threadId);
-    if (outcome === 'interrupted')
-      expect(checkpoints).toMatchObject([
-        {
-          stage: 'aborted',
+    expect(checkpoints).toEqual([]);
+    if (outcome === 'interrupted') {
+      const launch = interruptedNative!.executor.nativeLineage!;
+      expect(launch).toMatchObject({
+        workspaceId: ws.id,
+        threadId: linked.tasks[0]!.threadId,
+        turnId: linked.tasks[0]!.turns[0]!.turnId,
+      });
+      const terminal = store
+        .getTurnEvents(launch.turnId)
+        .find((event) => event.event === 'turn.completed');
+      expect(terminal).toMatchObject({
+        workspaceId: launch.workspaceId,
+        threadId: launch.threadId,
+        turnId: launch.turnId,
+        data: {
+          type: 'turn-completed',
           stopReason: 'aborted',
-          workerSessionId: store.getTurnById(linked.tasks[0]!.turns[0]!.turnId).agentSessionId,
+          turn: {
+            id: launch.turnId,
+            threadId: launch.threadId,
+            agentSessionId: launch.agentSessionId,
+            status: 'interrupted',
+          },
         },
-      ]);
-    else expect(checkpoints).toEqual([]);
+      });
+    }
     const admittedTurn = store.listThreadTurns(ws.id, linked.tasks[0]!.threadId)[0]!;
     expect(linked.tasks[0]!.admittedAt).toBe(admittedTurn.startedAt);
     expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
@@ -586,7 +574,18 @@ it.each([
     expect(readGoalView(store, db, goal.goalId).tasks[0]!.admittedAt).toBe(admittedTurn.startedAt);
     expect(linked.goal!.disposition).toBeNull();
   } finally {
+    if (outcome === 'interrupted') {
+      drainingInterruptedPeer = true;
+      if (interruptedNative && interruptedNative.executor.launches > 0)
+        interruptedNative.executor.completion.resolve();
+      // Join entered loops first so any late start is observed before joining start closeout.
+      await Promise.allSettled(enteredWorkerLoops);
+      await Promise.allSettled(enteredWorkerStarts);
+      await Promise.allSettled(connectionClosures);
+    }
+    loopObservation?.mockRestore();
     authorization.mockRestore();
+    interruptedNative?.restore();
     await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     coreDb.sqlite.close();

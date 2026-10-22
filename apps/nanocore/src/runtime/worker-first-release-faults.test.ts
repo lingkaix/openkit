@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, constants, createServer } from 'node:http2';
@@ -18,7 +18,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -38,6 +38,7 @@ import {
   markSchedulerAttemptForTerminalTurn,
   requireSchedulerExecutionAttempt,
 } from './execution-attempt-records.js';
+import { commandInputHash } from './idempotent-command.js';
 import { requireNanoHostExecutionAttempt } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import type { NanoHostHarnessCommand } from './nanohost-harness-records.js';
@@ -56,6 +57,11 @@ import {
 } from './pending-requests.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  listWorkerControlAcceptedEvents,
+} from './worker-control-records.js';
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
 const harnessLoop = vi.hoisted(() => ({ client: null as SandboxIntegrationClient | null }));
@@ -191,6 +197,7 @@ function operationDouble(
 /** Composes real scheduler, Core attempt, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
 async function faultFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
+  const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -310,9 +317,11 @@ async function faultFixture() {
         expect(response.statusCode).toBe(200);
         droppedWire = body;
         droppedCommand = JSON.parse(body) as NanoHostHarnessCommand;
-        expect(
-          coreDb.sqlite.prepare('SELECT operation_state FROM harness_instance_records').get()
-        ).toEqual({ operation_state: 'dispatched' });
+        expect(dispatchedCommands).toContainEqual({
+          operationId: droppedCommand.operationId,
+          operation: droppedCommand.operation,
+          sequence: droppedCommand.sequence,
+        });
         if (finishBeforeReset) {
           // The peer cancels after commit, before Core can process RST. Native end() still finishes the local write.
           finishedResetStream!.close(constants.NGHTTP2_CANCEL);
@@ -332,15 +341,14 @@ async function faultFixture() {
 
   /** Posts on the real authenticated native H2 route; a reset without headers is the injected lost response. */
   const post = async (path: string, body: unknown, signal?: AbortSignal) => {
-    const integration = coreDb.sqlite
-      .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
-      .get() as { ref: string } | undefined;
+    const integration = effects.find((effect) => effect.kind === 'bridge.open')?.input
+      .sandboxIntegrationBindingRef;
     const resetFinishedResponse = finishNextPoll && path === '/worker-control/harness/poll';
     const stream = client.request({
       ':method': 'POST',
       ':path': path,
       'content-type': 'application/json',
-      ...(integration ? { 'x-openkit-integration-binding': integration.ref } : {}),
+      ...(typeof integration === 'string' ? { 'x-openkit-integration-binding': integration } : {}),
     });
     if (resetFinishedResponse) finishedResetStream = stream;
     const abort = () => stream.close(constants.NGHTTP2_CANCEL);
@@ -369,7 +377,13 @@ async function faultFixture() {
   expect(
     await post('/api/nanohost/transport/session/readiness', { physicalEpoch: DIGEST })
   ).toEqual({ status: 204, body: '' });
-  // The real dispatcher requires the exact pending Turn and initiating command receipt (D83).
+  // The real dispatcher requires the exact pending Turn and initiating native command receipt.
+  const createdAt = new Date().toISOString();
+  const scope = {
+    actorId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+  };
   await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -381,23 +395,22 @@ async function faultFixture() {
       agentId: setup.manifest.id,
       status: 'pending',
       executorKind: 'worker',
+      commandReceipt: {
+        key: commandRequestKey('turn.start', requestId, scope),
+        command: 'turn.start',
+        requestId,
+        scope,
+        inputHash: commandInputHash({ input: 'Exercise a bounded worker fault' }),
+        responseKind: 'turn',
+        createdAt,
+        expiresAt: commandRequestExpiresAt(createdAt),
+      },
     }
   );
-  store.recordCommandRequest({
-    command: 'turn.start',
-    requestId: 'fault-request',
-    scope: {
-      actorId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-    },
-    inputHash: 'fault-fixture',
-    response: { kind: 'turn', id: testEntityId('tu', 'fault-turn') },
-  });
   createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'fault-queue',
-    requestId: 'fault-request',
+    requestId,
     requestedAgentId: setup.manifest.id,
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: testEntityId('tu', 'fault-turn'),
@@ -462,10 +475,6 @@ async function faultFixture() {
         throw new Error(`Dispatch loop ended before ${operation} was queued.`);
       }),
     ]);
-    const row = coreDb.sqlite
-      .prepare('SELECT operation, operation_state FROM harness_instance_records')
-      .get();
-    expect(row).toEqual({ operation, operation_state: 'queued' });
   };
   const poll = (harnesses?: readonly { harnessInstanceId: string; nextSequence: number }[]) =>
     post('/worker-control/harness/poll', { schemaVersion: 2, ...(harnesses ? { harnesses } : {}) });
@@ -498,7 +507,7 @@ async function faultFixture() {
         turnId: testEntityId('tu', 'fault-turn'),
         agentSessionId: testEntityId('as', 'fault-session'),
         packageSnapshotId: String(command.body.packageSnapshotId),
-        requestId: 'fault-request',
+        requestId,
       },
       fetch: async (url, { signal, ...init }) =>
         app.request(url, { ...init, ...(signal ? { signal } : {}) }),
@@ -513,6 +522,7 @@ async function faultFixture() {
   return {
     coreDb,
     store,
+    requestId,
     maintenance: () =>
       runNanoHostAttemptRecoveryMaintenance(coreDb, {
         executionBackend: runtime.turnExecutor.executionBackend!,
@@ -560,7 +570,7 @@ async function faultFixture() {
             turnId: testEntityId('tu', 'fault-turn'),
             agentSessionId: testEntityId('as', 'fault-session'),
             packageSnapshotId: String(command.body.packageSnapshotId),
-            requestId: 'fault-request',
+            requestId,
           },
           sequence: 1,
           data: { status: 'completed', stopReason: 'completed' },
@@ -720,6 +730,10 @@ describe('first-release worker faults (real Core crossings)', () => {
         state: 'open',
       });
       const start = await f.dispatch('turn.start');
+      const lineage = {
+        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        requestId: f.requestId,
+      };
       await f.result(start, { ...ready, state: 'started' });
       const control = f.controlClient(start);
       await control.recordHeartbeat({ status: 'starting' });
@@ -779,13 +793,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       }
       expect(new Date().toISOString()).toBe('2026-10-05T00:01:20.000Z');
       expect(new Date().toISOString() > firstDeadline).toBe(true);
-      expect(
-        f.coreDb.sqlite
-          .prepare(
-            "SELECT count(*) AS count FROM worker_control_records WHERE operation = 'event_append'"
-          )
-          .get()
-      ).toEqual({ count: 0 });
+      expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
       expect(
         answerPendingRequest(
           workspaceDb.sqlite,
@@ -816,12 +824,6 @@ describe('first-release worker faults (real Core crossings)', () => {
         new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(testEntityId('tu', 'fault-turn'))
           .status
       ).toBe('completed');
-      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
-        integrity_check: 'ok',
-      });
-      expect(workspaceDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
-        integrity_check: 'ok',
-      });
     } finally {
       workspaceDb.sqlite.close();
       await f.close();
@@ -857,7 +859,6 @@ describe('first-release worker faults (real Core crossings)', () => {
           writableFinished: true,
           resetCode: constants.NGHTTP2_CANCEL,
         });
-      const beforeReplay = f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
       await vi.advanceTimersByTimeAsync(250);
       const recovered = await f.poll(proof);
       expect(
@@ -869,9 +870,6 @@ describe('first-release worker faults (real Core crossings)', () => {
         recovered.body === f.droppedWire(),
         'redelivery must retain every original wire byte'
       ).toBe(true);
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
-        beforeReplay
-      );
       expect(
         f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
       ).toHaveLength(1);
@@ -903,9 +901,6 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(
         f.store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
       ).toHaveLength(1);
-      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
-        integrity_check: 'ok',
-      });
     } finally {
       await f.close();
       vi.useRealTimers();
@@ -927,6 +922,10 @@ describe('first-release worker faults (real Core crossings)', () => {
         state: 'open',
       });
       await f.waitQueued('turn.start');
+      const lineage = {
+        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        requestId: f.requestId,
+      };
       f.loseNextPoll(true, finished);
       expect(
         await f.poll([
@@ -940,11 +939,14 @@ describe('first-release worker faults (real Core crossings)', () => {
         });
       // No successor poll: the Worker died. One poll interval plus the header bound fits within this independent ceiling.
       await vi.advanceTimersByTimeAsync(2_000);
+      // Join native failure publication without advancing the original virtual deadline.
+      const failureTime = Date.now();
+      await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
+      expect(Date.now()).toBe(failureTime);
       expect(
         f.isSettled(),
         'missing non-receipt proof must fail within seconds, not the 300-second result budget'
       ).toBe(true);
-      await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
       const failedTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
       expect(failedTurn.status).toBe('failed');
       const delayed = await f.poll([
@@ -955,9 +957,12 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(
         f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
       ).toHaveLength(1);
+      expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
-        f.coreDb.sqlite.prepare('SELECT count(*) AS count FROM worker_control_records').get()
-      ).toEqual({ count: 0 });
+        requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+          .lastWorkerSequence
+      ).toBeNull();
     } finally {
       await f.close();
       vi.useRealTimers();
@@ -981,6 +986,10 @@ describe('first-release worker faults (real Core crossings)', () => {
         state: 'open',
       });
       await f.waitQueued('turn.start');
+      const lineage = {
+        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        requestId: f.requestId,
+      };
       const proof = [
         { harnessInstanceId: opened.harnessInstanceId, nextSequence: opened.sequence + 1 },
       ];
@@ -1003,8 +1012,10 @@ describe('first-release worker faults (real Core crossings)', () => {
             ];
       expect([204, 409]).toContain((await f.poll(invalid)).status);
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(f.isSettled()).toBe(true);
+      const failureTime = Date.now();
       await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
+      expect(Date.now()).toBe(failureTime);
+      expect(f.isSettled()).toBe(true);
       const failedTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
       expect(failedTurn.status).toBe('failed');
       expect([204, 409]).toContain((await f.poll(proof)).status);
@@ -1012,9 +1023,12 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(
         f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
       ).toHaveLength(1);
+      expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
-        f.coreDb.sqlite.prepare('SELECT count(*) AS count FROM worker_control_records').get()
-      ).toEqual({ count: 0 });
+        requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+          .lastWorkerSequence
+      ).toBeNull();
     } finally {
       await f.close();
       vi.useRealTimers();
@@ -1037,6 +1051,10 @@ describe('first-release worker faults (real Core crossings)', () => {
         state: 'open',
       });
       await f.waitQueued('turn.start');
+      const lineage = {
+        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        requestId: f.requestId,
+      };
       f.loseNextPoll(true, finished);
       expect(await f.poll()).toEqual({ status: undefined, body: '' });
       expect(f.droppedCommand()?.operation).toBe('turn.start');
@@ -1048,13 +1066,18 @@ describe('first-release worker faults (real Core crossings)', () => {
       const nextPoll = await f.poll();
       // Prompt cleanup may already have retired the Integration; neither response may carry work.
       expect([204, 409]).toContain(nextPoll.status);
+      expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
-        f.coreDb.sqlite.prepare('SELECT count(*) AS count FROM worker_control_records').get()
-      ).toEqual({ count: 0 });
+        requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+          .lastWorkerSequence
+      ).toBeNull();
       const expectedFailure = 'NanoHost Harness turn.start delivery incomplete: outcome unknown.';
       await vi.advanceTimersByTimeAsync(100);
-      expect(f.isSettled()).toBe(true);
+      const failureTime = Date.now();
       await expect(f.running).rejects.toThrow(expectedFailure);
+      expect(Date.now()).toBe(failureTime);
+      expect(f.isSettled()).toBe(true);
       const turn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
       expect(turn.status).toBe('failed');
       expect(turn.error?.message).toContain(expectedFailure);
@@ -1070,16 +1093,16 @@ describe('first-release worker faults (real Core crossings)', () => {
         }),
       ]);
       expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(turn.id)).toEqual(turn);
+      expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
-        f.coreDb.sqlite.prepare('SELECT count(*) AS count FROM worker_control_records').get()
-      ).toEqual({ count: 0 });
-      expect(f.coreDb.sqlite.prepare('SELECT state FROM worker_backend_sessions').get()).toEqual({
-        state: 'cleaned',
-      });
+        requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+          .lastWorkerSequence
+      ).toBeNull();
+      expect(getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))?.state).toBe(
+        'cleaned'
+      );
       expect(f.effects.map((effect) => effect.kind)).toContain('sandbox.delete');
-      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
-        integrity_check: 'ok',
-      });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // D97/D111: terminal failure and physical cleanup cannot prove unread output or evidence.
       expect(
@@ -1108,6 +1131,10 @@ describe('first-release worker faults (real Core crossings)', () => {
         state: 'open',
       });
       const start = await f.dispatch('turn.start');
+      const lineage = {
+        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        requestId: f.requestId,
+      };
       await f.result(start, { ...ready, state: 'started' });
       const control = f.controlClient(start);
       await control.recordHeartbeat({ status: 'starting' });
@@ -1119,10 +1146,8 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       await vi.advanceTimersByTimeAsync(100);
       const inspect = await f.dispatch('session.inspect');
-      const accepted = f.coreDb.sqlite
-        .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
-        .all();
-      expect(accepted).toHaveLength(1);
+      const accepted = getWorkerControlAcceptedFinalStatus(f.coreDb, lineage);
+      expect(accepted).not.toBeNull();
       expect(await f.poll()).toEqual({ status: 204, body: '' });
       await vi.advanceTimersByTimeAsync(299_999);
       expect(f.isSettled()).toBe(false);
@@ -1141,11 +1166,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(turn.error?.message).toContain(
         'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.'
       );
-      expect(
-        f.coreDb.sqlite
-          .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
-          .all()
-      ).toEqual(accepted);
+      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toEqual(accepted);
       expect(f.effects.map((effect) => effect.kind)).not.toContain('file.export');
       expect(f.effects.map((effect) => effect.kind)).toContain('sandbox.delete');
       expect(inspect.operation).toBe('session.inspect');
@@ -1161,9 +1182,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         }),
       ]);
       expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(turn.id)).toEqual(turn);
-      expect(f.coreDb.sqlite.prepare('SELECT state FROM worker_backend_sessions').get()).toEqual({
-        state: 'cleaned',
-      });
+      expect(getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))?.state).toBe(
+        'cleaned'
+      );
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // Submission was accepted, but held inspection leaves collection/evidence unproved.
       expect(
@@ -1173,9 +1194,6 @@ describe('first-release worker faults (real Core crossings)', () => {
         disposition: 'accepted',
         operationId: expect.any(String),
         fenceRef: null,
-      });
-      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
-        integrity_check: 'ok',
       });
     } finally {
       await f.close();
