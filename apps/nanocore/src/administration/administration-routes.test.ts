@@ -17,7 +17,10 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -691,16 +694,30 @@ describe('administration conversation route', () => {
       store.updateTurn(firstBody.turn.id, { status: 'running', completedAt: null, error: null })
     ).rejects.toThrow(/is terminal and does not admit this write/);
 
-    const updateTurn = store.updateTurn.bind(store);
+    const writer = getControlStoreWorkerClient();
+    const terminal = writer.terminal.bind(writer);
     let completionFailureInjected = false;
-    vi.spyOn(store, 'updateTurn').mockImplementation(async (turnId, input, admission) => {
-      // Admission pins internalExecution first; fail the terminal publication this case exercises.
-      if (!completionFailureInjected && input.status === 'completed') {
-        completionFailureInjected = true;
-        throw new Error('completion persistence failed');
-      }
-      return await updateTurn(turnId, input, admission);
-    });
+    let terminalFailure: unknown;
+    const publicationFault = vi
+      .spyOn(writer, 'terminal')
+      .mockImplementation(async (database, input) => {
+        if (
+          !completionFailureInjected &&
+          input.command?.receipt.requestId === partialRequest.requestId &&
+          input.turn.record.status === 'completed'
+        ) {
+          completionFailureInjected = true;
+          // A stale publication must not terminalize the Turn; use the real native refusal.
+          return await terminal(database, {
+            ...input,
+            turn: { ...input.turn, expectedRevision: input.turn.expectedRevision - 1 },
+          }).catch((error: unknown) => {
+            terminalFailure = error;
+            throw error;
+          });
+        }
+        return await terminal(database, input);
+      });
     const partialRequest = {
       input: 'Inspect another Worker environment.',
       requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -716,8 +733,10 @@ describe('administration conversation route', () => {
         }
       )
     );
+    publicationFault.mockRestore();
     expect(partial.status).toBe(409);
     expect(completionFailureInjected).toBe(true);
+    expect(terminalFailure).toMatchObject({ code: 'precondition', commit: 'not-committed' });
     await expect(partial.json()).resolves.toMatchObject({ code: 'recovery_required' });
     const partialReplay = await app.request(
       ...operationRequest(
