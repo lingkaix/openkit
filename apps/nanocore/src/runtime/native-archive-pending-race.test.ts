@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestKey, FsStore } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import {
   ControlProductEntrySchema,
@@ -20,7 +20,7 @@ import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { archiveThread, createThread } from '../thread-routes.js';
 import { commandInputHash, runIdempotentCommand } from './idempotent-command.js';
-import { raiseRecordedPendingRequest } from './pending-request-flow.js';
+import { archiveThreadWithCloseout, raiseRecordedPendingRequest } from './pending-request-flow.js';
 import {
   pendingRequestItemId,
   readPendingRequest,
@@ -127,6 +127,10 @@ function committedRows(reader: ReturnType<typeof openControlStoreProductReadHand
       'control_agent_sessions',
       'control_product_entries',
       'pending_requests',
+      'control_work_observations',
+      'runtime_evidence',
+      'control_executions',
+      'control_execution_steps',
       'idempotency_requests',
       'audit_events',
     ].map((table) => [
@@ -535,5 +539,333 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(existsSync(immutablePath)).toBe(false);
     expect(readFileSync(unavailablePath)).toEqual(originalBytes);
     expect(readdirSync(dirname(immutablePath)).sort()).toEqual(immutableDirectoryEntries);
+  });
+
+  it.each([
+    'lifecycle',
+    'public',
+  ] as const)('refuses %s closeout when a real Turn wins after native packet preparation', async (path) => {
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    await f.store.completeTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: f.turn.startedAt!,
+    });
+    const request = readPendingRequest(f.reader.sqlite, f.raise.requestId)!;
+    const raisingTurn = structuredClone(f.store.getTurnById(f.turn.id));
+    const raisingEvents = structuredClone(f.store.getTurnEventsForExport(f.turn.id));
+    const receipts = readCommandRequestRecordsFromSqlite(f.reader.sqlite);
+    const beforePreparation = committedRows(f.reader);
+    expect(request).toMatchObject({
+      state: 'pending',
+      claim: 'unclaimed',
+      publicationTurnId: null,
+      delivery: 'undelivered',
+    });
+    expect(raisingTurn.status).toBe('completed');
+    const client = getControlStoreWorkerClient();
+    const nativePending = client.pendingCommand.bind(client);
+    const packet = Promise.withResolvers<Parameters<typeof nativePending>>();
+    const reply = Promise.withResolvers<Awaited<ReturnType<typeof nativePending>>>();
+    // Hold only the real producer's first post; the unchanged packet receives a real native reply.
+    const boundary = vi.spyOn(client, 'pendingCommand').mockImplementationOnce((...args) => {
+      packet.resolve(args);
+      return reply.promise;
+    });
+    const archiveAttempt = (
+      path === 'public'
+        ? archiveThread(f.archive, f.dependencies, actor)
+        : archiveThreadWithCloseout(
+            f.store,
+            { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+            f.workspace.id,
+            f.thread.id,
+            { kind: 'user', id: userId }
+          )
+    ).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
+    const args = await packet.promise;
+    let winningTurn: Awaited<ReturnType<typeof f.store.createTurn>>;
+    let winningThread: ReturnType<typeof f.store.getThread>;
+    let beforeRelease: ReturnType<typeof committedRows>;
+    try {
+      expect(args[1].input).toMatchObject({
+        action: 'closeout',
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        expectedThreadCensus: [f.raise.requestId],
+        expected: [expect.objectContaining({ requestId: f.raise.requestId })],
+      });
+      expect(args[1].terminal).toMatchObject({
+        turn: { expectedRevision: 0, record: { status: 'completed' } },
+        execution: null,
+        command: null,
+        evidence: [],
+      });
+      expect(args[1].receipt).toBeNull();
+      if (path === 'public') {
+        const scope = { workspaceId: f.workspace.id, threadId: f.thread.id };
+        expect(args[1].admission?.receipt).toMatchObject({
+          key: commandRequestKey('thread.archive', f.archive.requestId, scope),
+          command: 'thread.archive',
+          requestId: f.archive.requestId,
+          scope,
+          inputHash: commandInputHash(f.archive),
+          response: { kind: 'thread', id: f.thread.id },
+        });
+        expect(args[1].admission?.audit).toMatchObject({
+          requestId: f.archive.requestId,
+          action: 'thread.archive',
+        });
+      } else {
+        expect(args[1].admission).toBeUndefined();
+      }
+      expect(committedRows(f.reader)).toEqual(beforePreparation);
+      winningTurn = await f.store.createTurn(
+        f.workspace.id,
+        f.thread.id,
+        'Competing Turn admitted before archive closeout',
+        { kind: 'user', id: userId },
+        null,
+        { agentId: null, agentSessionId: null }
+      );
+      expect(
+        f.reader.sqlite
+          .prepare(
+            "SELECT id, status FROM control_turns WHERE thread_id=? AND status IN ('pending','running')"
+          )
+          .all(f.thread.id)
+      ).toEqual([{ id: winningTurn.id, status: 'running' }]);
+      winningThread = structuredClone(f.store.getThread(f.workspace.id, f.thread.id));
+      beforeRelease = committedRows(f.reader);
+    } finally {
+      void nativePending(...args).then(reply.resolve, reply.reject);
+    }
+    const result = await archiveAttempt;
+    expect(boundary).toHaveBeenCalledTimes(1);
+    boundary.mockRestore();
+    // A refusal must roll back every selected request, product, original receipt and Audit write.
+    expect(committedRows(f.reader)).toEqual(beforeRelease);
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toEqual(request);
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).toEqual(winningThread);
+    expect(winningThread.status).toBe('active');
+    expect(f.store.getTurnById(f.turn.id)).toEqual(raisingTurn);
+    expect(f.store.getTurnEventsForExport(f.turn.id)).toEqual(raisingEvents);
+    expect(f.store.getTurnById(winningTurn.id)).toEqual(winningTurn);
+    const turns = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+    expect(turns.map((turn) => turn.id).sort()).toEqual([f.turn.id, winningTurn.id].sort());
+    expect(readCommandRequestRecordsFromSqlite(f.reader.sqlite)).toEqual(receipts);
+    expect(
+      f.reader.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+        .all(f.archive.requestId)
+    ).toEqual([]);
+    expect(
+      f.reader.sqlite
+        .prepare('SELECT * FROM audit_events WHERE request_id=?')
+        .all(f.archive.requestId)
+    ).toEqual([]);
+    expect(validateCanonicalLoad(request, turns, receipts)).toBeNull();
+    // Expected RED: stale closeout commits or returns a generic precondition instead of thread_busy.
+    expect(result).toMatchObject({
+      status: 'rejected',
+      reason: { status: 409, code: 'thread_busy' },
+    });
+  });
+
+  it('archives an idle request with one fresh immutable service outcome and refuses later Turn admission', async () => {
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    // This fixture is a Core-local person's request, with no Worker or invented runtime proof.
+    await f.store.completeTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: f.turn.startedAt!,
+    });
+    const raisingTurn = structuredClone(f.store.getTurnById(f.turn.id));
+    const raisingEvents = structuredClone(f.store.getTurnEventsForExport(f.turn.id));
+    const before = committedRows(f.reader);
+    expect(raisingTurn.status).toBe('completed');
+    expect(raisingTurn.agentId ?? null).toBeNull();
+    expect(raisingTurn.agentSessionId ?? null).toBeNull();
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toMatchObject({
+      state: 'pending',
+      publicationTurnId: null,
+      delivery: 'undelivered',
+    });
+
+    // Expected RED: archive prepares a fresh terminal service Turn against already-archived metadata.
+    expect(
+      await archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      )
+    ).toBe(f.thread.id);
+    const archived = f.store.getThread(f.workspace.id, f.thread.id);
+    expect(archived).toMatchObject({ id: f.thread.id, status: 'archived' });
+    const turns = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+    expect(turns).toHaveLength(2);
+    const closeout = turns.find((turn) => turn.id !== f.turn.id)!;
+    expect(closeout).toMatchObject({
+      owner: f.turn.owner,
+      threadId: f.thread.id,
+      status: 'completed',
+      agentId: null,
+      agentSessionId: null,
+      triggerSource: { kind: 'system-input' },
+      completedAt: expect.any(String),
+      items: [
+        expect.objectContaining({
+          id: pendingRequestItemId(f.raise.requestId, 'ending'),
+          type: 'status',
+          turnId: closeout.id,
+          threadId: f.thread.id,
+          causationId: f.raise.requestItemId,
+          summary: 'thread-archived',
+          status: 'completed',
+        }),
+      ],
+    });
+    expect(closeout.items).toHaveLength(1);
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toMatchObject({
+      state: 'ended',
+      ending: 'invalidated',
+      invalidatingEvent: 'thread-archived',
+      endingActor: { kind: 'user', id: userId },
+      endedAt: closeout.completedAt,
+      publicationTurnId: closeout.id,
+      delivery: 'closed-out',
+      deliveryTurnId: null,
+      claim: 'unclaimed',
+      disposition: null,
+    });
+    const events = f.store.getTurnEventsForExport(closeout.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      turnId: closeout.id,
+      event: 'turn.completed',
+      data: { type: 'turn-completed', stopReason: 'completed', turn: closeout },
+    });
+    expect(f.store.getTurnById(f.turn.id)).toEqual(raisingTurn);
+    expect(f.store.getTurnEventsForExport(f.turn.id)).toEqual(raisingEvents);
+    // A lifecycle archive without command admission creates no substitute receipt or Audit.
+    expect(committedRows(f.reader).idempotency_requests).toEqual(before.idempotency_requests);
+    expect(committedRows(f.reader).audit_events).toEqual(before.audit_events);
+    const committed = committedRows(f.reader);
+    expect(committed.control_turns).toHaveLength(before.control_turns!.length + 1);
+    for (const table of ['runtime_evidence', 'control_executions', 'control_execution_steps'])
+      expect(committed[table]).toEqual(before[table]);
+
+    // Archive closeout is the admitted exception; ordinary fresh admission remains forbidden.
+    await expect(
+      f.store.createTurn(
+        f.workspace.id,
+        f.thread.id,
+        'Fresh work after archive must be refused',
+        { kind: 'user', id: userId },
+        null,
+        { agentId: null, agentSessionId: null }
+      )
+    ).rejects.toThrow();
+    await expect(f.store.updateTurn(closeout.id, { status: 'failed' })).rejects.toThrow();
+    expect(committedRows(f.reader)).toEqual(committed);
+    // Repeating lifecycle closeout cannot move or republish its outcome. Thread update time may refresh.
+    await archiveThreadWithCloseout(
+      f.store,
+      { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+      f.workspace.id,
+      f.thread.id,
+      { kind: 'user', id: userId }
+    );
+    const repeated = committedRows(f.reader);
+    for (const table of Object.keys(committed).filter((table) => table !== 'control_threads'))
+      expect(repeated[table]).toEqual(committed[table]);
+    expect(f.store.getTurnById(closeout.id)).toEqual(closeout);
+    expect(f.store.getTurnEventsForExport(closeout.id)).toEqual(events);
+    const retainedArchived = f.store.getThread(f.workspace.id, f.thread.id);
+    expect(retainedArchived).toEqual({ ...archived, updatedAt: expect.any(String) });
+
+    // A new read-only handle opens only after the actual live writer has stopped.
+    await shutdownControlStoreWorkerClient();
+    const scope = nativeProductScope(f.root, f.turn.owner);
+    const cold = openControlStoreProductReadHandle(scope.path, scope.owner);
+    readers.push(cold);
+    expect(committedRows(cold)).toEqual(repeated);
+    const reopened = new FsStore({ dataRoot: f.root });
+    expect(reopened.getThread(f.workspace.id, f.thread.id)).toEqual(retainedArchived);
+    expect(reopened.getTurnById(f.turn.id)).toEqual(raisingTurn);
+    expect(reopened.getTurnById(closeout.id)).toEqual(closeout);
+    expect(reopened.getTurnEventsForExport(closeout.id)).toEqual(events);
+    const record = readPendingRequest(cold.sqlite, f.raise.requestId)!;
+    expect(
+      validateCanonicalLoad(
+        record,
+        reopened.listThreadTurns(f.workspace.id, f.thread.id),
+        readCommandRequestRecordsFromSqlite(cold.sqlite)
+      )
+    ).toBeNull();
+  });
+
+  it('rolls back fresh lifecycle closeout when the native archived-status write fails', async () => {
+    const f = await fixture();
+    const request = await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    await f.store.completeTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: f.turn.startedAt!,
+    });
+    const raisingTurn = structuredClone(f.store.getTurnById(f.turn.id));
+    const originalThread = structuredClone(f.store.getThread(f.workspace.id, f.thread.id));
+    const before = committedRows(f.reader);
+    await shutdownControlStoreWorkerClient();
+    const stopped = openWorkspaceDb(f.root, f.workspace.id);
+    try {
+      // The trigger fires only when this archive write follows the complete closeout in its transaction.
+      stopped.sqlite.exec(`
+        CREATE TRIGGER refuse_archive_closeout_status BEFORE UPDATE OF status ON control_threads
+        WHEN NEW.id = '${f.thread.id}' AND NEW.status = 'archived' AND OLD.status = 'active'
+          AND EXISTS (
+            SELECT 1 FROM pending_requests p JOIN control_turns t ON t.id = p.publication_turn_id
+            WHERE p.request_id = '${f.raise.requestId}' AND p.state = 'ended'
+              AND p.delivery = 'closed-out' AND t.status = 'completed' AND t.id != '${f.turn.id}'
+              AND EXISTS (SELECT 1 FROM control_product_entries e WHERE e.turn_id = t.id AND e.kind = 'event')
+              AND EXISTS (SELECT 1 FROM control_product_entries e WHERE e.turn_id = t.id
+                AND e.kind = 'item' AND e.id = '${pendingRequestItemId(f.raise.requestId, 'ending')}')
+          )
+        BEGIN SELECT RAISE(ABORT, 'archive closeout status refused'); END
+      `);
+    } finally {
+      stopped.sqlite.close();
+    }
+
+    // Expected RED: a premature precondition refusal never reaches this in-transaction fault.
+    await expect(
+      archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      )
+    ).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+    });
+    await shutdownControlStoreWorkerClient();
+    const scope = nativeProductScope(f.root, f.turn.owner);
+    const cold = openControlStoreProductReadHandle(scope.path, scope.owner);
+    readers.push(cold);
+    expect(committedRows(cold)).toEqual(before);
+    const reopened = new FsStore({ dataRoot: f.root });
+    expect(reopened.getThread(f.workspace.id, f.thread.id)).toEqual(originalThread);
+    expect(reopened.listThreadTurns(f.workspace.id, f.thread.id)).toEqual([raisingTurn]);
+    expect(readPendingRequest(cold.sqlite, f.raise.requestId)).toEqual(request);
+    expect(committedRows(cold).idempotency_requests).toEqual(before.idempotency_requests);
+    expect(committedRows(cold).audit_events).toEqual(before.audit_events);
   });
 });
