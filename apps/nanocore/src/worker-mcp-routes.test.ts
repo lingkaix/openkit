@@ -32,10 +32,13 @@ import {
   type AgentEnvironmentPackage,
   parseWorkspaceMcpServerCatalog,
   resolveWorkspaceMcpServer,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
+  WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import { deriveEntityId, PolicyDocumentV1Schema, workspaceIdForOwner } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
+import { applyEdits, modify, parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createDefaultWorkerControlGateway } from './app.js';
@@ -62,6 +65,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from './config/runtime-config.js';
+import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { retainWorkObservationBody } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
@@ -98,6 +102,7 @@ import {
   createNanoHostHarnessRuntime,
   dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
+  readNanoHostThreadAgentSessionBinding,
   settleNanoHostHarnessOperation,
 } from './runtime/nanohost-harness-records.js';
 import {
@@ -112,6 +117,7 @@ import {
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
   installPendingRequestAdmission,
+  raiseRecordedPendingRequest,
   respondRecordedApproval,
 } from './runtime/pending-request-flow.js';
 import {
@@ -149,9 +155,11 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
-import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import {
@@ -1762,322 +1770,352 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it('reads only current same-Sandbox peers through Turn-scoped handles without changing their records', async () => {
+  it.each([
+    'Workspace member',
+    'nonmember administrator',
+  ] as const)('reads only current same-Sandbox peers through Turn-scoped handles without changing their records: %s', async (audience) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-work-peers-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    let store = await createDemoStore();
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
+    const store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
     const timestamp = '2026-09-30T00:00:00.000Z';
-    const physicalEpoch = 'e'.repeat(64);
-    coreDb.sqlite
-      .prepare(`INSERT INTO nanohost_runtime_targets (
-      target_id, identity_id, deployment_id, connection_generation,
-      predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-    ) VALUES ('target_test', 'target_test', 'deployment_test', 1, 1, 1, 1, ?, ?, 1)`)
-      .run(physicalEpoch, timestamp);
-    for (const sandbox of ['shared', 'foreign']) {
-      createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: 'test',
-        harnessBindingRef: `harness_binding_${sandbox}`,
-        harnessCompatibilityKey: 'b'.repeat(64),
-        harnessInstanceId: `harness_${sandbox}`,
-        imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: physicalEpoch,
-        sandboxBindingRef: `sandbox_binding_${sandbox}`,
-        sandboxCompatibilityKey: 'a'.repeat(64),
-        sandboxIntegrationBindingRef: `integration_${sandbox}`,
-        sandboxRuntimeId: `sandbox_${sandbox}`,
-        runtimeTargetId: 'target_test',
-        timestamp,
-      });
-    }
-    const threads = await Promise.all(
-      ['caller', 'peer', 'private', 'foreign'].map(
-        async (name) =>
-          await store.createThread(
-            'ws_00000000-0000-7000-8000-000000000001',
-            name,
-            testEntityId('th', `th_peers_${name}`),
-            'conversation',
-            name === 'private'
-              ? {
-                  visibility: 'private',
-                  privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-                }
-              : { visibility: 'workspace' }
-          )
-      )
-    );
-    const otherWorkspace = await store.createWorkspace('Unreadable peer Workspace');
-    coreDb.sqlite
-      .prepare(`INSERT INTO users
-      (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-      VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Foreign worker owner', 'other@example.invalid', 0, ?, ?, 'human', 'active')`)
-      .run(Date.parse(timestamp), Date.parse(timestamp));
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-      workspaceId: otherWorkspace.id,
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    threads.push(
-      await store.createThread(
-        otherWorkspace.id,
-        'external',
-        testEntityId('th', 'th_peers_external')
-      )
-    );
-    for (let index = 0; index < 3; index += 1) {
-      const history = await store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        threads[1]!.id,
-        'Earlier work',
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
         {
-          kind: 'user',
-          id: 'usr_00000000-0000-7000-8000-000000000001',
-        }
-      );
-      await store.updateTurn(history.id, {
-        status: 'completed',
-        completedAt: timestamp,
-        triggerSource: { kind: 'user-input', summary: 'Earlier work' },
-      });
-    }
-    const turns = threads.map(async (thread) => {
-      const turn = await store.createTurn(
-        workspaceIdForOwner(thread.owner),
-        thread.id,
-        'Read peers',
-        {
-          kind: 'user',
-          id:
-            workspaceIdForOwner(thread.owner) === otherWorkspace.id
-              ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
-              : 'usr_00000000-0000-7000-8000-000000000001',
-        }
-      );
-      const sessionId = testEntityId('as', `as_native_${thread.name}`);
-      await store.createAgentSession({
-        id: sessionId,
-        agentId: 'agent_codex_host',
-        workspaceId: workspaceIdForOwner(thread.owner),
-        threadId: thread.id,
-        status: 'busy',
-        message: 'native-state-canary credential-canary',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-      await store.updateTurn(turn.id, {
-        agentSessionId: sessionId,
-        agentId: 'agent_codex_host',
-        triggerSource: { kind: 'user-input', summary: 'Read peers' },
-      });
-      openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: sessionId,
-        agentSessionRuntimeBindingId: `binding_${thread.name}`,
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: thread.name === 'foreign' ? 'harness_foreign' : 'harness_shared',
-        workspaceId: workspaceIdForOwner(thread.owner),
-        threadId: thread.id,
-        timestamp,
-      });
-      return store.getTurnById(turn.id);
+          id: 'agent-openrouter',
+          displayName: 'Peer fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+      agentManifests: [setup.manifest],
     });
-    const peer = await turns[1]!;
-    const itemFields = {
-      owner: peer.owner,
-      threadId: peer.threadId,
-      turnId: peer.id,
-      status: 'completed' as const,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    };
-    for (let index = 0; index < 23; index += 1) {
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', `it_peer_${String(index).padStart(2, '0')}`),
-        createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
-        type: 'assistant-message',
-        text: `Product message ${index}`,
-      });
-    }
-    await store.createItem({
-      ...itemFields,
-      id: testEntityId('it', 'it_peer_plan'),
-      type: 'plan',
-      title: 'Product plan',
-      summary: null,
-      steps: [],
+    const manager = createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => snapshot,
     });
-    await store.createItem({
-      ...itemFields,
-      id: testEntityId('it', 'it_peer_tool'),
-      type: 'tool-call',
-      tool: 'test',
-      server: null,
-      arguments: null,
-      result: 'Product tool summary',
-      error: null,
-      durationMs: 1,
-    });
-    await store.createItem({
-      ...itemFields,
-      id: testEntityId('it', 'it_peer_status'),
-      type: 'status',
-      title: 'Product status',
-      summary: null,
-      level: 'info',
-    });
-    await store.createItem({
-      ...itemFields,
-      id: testEntityId('it', 'it_peer_reasoning'),
-      type: 'reasoning',
-      summary: [],
-      content: ['restricted-evidence-canary'],
-    });
-    // Seed in memory and publish each complete Workspace once; the oracle still reads real persisted bytes.
-    const seeded = store;
-    store = new FsStore({ dataRoot });
-    for (const workspace of seeded.listWorkspaces()) {
-      const workspaceThreads = seeded.listThreads(workspace.id);
-      const workspaceTurns = workspaceThreads.flatMap((thread) =>
-        seeded.listThreadTurns(workspace.id, thread.id)
-      );
-      await store.importWorkspaceSnapshot({
-        ...notebookImportFixture({
-          workspaceId: workspace.id,
-          knowledge: seeded.getWorkspaceResources(workspace.id).knowledge,
-        }),
-        workspace,
-        threads: workspaceThreads,
-        turns: workspaceTurns,
-        knowledge: seeded.getWorkspaceResources(workspace.id).knowledge,
-        itemRevisions: workspaceTurns.flatMap((turn) => turn.items),
-        artifacts: [],
-        agentSessions: seeded.listWorkspaceAgentSessions(workspace.id),
-        turnEvents: workspaceTurns.map((turn) => [turn.id, seeded.getTurnEventsForExport(turn.id)]),
-        turnCaptureCoverage: new Map(
-          workspaceTurns.map((turn) => [turn.id, seeded.getTurnCaptureCoverage(turn.id)!])
-        ),
-      });
-    }
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
-    const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');
-    retainWorkObservationBody(workspaceDb, {
-      bundleId: 'evidence_peer_private',
-      threadId: peer.threadId,
-      turnId: peer.id,
-      createdAt: timestamp,
-      sha256: createHash('sha256').update(rawEvidence).digest('hex'),
-      bytes: rawEvidence,
-    });
-    let environmentPackage: AgentEnvironmentPackage;
-    const packages = turns.map((turn) => {
-      const resolved = resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: turn.agentSessionId!,
-        agentSetup: createTestAgentSetup(),
-        backend: { kind: 'openshell' },
-        createdAt: timestamp,
-        requestId: `req_${turn.id}`,
-        triggerActor: turn.triggerActor,
-        turn,
-        workspaceCwd: '/workspace',
-        workspaceRoots: [],
-      });
-      recordMcpWorkerLineage(coreDb, resolved);
-      return resolved;
-    });
-    environmentPackage = packages[0]!;
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const auth = createBetterAuth(coreDb, {
+      mode: 'server',
+      env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
+    });
+    const taskApp = createApp({
+      mode: 'server',
+      auth,
+      coreDb,
+      store,
+      workerMcpGateway,
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager: manager,
+    });
     const app = new Hono();
     registerWorkerMcpRoutes({
       app,
       coreDb,
       store,
       workerMcpGateway,
-      workerControlGateway: {
-        authenticatePackageToken: () => environmentPackage,
-      } as unknown as WorkerControlGateway,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          agentManifests: [],
-          workspaceMcpServerCatalogs: [],
-        }),
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfig: () => snapshot,
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const client = new Client({ name: 'work-peers', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(
-      new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
-      {
-        fetch: (input, init) => app.fetch(new Request(input, init)),
-        requestInit: { headers: { authorization: 'Bearer test' } },
-      }
-    );
+    const laterClient = new Client({ name: 'later-work-peers', version: '1.0.0' });
+    const task = (requestId: string, secret: string) =>
+      taskApp.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId, threadId },
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ input: 'Read peers', requestId }),
+          }
+        )
+      );
+    const transport = () =>
+      new StreamableHTTPClientTransport(
+        new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+        {
+          fetch: (input, init) => app.fetch(new Request(input, init)),
+          requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
+        }
+      );
     try {
-      await client.connect(transport);
-      environmentPackage = packages[1]!;
-      await client.callTool({
-        name: 'work_input_request',
-        arguments: {
-          requestId: '00000000-0000-4000-8000-000000000255',
-          prompt: 'Keep this pending.',
-          questions: [
-            {
-              id: 'peer_question',
-              header: 'Peer',
-              question: 'Which next step?',
-              options: null,
-              isOther: false,
-              isSecret: false,
-            },
-          ],
-        },
-      });
-      environmentPackage = packages[0]!;
-      // The owner requires peer reads to leave Turns, Items, requests, and bindings unchanged.
-      // The brief requires byte-identical peer records, including retained Turn and Item file bytes.
-      const peerTurnFiles = threads
-        .slice(1)
-        .flatMap((thread) =>
-          store
-            .listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)
-            .flatMap((turn) =>
-              ['turn.json', 'items.jsonl'].map((name) =>
-                join(
-                  dataRoot,
-                  'workspaces',
-                  workspaceIdForOwner(thread.owner),
-                  'threads',
-                  thread.id,
-                  'turns',
-                  turn.id,
-                  name
-                )
-              )
-            )
+      let callerUserId = actor.id as string;
+      if (audience === 'nonmember administrator') {
+        const registered = await auth.handler(
+          new Request('http://nanocore.test/api/auth/sign-up/email', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              name: 'Peer administrator',
+              email: 'peer-admin@example.invalid',
+              password: randomUUID(),
+            }),
+          })
         );
-      const before = JSON.stringify({
-        files: peerTurnFiles.map((path) => readFileSync(path).toString('base64')),
-        turns: threads
-          .slice(1)
-          .flatMap((thread) => store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)),
-        items: threads
-          .slice(1)
-          .flatMap((thread) => store.listThreadItems(workspaceIdForOwner(thread.owner), thread.id)),
-        requests: workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all(),
-        bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
+        expect(registered.status).toBe(200);
+        const { user } = (await registered.json()) as { user: { id: string } };
+        callerUserId = user.id;
+        expect(isCanonicalUserActive(coreDb, callerUserId)).toBe(true);
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, callerUserId)).toBeNull();
+      }
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: callerUserId,
+        scope: audience === 'nonmember administrator' ? 'server-admin' : 'workspace',
+        workspaceIds: audience === 'nonmember administrator' ? [] : [workspaceId],
+        expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      expect(workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toHaveLength(1);
+      const firstRequestId = '0190f4c8-0000-7000-8000-000000000751';
+      const started = await task(firstRequestId, issued.secret);
+      expect(started.status).toBe(202);
+      const caller = StartTaskModeResponseSchema.parse(await started.json()).turn;
+      const first = native.executionFor(caller.id);
+      await first.launched.promise;
+      const firstPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(firstPackage.scope).toMatchObject({
+        workspaceId,
+        threadId,
+        turnId: caller.id,
+        triggerActor: { kind: 'user', id: callerUserId },
+      });
+      expect(
+        findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: caller.id })
+          ?.serverAdminTokenId
+      ).toBe(audience === 'nonmember administrator' ? issued.tokenId : null);
+      const callerCommand = commands.mock.calls.find(
+        ([command]) => command.operation === 'turn.start'
+      )![0];
+      const threads = await Promise.all(
+        ['peer', 'restricted', 'withdrawn', 'foreign'].map((name) =>
+          store.createThread(workspaceId, name, undefined, 'conversation', {
+            visibility: 'workspace',
+          })
+        )
+      );
+      // These peer bindings are unstarted Core inputs. No private history or native execution is admitted.
+      const sessions: ReturnType<typeof store.getAgentSession>[] = [];
+      for (const thread of threads) {
+        const session = await store.createAgentSession({
+          id: testEntityId('as', `as_native_${thread.name}`),
+          agentId: 'agent_codex_host',
+          workspaceId,
+          threadId: thread.id,
+          status: 'initializing',
+          message: 'native-state-canary credential-canary',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        sessions.push(session);
+      }
+      const bindingInputs = sessions.map((session, index) => ({
+        agentSessionCompatibilityKey: 'c'.repeat(64),
+        agentSessionId: session.id,
+        agentSessionRuntimeBindingId: `binding_${threads[index]!.name}`,
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: index === 3 ? 'harness_foreign' : callerCommand.harnessInstanceId,
+        workspaceId,
+        threadId: threads[index]!.id,
+        timestamp,
+      }));
+      for (const binding of bindingInputs.slice(0, 3))
+        openNanoHostAgentSessionBinding(coreDb, binding);
+      const [peerSession, , withdrawnSession, foreignSession] = sessions as [
+        (typeof sessions)[number],
+        (typeof sessions)[number],
+        (typeof sessions)[number],
+        (typeof sessions)[number],
+      ];
+      for (let index = 0; index < 3; index += 1) {
+        const history = await store.createTurn(
+          workspaceId,
+          threads[0]!.id,
+          'Earlier work',
+          actor,
+          null,
+          {
+            startedAt: `2026-09-29T00:00:0${index}.000Z`,
+            triggerSource: { kind: 'user-input', summary: 'Earlier work' },
+          }
+        );
+        await store.completeTurn(history.id, { status: 'completed', completedAt: timestamp });
+      }
+      const peer = await store.createTurn(workspaceId, threads[0]!.id, 'Read peers', actor, null, {
+        startedAt: timestamp,
+        triggerSource: { kind: 'user-input', summary: 'Read peers' },
+      });
+      // Preparing Core correlation is real; no native start or ready proof is supplied for this peer.
+      await store.updateTurn(peer.id, {
+        agentId: 'agent_codex_host',
+        agentSessionId: peerSession.id,
+      });
+      expect(store.getTurnById(peer.id).agentSessionId).toBe(peerSession.id);
+      const itemFields = {
+        owner: peer.owner,
+        threadId: peer.threadId,
+        turnId: peer.id,
+        status: 'completed' as const,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      };
+      await store.createItem({
+        ...itemFields,
+        id: testEntityId('it', 'it_peer_plan'),
+        type: 'plan',
+        title: 'Product plan',
+        summary: null,
+        steps: [],
+      });
+      await store.createItem({
+        ...itemFields,
+        id: testEntityId('it', 'it_peer_tool'),
+        type: 'tool-call',
+        tool: 'test',
+        server: null,
+        arguments: null,
+        result: 'Product tool summary',
+        error: null,
+        durationMs: 1,
+      });
+      await store.createItem({
+        ...itemFields,
+        id: testEntityId('it', 'it_peer_status'),
+        type: 'status',
+        title: 'Product status',
+        summary: null,
+        level: 'info',
+      });
+      for (let index = 0; index < 23; index += 1) {
+        await store.createItem({
+          ...itemFields,
+          id: testEntityId('it', `it_peer_${String(index).padStart(2, '0')}`),
+          createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
+          type: 'assistant-message',
+          text: `Product message ${index}`,
+        });
+      }
+      await store.createItem({
+        ...itemFields,
+        id: testEntityId('it', 'it_peer_reasoning'),
+        type: 'reasoning',
+        summary: [],
+        content: ['restricted-evidence-canary'],
+      });
+      const protectedTurn = await store.createTurn(
+        workspaceId,
+        threads[1]!.id,
+        'Protected current source',
+        actor,
+        null,
+        { startedAt: timestamp }
+      );
+      await store.createItem({
+        ...itemFields,
+        id: testEntityId('it', 'restricted_peer_source'),
+        threadId: protectedTurn.threadId,
+        turnId: protectedTurn.id,
+        type: 'assistant-message',
+        text: 'current-audience-content-canary',
+      });
+      const queued = await store.createTurn(
+        workspaceId,
+        threads[2]!.id,
+        'Queued work',
+        actor,
+        null,
+        { status: 'pending' }
+      );
+      const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');
+      retainWorkObservationBody(workspaceDb, {
+        bundleId: 'evidence_peer_private',
+        threadId: peer.threadId,
+        turnId: peer.id,
+        createdAt: timestamp,
+        sha256: createHash('sha256').update(rawEvidence).digest('hex'),
+        bytes: rawEvidence,
+      });
+      const questions = [
+        {
+          id: 'peer_question',
+          header: 'Peer',
+          question: 'Which next step?',
+          options: null,
+          isOther: false,
+          isSecret: false,
+        },
+      ];
+      const requestId = '00000000-0000-4000-8000-000000000255';
+      const requestItemId = testEntityId('it', 'peer_pending');
+      await raiseRecordedPendingRequest(
+        store,
+        workspaceDb.sqlite,
+        {
+          requestId,
+          workspaceId,
+          threadId: peer.threadId,
+          raisingTurnId: peer.id,
+          requestItemId,
+          kind: 'user-input',
+          requesterKind: 'person',
+          responsibleUserId: actor.id,
+          questions,
+          now: timestamp,
+        },
+        {
+          ...itemFields,
+          id: requestItemId,
+          type: 'user-input-request',
+          responsibleUserId: actor.id,
+          userInputRequestId: requestId,
+          prompt: 'Keep this pending.',
+          questions,
+        }
+      );
+      await client.connect(transport());
+      // Core product and binding readers own this read-only predicate; no layout file is canonical.
+      const before = {
+        turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
+        threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
+        revisions: store
+          .listWorkspaceItemRevisions(workspaceId)
+          .filter((item) => threads.some((thread) => thread.id === item.threadId)),
+        events: threads.flatMap((thread) =>
+          store
+            .listThreadTurns(workspaceId, thread.id)
+            .map((turn) => store.getTurnEventsForExport(turn.id))
+        ),
+        requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
+        sessions: sessions.map((session) => store.getAgentSession(session.id)),
+        bindings: threads.map((thread) =>
+          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+        ),
+        commands: commands.mock.calls.length,
+        effects: native.effects.length,
+      };
+      expect(before.requests).toHaveLength(1);
+      expect(before.bindings).toEqual(
+        sessions.map((session, index) => (index === 3 ? null : { agentSessionId: session.id }))
+      );
       const tools = (await client.listTools()).tools;
       expect(tools.map((tool) => tool.name)).toEqual([
         operationToolName('automation.event-admit'),
@@ -2107,7 +2145,7 @@ describe('worker MCP routes', () => {
         name: 'work_peer_list',
         arguments: {
           future: 'additive-canary',
-          agentSessionId: testEntityId('as', 'as_native_foreign'),
+          agentSessionId: foreignSession.id,
           requestId: '00000000-0000-4000-8000-000000000256',
           prompt: 'additive-canary',
           questions: [
@@ -2131,14 +2169,16 @@ describe('worker MCP routes', () => {
         runtime: 'codex',
         activeTurn: true,
       });
-      const hiddenPeers = peers.filter((entry) => !('title' in entry));
-      expect(hiddenPeers).toHaveLength(2);
-      for (const entry of hiddenPeers)
-        expect(Object.keys(entry).sort()).toEqual(['agentId', 'handle', 'runtime']);
-      expect(JSON.stringify(listed)).not.toMatch(
-        /as_native_|binding_|private|foreign|external|additive-canary/
+      expect(peers.find((entry) => entry.title === 'withdrawn')).toMatchObject({
+        activeTurn: true,
+      });
+      expect(store.getTurnById(queued.id).status).toBe('pending');
+      expect(peers.map((entry) => entry.title).sort()).toEqual(['peer', 'restricted', 'withdrawn']);
+      expect(JSON.stringify(listed)).not.toMatch(/as_native_|binding_|additive-canary/);
+      expect(JSON.stringify(listed)).not.toContain(firstPackage.scope.agentSessionId);
+      const callsBefore = new Set(
+        listWorkspaceCapabilityCalls(workspaceDb, workspaceId).map((call) => call.id)
       );
-      const callsBefore = workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all().length;
       const defaultRead = await client.callTool({
         name: 'work_peer_read',
         arguments: { handle: readable.handle },
@@ -2156,6 +2196,11 @@ describe('worker MCP routes', () => {
         items: [{ id: testEntityId('it', 'it_peer_22') }, { id: testEntityId('it', 'it_peer_21') }],
         nextCursor: '2',
       });
+      expect(
+        (read.structuredContent!.turns as Array<Record<string, unknown>>).every(
+          (turn) => !('items' in turn)
+        )
+      ).toBe(true);
       const next = await client.callTool({
         name: 'work_peer_read',
         arguments: { handle: readable.handle, cursor: '2', limit: 50 },
@@ -2167,31 +2212,28 @@ describe('worker MCP routes', () => {
       expect(JSON.stringify([read, next])).not.toMatch(
         /agentSessionId|as_native_|native-state-canary|restricted-evidence-canary|restricted-raw-canary|additive-canary|credential/
       );
-      for (const hiddenPeer of hiddenPeers) {
+      for (const session of sessions)
+        expect(JSON.stringify([listed, read, next])).not.toContain(session.id);
+      expect(JSON.stringify([listed, read, next])).not.toContain(callerCommand.harnessInstanceId);
+      for (const handle of [peerSession.id, 'fabricated-peer-handle']) {
         await expect(
-          client.callTool({ name: 'work_peer_read', arguments: { handle: hiddenPeer.handle } })
+          client.callTool({ name: 'work_peer_read', arguments: { handle } })
         ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
       }
-      await expect(
-        client.callTool({
-          name: 'work_peer_read',
-          arguments: { handle: testEntityId('as', 'as_native_peer') },
-        })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      expect(workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all()).toHaveLength(
-        callsBefore + 6
+      const readCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
+        (call) => !callsBefore.has(call.id)
       );
+      expect(readCalls).toHaveLength(5);
+      expect(readCalls.filter((call) => call.status === 'succeeded')).toHaveLength(3);
+      expect(readCalls.filter((call) => call.status === 'failed')).toHaveLength(2);
       expect(
-        (
-          workspaceDb.sqlite
-            .prepare('SELECT status FROM capability_calls ORDER BY rowid')
-            .all() as Array<{
-            status: string;
-          }>
+        readCalls.every(
+          (call) =>
+            call.turnId === caller.id &&
+            call.agentSessionId === firstPackage.scope.agentSessionId &&
+            call.packageSnapshotId === firstPackage.snapshotId
         )
-          .slice(callsBefore)
-          .map((call) => call.status)
-      ).toEqual(['succeeded', 'succeeded', 'succeeded', 'failed', 'failed', 'failed']);
+      ).toBe(true);
       for (const argumentsOverride of [
         { handle: '' },
         { handle: 1 },
@@ -2209,50 +2251,247 @@ describe('worker MCP routes', () => {
           })
         ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
       }
-      expect(
-        JSON.stringify(workspaceDb.sqlite.prepare('SELECT * FROM capability_calls').all())
-      ).not.toContain('additive-canary');
-      const after = JSON.stringify({
-        files: peerTurnFiles.map((path) => readFileSync(path).toString('base64')),
-        turns: threads
-          .slice(1)
-          .flatMap((thread) => store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)),
-        items: threads
-          .slice(1)
-          .flatMap((thread) => store.listThreadItems(workspaceIdForOwner(thread.owner), thread.id)),
-        requests: workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all(),
-        bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
+      expect(JSON.stringify(listWorkspaceCapabilityCalls(workspaceDb, workspaceId))).not.toContain(
+        'additive-canary'
+      );
+      const after = {
+        turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
+        threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
+        revisions: store
+          .listWorkspaceItemRevisions(workspaceId)
+          .filter((item) => threads.some((thread) => thread.id === item.threadId)),
+        events: threads.flatMap((thread) =>
+          store
+            .listThreadTurns(workspaceId, thread.id)
+            .map((turn) => store.getTurnEventsForExport(turn.id))
+        ),
+        requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
+        sessions: sessions.map((session) => store.getAgentSession(session.id)),
+        bindings: threads.map((thread) =>
+          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+        ),
+        commands: commands.mock.calls.length,
+        effects: native.effects.length,
+      };
+      expect(after).toEqual(before);
+      first.completion.resolve();
+      await first.execution;
+      const replay = await task(firstRequestId, issued.secret);
+      expect(replay.status).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(caller.id);
+      expect(store.getTurnById(caller.id).status).toBe('completed');
+      const later = await task('0190f4c8-0000-7000-8000-000000000752', issued.secret);
+      expect(later.status).toBe(202);
+      const successor = StartTaskModeResponseSchema.parse(await later.json()).turn;
+      expect(successor.id).not.toBe(caller.id);
+      const second = native.executionFor(successor.id);
+      await second.launched.promise;
+      const target = recordTestNativeRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: 'test',
+        harnessBindingRef: 'harness_binding_foreign',
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId: 'harness_foreign',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: target.physicalEpoch!,
+        sandboxBindingRef: 'sandbox_binding_foreign',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration_foreign',
+        sandboxRuntimeId: 'sandbox_foreign',
+        runtimeTargetId: target.targetId,
+        timestamp,
       });
-      expect(after).toBe(before);
-      await store.updateTurn(peer.id, { status: 'pending' });
-      const pendingPeers = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
+      openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
+      expect(
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          workspaceId,
+          threadId: threads[3]!.id,
+        })
+      ).toEqual({ agentSessionId: foreignSession.id });
+      const beforeAudience = {
+        ...before,
+        bindings: threads.map((thread) =>
+          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+        ),
+        commands: commands.mock.calls.length,
+        effects: native.effects.length,
+      };
+      expect(native.executor.launches).toBe(2);
+      await laterClient.connect(transport());
+      await expect(
+        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      const laterPeers = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
-      expect(pendingPeers.find((entry) => entry.handle === readable.handle)).toMatchObject({
+      const laterPeer = laterPeers.find((entry) => entry.title === 'peer')!;
+      expect(laterPeer).toMatchObject({
+        agentId: 'agent_codex_host',
+        runtime: 'codex',
         activeTurn: true,
       });
-      await store.updateTurn(peer.id, { status: 'running' });
-      environmentPackage = packages[1]!;
-      const reverse = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
-        .structuredContent!.peers as Array<Record<string, unknown>>;
-      expect(reverse.map((entry) => entry.title)).toContain('caller');
-      expect(reverse.map((entry) => entry.title)).not.toContain('peer');
-      environmentPackage = packages[0]!;
-      Object.assign(store.getThread('ws_00000000-0000-7000-8000-000000000001', peer.threadId), {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-      });
-      await expect(
-        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      const relisted = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
-        .structuredContent!.peers as Array<Record<string, unknown>>;
+      expect(laterPeer.handle).not.toBe(readable.handle);
+      const currentPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(currentPackage.scope.agentSessionId).toBe(firstPackage.scope.agentSessionId);
+      expect(currentPackage.scope.turnId).toBe(successor.id);
+      expect(currentPackage.snapshotId).not.toBe(firstPackage.snapshotId);
       expect(
-        Object.keys(relisted.find((entry) => entry.handle === readable.handle)!).sort()
-      ).toEqual(['agentId', 'handle', 'runtime']);
-      Object.assign(store.getThread('ws_00000000-0000-7000-8000-000000000001', peer.threadId), {
-        visibility: 'workspace',
-        privateOwnerUserId: undefined,
+        findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: successor.id })
+          ?.serverAdminTokenId
+      ).toBe(audience === 'nonmember administrator' ? issued.tokenId : null);
+      expect(laterPeers).toHaveLength(3);
+      expect(laterPeers.some((entry) => entry.title === 'foreign')).toBe(false);
+      await expect(
+        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: foreignSession.id } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      expect(laterPeers.filter((entry) => !('title' in entry))).toHaveLength(0);
+      expect(JSON.stringify(laterPeers)).not.toContain(firstPackage.scope.agentSessionId);
+      expect(
+        (
+          await laterClient.callTool({
+            name: 'work_peer_read',
+            arguments: { handle: laterPeer.handle, cursor: '1', limit: 1 },
+          })
+        ).structuredContent!.items
+      ).toHaveLength(1);
+      const boundary = {
+        id: 'peer-current-boundary',
+        kind: 'managed-boundary' as const,
+        author: { kind: 'human' as const, id: actor.id },
+        authority: { kind: 'human' as const, userId: actor.id },
+        authoredAt: timestamp,
+        state: 'active' as const,
+        scope: {
+          subjects: [],
+          actions: [],
+          resources: [
+            {
+              kind: 'container' as const,
+              container: { owner: peer.owner, kind: 'thread' as const, id: threads[1]!.id },
+            },
+          ],
+        },
+        lifetime: { anchor: { owner: peer.owner, kind: 'workspace' as const, id: workspaceId } },
+      };
+      const replacement = { schemaVersion: 1 as const, statements: [boundary] };
+      expect(
+        (
+          await laterClient.callTool({
+            name: 'work_peer_read',
+            arguments: { handle: laterPeers.find((entry) => entry.title === 'restricted')!.handle },
+          })
+        ).structuredContent!.items
+      ).toEqual([expect.objectContaining({ text: 'current-audience-content-canary' })]);
+      // Authored Policy is a prepared reader input, not an administrative command under test.
+      const files = new RuntimeConfigFileService({
+        dataRoot,
+        workspaceIds: [workspaceId],
+        userId: actor.id,
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
       });
+      const configId = `workspaces/${workspaceId}/workspace.jsonc`;
+      const configFile = files.readFile(configId);
+      const config = WorkspaceConfigSchema.parse(parse(configFile.content));
+      const mediation = {
+        ...replacement,
+        statements: [...(config.workspace.policy?.mediation.statements ?? []), boundary],
+      };
+      let content = applyEdits(
+        configFile.content,
+        modify(configFile.content, ['workspace', 'policy', 'mediation'], mediation, {})
+      );
+      content = applyEdits(
+        content,
+        modify(
+          content,
+          ['requiredFeatures'],
+          [...new Set([...(config.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE])],
+          {}
+        )
+      );
+      files.updateFile({
+        id: configId,
+        kind: 'workspace',
+        content,
+        expectedRevision: configFile.file.revision,
+      });
+      expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+      const restricted = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
+        .structuredContent!.peers as Array<Record<string, unknown>>;
+      const restrictedHandle = laterPeers.find((entry) => entry.title === 'restricted')!.handle;
+      expect(
+        Object.keys(restricted.find((entry) => entry.handle === restrictedHandle)!).sort()
+      ).toEqual(['agentId', 'handle', 'runtime']);
+      const refusal = await laterClient
+        .callTool({ name: 'work_peer_read', arguments: { handle: restrictedHandle } })
+        .catch((error: unknown) => error);
+      expect(refusal).toMatchObject({ data: { code: 'peer_not_found' } });
+      expect(String(refusal)).not.toContain(threads[1]!.id);
+      expect(String(refusal)).not.toContain('current-audience-content-canary');
+      expect(
+        JSON.stringify(restricted.find((entry) => entry.handle === restrictedHandle))
+      ).not.toContain(threads[1]!.id);
+      expect(
+        JSON.stringify(restricted.find((entry) => entry.handle === restrictedHandle))
+      ).not.toContain('current-audience-content-canary');
+      expect({
+        turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
+        threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
+        revisions: store
+          .listWorkspaceItemRevisions(workspaceId)
+          .filter((item) => threads.some((thread) => thread.id === item.threadId)),
+        events: threads.flatMap((thread) =>
+          store
+            .listThreadTurns(workspaceId, thread.id)
+            .map((turn) => store.getTurnEventsForExport(turn.id))
+        ),
+        requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
+        sessions: sessions.map((session) => store.getAgentSession(session.id)),
+        bindings: threads.map((thread) =>
+          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+        ),
+        commands: commands.mock.calls.length,
+        effects: native.effects.length,
+      }).toEqual(beforeAudience);
+      const withdrawnHandle = laterPeers.find((entry) => entry.title === 'withdrawn')!.handle;
+      expect(
+        (
+          await laterClient.callTool({
+            name: 'work_peer_read',
+            arguments: { handle: withdrawnHandle },
+          })
+        ).structuredContent!.turns
+      ).toEqual([expect.objectContaining({ id: queued.id, status: 'pending' })]);
+      // Deliberately lose only this valid, unstarted Core binding; no physical close is claimed.
+      coreDb.sqlite.transaction(() => {
+        const { changes } = coreDb.sqlite
+          .prepare(`DELETE FROM agent_session_runtime_bindings
+            WHERE agent_session_runtime_binding_id = ? AND agent_session_id = ?
+              AND workspace_id = ? AND thread_id = ?
+              AND lifecycle_state = 'opening' AND native_environment_applied = 0
+              AND current_turn_id IS NULL AND current_attempt_id IS NULL`)
+          .run('binding_withdrawn', withdrawnSession.id, workspaceId, threads[2]!.id);
+        expect(changes).toBe(1);
+      })();
+      expect(
+        readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
+      ).toBeNull();
+      await expect(
+        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: withdrawnHandle } })
+      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+      expect(
+        (
+          await laterClient.callTool({
+            name: 'work_peer_read',
+            arguments: { handle: laterPeer.handle, limit: 1 },
+          })
+        ).structuredContent!.items
+      ).toHaveLength(1);
+      expect(store.getTurnById(successor.id).status).toBe('running');
       await store.createItem({
         ...itemFields,
         id: testEntityId('it', 'it_peer_oversized'),
@@ -2261,131 +2500,30 @@ describe('worker MCP routes', () => {
         text: 'x'.repeat(524_288),
       });
       await expect(
-        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
+        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: laterPeer.handle } })
       ).rejects.toMatchObject({
         data: { code: 'mcp-result-too-large' },
         message: expect.stringContaining('Route bulk output through artifacts or the data plane.'),
       });
-      coreDb.sqlite
-        .prepare('DELETE FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
-        .run(testEntityId('as', 'as_native_peer'));
-      await expect(
-        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      // Restore the same binding; a later Turn still cannot use its predecessor's handle.
-      openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: testEntityId('as', 'as_native_peer'),
-        agentSessionRuntimeBindingId: 'binding_peer',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness_shared',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: peer.threadId,
-        timestamp,
-      });
-      await store.updateTurn(turns[0]!.id, { status: 'completed', completedAt: timestamp });
-      // Product terminal alone does not release execution. This metadata-only worker fixture
-      // owns no Native operation or output stream; its caller binding is still unoccupied.
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT current_attempt_id, current_turn_id FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
-          )
-          .get(testEntityId('as', 'as_native_caller'))
-      ).toEqual({ current_attempt_id: null, current_turn_id: null });
-      const closedCaller = markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${turns[0]!.id}`),
-        cause: 'worker-final-status',
-        outcomeRef: 'fixture-caller:completed',
-      });
-      const proof = {
-        terminalHandoff: true,
-        output: true,
-        evidence: true,
-        outsideWorkspaceCollection: true,
-        integrationDrain: true,
-        routesRevoked: true,
-      } as const;
-      const correlation = schedulerExecutionCorrelation(closedCaller);
-      const release = await new SimulatedTurnExecutor({ coreDb }).release({
-        ...correlation,
-        proof,
-      });
-      closeSchedulerExecutionAttemptWithFence(coreDb, {
-        correlation,
-        proof,
-        fenceRef: release.fenceRef!,
-      });
-      coreDb.sqlite
-        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-        VALUES ('usr_00000000-0000-7ea2-a10a-dd9edb0e2650', 'Peer Admin', 'peer-admin@example.com', 0, ?, ?, 'human', 'active')`)
-        .run(Date.now(), Date.now());
-      const later = await store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        turns[0]!.threadId,
-        'Later read',
-        {
-          kind: 'user',
-          id: 'usr_00000000-0000-7ea2-a10a-dd9edb0e2650',
-        }
-      );
-      await store.updateTurn(later.id, { agentSessionId: testEntityId('as', 'as_native_caller') });
-      environmentPackage = resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: testEntityId('as', 'as_native_caller'),
-        agentSetup: createTestAgentSetup(),
-        backend: { kind: 'openshell' },
-        createdAt: timestamp,
-        requestId: 'req_later_peers',
-        triggerActor: later.triggerActor,
-        turn: later,
-        workspaceCwd: '/workspace',
-        workspaceRoots: [],
-      });
-      const adminToken = createOpenKitAccessTokenRecord(coreDb, {
-        expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: 'usr_00000000-0000-7ea2-a10a-dd9edb0e2650',
-        scope: 'server-admin',
-        workspaceIds: [],
-      });
-      recordMcpWorkerLineage(coreDb, environmentPackage, adminToken.tokenId);
-      await expect(
-        client.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      const adminPeers = (await client.callTool({ name: 'work_peer_list', arguments: {} }))
-        .structuredContent!.peers as Array<Record<string, unknown>>;
-      const adminPeer = adminPeers.find((entry) => entry.title === 'peer');
-      expect(adminPeer).toMatchObject({
-        title: 'peer',
-        agentId: 'agent_codex_host',
-        runtime: 'codex',
-      });
-      // Core Permissions' Administrator Eligibility applies to the exact bearer retained
-      // by this admission, including another user's private Thread. The Sandbox limit
-      // still excludes the foreign physical peer.
-      expect(adminPeers.find((entry) => entry.title === 'external')).toMatchObject({
-        title: 'external',
-        agentId: 'agent_codex_host',
-        runtime: 'codex',
-      });
-      expect.soft(adminPeers.find((entry) => entry.title === 'private')).toMatchObject({
-        title: 'private',
-        agentId: 'agent_codex_host',
-        runtime: 'codex',
-      });
-      expect.soft(adminPeers.filter((entry) => !('title' in entry))).toHaveLength(0);
-      const adminRead = await client.callTool({
-        name: 'work_peer_read',
-        arguments: { handle: adminPeer!.handle, cursor: '1', limit: 1 },
-      });
-      expect(adminRead.structuredContent!.items).toHaveLength(1);
     } finally {
-      await client.close();
+      await Promise.allSettled([client.close(), laterClient.close()]);
+      native.executor.completion.resolve();
+      for (const turn of store.listThreadTurns(workspaceId, threadId))
+        native.executionFor(turn.id).completion.resolve();
+      const closeouts = await Promise.allSettled(
+        taskAdmissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      commands.mockRestore();
+      taskAdmissions.mockRestore();
+      native.restore();
       await workerMcpGateway.close();
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
+      expect.soft(closeouts.filter((result) => result.status === 'rejected')).toEqual([]);
     }
   });
 
