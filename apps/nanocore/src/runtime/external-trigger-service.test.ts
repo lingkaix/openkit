@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { AdmitExternalTriggerResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { isControlWorkerRequest } from '../storage/control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { findExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -245,6 +247,144 @@ function queueCount(db: CoreDb): number {
 }
 
 describe('bounded scheduled poll event admission', () => {
+  it.each([
+    'acknowledged',
+    'revoked-source',
+    'lost-ack',
+  ] as const)('retains original event work across initial native publication: %s', async (outcome) => {
+    const f = await fixture();
+    const duplicateSource = await f.nextPoll();
+    const before = queueCount(f.db);
+    const createTurn = vi.spyOn(f.store, 'createTurn');
+    // Hold the actual native reply after COMMIT; admission and SQL remain unchanged.
+    let entered!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held: { id?: number; worker?: Worker; deliver?: () => void } = {};
+    const post = Worker.prototype.postMessage;
+    const emit = Worker.prototype.emit;
+    vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (this: Worker, ...args) {
+      const request: unknown = args[0];
+      if (
+        held.id === undefined &&
+        isControlWorkerRequest(request) &&
+        request.operation === 'products' &&
+        request.transition.products.some(
+          (product) => product.kind === 'turn' && product.expectedRevision === 0
+        )
+      ) {
+        held.id = request.id;
+        held.worker = this;
+      }
+      return post.apply(this, args);
+    });
+    vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
+      const reply = args[0];
+      if (
+        this === held.worker &&
+        event === 'message' &&
+        typeof reply === 'object' &&
+        reply !== null &&
+        'id' in reply &&
+        reply.id === held.id
+      ) {
+        held.deliver = () => {
+          emit.call(this, event, ...args);
+        };
+        entered();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    let originalSettled = false;
+    let duplicateSettled = false;
+    let duplicate: Promise<PromiseSettledResult<Awaited<ReturnType<typeof f.admit>>>> | undefined;
+    const original = Promise.allSettled([f.admit()]).then((results) => {
+      originalSettled = true;
+      return results[0]!;
+    });
+    try {
+      await reached;
+      const accepted = findExternalTriggerAdmission(f.db, f.schedule.id, f.dependencies.eventKey)!;
+      const entry = requireSchedulerAdmissionEntry(f.db, accepted.queueEntryId);
+      duplicate = Promise.allSettled([
+        f.admit({
+          source: duplicateSource,
+          input: 'Changed content must not replace the original brief.',
+        }),
+      ]).then((results) => {
+        duplicateSettled = true;
+        return results[0]!;
+      });
+      // A real independent admission establishes progress without a guessed timer delay.
+      const distinct = await f.admit({
+        eventKey: 'mail:independent',
+        input: 'Handle another event.',
+      });
+      expect(originalSettled).toBe(false);
+      expect(duplicateSettled).toBe(false);
+      expect(distinct.entry.threadId).not.toBe(entry.threadId);
+      expect(distinct.entry.turnId).not.toBe(entry.turnId);
+      if (outcome === 'revoked-source')
+        f.store.setWorkspaceResourcePolicyProjection(() =>
+          managedThreadPolicy({
+            workspaceId: f.schedule.workspaceId,
+            threadId: duplicateSource.threadId,
+            userId: f.userId,
+          })
+        );
+      if (outcome === 'lost-ack') {
+        held.deliver = undefined;
+        await held.worker!.terminate();
+      } else {
+        held.deliver?.();
+        held.deliver = undefined;
+      }
+      const [first, repeated] = await Promise.all([original, duplicate]);
+      if (outcome !== 'lost-ack') expect(first.status).toBe('fulfilled');
+      if (outcome === 'revoked-source')
+        expect(repeated).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'external_event_denied' },
+        });
+      else if (outcome === 'acknowledged') {
+        expect(repeated).toEqual({
+          status: 'fulfilled',
+          value: {
+            ...(first as PromiseFulfilledResult<Awaited<ReturnType<typeof f.admit>>>).value,
+            duplicate: true,
+          },
+        });
+      }
+      if (outcome === 'lost-ack') {
+        // A valid committed tuple can be inspected; reply loss alone does not prove damage.
+        for (const result of [first, repeated]) {
+          if (result.status === 'rejected')
+            expect(result.reason).toMatchObject({ code: 'recovery_required' });
+          else {
+            expect(result.value.admission).toEqual(accepted);
+            expect(result.value.entry).toEqual(entry);
+          }
+        }
+        await shutdownControlStoreWorkerClient();
+      }
+      const replay = await f.admit({ input: 'No replacement after publication uncertainty.' });
+      expect(replay.admission).toEqual(accepted);
+      expect(replay.entry).toEqual(entry);
+      expect(replay.entry.turnInput).toBe(f.dependencies.input);
+      expect(replay.admission.sourceTurnId).toBe(f.source.turnId);
+      expect(replay.turn.status).toBe('pending');
+      expect(replay.turn.agentSessionId ?? null).toBeNull();
+      expect(createTurn).toHaveBeenCalledTimes(2);
+      expect(queueCount(f.db)).toBe(before + 2);
+    } finally {
+      held.deliver?.();
+      held.deliver = undefined;
+      await Promise.all([original, duplicate]);
+    }
+  });
+
   it('joins the native Work Tool to isolated admission and refuses substituted scope and human entry', async () => {
     const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);

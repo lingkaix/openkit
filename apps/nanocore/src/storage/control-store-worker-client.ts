@@ -101,6 +101,13 @@ interface Pending {
   readonly reject: (error: ControlStoreWorkerError | PendingRequestCommandError) => void;
 }
 
+/** Exact live product publication; this is not retained state or permission to retry. */
+interface ControlPublicationIdentity {
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly turnId: string;
+}
+
 let singleton: ControlStoreWorkerClient | undefined;
 
 /**
@@ -124,8 +131,11 @@ export async function shutdownControlStoreWorkerClient(): Promise<void> {
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
 class ControlStoreWorkerClient {
   private worker: Worker | undefined;
-  private readonly operations = new Set<Promise<unknown>>();
-  private readonly operationContext = new AsyncLocalStorage<{ active: boolean }>();
+  private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
+  private readonly operationContext = new AsyncLocalStorage<{
+    active: boolean;
+    publication: ControlPublicationIdentity | undefined;
+  }>();
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
   private readonly openings = new Map<
@@ -180,18 +190,40 @@ class ControlStoreWorkerClient {
     return this.closed;
   }
 
-  /** Retains an accepted producer, including asynchronous preparation, until its own closeout settles. */
-  async runOperation<T>(operation: () => Promise<T>): Promise<T> {
+  /** Retains an accepted producer, including asynchronous preparation, until its own closeout settles.
+   * @param publication Optional exact initial product identity, never retry authority.
+   * @returns The original producer result after its own closeout.
+   */
+  async runOperation<T>(
+    operation: () => Promise<T>,
+    publication?: ControlPublicationIdentity
+  ): Promise<T> {
     this.assertAccepting();
-    const context = { active: true };
-    const promise = this.operationContext.run(context, async () => operation());
-    this.operations.add(promise);
+    const context = { active: true, publication };
+    // Register before invoking the producer: its synchronous Core commit may expose this identity.
+    const promise = this.operationContext.run(context, () => Promise.resolve().then(operation));
+    this.operations.set(promise, publication);
     try {
       return await promise;
     } finally {
       context.active = false;
       this.operations.delete(promise);
     }
+  }
+
+  /** Observes only an exact live original admission; absence never authorizes publication or replay. */
+  async waitForPublication(publication: ControlPublicationIdentity): Promise<void> {
+    if (
+      this.operationContext.getStore()?.active &&
+      isDeepStrictEqual(this.operationContext.getStore()?.publication, publication)
+    )
+      throw new Error('A publication cannot join itself.');
+    const matches = [...this.operations].filter(([, identity]) =>
+      isDeepStrictEqual(identity, publication)
+    );
+    if (matches.length > 1) throw new Error('Publication identity is ambiguous.');
+    // The caller must inspect canonical history even when the original acknowledgement was lost.
+    if (matches[0]) await matches[0][0].catch(() => undefined);
   }
 
   /** Only still-active accepted producers may continue submitting work during shutdown drain. */
@@ -479,7 +511,7 @@ class ControlStoreWorkerClient {
       try {
         const failures: unknown[] = [];
         while (this.operations.size) {
-          const outcomes = await Promise.allSettled(this.operations);
+          const outcomes = await Promise.allSettled(this.operations.keys());
           for (const outcome of outcomes)
             if (outcome.status === 'rejected') failures.push(outcome.reason);
         }

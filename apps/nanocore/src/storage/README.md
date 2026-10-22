@@ -264,3 +264,5 @@ The source Worker bootstrap registers its ESM TypeScript loader once inside the 
 Under Vitest, source clients load the same native Worker from the invocation-private compiled entry produced by NanoCore global setup. The existing Vitest marker selects only this source entry; no native owner, flag, protocol or durability predicate changes. Missing test setup fails closed, and the shared temporary-directory owner removes the build after worker teardown.
 
 Offline Workspace restore and MOVE share Core `workspace_recovery_admissions` ownership for exact restart, terminal abandonment and next-boot refusal of partial authority.
+
+The native client's existing accepted-producer collection may retain an optional exact physical data root, Workspace and initial Turn identity. A duplicate observes only that still-live original acknowledgement; absent or failed producers grant no replay or repair. Shutdown drains the same collection and permits only its active accepted contexts to continue publication. Run `control-store-producer-lifetime.test.ts` and `../runtime/external-trigger-service.test.ts` for this boundary.

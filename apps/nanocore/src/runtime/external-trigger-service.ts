@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { type ActorRef, allocateEntityId, SubmitTurnInputRequestSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience, isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
-import type { SchedulerExecutionLineage } from '../scheduler-records.js';
+import {
+  requireSchedulerAdmissionEntry,
+  type SchedulerExecutionLineage,
+} from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type ExternalTriggerAdmission,
   findExternalTriggerAdmission,
@@ -56,6 +61,8 @@ export async function admitExternalTriggerEvent(
   input: ExternalTriggerServiceInput
 ): Promise<ExternalTriggerAdmissionResult> {
   const coreDb = input.schedules.coreDb;
+  const client = getControlStoreWorkerClient();
+  const owner = { dataRoot: realpathSync(coreDb.dataRoot), workspaceId: input.source.workspaceId };
   const release = input.schedules.mutationAdmission.enter(input.source.workspaceId);
   if (!release) throw denied();
   try {
@@ -65,7 +72,7 @@ export async function admitExternalTriggerEvent(
       throw new TurnStartValidationError('invalid_request', 'Invalid external event input.', 400);
     const schedule = validateSource();
     const duplicate = readAdmission(schedule.id, eventKey.data);
-    if (duplicate) return result(duplicate, true);
+    if (duplicate) return await duplicateResult(duplicate);
 
     const threadId = allocateEntityId('th');
     const reservedTurnId = allocateEntityId('tu');
@@ -80,7 +87,10 @@ export async function admitExternalTriggerEvent(
         parentThreadId: input.source.threadId,
       }
     );
-    return await new Promise<ExternalTriggerAdmissionResult>((resolve, reject) => {
+    const publish = (
+      resolve: (result: ExternalTriggerAdmissionResult) => void,
+      reject: (reason: unknown) => void
+    ) => {
       let admission: ExternalTriggerAdmission | undefined;
       let signalled = false;
       void startProductTurn({
@@ -123,17 +133,29 @@ export async function admitExternalTriggerEvent(
           signalled = true;
           resolve(accepted);
         },
-      }).catch((error: unknown) => {
+      }).catch(async (error: unknown) => {
         if (signalled) return;
         // A committed join fences every publication failure. Only inspection may follow.
         try {
           const accepted = readAdmission(schedule.id, eventKey.data);
-          if (accepted) resolve(result(accepted, true));
-          else reject(error);
-        } catch {
-          reject(externalTriggerRecoveryRequired());
+          if (accepted) {
+            const original = requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId);
+            resolve(
+              original.turnId === reservedTurnId
+                ? result(accepted, true)
+                : await duplicateResult(accepted)
+            );
+          } else reject(error);
+        } catch (cause) {
+          reject(
+            cause instanceof TurnStartValidationError ? cause : externalTriggerRecoveryRequired()
+          );
         }
       });
+    };
+    return await client.runOperation(() => new Promise(publish), {
+      ...owner,
+      turnId: reservedTurnId,
     });
   } finally {
     release();
@@ -199,6 +221,21 @@ export async function admitExternalTriggerEvent(
     } catch {
       throw externalTriggerRecoveryRequired();
     }
+  }
+
+  /** Joins only another live original publisher, then rechecks current authority and retained identity. */
+  async function duplicateResult(admission: ExternalTriggerAdmission) {
+    const entry = requireSchedulerAdmissionEntry(coreDb, admission.queueEntryId);
+    await client.waitForPublication({
+      ...owner,
+      workspaceId: entry.workspaceId,
+      turnId: entry.turnId,
+    });
+    validateSource();
+    const retained = readAdmission(admission.scheduleId, admission.eventKey);
+    if (!retained || !isDeepStrictEqual(retained, admission))
+      throw externalTriggerRecoveryRequired();
+    return result(retained, true);
   }
 
   /** Returns only the retained tuple and canonical target history, with no publication or launch. */
