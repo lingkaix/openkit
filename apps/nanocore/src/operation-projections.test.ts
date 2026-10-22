@@ -18,6 +18,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
@@ -35,6 +36,7 @@ import { OperationError } from './operation-error.js';
 import { createInternalOperationEngine, createOperationEngine } from './operation-invocation.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { OperationAdmissionDependencies } from './operation-resolvers.js';
+import * as goalCoordinator from './runtime/goal-coordinator.js';
 import {
   dispatchOpenkitGenerativeTool,
   OPENKIT_GENERATIVE_TOOL_OPERATIONS,
@@ -55,7 +57,10 @@ import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import {
+  recordWorkspaceOwnerMembership,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('shared family contract', () => {
@@ -373,7 +378,9 @@ describe('shared family contract', () => {
 });
 
 /** Isolated domain authority shared by every projection in this invariant. */
-async function operationFixture(options: Pick<CreateAppOptions, 'llmGatewayDispatcher'> = {}) {
+async function operationFixture(
+  options: Pick<CreateAppOptions, 'llmGatewayDispatcher' | 'mode'> = {}
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-operation-slice-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -408,8 +415,25 @@ async function operationFixture(options: Pick<CreateAppOptions, 'llmGatewayDispa
     ],
   };
   const appRecord = await createLightApp(command, schema);
-  const app = createApp({ coreDb, dataRoot, store, ...options });
-  return { app, coreDb, store, command, appRecord, schema };
+  // Join the real App boot before this fixture publishes live Goal work.
+  const createCoordinator = goalCoordinator.createGoalCoordinator;
+  const coordinators = vi
+    .spyOn(goalCoordinator, 'createGoalCoordinator')
+    .mockImplementation((options) => {
+      const coordinator = createCoordinator(options);
+      vi.spyOn(coordinator, 'boot');
+      return coordinator;
+    });
+  try {
+    const app = createApp({ coreDb, dataRoot, store, ...options });
+    for (const { value: coordinator } of coordinators.mock.results)
+      await vi.mocked(coordinator.boot).mock.results[0]!.value;
+    return { app, coreDb, store, command, appRecord, schema, mode: options.mode ?? 'local' };
+  } finally {
+    for (const { value: coordinator } of coordinators.mock.results)
+      vi.mocked(coordinator.boot).mockRestore();
+    coordinators.mockRestore();
+  }
 }
 
 /** Reuses the real projection assembly over one isolated Kernel authority and exact Worker admission. */
@@ -1285,9 +1309,15 @@ async function publicJourneyProjections(
   f: Awaited<ReturnType<typeof operationFixture>>,
   secret?: string
 ) {
-  const app = secret
-    ? createApp({ mode: 'server', coreDb: f.coreDb, dataRoot: f.command.dataRoot, store: f.store })
-    : f.app;
+  const app =
+    secret && f.mode !== 'server'
+      ? createApp({
+          mode: 'server',
+          coreDb: f.coreDb,
+          dataRoot: f.command.dataRoot,
+          store: f.store,
+        })
+      : f.app;
   const headers = {
     'content-type': 'application/json',
     ...(secret ? { authorization: `Bearer ${secret}` } : {}),
@@ -1901,19 +1931,22 @@ describe('Goal definition projections', () => {
 });
 
 import { executeGoalOperation, readGoalView } from './runtime/goal-owner.js';
+import { readPendingRequest } from './runtime/pending-requests.js';
 
 it('discloses and grants a Coordinator proposal to the current administrator without membership, retaining actual attribution and refusing revoked consumption', async () => {
-  const f = await operationFixture();
+  const f = await operationFixture({ mode: 'server' });
   const db = openWorkspaceDb(f.command.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db);
   try {
-    f.coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,last_seen_at) SELECT 'usr_00000000-0000-768a-8658-44c33d82c1f5',kind,display_name,'admin@local.openkit.invalid',email_verified,created_at,updated_at,last_seen_at FROM users WHERE id='usr_00000000-0000-7000-8000-000000000001'"
-      )
-      .run();
+    const { user: administrator } = await createBetterAuth(f.coreDb, { env: {} }).api.signUpEmail({
+      body: {
+        name: 'Proposal administrator',
+        email: [randomUUID(), 'example.invalid'].join('@'),
+        password: randomUUID(),
+      },
+    });
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+      ownerUserId: administrator.id,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1968,6 +2001,17 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
     );
     const request = proposed.requests[0]!;
     const admin = await publicJourneyProjections(f, issued.secret);
+    expect(
+      resolveWorkspaceMembershipRelation(f.coreDb, scope.workspaceId, administrator.id)
+    ).toBeNull();
+    const disclosed = (await admin.client(
+      'goal.read',
+      scope
+    )) as import('@openkit/app-api-schemas').GoalView;
+    expect(disclosed.requests[0]).toMatchObject({
+      requestId: request.requestId,
+      exactIntent: request.exactIntent,
+    });
     const resolved = (await admin.client('goal.plan.approve', {
       ...scope,
       requestId: randomUUID(),
@@ -1975,19 +2019,32 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
       decision: 'granted',
     })) as import('@openkit/app-api-schemas').GoalView;
     expect(resolved.requests[0]).toMatchObject({
-      decidingActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+      decidingActorId: administrator.id,
       claim: 'unclaimed',
       disposition: null,
     });
-    const consuming = await f.store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      goal.threadId,
-      'Consume exact outcome',
-      { kind: 'user', id: 'usr_00000000-0000-768a-8658-44c33d82c1f5' },
-      undefined,
-      { executorKind: 'coordinator', agentId: 'goal-coordinator' }
-    );
-    coordinator.coordinatorTurnId = consuming.id;
+    const originalBinding = {
+      workspaceId: scope.workspaceId,
+      threadId: goal.threadId,
+      raisingTurnId: turn.id,
+      requesterKind: 'coordinator',
+      responsibleUserId: context.actor.userId,
+      governedIntent: request.exactIntent,
+      decidingActor: { kind: 'user', id: administrator.id },
+      decidingActorContext: {
+        kind: 'token',
+        userId: administrator.id,
+        tokenId: issued.record.tokenId,
+      },
+    };
+    expect(readPendingRequest(db.sqlite, request.requestId)).toMatchObject({
+      ...originalBinding,
+      claim: 'unclaimed',
+      disposition: null,
+    });
+    expect(resolved.goal!.activePlanVersionId).toBeNull();
+    // Exercise current authority at the Goal owner boundary before terminal hooks admit delivery.
+    // The original live Coordinator binding remains valid; no competing consumer is created.
     revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
     await expect(
       executeGoalOperation(
@@ -2004,17 +2061,19 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
         { coreDb: f.coreDb }
       )
     ).rejects.toMatchObject({ code: 'grant_conflict' });
-    expect(
-      db.sqlite
-        .prepare(
-          'SELECT deciding_actor_id,claim,disposition FROM pending_requests WHERE request_id=?'
-        )
-        .get(request.requestId)
-    ).toEqual({
-      deciding_actor_id: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+    expect(readPendingRequest(db.sqlite, request.requestId)).toMatchObject({
+      ...originalBinding,
       claim: 'unclaimed',
       disposition: 'denied-not-executed',
+      executionCallId: null,
     });
+    const after = readGoalView(f.store, db, goal.goalId);
+    expect(after.goal!.activePlanVersionId).toBeNull();
+    expect(after.versions).toEqual(proposed.versions);
+    expect(after.tasks).toEqual([]);
+    expect(
+      resolveWorkspaceMembershipRelation(f.coreDb, scope.workspaceId, administrator.id)
+    ).toBeNull();
   } finally {
     db.sqlite.close();
     f.coreDb.sqlite.close();
