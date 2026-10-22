@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -14,7 +14,9 @@ import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
+import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import type { TurnStartRuntimeContext } from '../runtime/types.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -62,10 +64,20 @@ class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
   /** Stores each accepted turn id so tests can verify per-user execution. */
   public readonly startedTurnIds: string[] = [];
 
+  private nextStart = Promise.withResolvers<void>();
   private releaseStart: (() => void) | null = null;
   private readonly startGate = new Promise<void>((resolve) => {
     this.releaseStart = resolve;
   });
+
+  /**
+   * Joins actual executor entries within the enclosing case's existing time bound.
+   * @param count Required number of observed starts.
+   * @returns Promise that resolves only after those starts enter this executor.
+   */
+  public async waitForStartCount(count: number): Promise<void> {
+    while (this.startedTurnIds.length < count) await this.nextStart.promise;
+  }
 
   /**
    * Releases the modeled closeout fence for both accepted Turns.
@@ -84,6 +96,8 @@ class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
     this.startedTurnIds.push(turnId);
+    this.nextStart.resolve();
+    this.nextStart = Promise.withResolvers<void>();
     await super.startTurn(store, turnId, _input, context);
   }
 
@@ -100,24 +114,6 @@ class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
    */
   public async interruptTurn(): Promise<void> {
     return;
-  }
-}
-
-/**
- * Waits briefly for the delayed executor to accept a target number of starts.
- *
- * @param executor Executor being observed.
- * @param count Expected number of starts.
- * @returns Promise that settles after the target count or timeout.
- */
-async function waitForStartCount(
-  executor: DelayedServerTurnExecutor,
-  count: number
-): Promise<void> {
-  const deadline = Date.now() + 50;
-
-  while (executor.startedTurnIds.length < count && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
 
@@ -466,11 +462,33 @@ describe('server auth flow', () => {
       ready: true,
     });
 
+    const executor = new DelayedServerTurnExecutor({ coreDb });
+    const starts = vi.spyOn(executor, 'startTurn');
+    onTestFinished(() => starts.mockRestore());
+    /** Releases held closeout and joins the real owners, including when an entry wait times out. */
+    const closeFixture = async () => {
+      executor.releaseCloseout();
+      while (getSchedulerPreparationClaims(coreDb).size)
+        await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      try {
+        await Promise.all(starts.mock.results.map((result) => result.value));
+      } finally {
+        try {
+          await shutdownControlStoreWorkerClient();
+        } finally {
+          if (coreDb.sqlite.open) coreDb.sqlite.close();
+        }
+      }
+    };
+    onTestFinished(closeFixture);
     try {
-      const executor = new DelayedServerTurnExecutor({ coreDb });
       const store = new FsStore({ dataRoot });
+      const dispatcher = await import('../runtime/scheduler-dispatch-loop.js');
+      const dispatch = vi.spyOn(dispatcher, 'runSchedulerDispatchLoop');
+      onTestFinished(() => dispatch.mockRestore());
+      const manifest = createTestAgentSetup().manifest;
       const app = createApp({
-        agentManifests: [createTestAgentSetup().manifest],
+        agentManifests: [manifest],
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
@@ -509,6 +527,7 @@ describe('server auth flow', () => {
       const firstRepositoryPath = mkdtempSync(join(tmpdir(), 'openkit-server-first-repo-'));
       const secondRepositoryPath = mkdtempSync(join(tmpdir(), 'openkit-server-second-repo-'));
       const requestBody = {
+        agentId: manifest.id,
         requestId: '0190f4c8-0000-7000-8000-000000000402',
         input: 'Run the same request for two users.',
       };
@@ -528,7 +547,7 @@ describe('server auth flow', () => {
         )
       );
 
-      await waitForStartCount(executor, 1);
+      await executor.waitForStartCount(1);
 
       const secondRequest = app.request(
         ...operationRequest(
@@ -542,10 +561,18 @@ describe('server auth flow', () => {
         )
       );
 
-      await waitForStartCount(executor, 2);
-      executor.releaseCloseout();
-
       const [firstResponse, secondResponse] = await Promise.all([firstRequest, secondRequest]);
+      executor.releaseCloseout();
+      // createApp omits the process retry service; reuse its ordinary queued-work boundary.
+      // Join the original submission before selecting work behind its preparation gate.
+      const firstDispatch = dispatch.mock.calls.findIndex(([input]) => input.store === store);
+      await dispatch.mock.results[firstDispatch]!.value;
+      // A caller-specific hint would join the first invocation instead of queued work.
+      const { callerQueueEntryId: _callerQueueEntryId, ...queuedInput } =
+        dispatch.mock.calls[firstDispatch]![0];
+      await dispatcher.runSchedulerDispatchLoop(queuedInput);
+      await executor.waitForStartCount(2);
+
       const firstTurn = (await firstResponse.json()) as { id: string };
       const secondTurn = (await secondResponse.json()) as { id: string };
 
@@ -553,6 +580,8 @@ describe('server auth flow', () => {
       expect(secondResponse.status).toBe(202);
       expect(executor.startedTurnIds).toHaveLength(2);
       expect(new Set(executor.startedTurnIds)).toEqual(new Set([firstTurn.id, secondTurn.id]));
+      // Method entry precedes the original release, attempt fence and native journal closeout.
+      await Promise.all(starts.mock.results.map((result) => result.value));
       await vi.waitFor(() => {
         expect(
           coreDb.sqlite
@@ -561,7 +590,7 @@ describe('server auth flow', () => {
         ).toEqual([{ phase: 'closed' }, { phase: 'closed' }]);
       });
     } finally {
-      coreDb.sqlite.close();
+      await closeFixture();
     }
   });
 });
