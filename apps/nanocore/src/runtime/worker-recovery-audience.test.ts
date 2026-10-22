@@ -141,22 +141,6 @@ async function seedInterruptedWorker(input: {
   return turn.id;
 }
 
-/** Reads exact Core attempt ownership without interpreting NanoHost liveness or cleanup. */
-function observeExecutionAttempts(
-  coreDb: ReturnType<typeof openCoreDb>
-): Record<string, unknown>[] {
-  const exists = coreDb.sqlite
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
-    )
-    .get();
-  return exists
-    ? (coreDb.sqlite
-        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
-        .all() as Record<string, unknown>[])
-    : [];
-}
-
 describe('interrupted worker list Thread audience', () => {
   it('keeps member audiences private while current administrators see all recovery rows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-audience-'));
@@ -418,81 +402,6 @@ describe('interrupted worker list Thread audience', () => {
         afterDb.sqlite.close();
       }
     } finally {
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('releases an eligible checkpoint and replays its exact receipt without rewriting or relaunching the original attempt', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-recovery-receipt-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Receipt recovery');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      workspaceId: workspace.id,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    const thread = await store.createThread(workspace.id, 'Original attempt');
-    const turnId = await seedInterruptedWorker({
-      coreDb,
-      dataRoot,
-      store,
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      diagnosticsSummary: 'Interrupted receipt attempt',
-    });
-    const turnBefore = { ...store.getTurnById(turnId) };
-    const sessionBefore = { ...store.getAgentSession(testEntityId('as', `as_${turnId}`)) };
-    const db = openWorkspaceDb(dataRoot, workspace.id);
-    const scope = { workspaceId: workspace.id, threadId: thread.id, turnId };
-    const requestId = 'req_b9_exact_receipt';
-    const app = createApp({ coreDb, dataRoot, store });
-    const beforeAttempt = observeExecutionAttempts(coreDb).find(
-      (attempt) => attempt.turn_id === turnId
-    );
-    try {
-      expect(beforeAttempt).toBeDefined();
-      expect(getWorkerCheckpoint(db, workspace.id, thread.id, turnId)).toMatchObject({
-        stage: 'running_worker',
-        stopReason: null,
-      });
-      const release = await app.request('/api/app/operations/recovery.checkpoint-retry', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-        body: JSON.stringify({ ...scope, requestId }),
-      });
-      expect(release.status, await release.clone().text()).toBe(200);
-      await expect(release.json()).resolves.toEqual({ outcome: 'released_for_retry', turnId });
-      const receipt = store.getCommandRequest('worker.recovery.retry', requestId, scope, db);
-      expect(receipt).toMatchObject({
-        command: 'worker.recovery.retry',
-        requestId,
-        scope,
-        response: { kind: 'turn', id: turnId },
-      });
-      expect(getWorkerCheckpoint(db, workspace.id, thread.id, turnId)).toBeNull();
-      const replay = await app.request('/api/app/operations/recovery.checkpoint-retry', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-        body: JSON.stringify({ ...scope, requestId }),
-      });
-      expect(replay.status, await replay.clone().text()).toBe(200);
-      await expect(replay.json()).resolves.toEqual({ outcome: 'released_for_retry', turnId });
-      expect(store.getCommandRequest('worker.recovery.retry', requestId, scope, db)).toEqual(
-        receipt
-      );
-      expect(store.getTurnById(turnId)).toEqual(turnBefore);
-      expect(store.getAgentSession(testEntityId('as', `as_${turnId}`))).toEqual(sessionBefore);
-      expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === turnId)
-      ).toEqual(beforeAttempt);
-      expect(store.listThreadTurns(workspace.id, thread.id)).toHaveLength(1);
-    } finally {
-      db.sqlite.close();
       coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });

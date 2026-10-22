@@ -35,6 +35,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -126,6 +127,7 @@ import {
   type WorkerBackendSessionState,
   workerBackendImageIdentity,
 } from './worker-backend-sessions.js';
+import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway, type WorkerControlLineage } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
@@ -134,6 +136,7 @@ import {
   prepareWorkerTurnJournalIntents,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
+import { resolveInterruptedWorkerRetryDecision } from './worker-recovery.js';
 import * as workerTurnFailure from './worker-turn-failure.js';
 import {
   terminalizeGovernedWorkerTurn,
@@ -5944,17 +5947,127 @@ describe('minimal scheduler reconnect contract', () => {
 
   it('closes an expired reconnect attempt through complete recovery and admits its next Turn', async () => {
     const f = await createFinalReviewRecoveryFixture('reconnect_timeout', 'running');
+    const original = requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, f.attemptId);
+    const db = openWorkspaceDb(f.coreDb.dataRoot, original.workspaceId);
     try {
+      const receipt = readCommandRequestRecordsFromSqlite(db.sqlite).find(
+        (record) => record.command === 'turn.start' && record.response.id === f.turnId
+      );
+      if (!receipt) throw new Error('Original Worker admission receipt is missing.');
+      expect(receipt.requestId).toBe(original.requestId);
+      const checkpoint = upsertWorkerCheckpoint(db, {
+        ...original,
+        requestId: receipt.requestId,
+        requestInputHash: receipt.inputHash,
+        workerSessionId: f.agentSessionId,
+        stage: 'running_worker',
+        iteration: 0,
+      });
       await recoverTestStartup(f.coreDb, f.input);
       const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
+      if (!armed.inputRef || !armed.bindingRef) throw new Error('Native binding is missing.');
       expect(armed.recoveryState).toBe('awaiting-reconnect');
       if (!armed.recoveryDeadline) throw new Error('Restart did not arm exact reconnect.');
       f.clock.now = armed.recoveryDeadline;
       await drainTestRecovery(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
       expect(f.store.getAgentSession(f.agentSessionId).status).toBe('interrupted');
+      expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+        phase: 'closed',
+        fenceRef: expect.any(String),
+        inputRef: armed.inputRef,
+      });
+      expect(() =>
+        adoptNanoHostAttemptReconnect(f.coreDb, {
+          acceptedAt: f.clock.now,
+          lineage: {
+            ...original,
+            agentSessionId: f.agentSessionId,
+            packageSnapshotId: armed.inputRef,
+          },
+          reconnectKey: reconnectKeyFor('reconnect_timeout'),
+          sandboxBindingRef: armed.bindingRef,
+          workerSequence: armed.lastWorkerSequence! + 1,
+        })
+      ).toThrow();
+      const decision = resolveInterruptedWorkerRetryDecision(f.coreDb, f.store, db, checkpoint);
+      expect(decision.status).toBe('eligible');
+      // Worker Reliability, Interrupted Retry Eligibility: release preserves original execution.
+      const scope = { workspaceId: original.workspaceId, threadId: f.threadId, turnId: f.turnId };
+      const turnBefore = f.store.getTurnById(f.turnId);
+      const sessionBefore = f.store.getAgentSession(f.agentSessionId);
+      const attemptsBefore = attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope);
+      const backendBefore = getWorkerBackendSession(f.coreDb, f.attemptId);
+      expect(backendBefore).toMatchObject({
+        state: 'cleaned',
+        physicalCleanedAt: expect.any(String),
+        workspaceHandoffState: 'complete',
+      });
+      const turnsBefore = f.store.listThreadTurns(scope.workspaceId, scope.threadId);
+      const queueBefore = listQueuedSchedulerAdmissionEntries(f.coreDb);
+      const checkpointBefore = getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, f.turnId);
+      const executor = new RejectRecoveredTurnExecutor();
+      const app = createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.coreDb.dataRoot,
+        store: f.store,
+        turnExecutor: executor,
+      });
+      const listed = await app.request(...operationRequest('recovery.worker-list', {}));
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(await listed.json()).toMatchObject({
+        items: [
+          {
+            ...scope,
+            stage: 'running_worker',
+            choices: expect.arrayContaining([expect.objectContaining({ kind: 'retry' })]),
+          },
+        ],
+      });
+      expect(getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, f.turnId)).toEqual(
+        checkpointBefore
+      );
+      const requestId = fixtureRequestId('recovery-public-retry');
+      const recoveryReceipts: unknown[] = [];
+      for (let delivery = 0; delivery < 2; delivery += 1) {
+        const response = await app.request(
+          ...operationRequest('recovery.checkpoint-retry', scope, {
+            body: JSON.stringify({ requestId }),
+          })
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(await response.json()).toEqual({ outcome: 'released_for_retry', turnId: f.turnId });
+        const stored = f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db);
+        expect(stored).toMatchObject({
+          command: 'worker.recovery.retry',
+          requestId,
+          scope,
+          response: { kind: 'turn', id: f.turnId },
+        });
+        recoveryReceipts.push(stored);
+        expect(getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, f.turnId)).toBeNull();
+        expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
+        expect(f.store.getAgentSession(f.agentSessionId)).toEqual(sessionBefore);
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope)).toEqual(
+          attemptsBefore
+        );
+        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backendBefore);
+        expect(f.store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turnsBefore);
+        expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toEqual(queueBefore);
+        expect(executor.calls).toEqual([]);
+      }
+      expect(recoveryReceipts[1]).toEqual(recoveryReceipts[0]);
+      expect(
+        readCommandRequestRecordsFromSqlite(db.sqlite).find(
+          (record) => record.command === 'turn.start' && record.response.id === f.turnId
+        )
+      ).toEqual(receipt);
+      const afterRelease = await app.request(...operationRequest('recovery.worker-list', {}));
+      expect(afterRelease.status, await afterRelease.clone().text()).toBe(200);
+      expect(await afterRelease.json()).toEqual({ items: [] });
       await assertRecoveryClosedAndNextTurnAdmitted(f);
     } finally {
+      db.sqlite.close();
       f.coreDb.sqlite.close();
     }
   });
