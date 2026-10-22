@@ -17,19 +17,22 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { importArtifactFile } from './artifact-file-commands.js';
 import { commitArtifactVersionCommand } from './artifact-versions.js';
 import { scopeAdmissionFailures } from './bootstrap/readiness.js';
-import { FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
-import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { applyScopedMigrations } from './storage/migrate.js';
+import { createTestStore } from './test-support/store.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -43,10 +46,7 @@ function digest(bytes: Uint8Array): string {
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-command-'));
   roots.push(dataRoot);
-  const core = openCoreDb(dataRoot);
-  applyMigrations(core);
-  core.sqlite.close();
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Version command');
   const thread = await store.createThread(workspace.id, 'Shared version publication');
   const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -154,14 +154,18 @@ function forbiddenRetrySource() {
  */
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
-  const seed = new FsStore({ dataRoot: restartRoot });
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(restartRoot, { recursive: true, force: true });
+  });
+  const seed = createTestStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
+  await shutdownControlStoreWorkerClient();
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
-  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  /** Records paths, link targets and retained bytes, including the absence of deleted entries. */
   function snapshot(root: string): Record<string, Buffer | string> {
     const entries: Record<string, Buffer | string> = {};
     const visit = (directory: string, prefix = '') => {
@@ -171,6 +175,10 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
         if (entry.isDirectory()) {
           entries[key] = 'directory';
           visit(path, key);
+        } else if (entry.isFile() && key === join('db', 'workspace.sqlite-shm')) {
+          // SQLite's WAL-index is transient; Core Storage owns records and immutable content.
+          // docs/core/storage.md: SQLite Layers; Source Of Truth.
+          entries[key] = 'sqlite-wal-index';
         } else {
           entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
         }
@@ -182,7 +190,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 
   const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
   const before = snapshot(refusedRoot);
-  const reopened = new FsStore({ dataRoot: restartRoot });
+  const reopened = createTestStore({ dataRoot: restartRoot });
   expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
     expect.objectContaining({ scope: 'workspace', id: workspaceId })
   );
@@ -195,7 +203,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
   const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
-  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+  expect(createTestStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
   expect(snapshot(refusedRoot)).toEqual(before);
@@ -232,7 +240,7 @@ describe('exact Artifact version commands', () => {
     expect(state.read(1)).toEqual(state.original);
     expect(state.read(2)).toEqual(Buffer.from(text));
     expect(state.read(3)).toEqual(state.next);
-    const reopened = new FsStore({ dataRoot: state.dataRoot });
+    const reopened = createTestStore({ dataRoot: state.dataRoot });
     expect(
       reopened.getArtifactVersion(state.workspace.id, state.metadata.artifactId, 2).artifact.content
     ).toEqual({ format: 'text', body: text });
@@ -261,7 +269,7 @@ describe('exact Artifact version commands', () => {
     const retry = forbiddenRetrySource();
     await expect(state.submit(retry.source)).rejects.toMatchObject({ code: 'recovery_required' });
     expect(retry.read).not.toHaveBeenCalled();
-    expectLocalWorkspaceRefusal(state.dataRoot, state.workspace.id);
+    await expectLocalWorkspaceRefusal(state.dataRoot, state.workspace.id);
     expect(readFileSync(originalPath)).toEqual(state.original);
   });
   it('retains both binary originals and replays the historical result after another version advances', async () => {
@@ -302,7 +310,7 @@ describe('exact Artifact version commands', () => {
     const retry = forbiddenRetrySource();
     expect(await state.submit(retry.source)).toEqual(accepted);
     expect(retry.read).not.toHaveBeenCalled();
-    const reopened = new FsStore({ dataRoot: state.dataRoot });
+    const reopened = createTestStore({ dataRoot: state.dataRoot });
     expect(reopened.getArtifactVersion(state.workspace.id, state.metadata.artifactId, 2)).toEqual(
       accepted
     );
