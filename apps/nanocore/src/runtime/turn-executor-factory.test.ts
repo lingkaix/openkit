@@ -45,13 +45,19 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
-import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import {
+  createDemoStore,
+  createDemoWorkspaceForUser,
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+} from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
+  recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -96,6 +102,7 @@ import {
 } from './nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
+  NanoHostCleanupFencePendingError,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import type {
@@ -145,6 +152,7 @@ import {
   createWorkerStorageBinding,
   getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
+  listWorkerStorageBindings,
   markWorkerStorageAttachmentUnknown,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
@@ -8756,217 +8764,203 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('acquires an exact local digest before inspection and stops when acquisition fails', async () => {
+  it.each([
+    'failure',
+    'mismatch',
+    'match',
+  ] as const)('acquires an exact local digest before inspection and stops when acquisition fails (%s)', async (acquisitionResult) => {
     const coreDb = createFactoryCoreDb();
-    const packageSnapshotId = 'aepsnap_factory_newest_lease';
     const effects: NanoHostSessionEffectRequest[] = [];
-    let acquisitionResult: 'failure' | 'mismatch' | 'match' = 'failure';
-    const sessionDispatch: NanoHostSessionDispatch = {
-      async effect(
-        requestOrConnection: object,
-        carriedRequest?: NanoHostSessionEffectRequest
-      ): Promise<unknown> {
-        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
-        effects.push(request);
-        if (request.kind === 'image.acquire') {
-          if (acquisitionResult === 'failure') throw new Error('exact local image is unavailable');
-          return {
-            digest:
-              acquisitionResult === 'mismatch'
-                ? `sha256:${'e'.repeat(64)}`
-                : request.input.imageReference,
-          };
-        }
-        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
-        throw new Error('Sandbox creation reached');
+    const localDigest = `sha256:${'d'.repeat(64)}`;
+    const suffix =
+      acquisitionResult === 'failure' ? 'factory_newest_lease' : `acquire_${acquisitionResult}`;
+    const turnId = testEntityId('tu', `turn_${suffix}`);
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
+    const agentSessionId = testEntityId('as', `as_${suffix}`);
+    const setup = createTestAgentSetup({
+      imageRef: localDigest,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    setup.manifest.runtime.image = { kind: 'reference', pullPolicy: 'never', ref: localDigest };
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+    recordTestNativeRuntimeTarget(coreDb);
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue:${attemptId}`,
+      requestId: testEntityId('tu', `request_${suffix}`).slice(3),
+      requestedAgentId: setup.manifest.id,
+      threadId: DEMO_THREAD_ID,
+      turnId,
+      turnInput: 'Acquire the exact local image.',
+      triggerActor: { kind: 'user', id: ownerUserId },
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    await publishFactoryAdmission(store, entry);
+    let preparationObserved = false;
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb,
+      store,
+      env: {},
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n),
+      workerControlGateway: createDefaultWorkerControlGateway(coreDb),
+      nanoHostSessionDispatch: {
+        async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
+          const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          effects.push(request);
+          if (request.kind === 'image.acquire') {
+            const original = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+            expect(store.getTurnById(turnId).agentSessionId).toBe(agentSessionId);
+            expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+              turnId,
+              agentSessionId,
+            });
+            // Scheduler Admission And Launch: the original preparation excludes a second grant.
+            expect(() =>
+              recordTestExecutionAttempt(coreDb, {
+                entry,
+                attemptId: testEntityId('attempt', `duplicate_${suffix}`),
+                agentSessionId,
+                inputRef: original.inputRef!,
+                bindingRef: original.bindingRef!,
+                sessionCompatibilityKey: 'duplicate-refused',
+                now: () => new Date().toISOString(),
+              })
+            ).toThrow('no longer dispatchable');
+            preparationObserved = true;
+            if (acquisitionResult === 'failure')
+              throw new Error('exact local image is unavailable');
+            return {
+              digest: acquisitionResult === 'mismatch' ? `sha256:${'e'.repeat(64)}` : localDigest,
+            };
+          }
+          if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+          if (request.kind === 'sandbox.create') throw new Error('Sandbox creation reached');
+          if (request.kind === 'bridge.close') {
+            expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+              disposition: 'unknown',
+              operationId: effects[2]?.requestId,
+              phase: 'closing',
+            });
+            throw new Error('Wider image cleanup is unknown.');
+          }
+          throw new Error(`Unexpected image trial effect: ${request.kind}`);
+        },
+        poll: async () => null,
+        async result() {},
+        async route() {
+          throw new Error('Unexpected semantic route.');
+        },
       },
-      async poll() {
-        return null;
-      },
-      async result() {},
-      async route() {
-        throw new Error('Unexpected semantic route.');
-      },
-    };
-
+    });
+    const dispatch = () =>
+      runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: runtime.turnExecutor,
+        executionBackend: runtime.turnExecutor.executionBackend!,
+        agentManifests: [setup.manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        maxDispatches: 1,
+        createAttemptId: () => attemptId,
+        createAgentSessionId: () => agentSessionId,
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Image fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
     try {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO nanohost_runtime_targets (
-             target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-           ) VALUES (?, ?, ?, 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
-        )
-        .run(
-          'target_factory_newest_lease',
-          'identity_factory_newest_lease',
-          'deployment_factory_newest_lease',
-          '2026-08-10T00:00:00.000Z'
-        );
-      const localDigest = `sha256:${'d'.repeat(64)}`;
-      let environmentPackage = completeNanoHostPackage({
-        runtime: {
-          image: { kind: 'reference', pullPolicy: 'never', ref: localDigest },
-        },
-        scope: {
-          agentSessionId: testEntityId('as', 'as_factory_newest_lease'),
-          threadId: 'th_00000000-0000-7de7-983a-086ab56b8b90',
-          turnId: testEntityId('tu', 'turn_factory_newest_lease'),
-          workspaceId: 'ws_00000000-0000-7060-b78c-6b2c47ca40f0',
-        },
-        snapshotId: packageSnapshotId,
-      });
-      await authorizeNanoHostPackage(coreDb, environmentPackage);
-      bindNanoHostWorkerLineage(coreDb, environmentPackage, {
-        attemptId: testEntityId('attempt', 'lease_a_current'),
-        sandboxBindingRef: 'binding:lease_a_current',
-      });
-      expect(() =>
-        recordTestExecutionAttempt(coreDb, {
-          entry: attemptActionOwners.requireSchedulerAdmissionEntry(
-            coreDb,
-            `queue:${testEntityId('attempt', 'lease_a_current')}`
-          ),
-          attemptId: testEntityId('attempt', 'lease_b_current'),
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          inputRef: packageSnapshotId,
-          bindingRef: 'binding:lease_b_current',
-          sessionCompatibilityKey: 'duplicate-refused',
-          now: () => new Date().toISOString(),
-        })
-      ).toThrow('no longer dispatchable');
-      const runtime = createConfiguredWorkerLifecycleRuntime({
-        coreDb,
-        env: {},
-        nanoHostSessionDispatch: sessionDispatch,
-        workerControlGateway: new WorkerControlGateway(),
-      });
-      const backend = (
-        runtime.turnExecutor as unknown as {
-          readonly backend: WorkerGovernanceBackend;
-        }
-      ).backend;
-
-      await anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
-      await expect(
-        backend.materialize(environmentPackage, {
-          sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow('exact local image is unavailable');
-      expect(effects).toEqual([
-        expect.objectContaining({
-          input: expect.objectContaining({ imageReference: localDigest }),
-          kind: 'image.acquire',
-        }),
-      ]);
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
-      ).toEqual({ count: 0 });
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
-      ).toEqual({ count: 0 });
-
-      effects.length = 0;
-      acquisitionResult = 'mismatch';
-      await closeFactoryAttempt(
-        coreDb,
-        (
-          coreDb.sqlite
-            .prepare('SELECT attempt_id AS id FROM scheduler_execution_attempts WHERE input_ref=?')
-            .get(environmentPackage.snapshotId) as { id: string }
-        ).id
+      const failure = await dispatch().catch((error: unknown) => error);
+      const messages = (error: unknown): string[] =>
+        error instanceof AggregateError
+          ? [error.message, ...error.errors.flatMap(messages)]
+          : [error instanceof Error ? error.message : String(error)];
+      expect(failure).toBeInstanceOf(Error);
+      expect(preparationObserved, 'The real native preparation must reach image acquisition.').toBe(
+        true
       );
-      environmentPackage = {
-        ...environmentPackage,
-        snapshotId: `snapshot_acquire_mismatch`,
-        scope: {
-          ...environmentPackage.scope,
-          agentSessionId: testEntityId('as', 'as_acquire_mismatch'),
-          turnId: testEntityId('tu', 'turn_acquire_mismatch'),
-          requestId: 'request_acquire_mismatch',
-        },
-      };
-      await authorizeNanoHostPackage(coreDb, environmentPackage);
-      await anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
-
-      await expect(
-        backend.materialize(environmentPackage, {
-          sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow('local image acquisition returned a different digest');
-      expect(effects.map((effect) => effect.kind)).toEqual(['image.acquire']);
+      expect(messages(failure)).toContain(
+        acquisitionResult === 'failure'
+          ? 'exact local image is unavailable'
+          : acquisitionResult === 'mismatch'
+            ? 'NanoHost local image acquisition returned a different digest.'
+            : 'Sandbox creation reached'
+      );
+      // NanoHost Image Acquisition And Build forbids inspection/create after refusal or mismatch.
+      expect(effects.map((effect) => effect.kind)).toEqual(
+        acquisitionResult === 'match'
+          ? ['image.acquire', 'image.inspect', 'sandbox.create', 'bridge.close']
+          : ['image.acquire']
+      );
+      const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+      expect(anchor).toMatchObject({ turnId, agentSessionId, attemptId });
+      expect(effects[0]?.input).toMatchObject({
+        imageReference: localDigest,
+        leaseId: attemptId,
+        backendSessionId: anchor.backendSessionId,
+        packageSnapshotId: anchor.packageSnapshotId,
+      });
+      if (acquisitionResult !== 'match') {
+        expect(
+          listWorkerStorageBindings(coreDb, {
+            workspaceId: entry.workspaceId,
+            authorizeContributor: () => true,
+          })
+        ).toEqual([]);
+        return;
+      }
+      expect(effects[1]?.input).toEqual({ imageDigest: localDigest });
+      expect(effects[2]?.input).toMatchObject({
+        imageDigest: localDigest,
+        leaseId: attemptId,
+        backendSessionId: anchor.backendSessionId,
+        packageSnapshotId: anchor.packageSnapshotId,
+      });
+      // Scheduler cleanup widens once; neither lost result permits release or effect replay.
+      expect(messages(failure)).toContain('Wider image cleanup is unknown.');
+      expect(effects[3]?.requestId).toMatch(/^[0-9a-f]{64}$/);
+      expect(effects[3]?.requestId).not.toBe(effects[2]?.requestId);
+      expect(effects[3]?.input).toMatchObject({
+        leaseId: attemptId,
+        backendSessionId: anchor.backendSessionId,
+        packageSnapshotId: anchor.packageSnapshotId,
+        sandboxId: effects[2]?.input.sandboxId,
+      });
+      expect(anchor).toMatchObject({ state: 'cleanup-failed', physicalCleanedAt: null });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
-      ).toEqual({ count: 0 });
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
-      ).toEqual({ count: 0 });
-
-      effects.length = 0;
-      acquisitionResult = 'match';
-      await closeFactoryAttempt(
-        coreDb,
-        (
-          coreDb.sqlite
-            .prepare('SELECT attempt_id AS id FROM scheduler_execution_attempts WHERE input_ref=?')
-            .get(environmentPackage.snapshotId) as { id: string }
-        ).id
-      );
-      environmentPackage = {
-        ...environmentPackage,
-        snapshotId: `snapshot_acquire_match`,
-        scope: {
-          ...environmentPackage.scope,
-          agentSessionId: testEntityId('as', 'as_acquire_match'),
-          turnId: testEntityId('tu', 'turn_acquire_match'),
-          requestId: 'request_acquire_match',
-        },
-      };
-      await authorizeNanoHostPackage(coreDb, environmentPackage);
-      await anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
-
-      await expect(
-        backend.materialize(environmentPackage, {
-          sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
-          workspaceRoots: [],
+        getWorkerStorageBinding(coreDb, {
+          storageRef: (effects[2]!.input.storage as { storageRef: string }).storageRef,
         })
-      ).rejects.toThrow('Sandbox creation reached');
-      expect(effects).toHaveLength(3);
-      expect(effects[0]).toMatchObject({
-        input: {
-          imageReference: localDigest,
-          leaseId: testEntityId('attempt', 'lease-fixture:snapshot_acquire_match'),
-        },
-        kind: 'image.acquire',
+      ).toMatchObject({ state: 'unknown' });
+      const original = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      expect(original).toMatchObject({
+        disposition: 'unknown',
+        operationId: effects[2]?.requestId,
+        phase: 'closing',
+        fenceRef: null,
       });
-      expect(effects[1]).toMatchObject({
-        input: { imageDigest: localDigest },
-        kind: 'image.inspect',
-      });
-      expect(effects[1]?.input).not.toHaveProperty('leaseId');
-      expect(effects[2]).toMatchObject({
-        input: {
-          imageDigest: localDigest,
-          leaseId: testEntityId('attempt', 'lease-fixture:snapshot_acquire_match'),
-        },
-        kind: 'sandbox.create',
-      });
-      // The new original sandbox.create has an unknown response; it cannot replay a cleanup effect.
-      const failedAttempt = attempts.requireSchedulerExecutionAttempt(
-        coreDb,
-        testEntityId('attempt', 'lease-fixture:snapshot_acquire_match')
+      await expect(runtime.cleanupBackendSession(anchor)).rejects.toBeInstanceOf(
+        NanoHostCleanupFencePendingError
       );
-      expect(failedAttempt.disposition).toBe('unknown');
-      await expect(
-        runtime.cleanupBackendSession(backend.planSession(environmentPackage))
-      ).rejects.toThrow('An unknown operation must be inspected or fenced before another effect.');
-      expect(effects).toHaveLength(3);
-      expect(attempts.requireSchedulerExecutionAttempt(coreDb, failedAttempt.attemptId)).toEqual(
-        failedAttempt
-      );
+      const competing = createSchedulerAdmissionEntry(coreDb, {
+        ...entry,
+        queueEntryId: `queue:${attemptId}:competing`,
+        requestId: testEntityId('tu', 'request_acquire_match_competing').slice(3),
+        turnId: testEntityId('tu', 'turn_acquire_match_competing'),
+      });
+      await publishFactoryAdmission(store, competing);
+      expect((await dispatch()).startedTurns).toEqual([]);
+      expect(effects).toHaveLength(4);
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(original);
+      expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(anchor);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
