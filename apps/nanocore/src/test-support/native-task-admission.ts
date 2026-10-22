@@ -30,11 +30,16 @@ import { recordTestNativeRuntimeTarget } from './native-environment.js';
  * Models the peer; native owners fence delivery and release; interrupted finals follow real commands.
  * @param coreDb Caller-owned migrated Core database for the original execution.
  * @param store Caller-created Demo store sharing the same data root.
- * @returns Native executor, shared file admission, gateway and observer restoration.
+ * @param options Existing runtime configuration reader for the same admitted Task.
+ * @returns Native executor, outside peer faults, actual capability token, admission, gateway and restoration.
  */
 export function createNativeTaskAdmissionFixture(
   coreDb: ReturnType<typeof openCoreDb>,
-  store: FsStore
+  store: FsStore,
+  options: Pick<
+    NonNullable<Parameters<typeof createConfiguredWorkerLifecycleRuntime>[0]>,
+    'readRuntimeConfig'
+  > = {}
 ) {
   recordTestNativeRuntimeTarget(coreDb);
   const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
@@ -45,6 +50,12 @@ export function createNativeTaskAdmissionFixture(
   let nativeInput = '';
   let nativeLineage: Parameters<typeof workerControlGateway.recordFinalStatus>[0]['lineage'];
   const nativeEvents: unknown[] = [];
+  // Failure and capture-loss selection belongs to the outside peer after native admission.
+  const peerFaults = {
+    failedFinal: false,
+    failFileExport: false,
+    failedExportPaths: [] as string[],
+  };
   const journalRefs = new Map<string, ExecutionJournalRef>();
   const writeIntent = store.writeWorkspaceExecutionJournalIntent.bind(store);
   const journalObservation = vi
@@ -64,11 +75,13 @@ export function createNativeTaskAdmissionFixture(
     fileAdmission,
     workerControlGateway,
     env: {},
-    readRuntimeConfig: () =>
-      createInMemoryRuntimeConfigSnapshot({
-        dataRoot: coreDb.dataRoot,
-        workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
-      }),
+    readRuntimeConfig:
+      options.readRuntimeConfig ??
+      (() =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot: coreDb.dataRoot,
+          workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
+        })),
     nanoHostSessionDispatch: {
       async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
         const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
@@ -122,6 +135,10 @@ export function createNativeTaskAdmissionFixture(
             : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
         if (request.kind === 'file.export') {
           if (!nativeLineage) throw new Error('Native trial has no submitted Turn.');
+          if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
+            peerFaults.failedExportPaths.push(String(request.input.relativePath));
+            throw new Error('Controlled required native export loss.');
+          }
           const relativePath = String(request.input.relativePath);
           const records = relativePath.endsWith('/events.jsonl')
             ? nativeEvents
@@ -168,8 +185,10 @@ export function createNativeTaskAdmissionFixture(
     checkpointAtLaunch: null as ReturnType<typeof getWorkerCheckpoint>,
     execution: observedExecution.promise,
     failCloseout: false,
+    nativeLineage: null as typeof nativeLineage | null,
     releaseResults: [] as Awaited<ReturnType<typeof release>>[],
     launches: 0,
+    capabilityToken: '',
     inputs: [] as string[],
   });
   const releaseSpy = vi.spyOn(executionBackend, 'release').mockImplementation(async (...args) => {
@@ -262,8 +281,16 @@ export function createNativeTaskAdmissionFixture(
                   db.sqlite.close();
                 }
                 reportFinal = (interrupted) => {
-                  const status = interrupted ? 'interrupted' : 'completed';
-                  const stopReason = interrupted ? 'aborted' : 'completed';
+                  const status = interrupted
+                    ? 'interrupted'
+                    : peerFaults.failedFinal
+                      ? 'failed'
+                      : 'completed';
+                  const stopReason = interrupted
+                    ? 'aborted'
+                    : peerFaults.failedFinal
+                      ? 'error'
+                      : 'completed';
                   const data = { status, stopReason, evidenceManifestDigests: {} } as const;
                   const sequence = ++finalSequence;
                   nativeEvents.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
@@ -297,6 +324,8 @@ export function createNativeTaskAdmissionFixture(
               runtime.acceptNanoHostHarnessResult(result);
               if (command.operation === 'turn.start') {
                 acceptedStart = true;
+                executor.nativeLineage = nativeLineage;
+                executor.capabilityToken = String(wire.body.capabilityToken);
                 launched.resolve();
                 await completion.promise;
                 if (!settled) reportFinal!(false);
@@ -338,6 +367,7 @@ export function createNativeTaskAdmissionFixture(
   return {
     executor,
     fileAdmission,
+    peerFaults,
     workerControlGateway,
     restore() {
       startObservation.mockRestore();

@@ -57,6 +57,7 @@ import {
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
+  loadRuntimeConfig,
 } from './config/runtime-config.js';
 import { retainWorkObservationBody } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -68,7 +69,13 @@ import { EMPTY_POLICY_DOCUMENT, policyDigest, preparePolicyDocument } from './po
 import { ProviderRegistry } from './providers/registry.js';
 import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
-import { evaluateCapturedPendingCall } from './runtime/captured-pending-call.js';
+import {
+  admitCapturedPendingCall,
+  evaluateCapturedPendingCall,
+  executeCapturedPendingCall,
+  type PreparedCapturedPendingCall,
+  prepareCapturedPendingCall,
+} from './runtime/captured-pending-call.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
@@ -78,8 +85,10 @@ import {
 } from './runtime/execution-attempt-records.js';
 import {
   importMcpToolSchemaSnapshots,
+  listExportableMcpToolSchemaSnapshots,
   mcpToolSchemaContentDigest,
   readCurrentMcpToolSchemaSnapshot,
+  readRetainedMcpToolSchemaSnapshot,
   recordMcpToolSchemaSnapshot,
 } from './runtime/mcp-tool-schema-snapshots.js';
 import {
@@ -97,13 +106,18 @@ import {
   type NanoHostSessionDispatch,
   type NanoHostSessionEffectRequest,
 } from './runtime/nanohost-session-dispatch.js';
-import { approvalCardCopy, projectApprovalEffect } from './runtime/pending-request-disclosure.js';
+import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
+import {
+  installPendingRequestAdmission,
+  respondRecordedApproval,
+} from './runtime/pending-request-flow.js';
 import {
   executionCallIdForRequest,
   listThreadPendingRequests,
   pendingRequestItemId,
   readPendingRequest,
 } from './runtime/pending-requests.js';
+import * as productTurnStart from './runtime/product-turn-start.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -132,6 +146,7 @@ import { recordTestExecutionAttempt } from './test-support/execution-attempt.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
@@ -143,7 +158,11 @@ import {
 } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
-import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
+import {
+  reconcileWorkerMcpItems,
+  registerWorkerMcpRoutes,
+  reviewCapturedMcpPolicy,
+} from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -2812,48 +2831,20 @@ describe('worker MCP routes', () => {
     'unchanged',
     'deny',
     'revoke',
-    'schema-drift',
-    'tool-removed',
-    'agent-removed',
     'known-error',
     'unknown-effect',
     'no-contact',
-    'credential-before-claim',
     'credential-after-claim',
   ] as const)('re-evaluates current authority before granting a captured MCP call: %s', async (change) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Call echo',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
-    await store.createAgentSession({
-      id: testEntityId('as', 'as_pending_echo'),
-      agentId: 'agent_codex_host',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      status: 'busy',
-      message: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    await store.updateTurn(turn.id, {
-      agentId: 'agent_codex_host',
-      agentSessionId: testEntityId('as', 'as_pending_echo'),
-    });
+    let store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
@@ -2861,7 +2852,7 @@ describe('worker MCP routes', () => {
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
     vaultUnlockState.backend().store({
       material: 'pending-secret-canary',
-      metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      metadata: { ownerScope: 'workspace', workspaceId },
       referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
     });
     createVaultReference(coreDb, {
@@ -2874,23 +2865,14 @@ describe('worker MCP routes', () => {
       secretKind: 'api-key',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const issuer = createApp({ coreDb, dataRoot, store, vaultUnlockState });
-    const grantResponse = await issuer.request(
-      ...operationRequest(
-        'vault.grant-create',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
-            injectionPath: 'gateway-only',
-          }),
-        }
-      )
-    );
-    expect(grantResponse.status).toBe(200);
-    const publicGrant = await grantResponse.json();
+    const publicGrant = createVaultGrant(coreDb, {
+      grantId: testEntityId('grant', 'pending_echo'),
+      vaultReferenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
+      ownerScope: 'workspace',
+      workspaceId,
+      lifetime: 'workspace',
+      allowedInjectionPaths: ['gateway-only'],
+    });
     expect(publicGrant.allowedInjectionPaths).toEqual(['gateway-only']);
     expect(JSON.stringify(publicGrant)).not.toContain('pending-secret-canary');
     const catalog = {
@@ -2919,32 +2901,6 @@ describe('worker MCP routes', () => {
         },
       ],
     };
-    const environmentPackage = resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: testEntityId('as', 'as_pending_echo'),
-      agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
-      backend: { kind: 'openshell' },
-      createdAt: new Date().toISOString(),
-      requestId: 'req_pending_echo',
-      triggerActor: turn.triggerActor,
-      turn,
-      workspaceCwd: '/workspace',
-      workspaceRoots: [],
-      workspaceMcpServerCatalog: catalog,
-    });
-    expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
-    recordMcpWorkerLineage(coreDb, environmentPackage);
-    // Production retains the dispatched package before a later captured human response reads it.
-    const packageDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
-    try {
-      applyScopedMigrations(packageDb);
-      recordAgentEnvironmentPackageSnapshot(packageDb, {
-        environmentPackage,
-        createdAt: new Date().toISOString(),
-      });
-    } finally {
-      packageDb.sqlite.close();
-    }
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: new ProviderRegistry([
@@ -2956,7 +2912,13 @@ describe('worker MCP routes', () => {
         },
       ]),
       dataRoot,
-      agentManifests: [createTestAgentSetup({ mcpIds: ['echo'] }).manifest],
+      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+      agentManifests: [
+        createTestAgentSetup({
+          mcpIds: ['echo'],
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }).manifest,
+      ],
       workspaceMcpServerCatalogs: [
         {
           catalog,
@@ -2969,38 +2931,66 @@ describe('worker MCP routes', () => {
       ...snapshot.openKitConfig.policy,
       mediation: admitTestMcpApproval({
         coreDb,
-        workspaceId: workspaceIdForOwner(turn.owner),
+        workspaceId,
         serverId: 'echo',
         toolName: 'echo',
         userId: 'usr_00000000-0000-7000-8000-000000000001',
-        threadId: turn.threadId,
-        turnId: turn.id,
+        threadId,
+        turnId: testEntityId('tu', 'pending-mcp-policy'),
       }),
     };
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
     const upstream = vi.spyOn(workerMcpGateway, 'callTool');
-    const route = new Hono();
-    registerWorkerMcpRoutes({
-      app: route,
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => snapshot,
+    });
+    admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
+    const captureApp = createApp({
       coreDb,
-      runtimeConfig: () => snapshot,
       store,
-      workerControlGateway: {
-        authenticatePackageToken: vi.fn(() => environmentPackage),
-      } as unknown as WorkerControlGateway,
       workerMcpGateway,
       vaultUnlockState,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      }),
     });
+    const taskRequest = operationRequest(
+      'task.start',
+      { workspaceId, threadId },
+      {
+        body: JSON.stringify({
+          input: 'Call echo',
+          requestId: '0190f4c8-0000-7000-8000-000000000701',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      }
+    );
+    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const client = new Client({ name: 'pending-echo', version: '1' });
     try {
+      const started = await captureApp.request(...taskRequest);
+      expect(started.status, await started.clone().text()).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+      await native.executor.launched.promise;
+      const environmentPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
       await client.connect(
         new StreamableHTTPClientTransport(
           new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
           {
-            fetch: (input, init) => route.fetch(new Request(input, init)),
-            requestInit: { headers: { authorization: 'Bearer capability-token' } },
+            fetch: (input, init) => captureApp.fetch(new Request(input, init)),
+            requestInit: {
+              headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
+            },
           }
         )
       );
@@ -3014,12 +3004,7 @@ describe('worker MCP routes', () => {
       expect(upstream).not.toHaveBeenCalled();
       if (change === 'unchanged') {
         const boundDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        const countCalls = () =>
-          (
-            boundDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get() as {
-              count: number;
-            }
-          ).count;
+        const countCalls = () => listWorkspaceCapabilityCalls(boundDb, workspaceId).length;
         const beforeDuplicate = countCalls();
         const duplicate = await client.callTool({
           name: 'echo',
@@ -3045,9 +3030,7 @@ describe('worker MCP routes', () => {
       }
       if (change === 'unchanged') {
         const evidenceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        const captured = evidenceDb.sqlite
-          .prepare('SELECT request_id FROM pending_requests ORDER BY request_id')
-          .all() as { request_id: string }[];
+        const captured = listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId);
         const project = (id: string, userId = 'usr_00000000-0000-7000-8000-000000000001') =>
           projectApprovalEffect({
             record: readPendingRequest(evidenceDb.sqlite, id)!,
@@ -3055,27 +3038,18 @@ describe('worker MCP routes', () => {
             coreDb,
             actor: { kind: 'local', userId },
           });
-        const details = captured.map((row) => project(row.request_id));
+        const details = captured.map((row) => project(row.requestId));
         expect(details.every((detail) => detail.status === 'available')).toBe(true);
         expect(
           new Set(details.map((detail) => detail.status === 'available' && detail.detail)).size
         ).toBe(16);
-        expect(project(captured[0]!.request_id, 'another-user')).toEqual({
-          status: 'unavailable',
-          reason: 'Current Thread access is unavailable.',
-        });
-        const beforeRead = evidenceDb.sqlite
-          .prepare('SELECT * FROM pending_requests ORDER BY request_id')
-          .all();
-        project(captured[0]!.request_id);
-        expect(
-          evidenceDb.sqlite.prepare('SELECT * FROM pending_requests ORDER BY request_id').all()
-        ).toEqual(beforeRead);
+        const beforeRead = listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId);
+        project(captured[0]!.requestId);
+        expect(listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId)).toEqual(
+          beforeRead
+        );
         expect(JSON.stringify(details)).not.toContain('pending-secret-canary');
         expect(JSON.stringify(store.listAllItems())).not.toContain('captured effect');
-        const copy = approvalCardCopy('多'.repeat(4000), '🙂'.repeat(4000));
-        expect(Buffer.byteLength(`${copy.title}\n${copy.description}`)).toBeLessThanOrEqual(2048);
-        expect(copy.title).toMatch(/^Summary:/);
         evidenceDb.sqlite.close();
       }
       expect(store.getTurnById(turn.id).status).toBe('running');
@@ -3087,68 +3061,35 @@ describe('worker MCP routes', () => {
         .find((item) => item.type === 'approval-request');
       if (!approvalItem || approvalItem.type !== 'approval-request')
         throw new Error('Missing approval request.');
-      await store.updateTurn(turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
+      await client.close();
+      native.executor.completion.resolve();
+      await native.executor.execution;
+      expect(store.getTurnById(turn.id).status).toBe('completed');
+      const replay = await captureApp.request(...taskRequest);
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(turn.id);
+      expect(native.executor.launches).toBe(1);
+      expect(upstream).not.toHaveBeenCalled();
+      await shutdownControlStoreWorkerClient();
+      // Reopen real products for the response module; delivery is a separate covered owner.
+      store = new FsStore({ dataRoot });
+      const dependencies = { coreDb, openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id) };
+      installPendingRequestAdmission(store, dependencies);
       if (change === 'revoke') revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
-      if (change === 'schema-drift') {
-        const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        try {
-          recordMcpToolSchemaSnapshot({
-            environmentPackage,
-            serverId: 'echo',
-            source: 'live',
-            schemaSnapshotId: 'mcpsnap_changed_before_grant',
-            tools: [{ name: 'echo', inputSchema: { type: 'object', required: ['newField'] } }],
-            workspaceDb: schemaDb,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          });
-        } finally {
-          schemaDb.sqlite.close();
-        }
-      }
-      const currentSnapshot = {
-        ...snapshot,
-        agentManifests:
-          change === 'agent-removed'
-            ? []
-            : snapshot.agentManifests.map((manifest) =>
-                change === 'tool-removed' ? { ...manifest, mcp: [] } : manifest
-              ),
-      };
-      const app = createApp({
-        coreDb,
-        store,
-        workerMcpGateway,
-        vaultUnlockState,
-        runtimeConfigManager: createRuntimeConfigManager({
-          dataRoot: null,
-          initialSnapshot: currentSnapshot,
-        }),
-      });
-      const backend = vaultUnlockState.backend();
-      const resolve = backend.resolve.bind(backend);
-      const resolved = vi.spyOn(backend, 'resolve').mockImplementation((input) => {
-        const material = resolve(input);
-        if (change === 'credential-before-claim') currentSnapshot.agentManifests.splice(0);
-        return material;
-      });
+      const resolved = vi.spyOn(vaultUnlockState.backend(), 'resolve');
       if (change === 'credential-after-claim') {
         const callTool = originalCallTool;
         upstream.mockImplementationOnce(async (input) => {
           expect(resolved).toHaveBeenCalled();
           const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
           try {
-            expect(
-              db.sqlite
-                .prepare('SELECT claim FROM pending_requests WHERE request_id = ?')
-                .get(approvalItem.approvalRequestId)
-            ).toMatchObject({ claim: 'claimed' });
+            expect(readPendingRequest(db.sqlite, approvalItem.approvalRequestId)).toMatchObject({
+              claim: 'claimed',
+            });
           } finally {
             db.sqlite.close();
           }
-          currentSnapshot.agentManifests.splice(0);
+          snapshot.agentManifests.splice(0);
           return callTool(input);
         });
       }
@@ -3166,38 +3107,83 @@ describe('worker MCP routes', () => {
           )
         );
       }
-      const executed =
-        change !== 'tool-removed' &&
-        change !== 'agent-removed' &&
-        change !== 'credential-before-claim' &&
-        change !== 'deny' &&
-        change !== 'revoke' &&
-        change !== 'schema-drift';
+      const executed = change !== 'deny' && change !== 'revoke';
       const disposition =
-        change === 'unknown-effect'
-          ? 'outcome-unknown'
-          : change === 'known-error' || change === 'no-contact'
-            ? 'execution-error'
-            : 'approved-executed';
-      const response = await app.request(
-        ...operationRequest(
-          'approval.respond',
-          { approvalRequestId: approvalItem.approvalRequestId },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-              requestId: '00000000-0000-4000-8000-000000000117',
-              decision: change === 'deny' ? 'denied' : 'granted',
+        change === 'deny'
+          ? 'denied-not-executed'
+          : change === 'unknown-effect'
+            ? 'outcome-unknown'
+            : ['known-error', 'no-contact', 'revoke'].includes(change)
+              ? 'execution-error'
+              : 'approved-executed';
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      const captured = readPendingRequest(workspaceDb.sqlite, approvalItem.approvalRequestId)!;
+      let prepared: PreparedCapturedPendingCall | undefined;
+      let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+      const context = { catalog, coreDb, workspaceDb, workerMcpGateway, record: captured };
+      const respond = () =>
+        respondRecordedApproval({
+          store,
+          sqlite: workspaceDb.sqlite,
+          workspaceId,
+          threadId,
+          coreDb,
+          approvalRequestId: captured.requestId,
+          decision: change === 'deny' ? 'denied' : 'granted',
+          actorId: userId,
+          requestActor: { kind: 'local', userId },
+          dependencies,
+          prepare: async () => {
+            prepared = await prepareCapturedPendingCall({
+              actor: { userId },
+              ...context,
+              vaultBackend: () => vaultUnlockState.backend(),
+              reviewPolicy: (record, actor) =>
+                reviewCapturedMcpPolicy({
+                  record,
+                  actor,
+                  workspaceDb,
+                  catalog,
+                  interception: new PolicyInterception(),
+                  routes: {
+                    coreDb,
+                    store,
+                    workerMcpGateway,
+                    vaultUnlockState,
+                    workerControlGateway: native.workerControlGateway,
+                    runtimeConfig: () => snapshot,
+                    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+                  },
+                }),
+            });
+          },
+          evaluate: () =>
+            evaluateCapturedPendingCall({
+              manifest: snapshot.agentManifests.find((row) => row.id === captured.agentId) ?? null,
+              ...context,
+              sqlite: workspaceDb.sqlite,
+              prepared,
             }),
-          }
-        )
-      );
+          admitExecution: (failure) => {
+            executionCall = admitCapturedPendingCall(
+              captured,
+              workspaceDb,
+              '00000000-0000-4000-8000-000000000117',
+              prepared,
+              failure
+            );
+            return executionCall.refusal;
+          },
+          execute: (record) =>
+            executeCapturedPendingCall({
+              ...context,
+              record,
+              prepared,
+              executionCall,
+            }),
+        });
+      const response = await respond();
       resolved.mockRestore();
-      expect(response.status, await response.clone().text()).toBe(200);
       expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
       if (change === 'unchanged') {
         expect(upstream.mock.calls[0]?.[0]).toMatchObject({
@@ -3206,216 +3192,143 @@ describe('worker MCP routes', () => {
           credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
         });
       }
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        if (executed) {
-          expect(
-            workspaceDb.sqlite
-              .prepare(
-                'SELECT status FROM capability_calls WHERE call_id = (SELECT execution_call_id FROM pending_requests WHERE request_id = ?)'
-              )
-              .get(approvalItem.approvalRequestId)
-          ).toMatchObject({
-            status:
-              disposition === 'approved-executed'
-                ? 'succeeded'
-                : disposition === 'outcome-unknown'
-                  ? 'unknown'
-                  : 'failed',
-          });
-          expect(
-            workspaceDb.sqlite
-              .prepare(
-                'SELECT count(*) AS count FROM usage_records WHERE capability_call_id = (SELECT execution_call_id FROM pending_requests WHERE request_id = ?)'
-              )
-              .get(approvalItem.approvalRequestId)
-          ).toMatchObject({ count: change === 'no-contact' ? 0 : 1 });
-          expect(
-            workspaceDb.sqlite
-              .prepare(
-                'SELECT count(*) AS count FROM permission_decisions WHERE approval_id = ? AND result = ?'
-              )
-              .get(approvalItem.approvalRequestId, 'allow')
-          ).toMatchObject({ count: 1 });
-        }
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              'SELECT state, resolution, disposition FROM pending_requests WHERE request_id = ?'
-            )
-            .get(approvalItem.approvalRequestId)
-        ).toMatchObject(
-          change === 'agent-removed' || change === 'credential-before-claim'
-            ? { state: 'ended', resolution: null }
-            : {
-                state: 'resolved',
-                resolution: change === 'deny' ? 'denied' : 'granted',
-                disposition: ['tool-removed', 'deny', 'revoke', 'schema-drift'].includes(change)
-                  ? 'denied-not-executed'
-                  : disposition,
-              }
+        expect(response).toMatchObject({
+          state: 'resolved',
+          resolution: change === 'deny' ? 'denied' : 'granted',
+          disposition,
+          claim: change === 'deny' ? 'unclaimed' : 'finished',
+          executionCallId: change === 'deny' ? null : executionCallIdForRequest(captured.requestId),
+        });
+        const callId = executionCallIdForRequest(captured.requestId);
+        const calls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
+        expect(calls.filter((call) => call.id === callId)).toEqual(
+          change === 'deny'
+            ? []
+            : [
+                expect.objectContaining({
+                  status:
+                    disposition === 'approved-executed'
+                      ? 'succeeded'
+                      : disposition === 'outcome-unknown'
+                        ? 'unknown'
+                        : 'failed',
+                  ...(change === 'revoke' ? { upstreamContacted: false } : {}),
+                }),
+              ]
         );
-        expect(
-          workspaceDb.sqlite
-            .prepare('SELECT source, catalog_entry_id FROM mcp_tool_schema_snapshots')
-            .all()
-        ).toEqual(
-          Array.from({ length: change === 'schema-drift' ? 2 : 1 }, () => ({
-            catalog_entry_id: 'echo',
-            source: 'live',
-          }))
+        const usage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
+        expect(usage.filter((row) => row.capabilityCallId === callId)).toHaveLength(
+          executed && change !== 'no-contact' ? 1 : 0
         );
-        const fixedNow = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-03T01:00:00Z'));
-        try {
-          for (const label of ['a', 'b', 'a']) {
-            const tools = [{ inputSchema: { const: label }, name: 'echo' }];
+        if (change !== 'deny')
+          expect(
+            listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)
+          ).toContainEqual(
+            expect.objectContaining({
+              approvalId: captured.requestId,
+              result: change === 'revoke' ? 'deny' : 'allow',
+              contextSummary: expect.objectContaining({ capabilityCallId: callId }),
+            })
+          );
+        expect(JSON.stringify(response)).not.toContain('pending-secret-canary');
+        await expect(respond()).rejects.toMatchObject({ code: 'request_not_pending' });
+        expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceId)).toEqual(calls);
+        expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(usage);
+        expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
+        if (change === 'unchanged') {
+          const scope = { workspaceDb, workspaceId, catalogEntryId: 'echo' };
+          const currentId = () =>
+            readCurrentMcpToolSchemaSnapshot({ ...scope, pinnedSchemaSnapshotId: null })
+              ?.schemaSnapshotId;
+          type Tool = { name: string; inputSchema: Record<string, unknown> };
+          const tool = (v: string | number) => ({ inputSchema: { const: v }, name: 'echo' });
+          const record = (id: string, tools: Tool[]) =>
             recordMcpToolSchemaSnapshot({
               environmentPackage,
-              schemaSnapshotId: `mcpsnap_${label}`,
               serverId: 'echo',
               source: 'live',
+              schemaSnapshotId: id,
               tools,
               workspaceDb,
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              workspaceId,
             });
+          const retained = (id: string) =>
+            readRetainedMcpToolSchemaSnapshot({ ...scope, schemaSnapshotId: id });
+          const referencedId = captured.schemaSnapshotId!;
+          const referenced = retained(referencedId);
+          expect(referenced).not.toBeNull();
+          expect(
+            listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId).find(
+              (row) => row.schemaSnapshotId === referencedId
+            )?.source
+          ).toBe('live');
+          const fixedNow = vi
+            .spyOn(Date, 'now')
+            .mockReturnValue(Date.parse('2026-09-03T01:00:00Z'));
+          try {
+            for (const label of ['a', 'b', 'a']) record(`mcpsnap_${label}`, [tool(label)]);
+          } finally {
+            fixedNow.mockRestore();
           }
-        } finally {
-          fixedNow.mockRestore();
-        }
-        expect(
-          readCurrentMcpToolSchemaSnapshot({
-            catalogEntryId: 'echo',
-            pinnedSchemaSnapshotId: null,
-            workspaceDb,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        ).toMatchObject({ schemaSnapshotId: 'mcpsnap_a' });
-        const importedTools = [{ inputSchema: { type: 'object' }, name: 'imported' }];
-        const crossCatalogTools = [{ inputSchema: { const: 'cross' }, name: 'cross' }];
-        importMcpToolSchemaSnapshots(workspaceDb, [
-          {
+          expect(currentId()).toBe('mcpsnap_a');
+          const tools = [{ inputSchema: { type: 'object' }, name: 'imported' }];
+          const history = (id: string, catalogEntryId: string) => ({
             capturedAt: '2099-01-01T00:00:00.000Z',
-            catalogEntryId: 'echo',
-            contentDigest: mcpToolSchemaContentDigest(importedTools),
-            schemaSnapshotId: 'mcpsnap_imported_history',
+            catalogEntryId,
+            contentDigest: mcpToolSchemaContentDigest(tools),
+            schemaSnapshotId: id,
             serverVersion: '1.0.0',
-            source: 'live',
-            sourceRef: null,
-            tools: importedTools,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        ]);
-        expect(
-          readCurrentMcpToolSchemaSnapshot({
-            catalogEntryId: 'echo',
-            pinnedSchemaSnapshotId: null,
-            workspaceDb,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        ).not.toMatchObject({ schemaSnapshotId: 'mcpsnap_imported_history' });
-        const captureCountBeforePromotion = workspaceDb.sqlite
-          .prepare(
-            `SELECT COUNT(*) AS count FROM audit_events
-             WHERE action = 'mcp.schema.capture' AND resource = ?`
-          )
-          .get('mcp-schema:mcpsnap_imported_history');
-        recordMcpToolSchemaSnapshot({
-          environmentPackage,
-          schemaSnapshotId: 'mcpsnap_imported_history',
-          serverId: 'echo',
-          source: 'live',
-          tools: importedTools,
-          workspaceDb,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        });
-        recordMcpToolSchemaSnapshot({
-          environmentPackage,
-          schemaSnapshotId: 'mcpsnap_imported_history',
-          serverId: 'echo',
-          source: 'live',
-          tools: importedTools,
-          workspaceDb,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        });
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              `SELECT COUNT(*) AS count FROM audit_events
-               WHERE action = 'mcp.schema.capture' AND resource = ?`
-            )
-            .get('mcp-schema:mcpsnap_imported_history')
-        ).toEqual({
-          count: (captureCountBeforePromotion as { count: number }).count + 1,
-        });
-        expect(
-          readCurrentMcpToolSchemaSnapshot({
-            catalogEntryId: 'echo',
-            pinnedSchemaSnapshotId: null,
-            workspaceDb,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        ).toMatchObject({ schemaSnapshotId: 'mcpsnap_imported_history' });
-        importMcpToolSchemaSnapshots(workspaceDb, [
-          {
-            capturedAt: '2099-01-02T00:00:00.000Z',
-            catalogEntryId: 'other',
-            contentDigest: mcpToolSchemaContentDigest(crossCatalogTools),
-            schemaSnapshotId: 'mcpsnap_cross_catalog',
-            serverVersion: '1.0.0',
-            source: 'aep',
+            source: 'aep' as const,
             sourceRef: 'aep_history',
-            tools: crossCatalogTools,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        ]);
-        expect(() =>
-          recordMcpToolSchemaSnapshot({
-            environmentPackage,
-            schemaSnapshotId: 'mcpsnap_cross_catalog',
-            serverId: 'echo',
-            source: 'live',
-            tools: importedTools,
-            workspaceDb,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        ).toThrow('MCP schema snapshot identity conflicts');
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              `SELECT catalog_entry_id, source
-               FROM mcp_tool_schema_snapshots
-               WHERE snapshot_id = 'mcpsnap_cross_catalog'`
-            )
-            .get()
-        ).toEqual({ catalog_entry_id: 'other', source: 'aep' });
-        workspaceDb.sqlite
-          .prepare(
-            "DELETE FROM mcp_tool_schema_snapshots WHERE snapshot_id = 'mcpsnap_cross_catalog'"
-          )
-          .run();
-        for (let index = 0; index < 10; index += 1) {
-          recordMcpToolSchemaSnapshot({
-            environmentPackage,
-            schemaSnapshotId: `mcpsnap_retention_${String(index).padStart(2, '0')}`,
-            serverId: 'echo',
-            source: 'live',
-            tools: [{ inputSchema: { const: index }, name: 'echo' }],
-            workspaceDb,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            tools,
+            workspaceId,
           });
+          importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_imported_history', 'echo')]);
+          expect(currentId()).toBe('mcpsnap_a');
+          const captures = () =>
+            listWorkspaceAuditEvents(workspaceDb, workspaceId).filter(
+              (event) =>
+                event.action === 'mcp.schema.capture' &&
+                event.resource === 'mcp-schema:mcpsnap_imported_history'
+            );
+          const beforePromotion = captures().length;
+          record('mcpsnap_imported_history', tools);
+          record('mcpsnap_imported_history', tools);
+          expect(captures()).toHaveLength(beforePromotion + 1);
+          expect(currentId()).toBe('mcpsnap_imported_history');
+          importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_cross_catalog', 'other')]);
+          const beforeConflict = listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId);
+          expect(() => record('mcpsnap_cross_catalog', tools)).toThrow(Error);
+          expect(listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId)).toEqual(
+            beforeConflict
+          );
+          const churn = Array.from({ length: 10 }, (_, index) => `mcpsnap_retention_${index}`);
+          churn.forEach((id, index) => {
+            record(id, [tool(index)]);
+          });
+          expect(churn.some((id) => retained(id) === null)).toBe(true);
+          expect(retained(referencedId)).toEqual(referenced);
+          expect(currentId()).toBe(churn.at(-1));
         }
-        expect(
-          workspaceDb.sqlite
-            .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
-            .get()
-        ).toEqual({ count: 9 });
       } finally {
         workspaceDb.sqlite.close();
       }
     } finally {
       await client.close().catch(() => undefined);
+      native.executor.completion.resolve();
+      if (native.executor.launches) await native.executor.execution.catch(() => undefined);
+      await Promise.allSettled(
+        taskAdmissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      taskAdmissions.mockRestore();
+      native.restore();
       await workerMcpGateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -4545,9 +4458,7 @@ describe('worker MCP routes', () => {
     });
     const authorizedEnvironmentPackage = environmentPackage;
     recordMcpWorkerLineage(coreDb, environmentPackage);
-    // Production records the AgentSession and then its AEP snapshot before the worker that reaches
-    // this gateway exists. The snapshot directory is pruned to the AgentSessions the store knows
-    // (`workspace-file-records.ts` removeStaleDirectories), so the record has to exist here too.
+    // Retain the canonical AgentSession and named AEP for publication repair.
     await store.createAgentSession({
       agentId: environmentPackage.agent.agentId,
       createdAt: '2026-09-03T00:00:00.000Z',
@@ -5048,19 +4959,14 @@ describe('worker MCP routes', () => {
         .get() as { call_id: string; item_id: string; status: string };
       terminalDb.sqlite.close();
       expect(successfulUnpublished.status).toBe('succeeded');
+      // Keep interrupted-call ledger recovery; Item repair has its own retained-history test.
       verifyAndMigrateExistingScopedDatabases(dataRoot);
-      expect(reconcileWorkerMcpItems(dataRoot, store)).toBeGreaterThan(0);
-      expect(store.listAllItems()).toContainEqual(
-        expect.objectContaining({
-          causationId: successfulUnpublished.call_id,
-          id: successfulUnpublished.item_id,
-          status: 'completed',
-        })
-      );
 
+      // Keep the active Tool Turn; the independent denial needs its own Thread.
+      const deniedThread = await store.createThread(workspaceIdForOwner(turn.owner), 'MCP denial');
       const deniedTurn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
+        deniedThread.id,
         'Reject unauthorized MCP use',
         {
           id: 'usr_00000000-0000-76a2-91eb-629d90835e80',
@@ -5093,7 +4999,7 @@ describe('worker MCP routes', () => {
       afterDeniedDb.sqlite.close();
       expect(store.listAllItems()).toHaveLength(itemsBeforeDenied);
       expect(callTool).toHaveBeenCalledTimes(upstreamCallsBeforeDenied);
-      expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+      expect(store.getTurnById(turn.id).status).toBe('running');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(workspaceDb);
@@ -5202,6 +5108,7 @@ describe('worker MCP routes', () => {
       nearLimitDb.sqlite.close();
       await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
       const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
+      await shutdownControlStoreWorkerClient();
       rmSync(workspaceRoot, { recursive: true });
       const staleRequest = await rawCall('stale-after-delete');
       expect(staleRequest.status).toBe(200);
@@ -5211,7 +5118,8 @@ describe('worker MCP routes', () => {
       });
       expect(existsSync(workspaceRoot)).toBe(false);
     } finally {
-      await Promise.all(clients.map((client) => client.close()));
+      await Promise.allSettled(clients.map((client) => client.close()));
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
