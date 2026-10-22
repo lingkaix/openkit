@@ -2259,7 +2259,7 @@ describe('createConfiguredTurnExecutor', () => {
       configurePackage?: (
         environmentPackage: AgentEnvironmentPackage,
         coreDb: ReturnType<typeof createFactoryCoreDb>
-      ) => void;
+      ) => void | Promise<void>;
       onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       onExport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       beforeFirstTurn?: (input: {
@@ -2390,7 +2390,7 @@ describe('createConfiguredTurnExecutor', () => {
       snapshotId: `snapshot_${label}`,
     });
     await authorizeNanoHostPackage(coreDb, environmentPackage);
-    options.configurePackage?.(environmentPackage, coreDb);
+    await options.configurePackage?.(environmentPackage, coreDb);
     bindNanoHostWorkerLineage(coreDb, environmentPackage, {
       attemptId: options.attemptId ?? testEntityId('attempt', `lease_${label}`),
       sandboxBindingRef: `sandbox-binding:${label}`,
@@ -2789,12 +2789,16 @@ describe('createConfiguredTurnExecutor', () => {
           .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
           .get()
       ).toEqual({ count: bound - 1 });
-      expect(f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
+      expect(await f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe(
+        'capacity-saturated'
+      );
       await f.backend.cleanupSession(f.backend.planSession(firstPackage));
       // Session-local cleanup alone does not complete the Core output/drain/revocation barrier.
-      expect(f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
+      expect(await f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe(
+        'capacity-saturated'
+      );
       await closeFactoryAttempt(f.coreDb, testEntityId('attempt', `lease_${label}_0`));
-      expect(f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
+      expect(await f.backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
       expect(
         f.effects.filter(
           (effect) => effect.kind === 'sandbox.delete' || effect.kind === 'bridge.close'
@@ -2920,13 +2924,15 @@ describe('createConfiguredTurnExecutor', () => {
           )
         ).toMatchObject({ execution: 'unknown' });
         // No instance row remains, but a new instance must not alias pending Core closeouts.
-        expect(f.backend.inspectMaterializationCapacity?.(packages[1]!)).toBe('capacity-saturated');
+        expect(await f.backend.inspectMaterializationCapacity?.(packages[1]!)).toBe(
+          'capacity-saturated'
+        );
         for (let index = 1; index < bound; index += 1) {
           await f.backend.cleanupSession(f.backend.planSession(packages[index]!));
           await closeFactoryAttempt(f.coreDb, testEntityId('attempt', `lease_${label}_${index}`));
         }
         expect(f.effects).toHaveLength(effectsAfterFence);
-        expect(f.backend.inspectMaterializationCapacity?.(packages[1]!)).toBe('available');
+        expect(await f.backend.inspectMaterializationCapacity?.(packages[1]!)).toBe('available');
       } finally {
         handoff.mockRestore();
       }
@@ -10806,7 +10812,9 @@ describe('createConfiguredTurnExecutor', () => {
           });
           if (scenario !== 'cross-thread-pre-naming-recorded') {
             const effectsBefore = [...effects];
-            expect(() => restoredBackend.inspectMaterializationCapacity!(desired)).toThrow();
+            await expect(
+              restoredBackend.inspectMaterializationCapacity!(desired)
+            ).rejects.toThrow();
             await expect(
               (
                 restoredBackend as WorkerGovernanceBackend & {
@@ -10827,7 +10835,7 @@ describe('createConfiguredTurnExecutor', () => {
             return;
           }
           // Preflight preserves the old rows; actual admission must retire them through the same rule.
-          expect(restoredBackend.inspectMaterializationCapacity!(desired)).toBe('available');
+          expect(await restoredBackend.inspectMaterializationCapacity!(desired)).toBe('available');
           expect(
             coreDb.sqlite
               .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
@@ -11028,9 +11036,9 @@ describe('createConfiguredTurnExecutor', () => {
               coreDb.sqlite
                 .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
                 .run('f'.repeat(64));
-              expect(() => restoredBackend.inspectMaterializationCapacity!(altered)).toThrow(
-                WorkerNativeProofValidationError
-              );
+              await expect(
+                restoredBackend.inspectMaterializationCapacity!(altered)
+              ).rejects.toThrow(WorkerNativeProofValidationError);
             }
             expect(recorder).not.toHaveBeenCalled();
             expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
@@ -11186,7 +11194,7 @@ describe('createConfiguredTurnExecutor', () => {
               "UPDATE worker_backend_sessions SET thread_id = 'wrong-thread', runtime_target_id = 'wrong-nanohost-target'"
             )
             .run();
-          expect(inspect).toThrow(
+          await expect(inspect()).rejects.toThrow(
             expect.objectContaining({ failedCheck: 'package-binding-lineage/anchor-thread' })
           );
           expect(recorder).not.toHaveBeenCalled();
@@ -11196,12 +11204,12 @@ describe('createConfiguredTurnExecutor', () => {
           const originalBytes = readFileSync(snapshotPath, 'utf8');
           retained.snapshot.scope.threadId = testEntityId('th', 'wrong-package-thread');
           writeFileSync(snapshotPath, JSON.stringify(retained));
-          expect(() => inspect()).toThrow('digest mismatch');
+          await expect(inspect()).rejects.toThrow('digest mismatch');
           retained.contentDigest = createHash('sha256')
             .update(JSON.stringify(retained.snapshot))
             .digest('hex');
           writeFileSync(snapshotPath, JSON.stringify(retained));
-          expect(() => inspect()).toThrow('lineage mismatch');
+          await expect(inspect()).rejects.toThrow('lineage mismatch');
           writeFileSync(snapshotPath, originalBytes);
           const changedScope = JSON.parse(originalBytes);
           changedScope.threadId = testEntityId('th', 'wrong-package-thread');
@@ -11210,7 +11218,7 @@ describe('createConfiguredTurnExecutor', () => {
             .update(JSON.stringify(changedScope.snapshot))
             .digest('hex');
           writeFileSync(snapshotPath, JSON.stringify(changedScope));
-          expect(() => inspect()).toThrow();
+          await expect(inspect()).rejects.toThrow();
           writeFileSync(snapshotPath, originalBytes);
           for (const [field, value] of [
             ['triggerActor', { kind: 'user', id: 'usr_00000000-0000-78d7-b17c-43d9aa145f21' }],
@@ -11222,13 +11230,13 @@ describe('createConfiguredTurnExecutor', () => {
               .update(JSON.stringify(changedAdmission.snapshot))
               .digest('hex');
             writeFileSync(snapshotPath, JSON.stringify(changedAdmission));
-            expect(() => inspect()).toThrow();
+            await expect(inspect()).rejects.toThrow();
             expect(recorder).not.toHaveBeenCalled();
             expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
             writeFileSync(snapshotPath, originalBytes);
           }
           expect(recorder).not.toHaveBeenCalled();
-          expect(inspect()).toBe('available');
+          expect(await inspect()).toBe('available');
           expect(recorder).toHaveBeenCalledExactlyOnceWith(
             predecessor.id,
             digest,
@@ -11286,7 +11294,7 @@ describe('createConfiguredTurnExecutor', () => {
           coreDb.sqlite
             .prepare('UPDATE agent_session_runtime_bindings SET native_handle_digest = ?')
             .run('e'.repeat(64));
-          expect(() => inspect()).toThrow();
+          await expect(inspect()).rejects.toThrow();
           expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBe(digest);
           return;
         }
@@ -11576,7 +11584,9 @@ describe('createConfiguredTurnExecutor', () => {
         });
       /** Inserts the real scheduler grant and its capacity accounting before backend effects. */
       const dispatch = async (environmentPackage: AgentEnvironmentPackage) => {
-        expect(backend.inspectMaterializationCapacity?.(environmentPackage)).toBe('available');
+        expect(await backend.inspectMaterializationCapacity?.(environmentPackage)).toBe(
+          'available'
+        );
         bindNanoHostWorkerLineage(coreDb, environmentPackage, {
           attemptId: testEntityId('attempt', `lease:${environmentPackage.snapshotId}`),
           sandboxBindingRef: `lease-binding:${environmentPackage.snapshotId}`,
@@ -11719,7 +11729,7 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .all()
       ).toEqual([{ activeTurns: 0, operationState: 'settled' }]);
-      expect(backend.inspectMaterializationCapacity?.(desired)).toBe('available');
+      expect(await backend.inspectMaterializationCapacity?.(desired)).toBe('available');
       expect(effects).toHaveLength(effectsBeforeRetry);
       await dispatch(desired);
       expect(backend.sessions.size).toBe(0);
@@ -11980,7 +11990,9 @@ describe('createConfiguredTurnExecutor', () => {
               )
               .get()
           ).toEqual({ harnessDrainState: 'draining', sandboxDrainState: 'draining' });
-          expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
+          expect(await backend.inspectMaterializationCapacity?.(firstPackage)).toBe(
+            'capacity-saturated'
+          );
           await anchorNanoHostMaterialization(coreDb, backend, firstPackage);
           await expect(
             backend.materialize(firstPackage, {
@@ -12167,7 +12179,7 @@ describe('createConfiguredTurnExecutor', () => {
       ).sandboxBindingRef;
       const selectedBinding = getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef });
       if (!selectedBinding) throw new Error('Expected attached retained storage.');
-      expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
+      expect(await backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
@@ -12177,7 +12189,9 @@ describe('createConfiguredTurnExecutor', () => {
         .run();
       coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
       // D70 keeps current execution excluded; retired physical pool headroom is no dispatch authority.
-      expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
+      expect(await backend.inspectMaterializationCapacity?.(firstPackage)).toBe(
+        'capacity-saturated'
+      );
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
@@ -12340,7 +12354,7 @@ describe('createConfiguredTurnExecutor', () => {
           ...firstPackage,
           agent: { ...firstPackage.agent, runtimeKind: 'opencode', runtimeVersion: '2.0.22' },
         });
-        expect(backend.inspectMaterializationCapacity?.(otherRuntime)).toBe('available');
+        expect(await backend.inspectMaterializationCapacity?.(otherRuntime)).toBe('available');
         if (startupRefused === 'predecessor-close-required') {
           // Checked-in version of the review's in-memory counterexample: co-location is not continuity.
           const freshThreadPackage = completeNanoHostPackage({
@@ -12365,11 +12379,13 @@ describe('createConfiguredTurnExecutor', () => {
         }
 
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
-        expect(backend.inspectMaterializationCapacity?.(secondPackage)).toBe('capacity-saturated');
+        expect(await backend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+          'capacity-saturated'
+        );
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
         // Later admission may retire the refused resident, but never repeats its native close.
-        expect(backend.inspectMaterializationCapacity?.(secondPackage)).toBe('available');
-        expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
+        expect(await backend.inspectMaterializationCapacity?.(secondPackage)).toBe('available');
+        expect(await backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
       }
 
       if (startupRefused?.startsWith('predecessor-fresh-')) {
@@ -12622,7 +12638,7 @@ describe('createConfiguredTurnExecutor', () => {
           expect(retired).toBeInstanceOf(Error);
           expect(retired).not.toMatchObject({ name: 'WorkerGovernanceCapacityUnavailableError' });
           expect(retired).toMatchObject({ message: 'Eviction Sandbox delete failed.' });
-          expect(backend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+          expect(await backend.inspectMaterializationCapacity?.(secondPackage)).toBe(
             'capacity-saturated'
           );
           expect(
@@ -13817,7 +13833,9 @@ describe('createConfiguredTurnExecutor', () => {
       });
       await authorizeNanoHostPackage(coreDb, desiredPackage);
       if (origin === 'a'.repeat(64)) {
-        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+          'capacity-saturated'
+        );
         await anchorNanoHostMaterialization(coreDb, backend, desiredPackage);
         await expect(
           backend.materialize(desiredPackage, {
@@ -13841,7 +13859,9 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite.exec(
         `UPDATE scheduler_execution_attempts SET phase = 'open' WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`
       );
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+        'capacity-saturated'
+      );
       coreDb.sqlite.exec(
         `UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = '${testEntityId('as', 'as_capacity_guard_resident')}'`
       );
@@ -13849,10 +13869,12 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb.sqlite.exec(
           `UPDATE agent_session_runtime_bindings SET ${field} = 'unsettled-owner'`
         );
-        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+          'capacity-saturated'
+        );
         coreDb.sqlite.exec(`UPDATE agent_session_runtime_bindings SET ${field} = NULL`);
       }
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
+      expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
       expect(effects).toEqual([]);
       expect(
         coreDb.sqlite.prepare('SELECT operation_state FROM harness_instance_records').all()
@@ -14025,40 +14047,50 @@ describe('createConfiguredTurnExecutor', () => {
         : null;
       for (const readinessField of ['ready', 'fresh_empty', 'predecessor_fenced']) {
         coreDb.sqlite.exec(`UPDATE nanohost_runtime_targets SET ${readinessField} = 0`);
-        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+          'capacity-saturated'
+        );
         coreDb.sqlite.exec(`UPDATE nanohost_runtime_targets SET ${readinessField} = 1`);
       }
       coreDb.sqlite
         .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
         .run('a'.repeat(64));
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+        'capacity-saturated'
+      );
       coreDb.sqlite
         .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
         .run(originPhysicalEpoch);
       if (withHarness) {
         // Fresh Epoch absence also retires stale binding lifecycle projections.
-        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
+        expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
         coreDb.sqlite.exec("UPDATE agent_session_runtime_bindings SET lifecycle_state = 'open'");
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
-        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+          'capacity-saturated'
+        );
         coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
         coreDb.sqlite.exec(
           `UPDATE agent_session_runtime_bindings SET current_attempt_id = '${testEntityId('attempt', 'lease_busy')}'`
         );
-        expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+        expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+          'capacity-saturated'
+        );
         coreDb.sqlite.exec('UPDATE agent_session_runtime_bindings SET current_attempt_id = NULL');
         if (operationState === 'unknown') {
           for (const blockedState of ['queued', 'dispatched'] as const) {
             coreDb.sqlite.exec(
               `UPDATE harness_instance_records SET operation_state = '${blockedState}'`
             );
-            expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
+            expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+              'available'
+            );
           }
           coreDb.sqlite.exec("UPDATE harness_instance_records SET operation_state = 'unknown'");
         }
       }
       await authorizeNanoHostPackage(coreDb, desiredPackage);
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
+      expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
       expect(effects).toEqual([]);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
@@ -14072,7 +14104,9 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET binding_ref = ? WHERE attempt_id = ?')
         .run('sandbox-binding-capacity-guard', lease.leaseId);
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+        'capacity-saturated'
+      );
       coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET binding_ref = ? WHERE attempt_id = ?')
         .run(lease.bindingRef, lease.leaseId);
@@ -14221,7 +14255,9 @@ describe('createConfiguredTurnExecutor', () => {
         snapshotId: 'snapshot_capacity_guard_desired',
       });
 
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
+        'capacity-saturated'
+      );
       expect(effects).toEqual([]);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
@@ -14486,9 +14522,9 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare("UPDATE sandbox_runtime_records SET origin_physical_epoch = 'malformed'")
         .run();
-      expect(() => restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toThrow(
-        /physical Epoch/i
-      );
+      await expect(
+        restartedBackend.inspectMaterializationCapacity?.(secondPackage)
+      ).rejects.toThrow(/physical Epoch/i);
       expect(
         getWorkerStorageBindingForSandbox(coreDb, {
           sandboxBindingRef: harness.sandboxBindingRef,
@@ -14500,7 +14536,9 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
         .run('a'.repeat(64));
-      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe('available');
+      expect(await restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'available'
+      );
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
@@ -14509,7 +14547,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run();
       coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
-      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+      expect(await restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
         'capacity-saturated'
       );
       coreDb.sqlite
@@ -14526,7 +14564,7 @@ describe('createConfiguredTurnExecutor', () => {
                drain_state = 'draining', cleanup_state = 'unknown'`
         )
         .run();
-      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+      expect(await restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
         'capacity-saturated'
       );
       coreDb.sqlite
@@ -15649,7 +15687,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         f.coreDb.sqlite.prepare('SELECT drain_state FROM harness_instance_records').get()
       ).toEqual({ drain_state: 'draining' });
-      expect(f.backend.inspectMaterializationCapacity?.(f.environmentPackage)).toBe(
+      expect(await f.backend.inspectMaterializationCapacity?.(f.environmentPackage)).toBe(
         'capacity-saturated'
       );
     } finally {
