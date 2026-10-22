@@ -487,7 +487,7 @@ describe('workspace portable file state', () => {
     expect(() =>
       readWorkspaceImportSnapshot({
         verified,
-        targetWorkspaceId: new FsStore().createWorkspace('Import validation').id,
+        targetWorkspaceId: testEntityId('ws', 'portable-import-validation'),
         targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
       })
     ).not.toThrow();

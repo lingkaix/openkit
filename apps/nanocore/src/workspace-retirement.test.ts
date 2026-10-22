@@ -21,7 +21,9 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './bootstrap/readiness.js';
+import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -31,6 +33,7 @@ import {
   markWorkerStorageAttachmentUnknown,
   reserveWorkerStorageAttachment,
 } from './runtime/worker-storage-bindings.js';
+import { recordWorkspaceQuarantineRecord } from './runtime/workspace-quarantine-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import * as databases from './storage/db.js';
@@ -39,12 +42,14 @@ import { applyMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import { createTestStore } from './test-support/store.js';
 import { createWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import { createWorkspaceInvitation } from './workspace-sharing.js';
 
 const OPERATION = 'workspace.retire-quarantined';
-const ADMIN = testEntityId('usr', 'retirement-administrator');
 const NOW = '2026-10-20T00:00:00.000Z';
 const disposals: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -84,30 +89,28 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
   const coreDb = databases.openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  coreDb.sqlite
-    .prepare(
-      "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES (?, 'Retirement administrator', 'retirement@example.invalid', 0, 1, 1, 'human', 'active')"
-    )
-    .run(ADMIN);
-  const store = new FsStore({ dataRoot });
+  const adminEmail = [randomUUID(), ['example', 'invalid'].join('.')].join('@');
+  const auth = createBetterAuth(coreDb, { env: {} });
+  const administrator = await auth.api.signUpEmail({
+    body: { name: 'Retirement administrator', email: adminEmail, password: randomUUID() },
+  });
+  const store = createTestStore({ dataRoot });
   const workspaceId = (await store.createWorkspace('Retained private canary')).id;
   const siblingId = (await store.createWorkspace('Healthy sibling')).id;
   for (const id of [workspaceId, siblingId])
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: id, ownerUserId: FIXTURE_LOCAL_USER_ID });
-  coreDb.sqlite
-    .prepare(`INSERT INTO workspace_invitations (
-    invitation_id, workspace_id, invitee_user_id, inviter_user_id, status, expires_at, revision, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, 'pending', '2999-01-01T00:00:00.000Z', 1, ?, ?)`)
-    .run(
-      testEntityId('inv', 'retirement-pending-invitation'),
+  const invitation = coreDb.sqlite.transaction(() =>
+    createWorkspaceInvitation({
+      coreDb,
       workspaceId,
-      ADMIN,
-      FIXTURE_LOCAL_USER_ID,
-      NOW,
-      NOW
-    );
+      inviterUserId: FIXTURE_LOCAL_USER_ID,
+      inviteeEmail: adminEmail,
+      now: new Date(NOW),
+    })
+  )();
+  expect(invitation.kind).toBe('created');
   const admin = createOpenKitAccessTokenRecord(coreDb, {
-    ownerUserId: ADMIN,
+    ownerUserId: administrator.user.id,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
@@ -138,35 +141,38 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   const db = databases.openWorkspaceDb(dataRoot, workspaceId);
   try {
-    db.sqlite
-      .prepare(`INSERT INTO evidence_bundles (
-      evidence_bundle_id, workspace_id, thread_id, goal_id, turn_id, agent_session_id, backend_type,
-      source_kind, summary, raw_evidence_refs_json, redacted_evidence_refs_json, content_digests_json,
-      retention_class, sensitivity_class, import_status, required_features_json, created_at
-    ) VALUES ('ev_retirement_hold', ?, NULL, NULL, NULL, NULL, NULL, 'test', 'Retained hold', '[]', '[]', '[]', 'legal-hold', 'product-safe', 'verified', '[]', ?)`)
-      .run(workspaceId, NOW);
-    db.sqlite
-      .prepare(`INSERT INTO workspace_quarantine_records (
-      quarantine_record_id, workspace_id, failure_kind, resolution, payload_json, created_at, updated_at, resolved_at
-    ) VALUES ('quarantine_retirement_hold', ?, 'schema_failure', 'pending', ?, ?, ?, NULL)`)
-      .run(
-        workspaceId,
-        JSON.stringify({
-          id: 'quarantine_retirement_hold',
-          workspaceId,
-          lifecycleRecordIds: [],
-          failureKind: 'schema_failure',
-          storageRef: 'evidence/quarantine/retained.json',
-          retentionClass: 'legal-hold',
-          requiredHumanDecision: 'Release legal hold.',
-          resolution: 'pending',
-          createdAt: NOW,
-          updatedAt: NOW,
-          resolvedAt: null,
-        }),
-        NOW,
-        NOW
-      );
+    recordWorkspaceEvidenceBundle(db, {
+      id: 'ev_retirement_hold',
+      workspaceId,
+      threadId: null,
+      goalId: null,
+      turnId: null,
+      agentSessionId: null,
+      backendType: null,
+      sourceKind: 'test',
+      summary: 'Retained hold',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [],
+      contentDigests: [],
+      retentionClass: 'legal-hold',
+      sensitivityClass: 'product-safe',
+      importStatus: 'verified',
+      requiredFeatures: [],
+      createdAt: NOW,
+    });
+    recordWorkspaceQuarantineRecord(db, {
+      id: 'quarantine_retirement_hold',
+      workspaceId,
+      lifecycleRecordIds: [],
+      failureKind: 'schema_failure',
+      storageRef: 'evidence/quarantine/retained.json',
+      retentionClass: 'legal-hold',
+      requiredHumanDecision: 'Release legal hold.',
+      resolution: 'pending',
+      createdAt: NOW,
+      updatedAt: NOW,
+      resolvedAt: null,
+    });
   } finally {
     db.sqlite.close();
   }
@@ -174,21 +180,26 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
   const opaque = join(workspaceRoot, 'evidence', 'retained-opaque');
   mkdirSync(opaque, { recursive: true });
   writeFileSync(join(opaque, 'original.bin'), Buffer.from([0, 255, 1, 128]));
+  await shutdownControlStoreWorkerClient();
   if (fault === 'missing') rmSync(workspaceDbPath(dataRoot, workspaceId));
   if (fault === 'corrupt')
     writeFileSync(
       workspaceDbPath(dataRoot, workspaceId),
       'Unreadable Workspace authority; never an empty hold inventory.'
     );
+  // Readable product records do not own admission after the native cutover.
   if (fault === 'records')
-    writeFileSync(join(workspaceRoot, 'workspace-record.json'), '{invalid canonical envelope');
+    writeFileSync(
+      join(workspaceRoot, 'workspace-record.json'),
+      '{invalid disposable record projection'
+    );
   if (fault === 'index')
     refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'index' });
   databases.verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
     FsStore.validateFileAuthority(dataRoot)
   );
   expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(
-    fault === 'healthy' || fault === 'index'
+    fault === 'healthy' || fault === 'index' || fault === 'records'
   );
   expect(isScopeAdmitted(dataRoot, 'workspace', siblingId)).toBe(true);
   // Add opaque links after the real admission check; the command must not traverse or change them.
@@ -265,11 +276,7 @@ function retainRuntimeFences(f: Fixture) {
     operationId: 'retained-uncertain-submission',
     now: () => NOW,
   });
-  f.coreDb.sqlite
-    .prepare(`INSERT INTO nanohost_runtime_targets (
-    target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-  ) VALUES ('retirement-target', 'retirement-identity', 'retirement-deployment', 1, 1, 1, 1, ?, 1)`)
-    .run(NOW);
+  const target = recordTestNativeRuntimeTarget(f.coreDb, 'retirement-target');
   const layout = {
     family: 'openkit-worker',
     version: '1',
@@ -281,8 +288,8 @@ function retainRuntimeFences(f: Fixture) {
   };
   for (const state of ['reserved', 'attached', 'unknown']) {
     const binding = createWorkerStorageBinding(f.coreDb, {
-      deploymentId: 'retirement-deployment',
-      runtimeTargetId: 'retirement-target',
+      deploymentId: target.deploymentId,
+      runtimeTargetId: target.targetId,
       workspaceId: f.workspaceId,
       layout,
       now: NOW,
@@ -297,7 +304,7 @@ function retainRuntimeFences(f: Fixture) {
       threadId: testEntityId('th', `retirement-${state}`),
       workspaceId: f.workspaceId,
       agentSessionId: testEntityId('as', `retirement-${state}`),
-      runtimeTargetId: 'retirement-target',
+      runtimeTargetId: target.targetId,
       now: NOW,
     });
     if (state === 'attached')
@@ -369,17 +376,8 @@ describe('retained-only quarantine retirement: native operation and Core authori
       f.member.secret
     );
     expect(members.status).toBe(200);
-    const db = databases.openBootVerifiedWorkspaceDb(f.dataRoot, f.siblingId);
-    try {
-      db.sqlite.exec(
-        "CREATE TABLE retirement_sibling_control (value TEXT); INSERT INTO retirement_sibling_control VALUES ('progress')"
-      );
-      expect(db.sqlite.prepare('SELECT value FROM retirement_sibling_control').pluck().get()).toBe(
-        'progress'
-      );
-    } finally {
-      db.sqlite.close();
-    }
+    const thread = await f.store.createThread(f.siblingId, 'Retirement sibling progress');
+    expect(f.store.getThread(f.siblingId, thread.id)).toMatchObject({ id: thread.id });
     expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual({
       scope: 'workspace',
       id: f.workspaceId,
@@ -411,7 +409,6 @@ describe('retained-only quarantine retirement: native operation and Core authori
   it.each([
     'corrupt',
     'missing',
-    'records',
   ] as const)('retires %s authority without opening content, altering any retained entry or releasing runtime fences', async (fault) => {
     const f = await fixture(fault);
     const runtime = retainRuntimeFences(f);
@@ -472,11 +469,14 @@ describe('retained-only quarantine retirement: native operation and Core authori
   it.each([
     'healthy',
     'index',
-  ] as const)('refuses %s scope rather than treating index degradation as authority quarantine', async (fault) => {
+    'records',
+  ] as const)('refuses %s scope without canonical authority quarantine', async (fault) => {
     const f = await fixture(fault);
     const before = registry(f);
+    const tree = retainedTree(f.workspaceRoot);
     await expectRefused(await f.call(OPERATION, f.request), [409]);
     expect(registry(f)).toEqual(before);
+    expect(retainedTree(f.workspaceRoot)).toEqual(tree);
     expect(f.admission.isClosed(f.workspaceId)).toBe(false);
   });
 
@@ -533,7 +533,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     expect(audit).toHaveLength(beforeAudit.length + 1);
     expect(JSON.stringify(audit.at(-1))).toContain(f.workspaceId);
     expect(JSON.stringify(audit.at(-1))).toContain(f.request.requestId);
-    expect(JSON.stringify(audit.at(-1))).toContain(ADMIN);
+    expect(JSON.stringify(audit.at(-1))).toContain(f.admin.record.ownerUserId);
     expect(rows(f, 'idempotency_requests')).toHaveLength(1);
     const receipts = rows(f, 'idempotency_requests');
     await expectRetired(f, await f.call(OPERATION, f.request));

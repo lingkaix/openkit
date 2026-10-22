@@ -16,10 +16,10 @@ import { applyMigrations } from '../storage/migrate.js';
 import { exportRecurringPortableHistory } from '../storage/recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { AutomationMutationError, AutomationStore } from './automation-store.js';
-import { FsStore } from './store.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
 function fixture() {
@@ -845,7 +845,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
   const state = fixture();
   let db = state.db;
   ensureLocalUser(db);
-  let files = new FsStore({ dataRoot: state.root });
+  let files = createTestStore({ dataRoot: state.root });
   const workspace = await files.createWorkspace('Monthly proof');
   const thread = await files.createThread(workspace.id, 'Existing target');
   recordWorkspaceOwnerMembership({
@@ -909,15 +909,21 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
       queueEntryId: january.record.queueEntryId!,
       workspaceId: workspace.id,
     });
+    // Settle the cancelled, undispatched Turn before the next monthly admission.
+    await files.completeTurn(january.record.turnId!, {
+      status: 'cancelled',
+      completedAt: state.clock(),
+    });
     state.setTime('2027-02-28T08:59:59.999Z');
     await service.runOnce();
     expect(prepare).toHaveBeenCalledTimes(1);
     service.stop();
     await service.runOnce();
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     db = openCoreDb(state.root);
     fixtures.push({ root: state.root, db });
-    files = new FsStore({ dataRoot: state.root });
+    files = createTestStore({ dataRoot: state.root });
     schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), state.clock);
     state.setTime('2027-02-28T09:00:00.000Z');
     service = start();
@@ -933,6 +939,10 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
     cancelSchedulerAdmissionEntry(db, {
       queueEntryId: february.record.queueEntryId!,
       workspaceId: workspace.id,
+    });
+    await files.completeTurn(february.record.turnId!, {
+      status: 'cancelled',
+      completedAt: state.clock(),
     });
     state.setTime('2027-03-28T09:00:00.000Z');
     await service.runOnce();
@@ -970,7 +980,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
         monthlyUtc: monthlyDefinition.monthlyUtc,
       });
       expect(files.getTurnById(item.record.turnId!)).toMatchObject({
-        status: 'pending',
+        status: item.record.scheduledAt === '2027-03-28T09:00:00.000Z' ? 'pending' : 'cancelled',
         threadId: thread.id,
       });
     }
@@ -979,10 +989,11 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
     ).toEqual([{ status: 'cancelled' }, { status: 'cancelled' }, { status: 'queued' }]);
     service.stop();
     await service.runOnce();
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     db = openCoreDb(state.root);
     fixtures.push({ root: state.root, db });
-    files = new FsStore({ dataRoot: state.root });
+    files = createTestStore({ dataRoot: state.root });
     schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), state.clock);
     service = start();
     await service.runOnce();
