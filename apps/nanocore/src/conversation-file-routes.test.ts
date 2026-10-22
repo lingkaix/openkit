@@ -326,22 +326,10 @@ describe('Turn-owned conversation originals', () => {
     ).toBe(false);
   });
 
-  // Retained-record serialization and verification use the local 60-second runner limit.
-  it('refuses a retained Thread rewrite that exceeds shared publication capacity before Assistant execution', async () => {
-    const state = await fixture(() => 1_500_000n);
-    const threadPath = join(
-      state.dataRoot,
-      'workspaces',
-      state.workspaceId,
-      'threads',
-      state.thread.id,
-      'thread.json'
-    );
-    const retained = JSON.parse(readFileSync(threadPath, 'utf8'));
-    retained.futureMetadata = 'x'.repeat(800_000);
-    writeFileSync(threadPath, JSON.stringify(retained));
-    const before = readFileSync(threadPath);
-    const bytes = new Uint8Array([1]);
+  it('rechecks shared capacity after file staging before Assistant execution', async () => {
+    let available = 2_000_000_000n;
+    const state = await fixture(() => available);
+    const bytes = new Uint8Array([0xff]);
     const input = {
       workspaceId: state.workspaceId,
       threadId: state.thread.id,
@@ -351,49 +339,44 @@ describe('Turn-owned conversation originals', () => {
       artifactRefs: [],
       fileInputs: [metadata(bytes)],
     };
-    const run = vi
-      .spyOn(assistantCommandOwners, 'runAssistantCommand')
-      .mockResolvedValue({ id: 'answer', content: 'Must not execute.', providerId: 'fixture' });
+    const framed = new Uint8Array(await frame(input, [bytes]).arrayBuffer());
+    let sent = false;
+    // Composer requires a live capacity recheck after preparation, before the first Turn.
+    const source = new ReadableStream<Uint8Array>(
+      {
+        pull(stream) {
+          if (!sent) {
+            sent = true;
+            stream.enqueue(framed);
+          } else {
+            available = 999_999n;
+            stream.close();
+          }
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    const artifactsBefore = state.store.listArtifacts(state.workspaceId).length;
     const response = await state.app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
       headers: {
         'content-type': CONVERSATION_FILE_MEDIA_TYPE,
         'x-openkit-request-id': input.requestId,
       },
-      body: frame(input, [bytes]),
-    });
+      body: source,
+      duplex: 'half',
+    } as RequestInit);
+    expect(available).toBe(999_999n);
     expect(response.status, await response.clone().text()).toBe(507);
-    expect(readFileSync(threadPath)).toEqual(before);
-    expect(run).not.toHaveBeenCalled();
+    expect((await response.json()).code).toBe('storage_capacity_unavailable');
+    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(state.store.listArtifacts(state.workspaceId)).toHaveLength(artifactsBefore);
+    expect(state.provider.createResponses).not.toHaveBeenCalled();
     expect(
       state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
     ).toBe(false);
-  }, 60_000);
-
-  it('admits the submitted user-message append through the same shared file-capacity owner', async () => {
-    let available = 2_000_000_000n;
-    const state = await fixture(() => available);
-    const bytes = new Uint8Array();
-    const input = {
-      workspaceId: state.workspaceId,
-      threadId: state.thread.id,
-      requestId: randomUUID(),
-      input: 'x'.repeat(300_000),
-      targetRef: 'internal-role:assistant',
-      artifactRefs: [],
-      fileInputs: [metadata(bytes)],
-    };
-    const create = state.store.createItem.bind(state.store);
-    const append = vi.spyOn(state.store, 'createItem').mockImplementation(async (item, ...rest) => {
-      if (item.type === 'user-message' && item.text === input.input) available = 1_250_000n;
-      return await create(item, ...rest);
-    });
-    const run = vi.spyOn(assistantCommandOwners, 'runAssistantCommand').mockResolvedValue({
-      id: 'answer',
-      content: 'Must not execute.',
-      providerId: 'fixture',
-    });
-    const response = await state.app.request('/api/app/operations/conversation.submit', {
+    available = 2_000_000_000n;
+    const retried = await state.app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
       headers: {
         'content-type': CONVERSATION_FILE_MEDIA_TYPE,
@@ -401,12 +384,20 @@ describe('Turn-owned conversation originals', () => {
       },
       body: frame(input, [bytes]),
     });
-    expect(append).toHaveBeenCalled();
-    expect(response.status).toBe(507);
-    expect(run).not.toHaveBeenCalled();
+    expect(retried.status, await retried.clone().text()).toBe(200);
+    const accepted = await retried.json();
+    expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
     expect(
-      state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
-    ).toBe(false);
+      readFileSync(
+        turnFilePayloadPath(
+          join(state.dataRoot, 'workspaces', state.workspaceId),
+          state.thread.id,
+          accepted.turn.id,
+          0
+        )
+      )
+    ).toEqual(Buffer.from(bytes));
+    expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
   });
 
   it('exposes no input inventory after a proved unpublished Turn failure and permits the exact retry', async () => {
@@ -913,16 +904,26 @@ describe('Turn-owned conversation originals', () => {
     expect(fileReplay.status).toBe(200);
     expect((await fileReplay.json()).turn.id).toBe(accepted.turn.id);
     expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
-    const turnPath = join(root, 'threads', state.thread.id, 'turns', accepted.turn.id, 'turn.json');
-    const retained = JSON.parse(readFileSync(turnPath, 'utf8'));
-    retained.fileInputs[1].futureAnnotation = 'Retained descriptive field';
-    writeFileSync(turnPath, JSON.stringify(retained));
+    await shutdownControlStoreWorkerClient();
     const restarted = new FsStore({ dataRoot: state.dataRoot });
     expect(restarted.getTurnById(accepted.turn.id).fileInputs).toEqual(input.fileInputs);
     await restarted.updateThread(state.workspaceId, state.thread.id, { name: 'Retained inputs' });
-    expect(JSON.parse(readFileSync(turnPath, 'utf8')).fileInputs[1].futureAnnotation).toBe(
-      'Retained descriptive field'
+    for (const [ordinal, part] of bytes.entries())
+      expect(
+        readFileSync(turnFilePayloadPath(root, state.thread.id, accepted.turn.id, ordinal))
+      ).toEqual(Buffer.from(part));
+    const restartedApp = createApp({
+      coreDb: state.coreDb,
+      dataRoot: state.dataRoot,
+      store: restarted,
+      llmPiAiClient: state.provider as unknown as PiAiGatewayClient,
+    });
+    const restartedReplay = await restartedApp.request(
+      ...operationRequest('conversation.submit', {}, { body: JSON.stringify(input) })
     );
+    expect(restartedReplay.status, await restartedReplay.clone().text()).toBe(200);
+    expect((await restartedReplay.json()).turn.id).toBe(accepted.turn.id);
+    expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
     const changed = { ...input, fileInputs: [input.fileInputs[1], input.fileInputs[0]] };
     const conflict = await state.app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
@@ -939,6 +940,7 @@ describe('Turn-owned conversation originals', () => {
     });
     expect(corrupt.status).toBe(409);
     expect((await corrupt.json()).code).toBe('recovery_required');
+    expect(state.provider.createResponses).toHaveBeenCalledTimes(1);
   });
 
   it.each([
