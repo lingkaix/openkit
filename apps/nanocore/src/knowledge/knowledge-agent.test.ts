@@ -672,6 +672,17 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
+  await f.store.createAgentSession({
+    id: environmentPackage.scope.agentSessionId,
+    agentId: environmentPackage.agent.agentId,
+    workspaceId: f.workspace.id,
+    threadId: turn.threadId,
+    status: 'busy',
+    message: null,
+    environmentPackageSnapshotId: environmentPackage.snapshotId,
+    createdAt: environmentPackage.createdAt,
+    updatedAt: environmentPackage.createdAt,
+  });
   await f.store.updateTurn(turn.id, {
     status: 'running',
     agentId: environmentPackage.agent.agentId,
@@ -1243,7 +1254,8 @@ async function memoryFixture() {
     f.userId,
     'Private Assistant'
   );
-  const turn = await f.store.createTurn(f.workspace.id, timeline.id, 'Which tea?', f.actor);
+  // The selected Timeline already owns the asking Turn; native admission permits one active Turn.
+  const turn = f.turn;
   const access = {
     ...f.access,
     userDb,
