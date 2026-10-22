@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
+import { createBetterAuth } from './auth/better-auth.js';
 import { refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { projectOperationError } from './operation-error.js';
@@ -20,12 +22,14 @@ describe('quarantined Workspace native admission', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const ownerUserId = ensureLocalUser(coreDb);
-    const outsiderId = 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b';
-    coreDb.sqlite
-      .prepare(`INSERT INTO users
-      (id, display_name, email, email_verified, created_at, updated_at, kind, status)
-      VALUES (?, 'Outside viewer', 'outside@example.invalid', 0, ?, ?, 'human', 'active')`)
-      .run(outsiderId, Date.now(), Date.now());
+    const outsider = await createBetterAuth(coreDb, { env: {} }).api.signUpEmail({
+      body: {
+        email: ['outside-viewer', 'example.invalid'].join('@'),
+        name: 'Outside viewer',
+        password: randomUUID(),
+      },
+    });
+    const outsiderId = outsider.user.id;
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Unreadable authority');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId });
@@ -38,9 +42,9 @@ describe('quarantined Workspace native admission', () => {
         { kind: 'public', actor: { kind: 'session', userId } },
         { coreDb, store, dataRoot, workspaceMutationAdmission: admission }
       );
-    const refusal = (userId: string) => {
+    const refusal = async (userId: string) => {
       try {
-        invoke(userId);
+        (await invoke(userId)).release?.();
         throw new Error('Expected classified refusal.');
       } catch (error) {
         const projected = projectOperationError(error);
@@ -50,7 +54,7 @@ describe('quarantined Workspace native admission', () => {
     };
     try {
       (await invoke(ownerUserId)).release?.();
-      const outsiderBefore = refusal(outsiderId);
+      const outsiderBefore = await refusal(outsiderId);
       expect(JSON.parse(outsiderBefore!)).toEqual({
         code: 'workspace_access_denied',
         message: 'Workspace access denied.',
@@ -58,15 +62,15 @@ describe('quarantined Workspace native admission', () => {
       });
       const reads = vi.spyOn(store, 'getThread');
       refuseScope(dataRoot, { scope: 'workspace', id: workspace.id, check: 'database' });
-      const ownerFailure = JSON.parse(refusal(ownerUserId)!);
+      const ownerFailure = JSON.parse((await refusal(ownerUserId))!);
       expect(ownerFailure).toMatchObject({ code: 'recovery_required', status: 409 });
       expect(ownerFailure.message).not.toContain(thread.name);
-      expect(refusal(outsiderId)).toBe(outsiderBefore);
+      expect(await refusal(outsiderId)).toBe(outsiderBefore);
       expect(reads).not.toHaveBeenCalled();
       reads.mockRestore();
     } finally {
-      coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
