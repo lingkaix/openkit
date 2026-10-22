@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import {
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { createBetterAuth } from '../auth/better-auth.js';
 import * as usageLedger from '../capability/usage-ledger.js';
 import { recordUsage, startCapabilityCall } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
@@ -19,11 +21,12 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../s
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, createRetainedDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 
 const timestamp = '2026-09-17T02:00:00.000Z';
 const digest = `sha256:${'a'.repeat(64)}`;
@@ -574,14 +577,28 @@ describe('worker.list operation', () => {
 
   it('labels current-session model usage for an active readonly member and refuses it after removal', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    // Import inert completed history; this grants no native execution or release authority.
+    const store = await createRetainedDemoStore({ dataRoot: coreDb.dataRoot }, [
+      {
+        name: 'Predecessor Worker',
+        input: 'Predecessor turn',
+        agentId: 'agent_codex_host',
+        timestamp,
+      },
+    ]);
+    const predecessorThread = store
+      .listThreads('ws_00000000-0000-7000-8000-000000000001')
+      .find((row) => row.name === 'Predecessor Worker')!;
+    const predecessorTurn = store.listThreadTurns(
+      'ws_00000000-0000-7000-8000-000000000001',
+      predecessorThread.id
+    )[0]!;
+    expect(predecessorTurn.status).toBe('completed');
+    const predecessorSession = store.getAgentSession(predecessorTurn.agentSessionId!);
+    await store.updateAgentSession(predecessorSession.id, { status: 'closed' });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Model Worker'
-    );
-    const predecessorThread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Predecessor Worker'
     );
     const session = await createCurrentWorkerSession(store, {
       agentId: 'agent_codex_host',
@@ -589,28 +606,6 @@ describe('worker.list operation', () => {
       status: 'idle',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
-    });
-    await store.createAgentSession({
-      agentId: 'agent_codex_host',
-      createdAt: timestamp,
-      id: 'as_00000000-0000-7709-bb38-c94cb60bb065',
-      message: null,
-      status: 'closed',
-      threadId: predecessorThread.id,
-      updatedAt: timestamp,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const predecessorTurn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      predecessorThread.id,
-      'Predecessor turn',
-      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      null,
-      { startedAt: timestamp, turnId: 'tu_00000000-0000-74fc-b0da-01927fa8e961' }
-    );
-    await store.updateTurn(predecessorTurn.id, {
-      agentId: 'agent_codex_host',
-      agentSessionId: 'as_00000000-0000-7709-bb38-c94cb60bb065',
     });
     const workspaceDb = openTestWorkspaceDb(coreDb);
     try {
@@ -640,34 +635,45 @@ describe('worker.list operation', () => {
         modelId: 'openai/gpt-predecessor',
         recordedAt: '2026-09-17T02:02:00.000Z',
         requestId: '00000000-0000-4000-8000-000000000202',
-        sessionId: 'as_00000000-0000-7709-bb38-c94cb60bb065',
+        sessionId: predecessorSession.id,
         threadId: predecessorThread.id,
-        turnId: 'tu_00000000-0000-74fc-b0da-01927fa8e961',
+        turnId: predecessorTurn.id,
         usageId: 'use_00000000-0000-7dc9-9cba-0a11208bcfd3',
       });
     } finally {
       workspaceDb.sqlite.close();
     }
     const ownerApp = createAuthorizedApp(coreDb, store);
-    const now = Date.now();
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO users
-          (id, display_name, email, email_verified, created_at, updated_at, kind)
-         VALUES ('usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'Viewer', 'viewer-workers@example.com', false, ?, ?, 'human')`
-      )
-      .run(now, now);
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO workspace_members (
-          workspace_id, user_id, status, invitation_id,
-          joined_at, removed_at, revision, created_at, updated_at
-        ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8', 'active', NULL, ?, NULL, 1, ?, ?)`
-      )
-      .run(new Date(now).toISOString(), new Date(now).toISOString(), new Date(now).toISOString());
+    const viewerEmail = ['viewer-workers', 'example.com'].join('@');
+    const viewer = await createBetterAuth(coreDb, { env: {}, mode: 'local' }).api.signUpEmail({
+      body: {
+        name: 'Viewer',
+        email: viewerEmail,
+        password: randomUUID(),
+      },
+    });
+    const viewerId = viewer.user.id;
+    const membership = coreDb.sqlite.transaction(() => {
+      const invited = createWorkspaceInvitation({
+        coreDb,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        inviteeEmail: viewerEmail,
+      });
+      if (invited.kind !== 'created') throw new Error('Expected a real Viewer invitation.');
+      const accepted = acceptWorkspaceInvitation({
+        coreDb,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        invitationId: invited.invitation.invitationId,
+        inviteeUserId: viewerId,
+        expectedRevision: invited.invitation.revision,
+      });
+      if (accepted.kind !== 'accepted') throw new Error('Expected real Viewer membership.');
+      return accepted.member;
+    })();
     const viewerToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+      ownerUserId: viewerId,
       scope: 'workspace-readonly',
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
@@ -763,11 +769,11 @@ describe('worker.list operation', () => {
           'workspace.member-remove',
           {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            targetUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+            targetUserId: viewerId,
           },
           {
             body: JSON.stringify({
-              expectedRevision: 1,
+              expectedRevision: membership.revision,
               requestId: '00000000-0000-4000-8000-000000000203',
             }),
           }

@@ -1652,17 +1652,17 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         acceptedAt: new Date().toISOString(),
       });
       const selectors = { workspaceId: DEMO_WORKSPACE_ID, materialId };
-      const counts = () => ({
-        materials: db.sqlite.prepare('SELECT count(*) AS n FROM workspace_materials').get(),
-        revisions: db.sqlite
-          .prepare('SELECT count(*) AS n FROM workspace_material_revisions')
-          .get(),
+      const records = () => ({
+        materials: materialOwners.listWorkspaceMaterials(db),
+        revisions: materialOwners
+          .listWorkspaceMaterials(db)
+          .flatMap((material) =>
+            materialOwners.listWorkspaceMaterialRevisions(db, material.materialId)
+          ),
         receipts: f.store.listCommandRequests(),
       });
-      const before = counts();
+      const before = records();
       const contentRead = vi.spyOn(materialOwners, 'getWorkspaceMaterialRevision');
-      const contentSave = vi.spyOn(materialOwners, 'saveWorkspaceMaterialRevision');
-      const materialCreate = vi.spyOn(materialOwners, 'createWorkspaceMaterial');
       const readInput = { ...selectors, revisionId };
       const saveInput = {
         ...selectors,
@@ -1705,10 +1705,8 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
           expect(JSON.stringify(result)).not.toContain(content);
           expect(JSON.stringify(result)).not.toContain(saveInput.content);
         }
-        expect(counts()).toEqual(before);
+        expect(records()).toEqual(before);
         expect(contentRead).not.toHaveBeenCalled();
-        expect(contentSave).not.toHaveBeenCalled();
-        expect(materialCreate).not.toHaveBeenCalled();
         const metadata = await f.call(
           'openkit_call',
           { operation: 'material.read', input: selectors },
@@ -1731,7 +1729,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
           code: 'sensitive_content',
           status: 409,
         });
-        expect(counts()).toEqual(before);
+        expect(records()).toEqual(before);
         const injected = await f.call(
           'openkit_call',
           { operation: 'material.revision-read', input: { ...readInput, delivery: 'human' } },
@@ -1741,7 +1739,7 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
           code: 'invalid_request',
           status: 400,
         });
-        expect(counts()).toEqual(before);
+        expect(records()).toEqual(before);
         const humanRead = await f.app.request(
           ...operationRequest('material.revision-read', readInput, {
             headers: { authorization: `Bearer ${token.secret}` },
@@ -1763,12 +1761,21 @@ for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
         expect((await humanSave.json()).revisionId).toBeTruthy();
       } else {
         for (const result of [read, save, create]) expect(result.isError).not.toBe(true);
-        expect(contentRead).toHaveBeenCalledWith(expect.anything(), materialId, revisionId);
-        expect(contentSave).toHaveBeenCalledOnce();
-        expect(materialCreate).toHaveBeenCalledOnce();
         expect(JSON.parse(read.content[0].text).revision.content).toBe(content);
-        expect(counts().receipts).toHaveLength(before.receipts.length + 2);
+        expect(records().receipts).toHaveLength(before.receipts.length + 2);
         const savedId = JSON.parse(save.content[0].text).revisionId;
+        expect(savedId).not.toBe(revisionId);
+        expect(materialOwners.getWorkspaceMaterial(db, materialId).currentRevisionId).toBe(savedId);
+        const createdId = JSON.parse(create.content[0].text).materialId;
+        expect(createdId).not.toBe(materialId);
+        expect(materialOwners.getWorkspaceMaterial(db, createdId)).toMatchObject({
+          materialId: createdId,
+          title: 'MCP create',
+          sensitivity,
+          currentRevisionId: null,
+        });
+        expect(records().materials).toHaveLength(before.materials.length + 1);
+        expect(records().revisions).toHaveLength(before.revisions.length + 1);
         const saved = await f.call(
           'openkit_call',
           { operation: 'material.revision-read', input: { ...selectors, revisionId: savedId } },

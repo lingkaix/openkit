@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
@@ -11,6 +12,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
 
@@ -22,10 +24,11 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Exact Proposal preview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const app = createApp({ coreDb, dataRoot, store });
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+  const app = createApp({ coreDb, dataRoot, store, runtimeConfigManager });
   onTestFinished(async () => {
-    coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const call = async (operation: string, input: Record<string, unknown>) => {
@@ -138,15 +141,26 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
   expect((await call('knowledge.proposal.read', { ...request, path: 'unknown.md' })).status).toBe(
     400
   );
-  // Existing reader regressions use test-owned current audience facts; this creates no transition API.
-  Object.assign(origin, { visibility: 'private', privateOwnerUserId: userId });
+  // Restrict the live Source audience through authored Policy, not a detached Thread view.
+  const originalConfig = writeManagedThreadPolicyFixture({
+    dataRoot,
+    workspaceId: workspace.id,
+    threadId: origin.id,
+    userId,
+  });
+  expect(runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
   for (const input of [request, { ...request, path: 'add.md', offset: 4096 }]) {
     const denied = await call('knowledge.proposal.read', input);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
     expect(JSON.stringify(denied.body)).not.toContain('Added exact body');
     expect(JSON.stringify(denied.body)).not.toContain(proposal.candidateRevision);
   }
-  Object.assign(origin, { visibility: 'workspace', privateOwnerUserId: undefined });
+  writeFileSync(
+    join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc'),
+    originalConfig
+  );
+  expect(runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+  expect((await call('knowledge.proposal.read', request)).status).toBe(200);
   const later = await call('knowledge.notebook.update', {
     requestId: randomUUID(),
     baseRevision,
