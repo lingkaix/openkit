@@ -44,10 +44,12 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from './auth/nanohost-transport-session.js';
+import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import {
   finishCapabilityCall,
   listWorkspaceCapabilityCalls,
@@ -128,6 +130,7 @@ import {
 } from './runtime/worker-mcp-gateway.js';
 import {
   createSchedulerAdmissionEntry,
+  findSchedulerAdmissionForTurn,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
@@ -163,7 +166,10 @@ import {
   registerWorkerMcpRoutes,
   reviewCapturedMcpPolicy,
 } from './worker-mcp-routes.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import {
+  recordWorkspaceOwnerMembership,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Records the admission and lease that own a manually resolved MCP worker package. */
@@ -2702,39 +2708,30 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift', async () => {
+  it.each([
+    'revocation',
+    'lineage',
+  ] as const)('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift: %s', async (fault) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
     });
-    const now = Date.now();
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES ('usr_00000000-0000-72be-94ef-6b69d9d89870', 'MCP Admin', 'mcp-admin@example.com', false, ?, ?, 'human', 'active')"
-      )
-      .run(now, now);
-    createOpenKitAccessTokenRecord(coreDb, {
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'usr_00000000-0000-72be-94ef-6b69d9d89870',
-      scope: 'server-admin',
-      tokenId: 'token_mcp_admin',
-      workspaceIds: [],
+    const baseUrl = 'http://127.0.0.1:3000';
+    const auth = createBetterAuth(coreDb, {
+      mode: 'server',
+      env: {
+        BETTER_AUTH_URL: baseUrl,
+        BETTER_AUTH_SECRET: randomUUID(),
+      },
     });
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Call MCP as admin',
-      {
-        id: 'usr_00000000-0000-72be-94ef-6b69d9d89870',
-        kind: 'user',
-      }
-    );
     const catalog = {
       schemaVersion: 1 as const,
       servers: [
@@ -2755,68 +2752,109 @@ describe('worker MCP routes', () => {
         },
       ],
     };
-    const environmentPackage = resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: testEntityId('as', 'as_mcp_admin'),
-      agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
-      backend: { kind: 'openshell' },
-      createdAt: new Date().toISOString(),
-      requestId: 'req_mcp_admin',
-      triggerActor: turn.triggerActor,
-      turn,
-      workspaceCwd: '/workspace',
-      workspaceMcpServerCatalog: catalog,
-      workspaceRoots: [],
+    const setup = createTestAgentSetup({
+      mcpIds: ['echo'],
+      requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    await store.updateTurn(turn.id, {
-      agentId: environmentPackage.agent.agentId,
-      agentSessionId: environmentPackage.scope.agentSessionId,
+    const runtimeConfig = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Admin fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+      agentManifests: [setup.manifest],
+      workspaceMcpServerCatalogs: [
+        { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId },
+      ],
     });
-    recordMcpWorkerLineage(coreDb, environmentPackage, 'token_mcp_admin');
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => runtimeConfig,
+    });
+    admitTestNativeEnvironment(coreDb, setup.manifest);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const callTool = vi.spyOn(workerMcpGateway, 'callTool');
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
+    const app = createApp({
+      auth,
       coreDb,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          agentManifests: [],
-          workspaceMcpServerCatalogs: [
-            {
-              catalog,
-              path: join(dataRoot, 'catalog/catalog.json'),
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            },
-          ],
-        }),
       store,
-      workerControlGateway: {
-        authenticatePackageToken: vi.fn(() => environmentPackage),
-      } as unknown as WorkerControlGateway,
+      mode: 'server',
       workerMcpGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: runtimeConfig,
+      }),
     });
+    const task = (secret: string, requestId: string) => {
+      const [path, init] = operationRequest(
+        'task.start',
+        { workspaceId, threadId },
+        {
+          headers: { authorization: `Bearer ${secret}` },
+          body: JSON.stringify({ input: 'Call MCP as admin', requestId }),
+        }
+      );
+      return app.request(new URL(path, baseUrl).toString(), init);
+    };
+    const transport = (serverId: string) =>
+      new StreamableHTTPClientTransport(
+        new URL(`/api/worker-capabilities/mcp/${serverId}`, baseUrl),
+        {
+          fetch: (input, init) => app.fetch(new Request(input, init)),
+          requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
+        }
+      );
     const client = new Client({ name: 'admin-route-test', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(
-      new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
-      {
-        fetch: (input, init) => app.fetch(new Request(input, init)),
-        requestInit: { headers: { authorization: 'Bearer capability-token' } },
-      }
-    );
     const generativeClient = new Client({ name: 'admin-generative-route-test', version: '1.0.0' });
-    const generativeTransport = new StreamableHTTPClientTransport(
-      new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-generative'),
-      {
-        fetch: (input, init) => app.fetch(new Request(input, init)),
-        requestInit: { headers: { authorization: 'Bearer capability-token' } },
-      }
-    );
+    const lineageClient = new Client({ name: 'admin-lineage-route-test', version: '1.0.0' });
+    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      await client.connect(transport);
-      await generativeClient.connect(generativeTransport);
+      const registered = await auth.handler(
+        new Request(`${baseUrl}/api/auth/sign-up/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'MCP Admin',
+            email: 'mcp-admin@example.invalid',
+            password: randomUUID(),
+          }),
+        })
+      );
+      expect(registered.status).toBe(200);
+      const { user } = (await registered.json()) as { user: { id: string } };
+      expect(isCanonicalUserActive(coreDb, user.id)).toBe(true);
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: user.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const started = await task(issued.secret, '0190f4c8-0000-7000-8000-000000000741');
+      expect(started.status).toBe(202);
+      const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
+      const first = native.executionFor(turn.id);
+      await first.launched.promise;
+      const environmentPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(environmentPackage.scope).toMatchObject({ workspaceId, threadId, turnId: turn.id });
+      const firstAdmission = findSchedulerAdmissionForTurn(coreDb, environmentPackage.scope);
+      expect(firstAdmission?.serverAdminTokenId === issued.tokenId).toBe(true);
+      expect(firstAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+      await client.connect(transport('echo'));
+      await generativeClient.connect(transport('openkit-generative'));
       await expect(
         client.callTool({ arguments: { message: 'admin allowed' }, name: 'echo' })
       ).resolves.toMatchObject({ content: [{ text: 'admin allowed' }] });
@@ -2824,34 +2862,119 @@ describe('worker MCP routes', () => {
         generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
       ).resolves.toMatchObject({ structuredContent: { items: [] } });
       expect(callTool).toHaveBeenCalledTimes(1);
-
-      coreDb.sqlite
-        .prepare(
-          "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = 'token_mcp_admin'"
-        )
-        .run(new Date().toISOString());
-      await expect(
-        client.callTool({ arguments: { message: 'revoked' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      expect(callTool).toHaveBeenCalledTimes(1);
-
-      coreDb.sqlite
-        .prepare(
-          "UPDATE openkit_access_tokens SET status = 'active', revoked_at = NULL WHERE token_id = 'token_mcp_admin'"
-        )
-        .run();
-      coreDb.sqlite
-        .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE turn_id = ?')
-        .run('pkg_other', turn.id);
-      await expect(
-        client.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      expect(callTool).toHaveBeenCalledTimes(1);
+      const allowed = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
+        (call) =>
+          call.turnId === turn.id &&
+          call.providerRef === 'echo' &&
+          call.capabilityId === 'mcp.call-tool'
+      );
+      expect(allowed).toHaveLength(1);
+      expect(allowed[0]).toMatchObject({
+        status: 'succeeded',
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+      });
+      const echoUsage = () =>
+        listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
+          (row) => row.providerRef === 'echo'
+        );
+      const usage = echoUsage();
+      expect(usage.map((row) => row.responsibleUserId)).toEqual([user.id]);
+      expect(usage[0]?.capabilityCallId === allowed[0]!.id).toBe(true);
+      if (fault === 'revocation') {
+        expect(revokeOpenKitAccessTokenRecord(coreDb, issued.tokenId)?.status).toBe('revoked');
+        await expect(
+          client.callTool({ arguments: { message: 'revoked' }, name: 'echo' })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(callTool).toHaveBeenCalledTimes(1);
+        expect(echoUsage()).toEqual(usage);
+      }
+      first.completion.resolve();
+      const closeouts = await Promise.allSettled(
+        taskAdmissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      if (fault === 'revocation') {
+        expect(['pending', 'running']).not.toContain(store.getTurnById(turn.id).status);
+        return;
+      }
+      expect(closeouts.every((result) => result.status === 'fulfilled')).toBe(true);
+      expect(store.getTurnById(turn.id).status).toBe('completed');
+      expect(
+        listSchedulerExecutionAttemptsForTurn(coreDb, environmentPackage.scope)
+      ).toContainEqual(
+        expect.objectContaining({
+          inputRef: environmentPackage.snapshotId,
+          phase: 'closed',
+          disposition: 'accepted',
+          fenceRef: expect.stringMatching(/\S/),
+        })
+      );
+      const fresh = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: user.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const next = await task(fresh.secret, '0190f4c8-0000-7000-8000-000000000742');
+      expect(next.status).toBe(202);
+      const secondTurn = StartTaskModeResponseSchema.parse(await next.json()).turn;
+      expect(secondTurn.id).not.toBe(turn.id);
+      const second = native.executionFor(secondTurn.id);
+      await second.launched.promise;
+      const secondPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(secondPackage.scope).toMatchObject({ workspaceId, threadId, turnId: secondTurn.id });
+      const secondAdmission = findSchedulerAdmissionForTurn(coreDb, secondPackage.scope);
+      expect(secondAdmission?.serverAdminTokenId === fresh.tokenId).toBe(true);
+      expect(secondAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+      await lineageClient.connect(transport('echo'));
+      expect((await lineageClient.listTools()).tools.map((tool) => tool.name)).toContain('echo');
+      const attempt = listSchedulerExecutionAttemptsForTurn(coreDb, secondPackage.scope).find(
+        (row) => row.inputRef === secondPackage.snapshotId && row.phase === 'open'
+      );
+      expect(attempt).toBeDefined();
+      // Contradict only the valid second admission's package after current discovery succeeds.
+      try {
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
+          .run(environmentPackage.snapshotId, attempt!.attemptId);
+        await expect(
+          lineageClient.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
+        ).rejects.toSatisfy((error: unknown) => {
+          expect(error).toMatchObject({ data: { status: 403 } });
+          expect(JSON.parse((error as { data: { text: string } }).data.text)).toMatchObject({
+            error: { data: { code: 'worker_control_lineage_mismatch' } },
+          });
+          return true;
+        });
+        expect(callTool).toHaveBeenCalledTimes(1);
+        expect(echoUsage()).toEqual(usage);
+      } finally {
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
+          .run(attempt!.inputRef, attempt!.attemptId);
+      }
     } finally {
-      await client.close();
-      await generativeClient.close();
+      await Promise.allSettled([client.close(), generativeClient.close(), lineageClient.close()]);
+      for (const turn of store.listThreadTurns(workspaceId, threadId))
+        native.executionFor(turn.id).completion.resolve();
+      await Promise.allSettled(
+        taskAdmissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      taskAdmissions.mockRestore();
+      native.restore();
       await workerMcpGateway.close();
+      workspaceDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 

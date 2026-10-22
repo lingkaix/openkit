@@ -515,7 +515,7 @@ it('bounds quoting worker errors in the loop checkpoint before rethrowing', asyn
   }
 });
 
-/** Starts a real scheduler admission with a bounded in-process executor. */
+/** Publishes real callback authority; only interrupted recovery uses the stronger legacy executor. */
 function admittedWorker(
   coreDb: CoreDb,
   store: import('../lib/store.js').FsStore,
@@ -525,20 +525,74 @@ function admittedWorker(
   requestActor?: import('../auth/identity.js').Actor,
   hooks: {
     execute?: (turnId: string) => Promise<void>;
-    prepare?: () => void;
+    interruptedRecovery?: true;
     observe?: WorkerTurnLoopStartWorkerInput['onAdmitted'];
   } = {}
 ) {
   return async ({ turnId, prepared, onAdmitted }: WorkerTurnLoopStartWorkerInput) => {
     const manifest = createTestAgentSetup().manifest;
+    if (!hooks.interruptedRecovery) {
+      // The loop owns checkpoint projection, not the outside executor's terminal or release proof.
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      const timestamp = new Date().toISOString();
+      if (
+        !store.listThreadAgentSessions(workspaceId, threadId).some((s) => s.id === agentSessionId)
+      )
+        await store.createAgentSession({
+          id: agentSessionId,
+          agentId: manifest.id,
+          workspaceId,
+          threadId,
+          status: 'busy',
+          message: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      const prompt = serializeStructuredWorkerDelegationRequest(prepared.delegationRequest);
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_loop_${turnId}`,
+        requestId,
+        turnId,
+        threadId,
+        workspaceId,
+        requestedAgentId: manifest.id,
+        triggerActor: { kind: 'user', id: actorId },
+        turnInput: prompt,
+        serverAdminTokenId:
+          requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin'
+            ? (requestActor.tokenId ?? null)
+            : null,
+      });
+      recordTestExecutionAttempt(coreDb, {
+        entry,
+        attemptId: testEntityId('attempt', `loop:${turnId}`),
+        agentSessionId,
+        inputRef: `aepsnap_${turnId}_${agentSessionId}`,
+        bindingRef: `worker-loop:${turnId}`,
+        sessionCompatibilityKey: 'sha256:fixture',
+        now: () => timestamp,
+      });
+      const admitted = await store.createTurn(
+        workspaceId,
+        threadId,
+        prompt,
+        { kind: 'user', id: actorId },
+        null,
+        { turnId, agentId: manifest.id, agentSessionId }
+      );
+      onAdmitted(admitted, agentSessionId);
+      hooks.observe?.(admitted, agentSessionId);
+      await hooks.execute?.(turnId);
+      return { workerSessionId: agentSessionId };
+    }
     admitTestNativeEnvironment(coreDb, manifest);
     recordTestNativeRuntimeTarget(coreDb);
     const executor = new SimulatedTurnExecutor({ coreDb });
-    let workerFailure: unknown;
     let workerCompletion: Promise<void> | undefined;
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     executor.prepareAgentSessionForTurn = async () => {
-      hooks.prepare?.();
       return {
         agentSessionId,
         sessionCompatibilityKey: 'sha256:fixture',
@@ -600,70 +654,13 @@ function admittedWorker(
           })
         );
         context!.onSubmissionSettled?.();
-        try {
-          await hooks.execute?.(id);
-        } catch (error) {
-          workerFailure = error;
-          throw error;
-        }
-        const existing = store
-          .listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)
-          .find((session) => session.id === agentSessionId);
-        if (!existing)
-          await store.createAgentSession({
-            id: agentSessionId,
-            agentId: manifest.id,
-            workspaceId: workspaceIdForOwner(turn.owner),
-            threadId: turn.threadId,
-            status: 'idle',
-            message: null,
-            sessionCompatibilityKey: context!.sessionCompatibilityKey!,
-            environmentPackageSnapshotId: environmentPackage.snapshotId,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-        const terminal = await store.updateTurn(id, {
-          status: 'completed',
-          agentSessionId,
-          completedAt: new Date().toISOString(),
-        });
-        store.emitTurnEvent(
-          id,
-          {
-            event: 'turn.completed',
-            requestId,
-            workspaceId: workspaceIdForOwner(turn.owner),
-            threadId: turn.threadId,
-            turnId: id,
-            data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        );
-        // This controlled executor owns no physical process or additional output/collection streams.
-        const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
-          attemptId: submitted.attemptId,
-          cause: 'turn-completed',
-        });
-        const proof = {
-          terminalHandoff: true,
-          output: true,
-          evidence: true,
-          outsideWorkspaceCollection: true,
-          integrationDrain: true,
-          routesRevoked: true,
-        } as const;
-        const correlation = attempts.schedulerExecutionCorrelation(closing);
-        const released = await executor.release({ ...correlation, proof });
-        attempts.closeSchedulerExecutionAttemptWithFence(coreDb, {
-          correlation,
-          proof,
-          fenceRef: released.fenceRef!,
-        });
+        await hooks.execute?.(id);
+        throw new Error('Interrupted recovery fixture requires its controlled failure.');
       })();
       return workerCompletion;
     };
     try {
-      const completed = await startProductTurn({
+      await startProductTurn({
         coreDb,
         store,
         triggerActor: { kind: 'user', id: actorId },
@@ -711,29 +708,27 @@ function admittedWorker(
         turnExecutor: executor,
       });
       if (workerCompletion) await workerCompletion;
-      if (workerFailure) throw workerFailure;
-      expect(completed.turn.status, JSON.stringify(completed.turn.error)).toBe('completed');
     } finally {
       db.sqlite.close();
     }
-    return { workerSessionId: agentSessionId };
+    throw new Error('Interrupted recovery fixture did not report its controlled failure.');
   };
 }
 
-/** Admission tests hold real dispatch at its executor boundary without external runtime effects. */
+/** Callback tests hold the outside worker effect after actual native admission publication. */
 it.each([
   'fresh',
-  'reused',
-] as const)('binds the exact %s lease before executor entry and acknowledgement', async (kind) => {
+  'selected-current',
+] as const)('binds the exact %s AgentSession before outside worker entry and acknowledgement', async (kind) => {
   const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const sessionId =
-    kind === 'reused'
+    kind === 'selected-current'
       ? 'as_00000000-0000-754f-9277-4058a2a883d1'
       : 'as_00000000-0000-7df9-8dd9-3222dd5f7145';
   const at = '2026-10-06T00:00:00.000Z';
-  if (kind === 'reused')
+  if (kind === 'selected-current')
     await store.createAgentSession({
       id: sessionId,
       sessionCompatibilityKey: 'sha256:fixture',
@@ -863,6 +858,7 @@ it.each([
           'usr_00000000-0000-7000-8000-000000000001',
           undefined,
           {
+            interruptedRecovery: true,
             execute: async (turnId) => {
               launches++;
               const at = new Date().toISOString();
