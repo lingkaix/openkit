@@ -47,7 +47,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
-import { createApp } from './test-support/app.js';
+import { type CreateAppOptions, createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -373,7 +373,7 @@ describe('shared family contract', () => {
 });
 
 /** Isolated domain authority shared by every projection in this invariant. */
-async function operationFixture() {
+async function operationFixture(options: Pick<CreateAppOptions, 'llmGatewayDispatcher'> = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-operation-slice-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -408,7 +408,7 @@ async function operationFixture() {
     ],
   };
   const appRecord = await createLightApp(command, schema);
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = createApp({ coreDb, dataRoot, store, ...options });
   return { app, coreDb, store, command, appRecord, schema };
 }
 
@@ -1741,7 +1741,22 @@ import { applyScopedMigrations } from './storage/migrate.js';
 
 describe('Goal definition projections', () => {
   it('joins HTTP, Core Client, CLI and Coordinator Tools to the same Goal owner', async () => {
-    const f = await operationFixture();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const dispatch = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+      return {
+        id: 'projection-idle',
+        object: 'response',
+        output: [
+          { type: 'message', content: [{ type: 'output_text', text: 'Projection checked.' }] },
+        ],
+      };
+    });
+    const f = await operationFixture({
+      llmGatewayDispatcher: { createResponses: dispatch } as never,
+    });
     try {
       const projections = await publicJourneyProjections(f);
       const created = (await projections.client('goal.create', {
@@ -1759,23 +1774,12 @@ describe('Goal definition projections', () => {
       const db = openWorkspaceDb(f.command.dataRoot, goal.workspaceId);
       applyScopedMigrations(db);
       try {
-        const previous = f.store
-          .listThreadTurns(goal.workspaceId, goal.threadId)
-          .filter((turn) => turn.agentId === 'goal-coordinator');
-        for (const turn of previous)
-          if (turn.status === 'running')
-            await f.store.updateTurn(turn.id, {
-              status: 'failed',
-              completedAt: new Date().toISOString(),
-            });
-        const turn = await f.store.createTurn(
-          goal.workspaceId,
-          goal.threadId,
-          'Projection check',
-          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          undefined,
-          { executorKind: 'coordinator', agentId: 'goal-coordinator' }
-        );
+        // Use the Goal owner's live Turn while its controlled Provider waits.
+        await entered.promise;
+        const turns = f.store.listThreadTurns(goal.workspaceId, goal.threadId);
+        expect(turns).toHaveLength(1);
+        const turn = turns[0]!;
+        expect(turn).toMatchObject({ agentId: 'goal-coordinator', status: 'running' });
         const tools = createGoalTools({
           store: f.store,
           db,
@@ -1830,10 +1834,24 @@ describe('Goal definition projections', () => {
           ).cards
         ).toHaveLength(1);
       } finally {
-        db.sqlite.close();
+        release.resolve();
+        try {
+          await shutdownControlStoreWorkerClient();
+          const current = readGoalView(f.store, db, goal.goalId).goal!;
+          expect(current.consideredRevision).toBe(current.changeRevision);
+          for (const completed of f.store.listThreadTurns(goal.workspaceId, goal.threadId))
+            expect(completed).toMatchObject({ status: 'completed', error: null });
+        } finally {
+          db.sqlite.close();
+        }
       }
     } finally {
-      f.coreDb.sqlite.close();
+      release.resolve();
+      try {
+        await shutdownControlStoreWorkerClient();
+      } finally {
+        f.coreDb.sqlite.close();
+      }
     }
   });
   it('preserves read-only, wrong-audience and revocation refusals before Goal effects', async () => {
@@ -1882,7 +1900,7 @@ describe('Goal definition projections', () => {
   });
 });
 
-import { executeGoalOperation } from './runtime/goal-owner.js';
+import { executeGoalOperation, readGoalView } from './runtime/goal-owner.js';
 
 it('discloses and grants a Coordinator proposal to the current administrator without membership, retaining actual attribution and refusing revoked consumption', async () => {
   const f = await operationFixture();
