@@ -6,6 +6,7 @@ import { advanceGoalForThread } from '../runtime/goal-owner.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import {
   applyControlPendingCommand,
+  assertControlPendingArchive,
   type ControlPendingCommandInput,
   ControlPendingCommandInputSchema,
   type ControlPendingCommandResult,
@@ -323,6 +324,19 @@ export function applyControlPendingTransition(
         'Pending terminal publication conflicts.',
         400
       );
+    const input = transition.input;
+    if (
+      input.action === 'closeout' &&
+      (transition.admission?.receipt.command === 'thread.archive' ||
+        transition.terminal.products.some(
+          ({ kind, record }) =>
+            kind === 'thread' && record.id === input.threadId && record.status === 'archived'
+        )) &&
+      db.sqlite
+        .prepare("SELECT 1 FROM control_turns WHERE thread_id=? AND status IN('pending','running')")
+        .get(input.threadId)
+    )
+      assertControlPendingArchive(db, input.threadId, prepared);
     applyControlTerminal(db, transition.terminal, terminal);
     result = {
       requestIds: transition.input.expected?.map((source) => source.requestId) ?? [],

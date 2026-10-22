@@ -2,6 +2,8 @@
 
 The native terminal input can carry the original submission command and one waiting internal Stop. Both receipts and Audits commit with the same Turn tuple or neither; the second command is limited to the exact interrupted or cancelled Turn. Worker Stop retains its existing accepted-cancellation boundary.
 
+A fresh Core-local Pending archive closeout publishes its terminal Turn and canonical request outcome before archiving its Thread in the same native savepoint. Native archive admission checks current Turn rows with prepared immutable Pending proof before applying the tuple. Ordinary new Turns on an already archived Thread remain refused; terminal replay does not rewind later Thread metadata.
+
 Knowledge retrieval records exact metadata selector mismatches as `selector_mismatch` in the existing response and retained trace. Current authorization or Source-policy refusals retain `policy_excluded`; selectors do not widen admission.
 
 This directory owns NanoCore's physical data-root layout, ownership-scoped SQLite databases, canonical workspace file records, migrations, integrity validation, derived indexes, backup, export, and import mechanics.

@@ -1849,12 +1849,36 @@ export function applyControlTerminal(
       throw new ControlProductPreconditionError();
   }
   // A decided replay must not rewind companion projections changed by later ordinary commands.
+  // Pending archive publishes this exact Core-local closeout before archiving its Thread.
+  const closeout = input.pending?.length === 1 ? input.pending[0] : undefined;
+  const archives = input.products.filter(
+    (product) =>
+      !previous &&
+      turn.status === 'completed' &&
+      turn.agentId == null &&
+      turn.agentSessionId == null &&
+      input.owner.kind === 'workspace' &&
+      closeout?.action === 'closeout' &&
+      closeout.workspaceId === input.owner.workspaceId &&
+      closeout.threadId === turn.threadId &&
+      closeout.closeoutTurnId === turn.id &&
+      product.kind === 'thread' &&
+      product.record.id === turn.threadId &&
+      product.record.status === 'archived'
+  );
+  if (
+    archives.length &&
+    input.products.filter(
+      (product) => product.kind === 'thread' && product.record.id === turn.threadId
+    ).length !== 1
+  )
+    throw new ControlProductPreconditionError();
   applyProducts(
     db.sqlite,
     input.owner,
     previous && !['pending', 'running'].includes(String(previous.record.status))
       ? [input.turn]
-      : [...input.products, input.turn],
+      : [...input.products.filter((product) => !archives.includes(product)), input.turn],
     preparation.entries,
     String(turn.id)
   );
@@ -1904,6 +1928,7 @@ export function applyControlTerminal(
         preparation.pending ?? { entries: [], dependencies: [] }
       );
   }
+  if (archives.length) applyControlProducts(db.sqlite, input.owner, archives, []);
   if (
     input.interruptCommand &&
     (!['interrupted', 'cancelled'].includes(String(turn.status)) ||

@@ -835,6 +835,7 @@ function receive(value: unknown): void {
             reply(failure(value.id, 'precondition'));
             return;
           }
+          const db = owner.scopeDb;
           let preparation: Promise<void>;
           preparation = prepareControlTerminal(
             owner.scopeDb,
@@ -844,7 +845,13 @@ function receive(value: unknown): void {
             .then((preparedTerminal) => {
               if (owner.poisoned || databases.get(value.database) !== owner)
                 throw new ControlProductPreconditionError();
-              owner.pending.push({ ...value, preparedTerminal });
+              const preparedPending = prepareControlPendingCommands(
+                db,
+                [value.input.input],
+                owner.contentMount,
+                []
+              );
+              owner.pending.push({ ...value, preparedTerminal, preparedPending });
               schedule(owner);
             })
             .catch((error) => {
