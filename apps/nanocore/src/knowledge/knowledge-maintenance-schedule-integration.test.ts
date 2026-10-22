@@ -51,7 +51,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
     })
   );
   const store = new FsStore({ dataRoot });
-  let scan!: (instant: string) => void;
+  let scan!: (instant: string) => Promise<void>;
   createApp({
     mode: 'server',
     coreDb,
@@ -62,7 +62,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
       scan = callback;
     },
   });
-  scan('2026-10-18T08:00:00.000Z');
+  await scan('2026-10-18T08:00:00.000Z');
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   const turns = store
     .listServerThreads()
@@ -75,7 +75,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
       knowledgeMaintenanceResult: expect.objectContaining({ outcome: 'failed' }),
     })
   );
-  scan('2026-10-18T09:00:00.000Z');
+  await scan('2026-10-18T09:00:00.000Z');
   expect(store.listServerThreadTurns(turns[0]!.threadId)).toHaveLength(1);
 });
 
@@ -124,7 +124,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
       )
     );
   };
-  let scan!: (instant: string) => void;
+  let scan!: (instant: string) => Promise<void>;
   const boot = () =>
     createApp({
       coreDb,
@@ -141,11 +141,11 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
       .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id));
   configure(false);
   boot();
-  scan('2026-10-17T10:00:00.000Z');
+  await scan('2026-10-17T10:00:00.000Z');
   expect(turns()).toEqual([]);
   configure(true);
   boot();
-  scan('2026-10-17T10:01:00.000Z');
+  await scan('2026-10-17T10:01:00.000Z');
   const retained = turns();
   expect(retained).toHaveLength(1);
   expect(retained[0]).toMatchObject({
@@ -172,7 +172,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   );
   // Boot and a later scan retain the same outcome; neither restarts model work.
   boot();
-  scan('2026-10-17T20:00:00.000Z');
+  await scan('2026-10-17T20:00:00.000Z');
   expect(turns().map(({ id }) => id)).toEqual([turn.id]);
 });
 

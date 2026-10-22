@@ -198,6 +198,99 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
 }
 
 describe('native Knowledge maintenance admission', () => {
+  it('admits only scheduled Server service metadata without a responsible User', async () => {
+    const f = fixture('server');
+    const { client, database } = await f.transport();
+    const actor = { kind: 'system' as const, id: 'knowledge-manager', responsibleUserId: null };
+    const daily = { ...f.input(false), actor, trigger: 'schedule' as const };
+    await expect(client.maintenance(database, daily)).resolves.toEqual({
+      threadId: daily.threadId,
+      turnId: daily.turnId,
+      busy: false,
+      replayed: false,
+    });
+    const rows = (await f.sql('SELECT record_json FROM control_turns')) as {
+      record_json: string;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.record_json)).toMatchObject({
+      owner: { kind: 'server' },
+      triggerActor: actor,
+      triggerSource: { kind: 'automation', summary: 'Knowledge Manager scheduled maintenance.' },
+    });
+    expect(await f.sql('SELECT * FROM idempotency_requests')).toEqual([]);
+    const tables = ['control_threads', 'control_turns', 'idempotency_requests'];
+    const before = await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)));
+    const original = f.input();
+    const scope = { coreId: 'server' as const, actorId: actor.id };
+    const receipt = {
+      ...original.receipt!,
+      scope,
+      key: commandRequestKey('knowledge.server.maintain', original.requestId, scope),
+    };
+    const denied: ControlMaintenanceAdmissionInput[] = [
+      { ...daily, trigger: 'request' },
+      { ...daily, actor: { ...actor, id: 'unrelated-system' } },
+      { ...daily, requestId: original.requestId, receipt },
+      { ...daily, purpose: 'query', trigger: 'request' },
+      ...(['agent', 'automation', 'integration'] as const).map((kind) => ({
+        ...daily,
+        actor: {
+          ...actor,
+          kind,
+          id: kind === 'automation' ? allocateEntityId('auto') : actor.id,
+        },
+      })),
+      { ...daily, ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') } },
+      { ...daily, ownerScope: { kind: 'user', userId } },
+    ];
+    for (const variant of denied) {
+      const input = { ...variant, turnId: allocateEntityId('tu') };
+      const refusal: unknown = await client
+        .maintenance(database, input)
+        .catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(NotebookError);
+      expect(refusal).toMatchObject({ code: 'invalid_request' });
+      expect(await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)))).toEqual(
+        before
+      );
+    }
+  }, 30_000);
+
+  it('does not extend Server metadata admission into Workspace or private User work', async () => {
+    for (const kind of ['workspace', 'user'] as const) {
+      const f = fixture(kind);
+      const first = f.input(false);
+      await f.apply(first);
+      const { client, database } = await f.transport();
+      const tables = [
+        'control_workspaces',
+        'control_threads',
+        'control_turns',
+        'idempotency_requests',
+      ];
+      const before = await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)));
+      const actor = { kind: 'system' as const, id: 'knowledge-manager', responsibleUserId: null };
+      const daily = { ...f.input(false), actor, trigger: 'schedule' as const };
+      const denied: ControlMaintenanceAdmissionInput[] = [
+        daily,
+        { ...daily, ownerScope: { kind: 'server' } },
+        { ...daily, purpose: 'query', trigger: 'request', outputThreadId: first.threadId },
+        { ...daily, purpose: 'query', trigger: 'request', ownerScope: { kind: 'user', userId } },
+      ];
+      for (const input of denied) {
+        const refusal: unknown = await client
+          .maintenance(database, input)
+          .catch((error: unknown) => error);
+        expect(refusal).toBeInstanceOf(NotebookError);
+        expect(refusal).toMatchObject({ code: 'invalid_request' });
+        expect(await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)))).toEqual(
+          before
+        );
+      }
+    }
+  }, 30_000);
+
   for (const kind of ['workspace', 'server'] as const) {
     it(`commits and replays the original ${kind} receipt through production transport after a reached-trigger rollback`, async () => {
       const f = fixture(kind);

@@ -325,6 +325,14 @@ export async function prepareServerKnowledgeMaintenance(
     );
     return { turnId: turn.id, fail, execute: async () => value };
   }
+  if (input.trigger === 'schedule' && !input.requestActor) {
+    outcome = result(
+      'failed',
+      'Scheduled Server maintenance has no current administration authority.'
+    );
+    const value = await fail();
+    return { turnId: turn.id, fail, execute: async () => value };
+  }
   let started = false;
   return {
     turnId: turn.id,

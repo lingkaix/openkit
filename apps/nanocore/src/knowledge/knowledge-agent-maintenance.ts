@@ -155,7 +155,19 @@ export function applyControlMaintenanceAdmission(
   assertControlProductWriter(db.sqlite);
   const input = ControlMaintenanceAdmissionInputSchema.parse(value);
   const userId = responsibleUserIdForActor(input.actor);
-  if (!userId) throw new NotebookError('invalid_request');
+  // Preserve a denied Server daily outcome without borrowing a responsible User.
+  if (
+    !userId &&
+    !(
+      input.purpose === 'maintenance' &&
+      input.ownerScope.kind === 'server' &&
+      input.trigger === 'schedule' &&
+      input.actor.kind === 'system' &&
+      input.actor.id === 'knowledge-manager' &&
+      input.receipt === undefined
+    )
+  )
+    throw new NotebookError('invalid_request');
   const owner =
     db.scope === 'core'
       ? { kind: 'server' as const }
