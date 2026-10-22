@@ -13,7 +13,7 @@ import {
 } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import * as attempts from '../runtime/execution-attempt-records.js';
 import { createExecutionStepJournalReader } from '../runtime/execution-journal.js';
 import type { ExecutionJournalRef } from '../runtime/execution-step-journal.js';
 import {
@@ -26,6 +26,7 @@ import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor
 import type { TurnExecutor } from '../runtime/types.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus as readFinal } from '../runtime/worker-control-records.js';
+import { WorkerGovernanceCapacityUnavailableError } from '../runtime/worker-governance-backend.js';
 import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -60,6 +61,7 @@ export function createNativeTaskAdmissionFixture(
       completion: Gate;
       launched: Gate;
       observed: Gate;
+      execution?: Promise<void>;
       input: string;
       context?: Parameters<TurnExecutor['startTurn']>[3];
       ownerStore?: FsStore;
@@ -260,14 +262,27 @@ export function createNativeTaskAdmissionFixture(
     .mockImplementation(async (ownerStore, turnId, input, context) => {
       if (stopped || peerFailure) throw peerFailure ?? new Error('Native peer is stopped.');
       const turn = executionFor(turnId);
-      if (turn.started) throw new Error('Native peer already observed this Turn execution.');
-      Object.assign(turn, { ownerStore, input, context, started: true });
+      const previous = turn.context?.attemptId;
+      const refused =
+        turn.settled &&
+        !turn.lineage &&
+        previous &&
+        context?.attemptId &&
+        previous !== context.attemptId &&
+        attempts.isSchedulerExecutionBusyRefusal(
+          attempts.requireSchedulerExecutionAttempt(coreDb, previous)
+        );
+      if (turn.started && !refused)
+        throw new Error('Native peer already observed this Turn execution.');
+      Object.assign(turn, { ownerStore, input, context, started: true, settled: false });
       executor.launches += 1;
       executor.inputs.push(input);
       const execution = start(ownerStore, turnId, input, context).finally(() => {
         turn.settled = true;
       });
       void execution.catch((error: unknown) => {
+        if (error instanceof WorkerGovernanceCapacityUnavailableError && !turn.lineage) return;
+        turn.observed.resolve(joined);
         turn.launched.reject(error);
         turn.completion.resolve();
       });
@@ -276,7 +291,7 @@ export function createNativeTaskAdmissionFixture(
         await turn.interrupt;
         if (turn.failure) throw turn.failure;
       });
-      turn.observed.resolve(joined);
+      turn.execution = joined;
       await joined;
     });
   /** Retains the first peer fault and requests the existing interrupt owner after accepted launch. */
@@ -433,6 +448,7 @@ export function createNativeTaskAdmissionFixture(
           runtime.acceptNanoHostHarnessResult(result);
           if (command.operation === 'turn.start') {
             turn!.acceptedStart = true;
+            turn!.observed.resolve(turn!.execution!);
             executor.nativeLineage = turn!.lineage!;
             executor.capabilityToken = String(wire.body.capabilityToken);
             turn!.launched.resolve();
@@ -519,7 +535,8 @@ export function createNativeTaskAdmissionFixture(
       const cleanup = async () => {
         turn.completion.resolve();
         await dispatch.catch(() => undefined);
-        if (turn.started) await turn.observed.promise.catch(() => undefined);
+        // Native acceptance owns observed; a refused call still owns its invocation join.
+        await turn.execution?.catch(() => undefined);
       };
       try {
         await Promise.race([
@@ -531,7 +548,7 @@ export function createNativeTaskAdmissionFixture(
           }),
         ]);
         const attempt = await vi.waitFor(() => {
-          const current = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+          const current = attempts.requireSchedulerExecutionAttempt(coreDb, input.attemptId);
           expect(current).toMatchObject({
             workspaceId,
             threadId,

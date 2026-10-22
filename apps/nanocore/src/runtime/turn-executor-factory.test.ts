@@ -18,7 +18,7 @@ import {
 } from '@openkit/config-schema';
 import { ENTITY_KINDS, entityIdPattern, isEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
@@ -34,6 +34,7 @@ import {
 } from '../catalog/resource-catalog.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -45,7 +46,6 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
-import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -123,8 +123,13 @@ import {
   NANO_HOST_EFFECT_OPERATIONS,
   NanoHostEffectNotEnqueuedError,
 } from './nanohost-session-dispatch.js';
+import * as productOwners from './product-turn-start.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
-import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
+import * as schedulerOwners from './scheduler-dispatch-loop.js';
+import {
+  getSchedulerPreparationClaims,
+  runSchedulerDispatchLoop,
+} from './scheduler-dispatch-loop.js';
 import {
   createConfiguredTurnExecutor,
   createConfiguredWorkerLifecycleRuntime as createWorkerLifecycleOwner,
@@ -135,11 +140,7 @@ import {
   markWorkerBackendWorkspaceHandoffComplete,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
-import {
-  createWorkerCheckpointContextDiagnostics,
-  getWorkerCheckpoint,
-  upsertWorkerCheckpoint,
-} from './worker-checkpoints.js';
+import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
@@ -2451,12 +2452,29 @@ describe('createConfiguredTurnExecutor', () => {
         | 'turn.interrupt',
       body: Readonly<Record<string, unknown>>
     ) => {
+      const queued = Promise.withResolvers<void>();
+      const queue = harnessRecords.queueNanoHostHarnessOperation;
+      const observation = vi
+        .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
+        .mockImplementation((...args) => {
+          const sequence = queue(...args);
+          if (args[0] === coreDb) queued.resolve();
+          return sequence;
+        });
+      onTestFinished(() => observation.mockRestore());
       let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-      for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
+      try {
         command = dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integrationRef(),
         });
-        if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        if (!command) {
+          await queued.promise;
+          command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integrationRef(),
+          });
+        }
+      } finally {
+        observation.mockRestore();
       }
       if (!command || command.operation !== operation) {
         throw new Error(
@@ -2996,94 +3014,185 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('rejects a selected Skill corrupted after preview before materialization eviction or effects', async () => {
-    const f = await admitIdleSupplyResident('skill_pre_effect', { exactBinding: true });
-    const { coreDb, backend, environmentPackage: resident } = f;
-    const native = backend as typeof backend & {
-      evictIncompatibleIdleSandbox(...args: unknown[]): Promise<unknown>;
-    };
-    const eviction = vi.spyOn(native, 'evictIncompatibleIdleSandbox');
+    const coreDb = createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const threadId = DEMO_THREAD_ID;
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    let manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Skill fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => ({ ...configuration, agentManifests: [manifest] }),
+    });
+    const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+    const registration = vi.spyOn(native.workerControlGateway, 'registerSession');
+    const agentSessionId = testEntityId('as', 'as_skill_pre_effect');
+    let resident: ReturnType<FsStore['getAgentSession']> | undefined;
+    let storage: ReturnType<typeof listWorkerStorageBindings> = [];
+    let originalTurn: ReturnType<FsStore['getTurnById']> | undefined;
+    let history: ReturnType<typeof requireAgentEnvironmentPackageSnapshot> | undefined;
+    const storageScope = { workspaceId, authorizeContributor: () => true };
     try {
-      const created = importWorkspaceSkill({
-        activate: true,
-        createdAt: '2026-10-17T00:00:00.000Z',
-        dataRoot: coreDb.dataRoot,
-        displayName: 'Repo guidelines',
-        expectedRevision: 0,
-        producer: resident.scope.triggerActor,
-        tree: [
-          {
-            kind: 'file',
-            path: 'SKILL.md',
-            contentBase64: Buffer.from(
-              '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRead this Skill.\n'
-            ).toString('base64'),
-          },
-        ],
-        workspaceId: resident.scope.workspaceId,
-      });
-      const incoming = completeNanoHostPackage({
-        scope: { ...resident.scope, turnId: testEntityId('tu', 'turn_skill_pre_effect_next') },
-        snapshotId: 'snapshot_skill_pre_effect_next',
-      });
-      await authorizeNanoHostPackage(coreDb, incoming);
-      const preview = resolveAgentEnvironmentPackageMetadata({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
-        agentSessionId: incoming.scope.agentSessionId,
-        backend: { kind: 'openshell' },
-        coreDb,
-        createdAt: incoming.createdAt,
-        requestId: incoming.scope.requestId,
-        turn: await new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
-          incoming.scope.workspaceId,
-          incoming.scope.threadId,
-          'Use selected Skill',
-          incoming.scope.triggerActor,
-          null,
-          { turnId: incoming.scope.turnId }
-        ),
-        triggerActor: incoming.scope.triggerActor,
-        userId:
-          incoming.scope.triggerActor.kind === 'user'
-            ? incoming.scope.triggerActor.id
-            : incoming.scope.triggerActor.responsibleUserId!,
-        workspaceRoots: [],
-      });
-      incoming.supply = preview.supply;
-      writeFileSync(
-        join(
-          skillSnapshotPath(
-            coreDb.dataRoot,
-            incoming.scope.workspaceId,
+      for (const label of ['resident', 'corrupt', 'reuse']) {
+        manifest = { ...manifest, skills: label === 'corrupt' ? [{ id: 'repo-guidelines' }] : [] };
+        const attemptId = testEntityId('attempt', `skill_pre_effect_${label}`);
+        const turnId = testEntityId('tu', `skill_pre_effect_${label}`);
+        const entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${attemptId}`,
+          requestId: testEntityId('tu', `request_skill_pre_effect_${label}`).slice(3),
+          requestedAgentId: manifest.id,
+          workspaceId,
+          threadId,
+          turnId,
+          turnInput: 'Use selected Skill',
+          triggerActor: { kind: 'user', id: ownerUserId },
+        });
+        await publishFactoryAdmission(store, entry);
+        const admission = {
+          attemptId,
+          agentSessionId,
+          candidateAgentSessionId: testEntityId('as', `skill_pre_effect_${label}`),
+        };
+        if (label === 'resident') admission.candidateAgentSessionId = agentSessionId;
+        if (label === 'corrupt') {
+          const { version } = importWorkspaceSkill({
+            activate: true,
+            createdAt: '2026-10-17T00:00:00.000Z',
+            dataRoot,
+            displayName: 'Repo guidelines',
+            expectedRevision: 0,
+            producer: entry.triggerActor,
+            tree: [
+              {
+                kind: 'file',
+                path: 'SKILL.md',
+                contentBase64: Buffer.from(
+                  '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\nRead this Skill.\n'
+                ).toString('base64'),
+              },
+            ],
+            workspaceId,
+          });
+          const snapshot = skillSnapshotPath(
+            dataRoot,
+            workspaceId,
             'repo-guidelines',
-            created.version.digest
-          ),
-          'SKILL.md'
-        ),
-        'corrupt after preview'
-      );
-      await anchorNanoHostMaterialization(coreDb, backend, incoming);
-      const beforeEffects = f.effects.length;
-      const beforeResident = coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all();
-      const beforeStorage = coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all();
-      await expect(
-        backend.materialize(incoming, {
-          dataRoot: coreDb.dataRoot,
-          sandboxBindingRef: factoryPackageBinding(coreDb, incoming),
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow(/Skill|snapshot|integrity|digest|inventory/i);
-      expect(eviction).not.toHaveBeenCalled();
-      await backend.cleanupSession(backend.planSession(incoming));
-      expect(f.effects.slice(beforeEffects)).toEqual([]);
-      expect(coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all()).toEqual(
-        beforeResident
-      );
-      expect(coreDb.sqlite.prepare('SELECT * FROM worker_storage_bindings').all()).toEqual(
-        beforeStorage
-      );
+            version.digest
+          );
+          const corruptContent = 'corrupt after preview: private-skill-content-r570';
+          let previewed = false;
+          let beforeEffects = native.effects.length;
+          const prepare = native.executor.prepareAgentSessionForTurn!.bind(native.executor);
+          const postPreviewCorruption = vi
+            .spyOn(native.executor, 'prepareAgentSessionForTurn')
+            .mockImplementation(async (...args) => {
+              const preview = await prepare(...args);
+              expect(preview.replacementRequired).toBe(true);
+              expect(preview.currentAgentSession?.id).toBe(resident!.id);
+              previewed = true;
+              beforeEffects = native.effects.length;
+              commands.mockClear();
+              registration.mockClear();
+              writeFileSync(join(snapshot, 'SKILL.md'), corruptContent);
+              return preview;
+            });
+          try {
+            await expect(native.admitTurn(entry, admission)).rejects.toThrow();
+          } finally {
+            postPreviewCorruption.mockRestore();
+          }
+          expect(previewed).toBe(true);
+          const failed = store.getTurnById(turnId);
+          expect(failed).toMatchObject({
+            status: 'failed',
+            error: { code: 'worker_preparation_failed' },
+          });
+          expect(failed.error?.message).toMatch(/Skill|snapshot|integrity|digest|inventory/i);
+          const publicFailure = JSON.stringify(failed.error);
+          for (const privateValue of [dataRoot, snapshot, corruptContent])
+            expect(publicFailure.includes(privateValue)).toBe(false);
+          expect(native.effects.slice(beforeEffects).map((effect) => effect.kind)).toEqual([]);
+          expect(commands.mock.calls.length).toBe(0);
+          expect(registration.mock.calls.length).toBe(0);
+          expect(native.executor.inputs).toEqual(['Use selected Skill']);
+          const {
+            updatedAt: _observation,
+            message: _message,
+            sandboxSummary: _summary,
+            ...authority
+          } = resident!;
+          expect(store.getAgentSession(agentSessionId)).toMatchObject(authority);
+          expect(listWorkerStorageBindings(coreDb, storageScope)).toEqual(
+            storage.map((binding) => ({ ...binding, updatedAt: expect.any(String) }))
+          );
+          expect(store.getTurnById(originalTurn!.id)).toEqual(originalTurn);
+          expect(
+            requireAgentEnvironmentPackageSnapshot(workspaceDb, workspaceId, history!.snapshotId)
+          ).toEqual(history);
+          expect(
+            store
+              .listThreadAgentSessions(workspaceId, threadId)
+              .filter((session) => isCurrentAgentSessionStatus(session.status))
+              .map((session) => session.id)
+          ).toEqual([agentSessionId]);
+          continue;
+        }
+        const admitted = await native.admitTurn(entry, admission);
+        try {
+          await admitted.complete();
+          expect(store.getTurnById(turnId)).toMatchObject({ status: 'completed', agentSessionId });
+          if (label === 'resident') {
+            resident = structuredClone(store.getAgentSession(agentSessionId));
+            originalTurn = structuredClone(store.getTurnById(turnId));
+            history = requireAgentEnvironmentPackageSnapshot(
+              workspaceDb,
+              workspaceId,
+              admitted.pkg.snapshotId
+            );
+            expect(resident).toMatchObject({
+              status: 'idle',
+              nativeHandleDigest: expect.any(String),
+              retainedStorage: expect.any(Object),
+            });
+            storage = listWorkerStorageBindings(coreDb, storageScope);
+            expect(storage.length).toBeGreaterThan(0);
+          } else {
+            expect(store.getAgentSession(agentSessionId)).toMatchObject({
+              status: 'idle',
+              id: resident!.id,
+            });
+            expect(
+              commands.mock.calls.filter(([command]) => command.operation === 'session.open').length
+            ).toBe(0);
+          }
+        } finally {
+          await admitted.cleanup();
+        }
+      }
     } finally {
-      eviction.mockRestore();
+      commands.mockRestore();
+      registration.mockRestore();
+      native.restore();
+      workspaceDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -10134,408 +10243,438 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  // Two real Task/source-package/native lifecycles use this local runner budget; product deadlines stay unchanged.
+  // These independent Tasks retain their original 60-second local runner budget.
   it.each([
     'active',
     'closeout',
     'late-capacity',
-    'materialization-initial-guard',
     'materialization-forced-retirement-guard',
   ] as const)('keeps an independent Task queued until one-Sandbox release: %s', async (scenario) => {
     const coreDb = createFactoryCoreDb();
-    const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
-    const effects: NanoHostSessionEffectRequest[] = [];
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspaceId = DEMO_WORKSPACE_ID;
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+    const threadIds = ['first', 'second'].map((label) => testEntityId('th', `th_busy_${label}`));
+    for (const threadId of threadIds)
+      await store.createThread(workspaceId, 'Independent Task', threadId);
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
-    coreDb.sqlite
-      .prepare(`INSERT INTO nanohost_runtime_targets
-        (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced,
-         ready, fresh_empty, physical_epoch, observed_at, slot_count)
-        VALUES ('target_busy', 'identity_busy', 'deployment_busy', 1, 1, 1, 1, ?, ?, 1)`)
-      .run('a'.repeat(64), new Date().toISOString());
-    for (const suffix of ['first', 'second'])
-      await authorizeNanoHostPackage(
-        coreDb,
-        completeNanoHostPackage({
-          agentSetup: setup,
-          scope: {
-            agentSessionId: testEntityId('as', `as_busy_${suffix}`),
-            threadId: testEntityId('th', `th_busy_${suffix}`),
-            turnId: testEntityId('tu', `turn_busy_${suffix}`),
-            workspaceId: 'ws_00000000-0000-7112-96e0-9da90dd77afb',
-          },
-          snapshotId: `snapshot_busy_${suffix}`,
-        })
-      );
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const runtime = createConfiguredWorkerLifecycleRuntime({
-      fileAdmission,
-      coreDb,
-      env: {},
-      store,
-      nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects),
-      workerControlGateway: new WorkerControlGateway(),
-    });
-    const backend = (
-      runtime.turnExecutor as unknown as {
-        backend: WorkerGovernanceBackend & {
-          inspectTerminalHarnessSession(session: unknown): Promise<void>;
-          inspectIncompatibleIdleSandbox(...args: unknown[]): unknown;
-          sessions: Map<string, unknown>;
-        };
-      }
-    ).backend;
-    const release = Promise.withResolvers<void>();
-    const held = Promise.withResolvers<void>();
-    const digest = 'b'.repeat(64);
-    const nativeStarts: string[] = [];
-    backend.collectTranscript = async (id) => {
-      await backend.inspectTerminalHarnessSession(backend.sessions.get(id));
-      if (scenario === 'closeout' && id.includes(testEntityId('tu', 'turn_busy_first'))) {
-        held.resolve();
-        await release.promise;
-      }
-      return { eventsJsonl: '', itemsJsonl: '' };
-    };
-    /** Changes only fixture residency after the real execution precheck yields to package validation. */
-    class CapacityBoundaryExecutor extends WorkerGovernanceTurnExecutor {
-      private capacityChanged = false;
-      public capacityRefusal: WorkerGovernanceCapacityUnavailableError | null = null;
-      public override async startTurn(
-        ...args: Parameters<WorkerGovernanceTurnExecutor['startTurn']>
-      ): Promise<void> {
-        const execution = super.startTurn(...args);
-        if (args[1] === testEntityId('tu', 'turn_busy_second') && !this.capacityChanged) {
-          this.capacityChanged = true;
-          if (scenario === 'materialization-initial-guard') {
-            coreDb.sqlite
-              .prepare("UPDATE sandbox_runtime_records SET drain_state = 'draining'")
-              .run();
-          } else if (scenario === 'materialization-forced-retirement-guard') {
-            // A compatible resident can still acquire unfinished binding ownership before retirement.
-            coreDb.sqlite
-              .prepare(`UPDATE agent_session_runtime_bindings
-              SET current_turn_id = '${testEntityId('tu', 'turn_busy_first')}', current_attempt_id = 'attempt_00000000-0000-7c61-92e0-cb977706c695'`)
-              .run();
-          }
-        }
-        try {
-          await execution;
-        } catch (error) {
-          if (error instanceof WorkerGovernanceCapacityUnavailableError)
-            this.capacityRefusal = error;
-          throw error;
-        }
-      }
-    }
-    const executor = new CapacityBoundaryExecutor({
-      fileAdmission,
-      backend,
-      coreDb,
-      awaitWorkerCompletion: async (aep) => {
-        if (scenario !== 'closeout' && aep.scope.turnId === testEntityId('tu', 'turn_busy_first')) {
-          held.resolve();
-          await release.promise;
-        }
-        const acceptedAt = new Date().toISOString();
-        recordWorkerControlAcceptedRecord(coreDb, {
-          acceptedAt,
-          lineage: { ...aep.scope, packageSnapshotId: aep.snapshotId },
-          operation: 'final_status',
-          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-          recordKey: '1',
-          sequence: 1,
-        });
-        return { acceptedAt, status: 'completed', stopReason: 'completed' };
-      },
-    });
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7112-96e0-9da90dd77afb');
-    applyScopedMigrations(workspaceDb);
-    const entries = await Promise.all(
-      ['first', 'second'].map(async (suffix, index) => {
-        const contextItemId = testEntityId('it', `it_busy_context_${suffix}`);
-        const requestId = `00000000-0000-4000-8000-00000000030${index}`;
-        const workerRequest = JSON.stringify({
-          schemaVersion: 1,
-          objective: 'Run an independent Task.',
-          acceptanceCriteria: ['Complete once capacity is released.'],
-          contextRefs: [{ kind: 'item', id: contextItemId }],
-          resources: [],
-          expectedArtifacts: [],
-          constraints: { maxContextTokens: 20000, maxWorkerIterations: 1 },
-          verification: [{ kind: 'manual', description: 'Inspect completion.' }],
-          reviewPolicy: {
-            required: true,
-            reviewers: ['human'],
-            instructions: 'Review completion.',
-          },
-          escalationConditions: [],
-          reviewContext: null,
-        });
-        const entry = createSchedulerAdmissionEntry(coreDb, {
-          backendId: backend.id,
-          queueEntryId: `queue_busy_${suffix}`,
-          requestId,
-          requestedAgentId: setup.manifest.id,
-          threadId: testEntityId('th', `th_busy_${suffix}`),
-          turnId: testEntityId('tu', `turn_busy_${suffix}`),
-          turnInput: workerRequest,
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
-          workspaceId: 'ws_00000000-0000-7112-96e0-9da90dd77afb',
-        });
-        await publishFactoryAdmission(store, entry);
-        await store.createItem({
-          id: contextItemId,
-          actor: entry.triggerActor,
-          type: 'user-message',
-          text: 'Independent Task context.',
-          status: 'completed',
-          createdAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          threadId: entry.threadId,
-          turnId: entry.turnId,
-          owner: { kind: 'workspace', workspaceId: entry.workspaceId },
-        });
-        const retrievalTraceId = `krt_0190f4c8-0000-7000-8000-00000000030${index}`;
-        await retrieveWorkspaceKnowledge({
-          caller: 'task-mode',
-          dataRoot: coreDb.dataRoot,
-          limit: 5,
-          pinnedReferences: [],
-          access: {
-            store,
-            coreDb,
-            actor: entry.triggerActor,
-            outputThreadId: entry.threadId,
-            outputTurnId: entry.turnId,
-          },
-          query: 'Run an independent Task',
-          traceId: retrievalTraceId,
-          workspaceId: entry.workspaceId,
-        });
-        upsertWorkerCheckpoint(workspaceDb, {
-          iteration: 0,
-          requestId,
-          requestInputHash: commandInputHash(workerRequest),
-          stage: 'preparing',
-          threadId: entry.threadId,
-          turnId: entry.turnId,
-          workspaceId: entry.workspaceId,
-          diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
-            contextDigest: commandInputHash(workerRequest),
-            contextRefs: [{ kind: 'item', id: contextItemId }],
-            knowledgeSelectionInput: {
-              retrievalTraceRef: {
-                scopeId: `retrieval-trace/turn/${entry.workspaceId}/${entry.threadId}/${entry.turnId}`,
-                objectId: retrievalTraceId,
-              },
-            },
-          }),
-        });
-        return entry;
-      })
-    );
-    let attemptNumber = 0;
-    const dispatch = {
+    const initial = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(coreDb.dataRoot),
       agentManifests: [setup.manifest],
-      coreDb,
       gatewayConfig: createTestGatewayConfig(),
-      maxDispatches: 1,
       providerRegistry: new ProviderRegistry([
         {
-          baseUrl: 'http://127.0.0.1:11434/v1',
-          defaultModel: 'openai/gpt-5.2',
-          displayName: 'Busy fixture',
           id: 'agent-openrouter',
-          kind: 'local' as const,
+          displayName: 'Busy fixture',
+          kind: 'local',
           models: ['openai/gpt-5.2'],
         },
       ]),
+      openKitConfig: {
+        defaults: { defaultAgentId: setup.manifest.id },
+        nanohost: {
+          maxActiveTurnsPerSandbox: scenario === 'active' || scenario === 'closeout' ? 1 : 2,
+        },
+      },
+    });
+    const reduced = createInMemoryRuntimeConfigSnapshot({
+      ...initial,
+      openKitConfig: { ...initial.openKitConfig, nanohost: { maxActiveTurnsPerSandbox: 1 } },
+    });
+    let configuration = initial;
+    const config = createRuntimeConfigManager({
+      dataRoot: coreDb.dataRoot,
+      initialSnapshot: initial,
+    });
+    const configRead = vi.spyOn(config, 'current').mockImplementation(() => configuration);
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => config.current(),
+    });
+    const executor = native.executor;
+    const backend = executor.executionBackend as WorkerGovernanceBackend;
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const collect = backend.collectTranscript.bind(backend);
+    const collection = vi
+      .spyOn(backend, 'collectTranscript')
+      .mockImplementation(async (...args) => {
+        const transcript = await collect(...args);
+        if (scenario === 'closeout') {
+          held.resolve();
+          await release.promise;
+        }
+        return transcript;
+      });
+    const inspect = backend.inspectMaterializationCapacity!.bind(backend);
+    const commit = executor.commitPreparedAgentSessionForTurn!.bind(executor);
+    const commitObservation = vi
+      .spyOn(executor, 'commitPreparedAgentSessionForTurn')
+      .mockImplementation(async (...args) => {
+        const result = await commit(...args);
+        if (args[1].preparation.turn.threadId === threadIds[1]) {
+          if (scenario === 'late-capacity') configuration = reduced;
+        }
+        return result;
+      });
+    const materialize = backend.materialize.bind(backend);
+    const materializationCapacity: string[] = [];
+    const materialization = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
+      if (args[0].scope.threadId === threadIds[1])
+        materializationCapacity.push(await inspect(args[0]));
+      return materialize(...args);
+    });
+    const commandObservation = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+    const admissions = vi.spyOn(productOwners, 'observeTurnAdmission');
+    const dispatches = vi.spyOn(schedulerOwners, 'runSchedulerDispatchLoop');
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
       store,
       turnExecutor: executor,
-      executionBackend: backend,
-      createAttemptId: () => testEntityId('attempt', `attempt_busy_${++attemptNumber}`),
-    };
-    /** Settles only external Harness replies while the real in-process owners execute. */
-    const drive = async <T>(promise: Promise<T>): Promise<T> => {
-      let done = false;
-      const observed = promise.finally(() => {
-        done = true;
-      });
-      void observed.catch(() => undefined);
-      for (let tick = 0; tick < 5000 && !done; tick += 1) {
-        const integrations = coreDb.sqlite
-          .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
-          .all() as { ref: string }[];
-        for (const integration of integrations) {
-          const command = dispatchNanoHostHarnessOperation(coreDb, {
-            sandboxIntegrationBindingRef: integration.ref,
-          });
-          if (!command) continue;
-          runtime.acceptNanoHostHarnessCommand(command);
-          if (command.operation === 'turn.start') nativeStarts.push(String(command.body.turnId));
-          const body =
-            command.operation === 'session.close'
-              ? { state: 'closed', privateState: 'absent', childState: 'absent' }
-              : command.operation === 'turn.start'
-                ? { state: 'started', nativeHandleState: 'ready', nativeHandleDigest: digest }
-                : command.operation === 'session.open'
-                  ? {
-                      maxActiveTurns: 20,
-                      state: 'open',
-                      nativeHandleState: 'ready',
-                      nativeHandleDigest: digest,
-                    }
-                  : {
-                      state: 'open',
-                      childState: 'absent',
-                      cleanupState: 'clean',
-                      nativeHandleState: 'ready',
-                      nativeHandleDigest: digest,
-                    };
-          const result = {
-            body,
-            disposition: 'succeeded' as const,
-            harnessInstanceId: command.harnessInstanceId,
-            operationId: command.operationId,
-            schemaVersion: 2 as const,
-            sequence: command.sequence,
-          };
-          settleNanoHostHarnessOperation(coreDb, {
-            result,
-            sandboxIntegrationBindingRef: integration.ref,
-            timestamp: new Date().toISOString(),
-          });
-          runtime.acceptNanoHostHarnessResult(result);
-        }
-        if (!done) await new Promise<void>((resolve) => setTimeout(resolve, 1));
-      }
-      expect(done).toBe(true);
-      return observed;
-    };
-    const first = runSchedulerDispatchLoop(dispatch);
-    void first.catch(() => undefined);
-    try {
-      await drive(held.promise);
-      const second = entries[1]!;
-      const scope = {
-        workspaceId: second.workspaceId,
-        threadId: second.threadId,
-        actorId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
-      };
-      const receipt = store.getCommandRequest('turn.start', second.requestId, scope);
-      const checkpoint = getWorkerCheckpoint(
-        workspaceDb,
-        second.workspaceId,
-        second.threadId,
-        second.turnId
-      );
-      expect(receipt).toMatchObject({ response: { kind: 'turn', id: second.turnId } });
-      expect(checkpoint).toMatchObject({ stage: 'preparing', workerSessionId: null });
-      expect(store.getTurnById(entries[0]!.turnId).status).toBe('running');
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
-      ).toEqual({ count: 1 });
-      const boundaryRefusal = scenario.startsWith('materialization-');
-      if (boundaryRefusal) {
-        release.resolve();
-        await drive(first);
-      }
-      const effectsBefore = effects.length;
-      // Model capacity changing between preparation and execution, without replacing the deciding backend check.
-      if (scenario === 'late-capacity') {
-        const staleRead = vi.spyOn(backend, 'inspectIncompatibleIdleSandbox').mockReturnValue(null);
-        const commit = executor.commitPreparedAgentSessionForTurn.bind(executor);
-        vi.spyOn(executor, 'commitPreparedAgentSessionForTurn').mockImplementationOnce(
-          async (...args) => {
-            try {
-              return await commit(...args);
-            } finally {
-              staleRead.mockRestore();
-            }
+      runtimeConfigManager: config,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
+    });
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+    const requestIds = [
+      '00000000-0000-4000-8000-000000000300',
+      '00000000-0000-4000-8000-000000000301',
+    ];
+    const post = (index: number) =>
+      app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId, threadId: threadIds[index]! },
+          {
+            body: JSON.stringify({
+              requestId: requestIds[index],
+              input: 'Run an independent Task and complete once capacity is released.',
+            }),
           }
-        );
+        )
+      );
+    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    try {
+      const firstResponse = await post(0);
+      expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
+      const first = (await firstResponse.json()).turn as ReturnType<FsStore['getTurnById']>;
+      const firstWork = native.executionFor(first.id);
+      const firstCloseout = admissions.mock.results.find((result) => result.type === 'return')!
+        .value.closeout;
+      await Promise.race([firstWork.launched.promise, firstCloseout]);
+      const firstAttempt = await vi.waitFor(() => {
+        const attempt = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId,
+          threadId: first.threadId,
+          turnId: first.id,
+        })[0]!;
+        expect(attempt).toMatchObject({
+          phase: 'open',
+          disposition: 'accepted',
+          deadline: expect.any(String),
+        });
+        return attempt;
+      });
+      if (scenario === 'closeout') {
+        firstWork.completion.resolve();
+        await Promise.race([held.promise, firstWork.execution]);
       }
-      const eventsBefore = store.getTurnEvents(second.turnId);
-      const deferred = await drive(runSchedulerDispatchLoop(dispatch));
-      if (boundaryRefusal) {
-        expect(executor.capacityRefusal).toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
-        expect(executor.capacityRefusal?.stack).toContain(
-          'NanoHostWorkerGovernanceBackend.materialize'
+      expect(store.getTurnById(first.id).status).toBe('running');
+      expect(executor.releaseResults).toEqual([]);
+      const firstSession = store.getAgentSession(firstAttempt.agentSessionId!);
+      expect(firstSession.status).toBe('busy');
+      const firstStorage = getWorkerStorageBinding(coreDb, firstSession.retainedStorage!);
+      expect(firstStorage).toMatchObject({
+        state: 'attached',
+        currentSandboxBindingRef: expect.any(String),
+      });
+      const firstBinding = harnessRecords.readNanoHostThreadAgentSessionBinding(coreDb, {
+        workspaceId,
+        threadId: first.threadId,
+      });
+      expect(firstBinding).toEqual({ agentSessionId: firstAttempt.agentSessionId });
+      const effectsBefore = native.effects.length;
+      const secondResponse = await post(1);
+      expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
+      const second = (await secondResponse.json()).turn as ReturnType<FsStore['getTurnById']>;
+      expect(second.threadId).not.toBe(first.threadId);
+      expect(second.id).not.toBe(first.id);
+      const entry = attemptActionOwners
+        .listQueuedSchedulerAdmissionEntries(coreDb)
+        .find((candidate) => candidate.turnId === second.id)!;
+      expect(entry).toMatchObject({
+        status: 'queued',
+        workspaceId,
+        threadId: threadIds[1],
+        requestId: requestIds[1],
+      });
+      expect(entry.workerStorageChoice).toBeNull();
+      const secondScope = { workspaceId, threadId: second.threadId, turnId: second.id };
+      const scope = { workspaceId, threadId: second.threadId, actorId: ownerUserId };
+      const receipt = store.getCommandRequest('task.start', requestIds[1]!, scope);
+      const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, second.threadId, second.id);
+      expect(receipt).toMatchObject({ response: { kind: 'turn', id: second.id } });
+      expect(checkpoint).toMatchObject({
+        stage: 'preparing',
+        workerSessionId: null,
+        turnId: second.id,
+      });
+      const eventsBefore = store.getTurnEvents(second.id);
+      const { execution } = await vi.waitFor(() => {
+        const index = dispatches.mock.calls.findIndex(
+          ([input]) => input.callerQueueEntryId === entry.queueEntryId
         );
-        expect(executor.capacityRefusal?.stack?.includes('evictIncompatibleIdleSandbox')).toBe(
-          scenario === 'materialization-forced-retirement-guard'
-        );
-      }
+        const result = dispatches.mock.results[index];
+        if (result?.type !== 'return') throw new Error('Original Task dispatch has not entered.');
+        return { execution: result.value };
+      });
+      const deferred = await execution;
       expect(deferred).toMatchObject({
         startedTurns: [],
         terminalResult: { status: 'queued', reason: 'backend-busy' },
       });
-      // Read the SSE envelope, so a failed terminal publication cannot satisfy queued admission.
+      const busy = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope);
+      expect(busy).toHaveLength(1);
+      expect(attempts.isSchedulerExecutionBusyRefusal(busy[0]!)).toBe(true);
+      expect(getWorkerBackendSession(coreDb, busy[0]!.attemptId)).toBeNull();
+      const finalGuard = scenario === 'materialization-forced-retirement-guard';
+      const materialized = materialization.mock.calls.flatMap(([pkg], index) =>
+        pkg.scope.threadId === second.threadId ? [materialization.mock.results[index]!.value] : []
+      );
+      expect(materialized).toHaveLength(finalGuard ? 1 : 0);
+      if (finalGuard)
+        await expect(materialized[0]).rejects.toBeInstanceOf(
+          WorkerGovernanceCapacityUnavailableError
+        );
+      if (scenario === 'late-capacity') expect(configuration).toBe(reduced);
+      expect(materializationCapacity).toEqual(finalGuard ? ['available'] : []);
+      if (finalGuard)
+        expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
+      const retainedAttempt = attempts.requireSchedulerExecutionAttempt(
+        coreDb,
+        firstAttempt.attemptId
+      );
+      expect(attempts.schedulerExecutionCorrelation(retainedAttempt)).toEqual(
+        attempts.schedulerExecutionCorrelation(firstAttempt)
+      );
+      expect(retainedAttempt).toMatchObject({
+        queueEntryId: firstAttempt.queueEntryId,
+        workspaceId,
+        threadId: first.threadId,
+        turnId: first.id,
+        agentSessionId: firstSession.id,
+        preparationInputJson: firstAttempt.preparationInputJson,
+        deadline: firstAttempt.deadline,
+        disposition: 'accepted',
+      });
+      // Terminal evidence can advance closing while the same exclusion remains held.
+      expect(['open', 'closing']).toContain(retainedAttempt.phase);
+      for (const field of ['terminalCause', 'outcomeRef', 'fenceRef'] as const)
+        if (firstAttempt[field] !== null) expect(retainedAttempt[field]).toBe(firstAttempt[field]);
       expect(
-        store
-          .getTurnEvents(second.turnId)
-          .filter(
-            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
-          )
-      ).toEqual([]);
-      expect(store.getTurnById(second.turnId)).toMatchObject({
-        id: second.turnId,
+        harnessRecords.readNanoHostThreadAgentSessionBinding(coreDb, {
+          workspaceId,
+          threadId: first.threadId,
+        })
+      ).toEqual(firstBinding);
+      // Creation and update timestamps do not identify the retained attachment.
+      const {
+        createdAt: _storageCreatedAt,
+        updatedAt: _storageUpdatedAt,
+        ...storageAuthority
+      } = firstStorage!;
+      expect(getWorkerStorageBinding(coreDb, firstSession.retainedStorage!)).toMatchObject(
+        storageAuthority
+      );
+      expect(store.getAgentSession(firstSession.id).status).toBe('busy');
+      expect(store.getTurnById(second.id)).toMatchObject({
+        id: second.id,
         status: 'pending',
         error: null,
         completedAt: null,
       });
-      expect(store.getTurnById(second.turnId).agentSessionId ?? null).toBeNull();
-      expect(store.getTurnEvents(second.turnId)).toEqual(eventsBefore);
+      expect(store.getTurnById(second.id).agentSessionId ?? null).toBeNull();
+      expect(store.getTurnEvents(second.id)).toEqual(eventsBefore);
       expect(
-        coreDb.sqlite
-          .prepare('SELECT COUNT(*) AS count FROM worker_backend_sessions WHERE turn_id = ?')
-          .get(second.turnId)
-      ).toEqual({ count: 0 });
+        store
+          .getTurnEvents(second.id)
+          .filter(
+            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+          )
+      ).toEqual([]);
       expect(
-        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, second.queueEntryId)
-      ).toEqual(second);
-      expect(store.getCommandRequest('turn.start', second.requestId, scope)).toEqual(receipt);
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
+      ).toEqual(entry);
+      expect(store.getCommandRequest('task.start', requestIds[1]!, scope)).toEqual(receipt);
+      expect(getWorkerCheckpoint(workspaceDb, workspaceId, second.threadId, second.id)).toEqual(
+        checkpoint
+      );
+      expect(store.listThreadAgentSessions(workspaceId, second.threadId)).toEqual([]);
+      for (const effect of native.effects.slice(effectsBefore))
+        expect(['image.acquire', 'image.inspect']).toContain(effect.kind);
+      expect(native.effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
       expect(
-        getWorkerCheckpoint(workspaceDb, second.workspaceId, second.threadId, second.turnId)
-      ).toEqual(checkpoint);
-      expect(store.listThreadAgentSessions(second.workspaceId, second.threadId)).toEqual([]);
-      expect(effects).toHaveLength(effectsBefore);
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
-      ).toEqual({ count: 1 });
-      expect(nativeStarts).toEqual([entries[0]!.turnId]);
-      expect(
-        observeExecutionAttempts(coreDb).filter((attempt) => attempt.turn_id === second.turnId)
-      ).toMatchObject([
-        {
-          phase: 'closed',
-          disposition: 'not_accepted',
-          terminal_cause: 'backend-busy',
-          operation_id: null,
-        },
+        commandObservation.mock.calls
+          .filter(([command]) => command.operation === 'turn.start')
+          .map(([command]) => command.body.turnId)
+      ).toEqual([first.id]);
+      for (const [command] of commandObservation.mock.calls)
+        expect(['session.open', 'session.inspect', 'turn.start']).toContain(command.operation);
+      expect(executor.releaseResults).toEqual([]);
+      configuration = initial;
+      release.resolve();
+      firstWork.completion.resolve();
+      await firstWork.execution;
+      await firstCloseout;
+      const closedFirst = attempts.requireSchedulerExecutionAttempt(coreDb, firstAttempt.attemptId);
+      expect(closedFirst).toMatchObject({
+        phase: 'closed',
+        disposition: 'accepted',
+        fenceRef: expect.any(String),
+      });
+      expect(executor.releaseResults).toEqual([
+        expect.objectContaining({
+          attemptId: firstAttempt.attemptId,
+          inputRef: firstAttempt.inputRef,
+          state: 'released',
+          fenceRef: closedFirst.fenceRef,
+        }),
       ]);
-      if (scenario === 'materialization-initial-guard')
-        coreDb.sqlite.prepare("UPDATE sandbox_runtime_records SET drain_state = 'accepting'").run();
-      if (scenario === 'materialization-forced-retirement-guard')
-        coreDb.sqlite
-          .prepare(`UPDATE agent_session_runtime_bindings
-          SET current_turn_id = NULL, current_attempt_id = NULL`)
-          .run();
-      release.resolve();
-      await drive(first);
-      expect(store.getTurnById(entries[0]!.turnId).status).toBe('completed');
-      const resumed = await drive(runSchedulerDispatchLoop(dispatch));
-      expect(resumed.startedTurns).toHaveLength(1);
-      expect(store.getTurnById(second.turnId).status).toBe('completed');
-      expect(store.getCommandRequest('turn.start', second.requestId, scope)).toEqual(receipt);
-      expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(2);
-      expect(nativeStarts).toEqual(entries.map((entry) => entry.turnId));
+      expect(store.getTurnById(first.id).status).toBe('completed');
+      const attemptId = testEntityId('attempt', 'attempt_busy_after_release');
+      const agentSessionId = testEntityId('as', 'as_busy_second');
+      expect(attemptId).not.toBe(busy[0]!.attemptId);
+      admitted = await native.admitTurn(entry, {
+        attemptId,
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      expect(admitted.pkg.scope).toMatchObject({
+        workspaceId,
+        threadId: second.threadId,
+        turnId: second.id,
+        requestId: requestIds[1],
+        agentSessionId,
+      });
+      expect((await admitted.complete()).startedTurns).toHaveLength(1);
+      await Promise.all(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      expect(store.getTurnById(second.id)).toMatchObject({ status: 'completed', agentSessionId });
+      const closedSecond = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      expect(closedSecond).toMatchObject({
+        phase: 'closed',
+        disposition: 'accepted',
+        fenceRef: expect.any(String),
+      });
+      expect(executor.releaseResults[1]).toMatchObject({
+        attemptId,
+        inputRef: admitted.pkg.snapshotId,
+        state: 'released',
+        fenceRef: closedSecond.fenceRef,
+      });
+      expect(executor.releaseResults).toHaveLength(2);
+      expect(store.getAgentSession(agentSessionId).retainedStorage!.storageRef).not.toBe(
+        firstStorage!.storageRef
+      );
+      expect(store.getCommandRequest('task.start', requestIds[1]!, scope)).toEqual(receipt);
+      const commands = commandObservation.mock.calls.map(([command]) => command);
+      const starts = commands.filter((command) => command.operation === 'turn.start');
+      expect(starts.map((command) => command.body.turnId)).toEqual([first.id, second.id]);
+      expect(starts.map((command) => command.body.packageSnapshotId)).toEqual([
+        firstAttempt.inputRef,
+        admitted.pkg.snapshotId,
+      ]);
+      expect(starts.map((command) => command.body.agentSessionId)).toEqual([
+        firstAttempt.agentSessionId,
+        agentSessionId,
+      ]);
+      const authorities = commandObservation.mock.results.flatMap((result) =>
+        result.type === 'return' && result.value.operation === 'turn.start'
+          ? [
+              createHash('sha256')
+                .update(String(result.value.body.workerControlToken))
+                .digest('hex'),
+            ]
+          : []
+      );
+      expect(new Set(authorities).size).toBe(2);
+      for (const command of commands)
+        expect(['session.open', 'session.inspect', 'session.close', 'turn.start']).toContain(
+          command.operation
+        );
+      expect(new Set(commands.map((command) => command.operationId)).size).toBe(commands.length);
+      const allowed = [
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+        'bridge.open',
+        'reference.import',
+        'file.export',
+        'workspace.collect',
+        'bridge.close',
+        'sandbox.delete',
+      ];
+      for (const effect of native.effects) expect(allowed).toContain(effect.kind);
+      expect(new Set(native.effects.map((effect) => effect.requestId)).size).toBe(
+        native.effects.length
+      );
+      const creates = native.effects.flatMap((effect, index) =>
+        effect.kind === 'sandbox.create' ? [index] : []
+      );
+      expect(creates).toHaveLength(2);
+      expect(
+        native.effects.findIndex((effect) => effect.kind === 'sandbox.delete')
+      ).toBeGreaterThan(creates[0]!);
+      expect(native.effects.findIndex((effect) => effect.kind === 'sandbox.delete')).toBeLessThan(
+        creates[1]!
+      );
+      expect(
+        attempts
+          .listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)
+          .map((attempt) => attempt.attemptId)
+      ).toEqual([busy[0]!.attemptId, attemptId]);
     } finally {
+      configuration = initial;
       release.resolve();
-      await drive(first);
+      for (const threadId of threadIds)
+        for (const turn of store.listThreadTurns(workspaceId, threadId))
+          native.executionFor(turn.id).completion.resolve();
+      await admitted?.cleanup();
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      // Failed assertions may leave accepted queued Tasks; cancel only through their public owner.
+      for (const entry of attemptActionOwners
+        .listQueuedSchedulerAdmissionEntries(coreDb)
+        .filter((entry) => threadIds.includes(entry.threadId))) {
+        await app.request(
+          ...operationRequest('scheduler.cancel', { workspaceId, queueEntryId: entry.queueEntryId })
+        );
+      }
+      await Promise.allSettled(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      await Promise.allSettled(
+        vi
+          .mocked(executor.startTurn)
+          .mock.results.filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      collection.mockRestore();
+      commitObservation.mockRestore();
+      materialization.mockRestore();
+      commandObservation.mockRestore();
+      dispatches.mockRestore();
+      admissions.mockRestore();
+      configRead.mockRestore();
+      native.restore();
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
