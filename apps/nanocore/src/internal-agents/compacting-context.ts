@@ -33,6 +33,10 @@ export interface CompactingInternalAgentProviderInput {
   readonly limits: InternalAgentLoopInput['limits'];
   readonly environmentFacts?: unknown;
   readonly assertCurrent: () => void;
+  /** Prepares exact trace content before the synchronous evidence predicate. */
+  readonly prepareEvidence?:
+    | ((items: readonly Item[], signal: AbortSignal) => Promise<void>)
+    | undefined;
   readonly readEvidence: (items: readonly Item[]) => string;
   /**
    * Commits the exact full loop transcript through existing Item owners and returns its ordered source Items.
@@ -88,6 +92,7 @@ export function createCompactingInternalAgentProvider(
     const sourceDigest = (items: readonly Item[]) =>
       internalContextSourceDigest(input.store, items, 'compaction');
     const digest = sourceDigest(sources);
+    if (input.prepareEvidence) await input.prepareEvidence(sources, request.signal);
     const evidenceDigest = input.readEvidence(sources);
     const assertSources = () => {
       request.signal.throwIfAborted();
@@ -178,6 +183,7 @@ export function createCompactingInternalAgentProvider(
       };
       // Validate immediately before each effect, including summary production; pure window
       // fitting above does not need another complete canonical source reread.
+      if (input.prepareEvidence) await input.prepareEvidence(sources, request.signal);
       assertSources();
       const response = await call({
         systemPrompt: COMPACTION_INSTRUCTION,
@@ -198,6 +204,7 @@ export function createCompactingInternalAgentProvider(
         ],
         signal: request.signal,
       });
+      if (input.prepareEvidence) await input.prepareEvidence(sources, request.signal);
       assertSources();
       const message = response.message;
       const text = message.content
@@ -240,6 +247,7 @@ export function createCompactingInternalAgentProvider(
       const compacted = [internalContextSummaryMessage(next)];
       if (Buffer.byteLength(JSON.stringify(compacted)) >= beforeBytes || !fits(compacted))
         throw invalidSummary();
+      if (input.prepareEvidence) await input.prepareEvidence(sources, request.signal);
       assertSources();
       const stored =
         next.owner.kind === 'server'
@@ -249,8 +257,10 @@ export function createCompactingInternalAgentProvider(
       summary = stored;
       coveredMessageCount = request.messages.length;
     }
+    if (input.prepareEvidence) await input.prepareEvidence(sources, request.signal);
     assertSources();
     const response = await call({ ...request, messages: messages() });
+    if (input.prepareEvidence) await input.prepareEvidence(sources, request.signal);
     assertSources();
     return response;
   };

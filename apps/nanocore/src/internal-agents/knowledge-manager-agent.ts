@@ -79,6 +79,10 @@ export interface KnowledgeManagerAgentRun {
   readonly tools: readonly AgentTool[];
   readonly signal: AbortSignal;
   readonly assertCurrent: () => void;
+  /** Prepares exact trace content before the synchronous evidence predicate. */
+  readonly prepareEvidence?:
+    | ((items: readonly Item[], signal: AbortSignal) => Promise<void>)
+    | undefined;
   readonly readEvidence: (items: readonly Item[]) => string;
   /** The existing loop validates this result Tool schema before role output admission. */
   readonly resultSchema: JsonSchema;
@@ -385,6 +389,7 @@ async function executeKnowledgeManagerAgent(
           compactThreshold: threshold,
           limits,
           assertCurrent: input.assertCurrent,
+          prepareEvidence: input.prepareEvidence,
           readEvidence: (items: readonly Item[]) =>
             'kind' in input
               ? input.readEvidence(items.map((item) => ItemSchema.parse(item)))

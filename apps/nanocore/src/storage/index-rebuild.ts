@@ -20,6 +20,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
+  currentWorkspaceNotebookRead,
   readWorkspaceNotebookIndexSource,
   type WorkspaceNotebookRead,
 } from '../knowledge/notebook-index-source.js';
@@ -1206,6 +1207,7 @@ function currentKnowledgePageScope(
 }
 
 interface KnowledgeTraceReadInput {
+  notebookRead?: WorkspaceNotebookRead | undefined;
   dataRoot: string;
   workspaceId: string;
   access: KnowledgeRetrievalAccess;
@@ -1253,6 +1255,28 @@ function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRe
   return trace;
 }
 
+/** Loads the complete inventory already owned by a currently admitted Workspace trace read. */
+export async function prepareKnowledgeRetrievalTraceRead(input: KnowledgeTraceReadInput) {
+  const trace = readAdmittedKnowledgeTrace(input);
+  if (parseReferenceScope(trace.sourceScope)?.kind !== 'workspace') return undefined;
+  if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
+  const prepared = await prepareAuthorizedWorkspaceNotebookRead({
+    ...input,
+    notebookRevision: trace.notebookRevision,
+  });
+  // Trace validation owns reserved Page blobs as well as the ordinary query inventory.
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(prepared.workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const paths = Object.keys(prepared.selected.entries).filter(
+    (path) => !Object.hasOwn(prepared.selected.files, path)
+  );
+  const extra = await notebook.readRevisionAsync(trace.notebookRevision, paths);
+  const selected = { ...prepared.selected, files: { ...prepared.selected.files, ...extra.files } };
+  const current = prepared.current.revision === selected.revision ? selected : prepared.current;
+  return { ...prepared, current, selected };
+}
+
 /** A failed reference check never discloses the failed source identity. */
 function knowledgeTraceUnavailable(): OperationError {
   return new OperationError(
@@ -1269,6 +1293,7 @@ function currentKnowledgeReferenceContent(
     workspaceId: string;
     access: KnowledgeRetrievalAccess;
     notebookRevision?: string | undefined;
+    notebookRead?: WorkspaceNotebookRead | undefined;
   },
   reference: PageReference,
   serverId: string
@@ -1311,12 +1336,31 @@ function currentKnowledgeReferenceContent(
     throw knowledgeTraceUnavailable();
   admitKnowledgeRetrieval(input);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const current = readWorkspaceNotebookIndexSource(workspaceRoot, undefined, [reference.objectId]);
+  const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot);
+  const currentRead =
+    prepared && Object.hasOwn(prepared.current.files, `${reference.objectId}.md`)
+      ? prepared
+      : undefined;
+  const current = readWorkspaceNotebookIndexSource(
+    workspaceRoot,
+    undefined,
+    [reference.objectId],
+    currentRead
+  );
+  const pinnedRead =
+    prepared &&
+    prepared.selected.revision === input.notebookRevision &&
+    Object.hasOwn(prepared.selected.files, `${reference.objectId}.md`)
+      ? prepared
+      : undefined;
   const pinned =
     input.notebookRevision !== undefined && input.notebookRevision !== current.notebookRevision
-      ? readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision, [
-          reference.objectId,
-        ])
+      ? readWorkspaceNotebookIndexSource(
+          workspaceRoot,
+          input.notebookRevision,
+          [reference.objectId],
+          pinnedRead
+        )
       : current;
   if (!pinned.pages.has(reference.objectId)) return null;
   // Retained bytes prove selection; current sensitivity still controls trace disclosure.
@@ -1455,6 +1499,8 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   dataRoot: string;
   /** Workspace expected to own the retrieval trace and pages. */
   workspaceId: string;
+  /** Complete immutable content; current native admission still decides this read. */
+  notebookRead?: WorkspaceNotebookRead | undefined;
   /** Persisted governed retrieval trace to resolve. */
   retrievalTraceRef?: RetrievalTraceReference;
   /** Fresh server-owned selection permits threadless reads without fabricating a trace. */
@@ -1565,10 +1611,26 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   }
   if (trace.sourceScope !== currentKnowledgePageScope(input, 'workspace'))
     throw knowledgeTraceUnavailable();
+  const candidate = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot);
+  const prepared =
+    candidate?.selected.revision === notebookRevision &&
+    Object.keys(candidate.selected.entries).every((path) =>
+      Object.hasOwn(candidate.selected.files, path)
+    )
+      ? candidate
+      : undefined;
+  pinnedInput.notebookRead = prepared;
   const referenceProofs = currentKnowledgeReferenceProofs(pinnedInput);
-  const pinnedPages = readWorkspaceNotebookIndexSource(workspaceRoot, notebookRevision).pages;
+  const pinnedPages = readWorkspaceNotebookIndexSource(
+    workspaceRoot,
+    notebookRevision,
+    undefined,
+    prepared
+  ).pages;
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
-  const registeredSources = readRegisteredSources(workspaceRoot, input.workspaceId);
+  const registeredSources = prepared?.sources
+    ? new Map([...prepared.sources.values()].map(({ source }) => [source.id, source.contentDigest]))
+    : readRegisteredSources(workspaceRoot, input.workspaceId);
   const knowledgeIds = readKnowledgePageIds(pinnedPages);
   const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
 

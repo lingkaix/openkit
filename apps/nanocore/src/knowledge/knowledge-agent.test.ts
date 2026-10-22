@@ -1,10 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
-import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri, writeRetainedV1 } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -22,6 +24,12 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
+import type { AgentMessage } from '../internal-agents/internal-agent-loop.js';
+import {
+  prepareInternalContextEvidenceRead,
+  readInternalContextEvidence,
+} from '../internal-agents/internal-context-evidence.js';
+import { createKnowledgeManagerTranscript } from '../internal-agents/knowledge-manager-agent.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
@@ -34,6 +42,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
+import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -425,6 +434,8 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     sourceThread,
     createResponses,
     dependencies,
+    publicationConfig,
+    workspaceMutationAdmission,
     ask,
   };
 }
@@ -1508,4 +1519,217 @@ it('exposes and forwards exact narrowing type/applicability arguments through th
     toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.retrieval', 'mismatch')
   );
   expect(second.sources[0].selected).toEqual([]);
+});
+
+it('reads the admitted overview while an unrelated retained page blob is damaged', async () => {
+  const f = await fixture();
+  const repositoryPath = join(
+    f.dataRoot,
+    'workspaces',
+    f.workspace.id,
+    'knowledge',
+    'notebook.git'
+  );
+  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const content = notebook.readRevision(f.revision, ['index.md']).files['index.md'];
+  f.createResponses.mockImplementationOnce(async () => {
+    const object = execFileSync(
+      'git',
+      ['--git-dir', repositoryPath, 'rev-parse', `${f.revision}:pages/launch-evidence.md`],
+      { encoding: 'utf8' }
+    ).trim();
+    const path = join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+    chmodSync(path, 0o644);
+    const changed = Buffer.from('# damaged unrelated page\n');
+    writeFileSync(
+      path,
+      deflateSync(Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed]))
+    );
+    return call('knowledge.page.read', { pageId: `openkit:${f.workspaceScope}/index` });
+  });
+  f.createResponses.mockImplementationOnce(async () => {
+    throw new Error('Stop after observing the selected Tool result.');
+  });
+  await f.ask().catch(() => undefined);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  const page = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.page.read'));
+  expect(page).toMatchObject({
+    pageId: `openkit:${f.workspaceScope}/index`,
+    contentDigest: f.overviewDigest,
+    content,
+  });
+});
+
+it.each([
+  'trace-revision',
+  'index.md',
+  'log.md',
+] as const)('prepares complete native Knowledge evidence and refuses a fresh %s fault', async (fault) => {
+  const f = await fixture();
+  const repositoryPath = join(
+    f.dataRoot,
+    'workspaces',
+    f.workspace.id,
+    'knowledge',
+    'notebook.git'
+  );
+  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const input = {
+    dataRoot: f.dataRoot,
+    workspaceId: f.workspace.id,
+    access: f.access,
+    caller: 'assistant' as const,
+    query: 'heliotrope cobalt',
+  };
+  const before = await retrieveWorkspaceKnowledge(input);
+  expect(before.notebookRevision).toBe(f.revision);
+  expect(before.selected).toMatchObject([{ contentDigest: f.contentDigest }]);
+  const content = f.page.replace('cobalt gate', 'cobalt checkpoint');
+  const publicationRequest = {
+    requestId: randomUUID(),
+    workspaceId: f.workspace.id,
+    baseRevision: f.revision,
+    summary: 'Publish a later exact evidence revision',
+    changes: [
+      { path: 'launch-evidence.md', content },
+      {
+        path: 'log.md',
+        content:
+          '# Directory Update Log\n\n## 2026-10-23\n* **Update**: Published exact retained evidence.\n',
+      },
+    ],
+  };
+  await publishWorkspaceNotebook(
+    {
+      store: f.store,
+      workspaceDb: f.workspaceDb,
+      notebook,
+      producer: f.actor,
+      inflightCommands: new WeakMap(),
+      revalidate: () =>
+        readWorkspaceNotebookAdmission({
+          store: f.store,
+          coreDb: f.coreDb,
+          workspaceDb: f.workspaceDb,
+          notebook,
+          request: publicationRequest,
+          requestActor: { kind: 'local', userId: f.userId },
+          actor: f.actor,
+          runtimeConfigManager: { current: () => f.publicationConfig },
+          workspaceMutationAdmission: f.workspaceMutationAdmission,
+        }),
+    },
+    publicationRequest
+  );
+  const candidateRevision = notebook.publishedRevision();
+  const after = await retrieveWorkspaceKnowledge(input);
+  expect(after.notebookRevision).toBe(candidateRevision);
+  expect(after.notebookRevision).not.toBe(before.notebookRevision);
+  expect(after.selected).toMatchObject([
+    { contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}` },
+  ]);
+  const root = join(f.dataRoot, 'workspaces', f.workspace.id);
+  const traces = readTurnRetrievalTraces(root, f.workspace.id, f.thread.id, f.turn.id);
+  expect(
+    traces.map(({ trace }) => ('notebookRevision' in trace ? trace.notebookRevision : null)).sort()
+  ).toEqual([before.notebookRevision, after.notebookRevision].sort());
+  const thread = await f.store.createThread(
+    f.workspace.id,
+    'Retained Knowledge evidence',
+    undefined,
+    'knowledge-manager',
+    { visibility: 'private', privateOwnerUserId: f.userId }
+  );
+  const turn = await f.store.createTurn(
+    f.workspace.id,
+    thread.id,
+    'Verify retained Knowledge evidence.',
+    f.actor,
+    null,
+    { agentId: 'knowledge-manager' }
+  );
+  const messages: AgentMessage[] = [];
+  for (const result of [before, after]) {
+    const callId = randomUUID();
+    messages.push(
+      {
+        role: 'assistant',
+        truncated: false,
+        content: [
+          {
+            type: 'toolCall',
+            name: 'knowledge.retrieval',
+            callId,
+            arguments: { query: input.query },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        callId,
+        isError: false,
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      }
+    );
+  }
+  const items = await createKnowledgeManagerTranscript(f.store, turn, f.actor)(messages);
+  expect(items.filter((item) => item.type === 'tool-call')).toHaveLength(2);
+  for (const result of [before, after])
+    expect(
+      items.some(
+        (item) =>
+          item.type === 'tool-call' && item.result?.includes(result.retrievalTraceRef.objectId)
+      )
+    ).toBe(true);
+  const evidence = {
+    store: f.store,
+    coreDb: f.coreDb,
+    actor: { kind: 'local' as const, userId: f.userId },
+    workspaceId: f.workspace.id,
+    threadId: thread.id,
+    items,
+    strategy: 'compaction' as const,
+    retrievalContext: { threadId: f.thread.id, turnId: f.turn.id },
+  };
+  const digest = readInternalContextEvidence(evidence);
+  const notebookReads = await prepareInternalContextEvidenceRead(
+    evidence,
+    new AbortController().signal
+  );
+  expect(readInternalContextEvidence({ ...evidence, notebookReads })).toBe(digest);
+  if (fault === 'trace-revision') {
+    const trace = traces.find(
+      ({ trace }) => trace.traceId === before.retrievalTraceRef.objectId
+    )!.trace;
+    writeFileSync(
+      join(
+        root,
+        'threads',
+        f.thread.id,
+        'turns',
+        f.turn.id,
+        'retrieval-traces',
+        `${trace.traceId}.json`
+      ),
+      JSON.stringify(writeRetainedV1({ ...trace, notebookRevision: after.notebookRevision }))
+    );
+  } else {
+    const object = execFileSync(
+      'git',
+      ['--git-dir', repositoryPath, 'rev-parse', `${after.notebookRevision}:pages/${fault}`],
+      { encoding: 'utf8' }
+    ).trim();
+    const path = join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+    chmodSync(path, 0o644);
+    const changed = Buffer.from('# damaged reserved inventory\n');
+    writeFileSync(
+      path,
+      deflateSync(Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed]))
+    );
+  }
+  await expect(
+    prepareInternalContextEvidenceRead(evidence, new AbortController().signal).then((fresh) =>
+      readInternalContextEvidence({ ...evidence, notebookReads: fresh })
+    )
+  ).rejects.toMatchObject({ code: 'internal_agent_context_source_unavailable' });
 });

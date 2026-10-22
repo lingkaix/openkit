@@ -2,15 +2,18 @@ import { join } from 'node:path';
 import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import {
   type Item,
+  parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
+import type { WorkspaceNotebookRead } from '../knowledge/notebook-index-source.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   assertKnowledgeRetrievalSelectionReadable,
   assertKnowledgeRetrievalTraceReadable,
+  prepareKnowledgeRetrievalTraceRead,
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
@@ -36,6 +39,7 @@ export function readInternalContextEvidence(
     readonly threadId: string;
     readonly items: readonly Item[];
     readonly strategy?: 'rolling' | 'compaction';
+    readonly notebookReads?: ReadonlyMap<string, WorkspaceNotebookRead> | undefined;
     /** KM queries alone verify their content-free-exclusion selection projection. */
     readonly knowledgeProjection?: 'selection';
     /** Trusted retained asking lineage for a query; maintenance defaults to its source Turn. */
@@ -44,6 +48,58 @@ export function readInternalContextEvidence(
     readonly serverKnowledgeActor?: Actor | undefined;
   }
 ): string {
+  const { dataRoot, entries } = contextEvidenceInventory(input);
+  for (const { reference, trace, access } of entries) {
+    if ('sourceKind' in trace) {
+      try {
+        assertConversationRetrievalTraceReadable({ ...input, retrievalTraceRef: reference });
+      } catch {
+        throw internalContextSourceUnavailable('assertConversationRetrievalTraceReadable');
+      }
+    } else {
+      const verifyKnowledge =
+        input.strategy === 'compaction' && input.knowledgeProjection === 'selection'
+          ? assertKnowledgeRetrievalSelectionReadable
+          : assertKnowledgeRetrievalTraceReadable;
+      try {
+        verifyKnowledge({
+          dataRoot,
+          workspaceId: input.workspaceId,
+          access: access(),
+          retrievalTraceRef: reference,
+          notebookRead: input.notebookReads?.get(`${reference.scopeId}/${reference.objectId}`),
+        });
+      } catch {
+        throw internalContextSourceUnavailable(
+          verifyKnowledge === assertKnowledgeRetrievalSelectionReadable
+            ? 'assertKnowledgeRetrievalSelectionReadable'
+            : 'assertKnowledgeRetrievalTraceReadable'
+        );
+      }
+      try {
+        if (
+          resolveWorkspaceKnowledgeRetrievalPages({
+            dataRoot,
+            workspaceId: input.workspaceId,
+            access: access(),
+            retrievalTraceRef: reference,
+            caller: trace.caller,
+            notebookRead: input.notebookReads?.get(`${reference.scopeId}/${reference.objectId}`),
+          }) === null
+        )
+          throw unavailable();
+      } catch {
+        throw internalContextSourceUnavailable('resolveWorkspaceKnowledgeRetrievalPages');
+      }
+    }
+  }
+  input.nativeAuthority?.assertCurrent();
+  const canonical = entries.map(({ reference, trace }) => ({ reference, trace }));
+  return internalContextDigest({ version: 1, entries: canonical });
+}
+
+/** Shares native admission and exact owned trace inputs before asynchronous content loading. */
+function contextEvidenceInventory(input: Parameters<typeof readInternalContextEvidence>[0]) {
   input.nativeAuthority?.assertCurrent();
   const dataRoot = input.store.getDataRoot();
   if (!dataRoot || dataRoot !== input.coreDb.dataRoot) throw unavailable();
@@ -87,15 +143,12 @@ export function readInternalContextEvidence(
     }
   });
   const entries = internalContextEvidenceEntries(input.items, inventory, input.strategy);
-  for (const { reference, trace } of entries) {
-    if ('sourceKind' in trace) {
-      try {
-        assertConversationRetrievalTraceReadable({ ...input, retrievalTraceRef: reference });
-      } catch {
-        throw internalContextSourceUnavailable('assertConversationRetrievalTraceReadable');
-      }
-    } else {
-      const access = {
+  return {
+    dataRoot,
+    entries: entries.map(({ reference, trace }) => ({
+      reference,
+      trace,
+      access: () => ({
         store: input.store,
         coreDb: input.coreDb,
         actor: input.nativeAuthority?.actorRef ?? {
@@ -111,43 +164,35 @@ export function readInternalContextEvidence(
             ? contexts.find((context) => scopeFor(context) === reference.scopeId)!.threadId
             : input.threadId,
         outputTurnId: trace.queryContext.turnId,
-      };
-      const verifyKnowledge =
-        input.strategy === 'compaction' && input.knowledgeProjection === 'selection'
-          ? assertKnowledgeRetrievalSelectionReadable
-          : assertKnowledgeRetrievalTraceReadable;
-      try {
-        verifyKnowledge({
-          dataRoot,
-          workspaceId: input.workspaceId,
-          access,
-          retrievalTraceRef: reference,
-        });
-      } catch {
-        throw internalContextSourceUnavailable(
-          verifyKnowledge === assertKnowledgeRetrievalSelectionReadable
-            ? 'assertKnowledgeRetrievalSelectionReadable'
-            : 'assertKnowledgeRetrievalTraceReadable'
-        );
-      }
-      try {
-        if (
-          resolveWorkspaceKnowledgeRetrievalPages({
-            dataRoot,
-            workspaceId: input.workspaceId,
-            access,
-            retrievalTraceRef: reference,
-            caller: trace.caller,
-          }) === null
-        )
-          throw unavailable();
-      } catch {
-        throw internalContextSourceUnavailable('resolveWorkspaceKnowledgeRetrievalPages');
-      }
-    }
+      }),
+    })),
+  };
+}
+
+/** Prepares immutable facts only; the original synchronous reader still decides admission. */
+export async function prepareInternalContextEvidenceRead(
+  input: Parameters<typeof readInternalContextEvidence>[0],
+  signal: AbortSignal
+): Promise<ReadonlyMap<string, WorkspaceNotebookRead>> {
+  const { dataRoot, entries } = contextEvidenceInventory(input);
+  const notebookReads = new Map<string, WorkspaceNotebookRead>();
+  for (const { reference, trace, access } of entries) {
+    if ('sourceKind' in trace) continue;
+    if (parseReferenceScope(trace.sourceScope)?.kind !== 'workspace') continue;
+    signal.throwIfAborted();
+    const prepared = await prepareKnowledgeRetrievalTraceRead({
+      dataRoot,
+      workspaceId: input.workspaceId,
+      access: access(),
+      retrievalTraceRef: reference,
+    }).catch(() => {
+      signal.throwIfAborted();
+      throw unavailable();
+    });
+    signal.throwIfAborted();
+    if (prepared) notebookReads.set(`${reference.scopeId}/${reference.objectId}`, prepared);
   }
-  input.nativeAuthority?.assertCurrent();
-  return internalContextDigest({ version: 1, entries });
+  return notebookReads;
 }
 
 /** Extracts only retrieval references retained in completed canonical Tool results. */

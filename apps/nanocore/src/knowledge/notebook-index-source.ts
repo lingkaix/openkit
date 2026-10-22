@@ -57,7 +57,7 @@ export interface WorkspaceNotebookRead {
   readonly workspaceRoot: string;
   readonly current: NotebookRevision & { readonly entries: Readonly<Record<string, string>> };
   readonly selected: NotebookRevision & { readonly entries: Readonly<Record<string, string>> };
-  readonly sources: ReadonlyMap<string, SourcePointer>;
+  readonly sources?: ReadonlyMap<string, SourcePointer>;
 }
 
 /** Reuses current content only while its published head is live; a changed head uses native current readers. */
@@ -73,11 +73,12 @@ export function currentWorkspaceNotebookRead(
   return notebook.publishedRevision() === prepared.current.revision ? prepared : undefined;
 }
 
-/** Loads the existing complete query inventory once; no permission or current-head grant survives I/O. */
+/** Loads inventory or exact selected content; neither view grants current authority. */
 export async function prepareWorkspaceNotebookRead(input: {
   readonly dataRoot: string;
   readonly workspaceId: string;
   readonly notebookRevision?: string | undefined;
+  readonly pageIds?: readonly string[] | undefined;
 }): Promise<WorkspaceNotebookRead> {
   const workspaceRoot = join(input.dataRoot, 'workspaces', input.workspaceId);
   const notebook = new KnowledgeNotebook({
@@ -87,15 +88,19 @@ export async function prepareWorkspaceNotebookRead(input: {
   const revision = input.notebookRevision ?? currentRevision;
   if (input.notebookRevision !== undefined) await notebook.assertPublishedAncestryAsync(revision);
   const record = await notebook.inspectRevisionAsync(revision);
-  const paths = Object.keys(record.entries).filter(
-    (path) => !['index.md', 'log.md'].includes(basename(path))
-  );
+  const paths = input.pageIds
+    ? input.pageIds.map((id) => `${id}.md`).filter((path) => Object.hasOwn(record.entries, path))
+    : Object.keys(record.entries).filter(
+        (path) => !['index.md', 'log.md'].includes(basename(path))
+      );
   const selected = { ...record, files: (await notebook.readRevisionAsync(revision, paths)).files };
   // Historical selection grants no permission to prefetch new current Page bodies or refused reference branches.
   const current =
     revision === currentRevision
       ? selected
       : { ...(await notebook.inspectRevisionAsync(currentRevision)), files: {} };
+  // Exact selections keep Source metadata lazy, as the native selected reader does.
+  if (input.pageIds !== undefined) return { workspaceRoot, current, selected };
   const owner = {
     dataRoot: input.dataRoot,
     ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },

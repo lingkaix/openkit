@@ -7,13 +7,17 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   formatReferenceUri,
+  type Item,
   parseReferenceScope,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { createAssistantHistory } from '../internal-agents/assistant-history.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
-import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
+import {
+  prepareInternalContextEvidenceRead,
+  readInternalContextEvidence,
+} from '../internal-agents/internal-context-evidence.js';
 import {
   type KnowledgeManagerAgentDependencies,
   runKnowledgeManagerAgent,
@@ -26,6 +30,7 @@ import {
   admitUserMemoryRetrieval,
   canReadServerKnowledge,
   knowledgeSourceAudienceReadable,
+  prepareAuthorizedWorkspaceNotebookRead,
   readAuthorizedServerNotebookPages,
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
@@ -209,9 +214,20 @@ export async function askKnowledgeAgent(
       ? `page/user/${userId}/${primaryNotebook.knowledgeBaseId}`
       : `page/workspace/${input.workspaceId}/${primaryNotebook.knowledgeBaseId}`;
     const pinned = { ...bound, notebookRevision: baseRevision };
+    let notebookRead:
+      | Awaited<ReturnType<typeof prepareAuthorizedWorkspaceNotebookRead>>
+      | undefined;
+    if (!memory) {
+      notebookRead = await prepareAuthorizedWorkspaceNotebookRead({
+        ...pinned,
+        pageIds: ['index'],
+      });
+      input.signal.throwIfAborted();
+    }
     const overviewPage = memory
       ? undefined
-      : readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'] }).pages[0];
+      : readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'], notebookRead })
+          .pages[0];
     if (!memory && !overviewPage) throw new Error('Knowledge overview is unavailable.');
     const candidates = new Map<string, KnowledgeRetrievalCandidate>();
     const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage?.content ?? '' });
@@ -298,11 +314,21 @@ export async function askKnowledgeAgent(
         notebookRevision: candidate.revision,
         pageIds: selection.map((page) => page.reference.objectId),
       };
+      const prepared = notebookRead;
       const current = memory
         ? readAuthorizedUserMemoryPages(selected)
         : parseReferenceScope(candidate.reference.scopeId)?.kind === 'server'
           ? readAuthorizedServerNotebookPages(selected)
-          : readAuthorizedWorkspaceNotebookPages(selected);
+          : readAuthorizedWorkspaceNotebookPages({
+              ...selected,
+              notebookRead:
+                prepared?.selected.revision === candidate.revision &&
+                selection.every((page) =>
+                  Object.hasOwn(prepared.selected.files, `${page.reference.objectId}.md`)
+                )
+                  ? prepared
+                  : undefined,
+            });
       const scope = parseReferenceScope(candidate.reference.scopeId);
       if (scope?.family !== 'page' || scope.knowledgeBaseId !== current.knowledgeBaseId)
         throw new Error('Knowledge Base is no longer available.');
@@ -595,6 +621,30 @@ export async function askKnowledgeAgent(
       nativeAuthority,
     });
     tools.push(history.tool);
+    let notebookReads: Awaited<ReturnType<typeof prepareInternalContextEvidenceRead>> | undefined;
+    const evidenceInput = (
+      items: readonly Item[]
+    ): Parameters<typeof readInternalContextEvidence>[0] => ({
+      store,
+      coreDb: input.access.coreDb!,
+      workspaceId: input.workspaceId,
+      threadId: thread.id,
+      // Trace readers recheck their own sources. The context provider checks the full
+      // overview/citation set around dispatch; repeating it inside every trace check is quadratic.
+      nativeAuthority: { ...nativeAuthority, assertCurrent: assertCallerCurrent },
+      items,
+      strategy: 'compaction',
+      knowledgeProjection: 'selection',
+      serverKnowledgeActor: access.serverKnowledgeActor ?? access.requestActor,
+      ...(access.outputThreadId && access.outputTurnId
+        ? {
+            retrievalContext: {
+              threadId: access.outputThreadId,
+              turnId: access.outputTurnId,
+            },
+          }
+        : {}),
+    });
     const workspaceDb = dependencies.openWorkspace(input.workspaceId);
     try {
       const result = await runKnowledgeManagerAgent(dependencies, {
@@ -636,28 +686,21 @@ export async function askKnowledgeAgent(
             ],
           },
         ],
+        prepareEvidence: memory
+          ? undefined
+          : async (items, signal) => {
+              const prepared = await prepareInternalContextEvidenceRead(
+                evidenceInput(items),
+                signal
+              );
+              signal.throwIfAborted();
+              notebookReads = prepared;
+              notebookRead =
+                [...prepared.values()].find((read) => read.selected.revision === baseRevision) ??
+                notebookRead;
+            },
         readEvidence: (items) =>
-          readInternalContextEvidence({
-            store,
-            coreDb: input.access.coreDb!,
-            workspaceId: input.workspaceId,
-            threadId: thread.id,
-            // Trace readers recheck their own sources. The context provider checks the full
-            // overview/citation set around dispatch; repeating it inside every trace check is quadratic.
-            nativeAuthority: { ...nativeAuthority, assertCurrent: assertCallerCurrent },
-            items,
-            strategy: 'compaction',
-            knowledgeProjection: 'selection',
-            serverKnowledgeActor: access.serverKnowledgeActor ?? access.requestActor,
-            ...(access.outputThreadId && access.outputTurnId
-              ? {
-                  retrievalContext: {
-                    threadId: access.outputThreadId,
-                    turnId: access.outputTurnId,
-                  },
-                }
-              : {}),
-          }),
+          readInternalContextEvidence({ ...evidenceInput(items), notebookReads }),
         resultSchema: schema(answerSchema),
         validateResult: (text) => {
           assertCurrent();
