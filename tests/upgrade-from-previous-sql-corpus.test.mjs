@@ -43,10 +43,11 @@ async function fixture(t, existingRuntimeTarget = false) {
   const userId = ensureLocalUser(coreDb);
   if (existingRuntimeTarget) {
     const targets = await load('runtime/nanohost-runtime-target');
+    const { readDataRootLayoutMarker } = await load('storage/fs-layout');
     const target = targets.allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       targetId: 'synthetic-existing-target',
       identityId: 'synthetic-existing-identity',
-      deploymentId: 'synthetic-existing-deployment',
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
       observedAt: '2026-10-17T00:00:00.000Z',
     });
     targets.upsertNanoHostRuntimeTarget(coreDb, {
@@ -131,6 +132,8 @@ async function fixture(t, existingRuntimeTarget = false) {
     },
   };
   const additional = await seedSqlCorpus(input);
+  const { shutdownControlStoreWorkerClient } = await load('storage/control-store-worker-client');
+  await shutdownControlStoreWorkerClient();
   return { ...input, selectors: { ...input.selectors, ...additional }, load };
 }
 
@@ -205,6 +208,10 @@ test('reopens every SQL family and its linked file owners with exact readback', 
   await pendingFlow.recoverPendingRequestsAtBoot(new FsStore({ dataRoot: input.dataRoot }), {
     openWorkspace: (workspaceId) => openWorkspaceDb(input.dataRoot, workspaceId),
   });
+  const { shutdownControlStoreWorkerClient } = await input.load(
+    'storage/control-store-worker-client'
+  );
+  await shutdownControlStoreWorkerClient();
   assert.deepEqual(await readSqlCorpus(input), original);
   assert.equal(
     original['Goals, cards, immutable Plans and Task facts'].values[0].goal.disposition.kind,
@@ -359,95 +366,25 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   const targets = await input.load('runtime/nanohost-runtime-target');
   const bindings = await input.load('runtime/worker-storage-bindings');
   const aep = await input.load('runtime/aep-snapshot-ledger');
-  const { workerTurnCapturePaths } = await import(
-    pathToFileURL(createRequire(join(appRoot, 'package.json')).resolve('@openkit/worker-protocol'))
-      .href
+  const { SimulatedTurnExecutor } = await input.load('lib/simulator');
+  const { FileStorageAdmission } = await input.load('storage/artifacts/file-admission');
+  const scheduler = await input.load('scheduler-records');
+  const attempts = await input.load('runtime/execution-attempt-records');
+  const { allocateEntityId } = await import(
+    pathToFileURL(createRequire(join(appRoot, 'package.json')).resolve('@openkit/protocol')).href
   );
   const sql = input.selectors.sql;
   const core = openCoreDb(input.dataRoot);
   t.after(() => core.sqlite.close());
-  const target = targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
-  const store = new FsStore({ dataRoot: input.dataRoot });
-  const predecessor = store.getAgentSession(sql.contextAgentSessionId);
-  const actor = { kind: 'user', id: input.userId };
-  const turnInput = 'Synthetic idle native corpus.';
-  const turn = await store.createTurn(
-    predecessor.workspaceId,
-    predecessor.threadId,
-    turnInput,
-    actor
-  );
-  const requestItemId = 'it_00000000-0000-7000-8000-000000000902';
-  await store.createItem({
-    id: requestItemId,
-    owner: turn.owner,
-    threadId: turn.threadId,
-    turnId: turn.id,
-    type: 'user-message',
-    text: turnInput,
-    actor,
-    status: 'completed',
-    createdAt: turn.startedAt,
-    completedAt: turn.startedAt,
+  const previousTarget = targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  const now = new Date().toISOString();
+  const target = targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+    targetId: previousTarget.targetId,
+    identityId: previousTarget.identityId,
+    deploymentId: previousTarget.deploymentId,
+    observedAt: now,
   });
-  const session = await store.createAgentSession({
-    id: 'as_00000000-0000-7000-8000-000000000902',
-    workspaceId: turn.owner.workspaceId,
-    threadId: turn.threadId,
-    agentId: predecessor.agentId,
-    status: 'busy',
-    message: null,
-    createdAt: turn.startedAt,
-    updatedAt: turn.startedAt,
-    environmentPackageSnapshotId: 'aepsnap_idle-native-corpus',
-  });
-  await store.updateTurn(turn.id, { agentSessionId: session.id });
-  const snapshotDb = openWorkspaceDb(input.dataRoot, session.workspaceId);
-  try {
-    const original = aep.requireAgentEnvironmentPackageSnapshot(
-      snapshotDb,
-      session.workspaceId,
-      sql.aepSnapshotId
-    );
-    const capturePaths = workerTurnCapturePaths(
-      turn.threadId,
-      original.snapshot.control.adapter.targetRuntime,
-      turn.id
-    );
-    aep.recordAgentEnvironmentPackageSnapshot(snapshotDb, {
-      environmentPackage: {
-        ...original.snapshot,
-        snapshotId: session.environmentPackageSnapshotId,
-        createdAt: turn.startedAt,
-        scope: {
-          ...original.snapshot.scope,
-          agentSessionId: session.id,
-          turnId: turn.id,
-          itemId: requestItemId,
-          requestId: 'upgrade-corpus-idle-native',
-        },
-        control: {
-          ...original.snapshot.control,
-          transcript: {
-            ...original.snapshot.control.transcript,
-            root: capturePaths.root,
-            eventsPath: capturePaths.eventsPath,
-            itemsPath: capturePaths.itemsPath,
-            runtimeProvenance: {
-              ...original.snapshot.control.transcript.runtimeProvenance,
-              nativeOriginIndexPath: capturePaths.nativeOriginIndexPath,
-              rawStreamsRoot: capturePaths.rawStreamsRoot,
-              streamManifestPath: capturePaths.streamManifestPath,
-            },
-          },
-        },
-      },
-      createdAt: session.createdAt,
-    });
-  } finally {
-    snapshotDb.sqlite.close();
-  }
-  const now = target.observedAt;
+  // A new modeled peer generation supplies the same fresh/fenced proof as other offline fixtures.
   targets.upsertNanoHostRuntimeTarget(core, {
     ...target,
     physicalEpoch: 'a'.repeat(64),
@@ -456,6 +393,74 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     predecessorFenced: true,
     observedAt: now,
   });
+  const store = new FsStore({ dataRoot: input.dataRoot });
+  const predecessor = store.getAgentSession(sql.contextAgentSessionId);
+  await store.updateThread(predecessor.workspaceId, predecessor.threadId, { status: 'active' });
+  const actor = { kind: 'user', id: input.userId };
+  const turnInput = 'Synthetic idle native corpus.';
+  const setup = JSON.parse(sql.contextStopped.attempt.preparationInputJson).setup;
+  const executor = new SimulatedTurnExecutor({
+    coreDb: core,
+    fileAdmission: new FileStorageAdmission(input.dataRoot, () => 1_000_000n),
+  });
+  const turn = await store.createTurn(
+    predecessor.workspaceId,
+    predecessor.threadId,
+    turnInput,
+    actor,
+    null,
+    { agentId: setup.manifest.id, executorKind: 'worker', status: 'pending' }
+  );
+  const entry = scheduler.createSchedulerAdmissionEntry(core, {
+    backendId: executor.id,
+    queueEntryId: 'idle-corpus-queue',
+    requestId: 'upgrade-corpus-idle-native',
+    workspaceId: predecessor.workspaceId,
+    threadId: predecessor.threadId,
+    turnId: turn.id,
+    turnInput,
+    requestedAgentId: setup.manifest.id,
+    triggerActor: actor,
+  });
+  const attempt = attempts.createSchedulerExecutionAttempt(core, {
+    entry,
+    preparationInput: { admission: entry, setup },
+  });
+  const preparation = {
+    attemptId: attempt.attemptId,
+    agentSetup: setup,
+    freshAgentSessionId: allocateEntityId('as'),
+    requestId: entry.requestId,
+    turn,
+    turnInput,
+    workspaceCwd: '/workspace',
+    workspaceRoots: [],
+  };
+  const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+  attempts.bindSchedulerExecutionAttemptSession(core, {
+    attemptId: attempt.attemptId,
+    agentSessionId: prepared.agentSessionId,
+  });
+  await executor.commitPreparedAgentSessionForTurn(store, {
+    attemptId: attempt.attemptId,
+    prepared,
+    preparation,
+  });
+  await store.updateTurn(turn.id, { status: 'running' });
+  await executor.startTurn(store, turn.id, turnInput, {
+    attemptId: attempt.attemptId,
+    agentSessionId: prepared.agentSessionId,
+    agentSetup: setup,
+    sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+    requestId: entry.requestId,
+    triggerActor: actor,
+    workspaceRoots: [],
+    workspaceCwd: '/workspace',
+  });
+  const session = store.getAgentSession(prepared.agentSessionId);
+  assert.equal(store.getTurnById(turn.id).status, 'completed');
+  assert.equal(session.status, 'idle');
+  assert.equal(attempts.requireSchedulerExecutionAttempt(core, attempt.attemptId).phase, 'closed');
   const storage = bindings.getWorkerStorageBinding(core, { storageRef: sql.storageRef });
   const reserved = bindings.reserveWorkerStorageAttachment(core, {
     agentSessionId: session.id,
@@ -477,11 +482,6 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     storageRef: storage.storageRef,
     now,
     targets: reserved.targets.map((entry) => ({ ...entry, initialized: true })),
-  });
-  await store.updateAgentSession(session.id, {
-    status: 'idle',
-    nativeHandleDigest: 'd'.repeat(64),
-    retainedStorage: { storageRef: storage.storageRef, workSlotRef: attached.currentWorkSlotRef },
   });
   harness.createNanoHostHarnessRuntime(core, {
     maxActiveTurns: 1,
@@ -538,10 +538,9 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
       },
     },
   });
-  await store.updateTurn(turn.id, {
-    status: 'completed',
-    completedAt: turn.startedAt,
-    durationMs: 0,
+  await store.updateAgentSession(session.id, {
+    nativeHandleDigest: 'd'.repeat(64),
+    retainedStorage: { storageRef: storage.storageRef, workSlotRef: attached.currentWorkSlotRef },
   });
   const previous = await captureIdleNativeBinding(input, {
     workspaceId: session.workspaceId,
@@ -583,7 +582,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     checkIdleNativeBinding(input, previous, {
       workspaceId: session.workspaceId,
       threadId: session.threadId,
-      turnId: sql.contextTurnId,
+      turnId: turn.id,
     }),
     /physical Epoch/
   );
@@ -602,5 +601,97 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   await assert.rejects(
     checkIdleNativeBinding(input, undefined, candidateWorker),
     /selected retained record is missing/
+  );
+});
+
+// These faults remove or contradict one existing owner after lawful checkpoint collection.
+for (const [label, scope, mutation, expected] of [
+  [
+    'original native release obligation',
+    'workspace',
+    `DELETE FROM control_execution_steps
+     WHERE execution_id IN (SELECT id FROM control_executions WHERE work_id = ?)
+       AND json_extract(control_json, '$.kind') = 'release'`,
+    /original terminal and release obligations/i,
+  ],
+  [
+    'original native accepted final status',
+    'core',
+    `DELETE FROM worker_control_records WHERE turn_id = ? AND operation = 'final_status'`,
+    /Task final.*missing/i,
+  ],
+  [
+    'original Task receipt',
+    'workspace',
+    `DELETE FROM idempotency_requests WHERE response_id = ? AND command_name = 'task.start'`,
+    /Task receipt.*missing/i,
+  ],
+  [
+    'matching native release fence',
+    'workspace',
+    `UPDATE control_execution_steps
+     SET control_json = json_set(control_json, '$.outputRefs', json_array('contradictory-fence'))
+     WHERE execution_id IN (SELECT id FROM control_executions WHERE work_id = ?)
+       AND json_extract(control_json, '$.kind') = 'release'`,
+    /release fence contradicts its accepted attempt/i,
+  ],
+]) {
+  test(`refuses collected checkpoint projection without ${label}`, async (t) => {
+    const input = await fixture(t);
+    await readSqlCorpus(input);
+    const { openCoreDb, openWorkspaceDb } = await input.load('storage/db');
+    const db =
+      scope === 'core'
+        ? openCoreDb(input.dataRoot)
+        : openWorkspaceDb(input.dataRoot, input.selectors.workspaceId);
+    try {
+      const triggerQuery = db.sqlite.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='control_execution_steps_settle_once'"
+      );
+      const trigger = label === 'matching native release fence' ? triggerQuery.get() : null;
+      if (label === 'matching native release fence') assert.ok(trigger?.sql);
+      db.sqlite.transaction(() => {
+        if (trigger) db.sqlite.exec('DROP TRIGGER control_execution_steps_settle_once');
+        assert.equal(db.sqlite.prepare(mutation).run(input.selectors.sql.contextTurnId).changes, 1);
+        if (trigger) db.sqlite.exec(trigger.sql);
+      })();
+      if (trigger) assert.deepEqual(triggerQuery.get(), trigger);
+    } finally {
+      db.sqlite.close();
+    }
+    await assert.rejects(readSqlCorpus(input), expected);
+  });
+}
+
+test('detects exact canonical work-observation byte changes without changing decoded values', async (t) => {
+  const input = await fixture(t);
+  const original = await readSqlCorpus(input);
+  const { openWorkspaceDb } = await input.load('storage/db');
+  const db = openWorkspaceDb(input.dataRoot, input.selectors.workspaceId);
+  try {
+    assert.equal(
+      db.sqlite
+        .prepare(
+          "UPDATE control_work_observations SET record_json=record_json || ' ' WHERE turn_id=? AND sequence=1"
+        )
+        .run(input.selectors.sql.contextTurnId).changes,
+      1
+    );
+  } finally {
+    db.sqlite.close();
+  }
+  const changed = await readSqlCorpus(input);
+  assert.deepEqual(
+    changed[SQL_CORPUS_FAMILIES[28]].values,
+    original[SQL_CORPUS_FAMILIES[28]].values
+  );
+  assert.throws(
+    () =>
+      compareFamilies(
+        summarizeFamilies(original, SQL_CORPUS_FAMILIES),
+        changed,
+        SQL_CORPUS_FAMILIES
+      ),
+    /readback changed/
   );
 });

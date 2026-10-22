@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -906,7 +906,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       workspace.sqlite.close();
       user.sqlite.close();
       core.sqlite.close();
-      // The actual Task and Worker owners run in the process that will stop at first publication.
+      // The native Task and Worker owners run to complete model closeout before the process cut.
       const producer = spawnSync(
         process.execPath,
         [
@@ -919,7 +919,7 @@ await produceStoppedSqlContext(input);
         ],
         {
           encoding: 'utf8',
-          input: JSON.stringify({ appRoot, dataRoot, sql, ...contextInput }),
+          input: JSON.stringify({ appRoot, dataRoot, retainedRoot, sql, ...contextInput }),
         }
       );
       if (producer.error) throw producer.error;
@@ -1032,10 +1032,11 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
   }
 }
 
-/** Runs actual Task preparation and Worker publication, then exits before any external effect. */
+/** Runs native Task closeout against an external model, then stops before Task envelope recovery. */
 export async function produceStoppedSqlContext({
   appRoot,
   dataRoot,
+  retainedRoot,
   sql,
   workspaceId,
   threadId,
@@ -1075,13 +1076,25 @@ export async function produceStoppedSqlContext({
     defaultsDigest: `sha256:${digest('{}')}`,
     values: {},
   });
-  const target = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  const previousTarget = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  const target = o.targets.upsertNanoHostRuntimeTarget(core, {
+    ...o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+      targetId: previousTarget.targetId,
+      identityId: previousTarget.identityId,
+      deploymentId: previousTarget.deploymentId,
+      observedAt: new Date().toISOString(),
+    }),
+    physicalEpoch: o.backend.getWorkerBackendSession(core, sql.attemptId).originPhysicalEpoch,
+    freshEmpty: true,
+    ready: true,
+    predecessorFenced: true,
+  });
   const { shutdownControlStoreWorkerClient } = await o.load('storage/control-store-worker-client');
   let originalAttemptId;
   let workerRequest;
   let publishedEnvironmentPackage;
-  /** Observes the actual native binding acknowledgement, then stops this process before later owners. */
-  async function stopAfterBinding(environmentPackage) {
+  /** Stops only after the native executor acknowledges model terminal publication and release. */
+  async function stopAfterNativeCloseout(environmentPackage) {
     const workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
     const turn = store.getTurnById(environmentPackage.scope.turnId);
     const session = store.getAgentSession(environmentPackage.scope.agentSessionId);
@@ -1111,17 +1124,21 @@ export async function produceStoppedSqlContext({
     await new Promise((resolve) =>
       process.stdout.write(`SQL_CORPUS_WORKER_STOP ${JSON.stringify(stopped)}\n`, resolve)
     );
-    // Real process loss prevents executor catch/finally from manufacturing a graceful closeout.
+    // This process cut tests cold Task-envelope publication after completed native model closeout.
     process.exit(0);
   }
-  const publishTurn = store.updateTurn.bind(store);
-  store.updateTurn = async (...args) => {
-    const published = await publishTurn(...args);
-    // The Worker executor alone supplies these original intents; this observer changes no input or result.
-    if (args[2]?.journalIntents) await stopAfterBinding(publishedEnvironmentPackage);
-    return published;
-  };
-  // Only the external runtime is modeled. Native admissions, checkpoints and journal intents are real.
+  const [appOwner, native, workerProtocol] = await Promise.all([
+    o.load('app'),
+    o.load('runtime/nanohost-attempt-records'),
+    o.loadPackage('@openkit/worker-protocol'),
+  ]);
+  const gateway = appOwner.createDefaultWorkerControlGateway(core);
+  const modelRoot = join(retainedRoot, 'synthetic-context-external-model');
+  const exposureRoot = join(modelRoot, 'exposure');
+  const model = { registration: null, correlation: null, eventsJsonl: null };
+  let capture;
+  let credentialCheckValues;
+  const modelSessionId = 'upgrade-corpus-context-session';
   const backend = {
     id: 'nanohost',
     async describeCapabilities() {
@@ -1142,7 +1159,7 @@ export async function produceStoppedSqlContext({
       return {
         agentSessionId: environmentPackage.scope.agentSessionId,
         backendKind: 'openshell',
-        backendSessionId: 'upgrade-corpus-context-session',
+        backendSessionId: modelSessionId,
         deploymentId: target.deploymentId,
         packageSnapshotId: environmentPackage.snapshotId,
         runtimeTargetId: target.targetId,
@@ -1151,10 +1168,102 @@ export async function produceStoppedSqlContext({
       };
     },
     async materialize(environmentPackage, context) {
-      // The observer stops on the first acknowledged binding inside this native callback.
+      assert.equal(existsSync(exposureRoot), false);
       publishedEnvironmentPackage = environmentPackage;
       await context.beforeMaterialization();
-      throw new Error('SQL corpus missed the first native Worker binding stop.');
+      mkdirSync(exposureRoot, { recursive: true });
+      capture = writeSqlContextCapture(environmentPackage, join(modelRoot, 'capture'));
+      model.registration = gateway.registerSession(environmentPackage, {
+        sandboxBindingRef: context.sandboxBindingRef,
+      });
+      native.bindNanoHostAttemptRouteTokenHashes(core, {
+        attemptId: originalAttemptId,
+        sandboxBindingRef: context.sandboxBindingRef,
+        workerControlTokenHash: model.registration.workerControlTokenHash,
+        workerInferenceTokenHash: model.registration.workerInferenceTokenHash,
+        workerCapabilityTokenHash: model.registration.workerCapabilityTokenHash,
+      });
+      const loopbackValues = Array.from({ length: 2 }, () => randomBytes(32).toString('base64url'));
+      writeFileSync(join(exposureRoot, 'loopback.json'), JSON.stringify(loopbackValues), {
+        mode: 0o600,
+      });
+      credentialCheckValues = {
+        sensitiveValues: [
+          context.sandboxBindingRef,
+          ...[
+            ...context.providerCredentials,
+            ...context.runtimeEnvCredentials,
+            ...context.runtimeFileCredentials,
+          ].map((entry) => entry.credentialValue),
+        ],
+        loopbackDigests: loopbackValues.map((value) => digest(value)),
+        routeTokenHashes: {
+          workerControl: model.registration.workerControlTokenHash,
+          inference: model.registration.workerInferenceTokenHash,
+          capability: model.registration.workerCapabilityTokenHash,
+        },
+      };
+      return {
+        backendKind: 'openshell',
+        packageId: environmentPackage.packageId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        controlMode: environmentPackage.control.mode,
+        command: environmentPackage.runtime.command,
+        requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+        sandbox: { name: modelSessionId, source: 'deterministic-external-model', state: 'created' },
+        workspaceInputs: environmentPackage.workspace.inputs.map(
+          ({ id, kind, target, access }) => ({ id, kind, target, access })
+        ),
+      };
+    },
+    async prepareLaunch() {
+      assert.equal(existsSync(exposureRoot), true);
+    },
+    async submit(input) {
+      model.correlation = input;
+      return {
+        ...input,
+        disposition: 'accepted',
+        execution: 'pending',
+        fenceRef: null,
+        outcomeRef: null,
+      };
+    },
+    async inspect() {
+      throw new Error('This model has no inspection request.');
+    },
+    async cancel() {
+      throw new Error('This model has no cancellation request.');
+    },
+    async collectEvidence() {
+      return [];
+    },
+    async collectWorkspaceChanges() {
+      return [];
+    },
+    async collectTranscript() {
+      return {
+        eventsJsonl: required(model.eventsJsonl, 'External model terminal bytes'),
+        itemsJsonl: '',
+        runtimeProvenance: capture,
+        credentialCheckValues,
+      };
+    },
+    async cleanupSession(identity) {
+      assert.equal(identity.backendSessionId, modelSessionId);
+      rmSync(exposureRoot, { recursive: true });
+      assert.equal(gateway.unregisterSession(publishedEnvironmentPackage.snapshotId), true);
+    },
+    async release({ proof, ...correlation }) {
+      assert.equal(existsSync(exposureRoot), false);
+      assert.deepEqual(Object.values(proof), [true, true, true, true, true, true]);
+      for (const key of ['attemptId', 'backendId', 'bindingRef', 'inputRef', 'operationId'])
+        assert.equal(correlation[key], model.correlation[key]);
+      return {
+        ...correlation,
+        state: 'released',
+        fenceRef: `external-model-fence:${correlation.attemptId}`,
+      };
     },
   };
   const executor = new worker.WorkerGovernanceTurnExecutor({
@@ -1162,6 +1271,31 @@ export async function produceStoppedSqlContext({
     coreDb: core,
     fileAdmission: new files.FileStorageAdmission(dataRoot, () => 0n),
     createAgentSessionId: () => id('as', 'context-session'),
+    workerControlGateway: gateway,
+    async awaitWorkerCompletion(environmentPackage) {
+      const { lineage } = capture;
+      const terminal = workerProtocol.buildWorkerCanonicalTerminalEventRecord({
+        lineage,
+        sequence: 0,
+        data: {
+          status: 'failed',
+          stopReason: 'error',
+        },
+      });
+      model.eventsJsonl = `${JSON.stringify(terminal)}\n`;
+      const accepted = gateway.recordFinalStatus({
+        authorization: `Bearer ${model.registration.token}`,
+        tokenFamily: 'worker-control',
+        lineage,
+        sequence: terminal.sequence,
+        ...terminal.event.data,
+      });
+      assert.equal(accepted.accepted, true);
+      return o.control.waitForWorkerControlFinalStatus(core, {
+        attemptId: originalAttemptId,
+        lineage,
+      });
+    },
   });
   let execution;
   const startTask = modes.createTaskStartOperation({
@@ -1246,7 +1380,7 @@ export async function produceStoppedSqlContext({
           workspaceRoots: [],
           workspaceCwd: '/workspace',
         });
-        throw new Error('SQL corpus Worker producer returned without the required process stop.');
+        await stopAfterNativeCloseout(publishedEnvironmentPackage);
       })().catch((error) => {
         process.stderr.write(
           `SQL_CORPUS_WORKER_REFUSAL ${JSON.stringify({
@@ -1280,6 +1414,14 @@ export async function produceStoppedSqlContext({
     await execution;
     throw new Error('SQL corpus Task admission returned without the required Worker process stop.');
   } finally {
+    if (publishedEnvironmentPackage)
+      gateway.unregisterSession(publishedEnvironmentPackage.snapshotId);
+    try {
+      rmSync(exposureRoot, { recursive: true, force: true });
+    } catch {
+      process.stderr.write('SQL_CORPUS_MODEL_EXPOSURE_CLEANUP_FAILED\n');
+      process.exitCode = 1;
+    }
     await shutdownControlStoreWorkerClient();
     if (core.sqlite.open) core.sqlite.close();
   }
@@ -1697,6 +1839,77 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
   );
 }
 
+/** Writes the existing synthetic native capture; these bytes never prove physical execution. */
+function writeSqlContextCapture(environmentPackage, captureRoot) {
+  const { agentSessionId, requestId, workspaceId, threadId, turnId } = environmentPackage.scope;
+  const lineage = {
+    agentSessionId,
+    packageSnapshotId: environmentPackage.snapshotId,
+    requestId,
+    workspaceId,
+    threadId,
+    turnId,
+  };
+  const nativeSessionId = '019f0000-0000-7000-8000-000000000010';
+  const nativeThreadId = '019f0000-0000-7000-8000-000000000001';
+  const [sessionFrame, threadFrame] = [
+    { type: 'session_meta', payload: { session_id: nativeSessionId, id: nativeThreadId } },
+    { type: 'thread.started', thread_id: nativeThreadId },
+  ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
+  const raw = Buffer.concat([sessionFrame, threadFrame]);
+  const nativeIndex = [
+    [sessionFrame, 'session_meta', { nativeSessionId, nativeThreadId }],
+    [threadFrame, 'thread.started', { nativeThreadId }],
+  ].map(([bytes, eventKind, identity], frameSequence) => ({
+    schemaVersion: 1,
+    lineage,
+    runtimeFamily: 'codex',
+    adapterVersion: '0.153.4',
+    streamRef: 'stream-0000.jsonl',
+    frameSequence,
+    byteOffset: frameSequence === 0 ? 0 : sessionFrame.length,
+    byteLength: bytes.length,
+    frameSha256: `sha256:${digest(bytes)}`,
+    eventKind,
+    parseStatus: 'parsed',
+    ...identity,
+  }));
+  const manifest = {
+    schemaVersion: 1,
+    lineage,
+    runtimeFamily: 'codex',
+    adapterVersion: '0.153.4',
+    primaryStreamRef: 'stream-0000.jsonl',
+    captureStatus: 'complete',
+    streams: [
+      {
+        streamRef: 'stream-0000.jsonl',
+        sourceKind: 'primary',
+        bytes: raw.length,
+        sha256: `sha256:${digest(raw)}`,
+        frameCount: 2,
+        captureStatus: 'complete',
+        stableTerminal: true,
+      },
+    ],
+  };
+  mkdirSync(captureRoot, { recursive: true });
+  writeFileSync(join(captureRoot, 'raw-streams.json'), `${JSON.stringify(manifest)}\n`);
+  writeFileSync(
+    join(captureRoot, 'native-origin-index.jsonl'),
+    `${nativeIndex.map((entry) => JSON.stringify(entry)).join('\n')}\n`
+  );
+  writeFileSync(join(captureRoot, 'stream-0000.jsonl'), raw);
+  return {
+    lineage,
+    manifestPath: join(captureRoot, 'raw-streams.json'),
+    nativeOriginIndexPath: join(captureRoot, 'native-origin-index.jsonl'),
+    diagnostics: [],
+    missingPaths: [],
+    rawStreamPaths: { 'stream-0000.jsonl': join(captureRoot, 'stream-0000.jsonl') },
+  };
+}
+
 /** Seeds correlated AEP, Context Package, and original evidence through their product owners. */
 async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, coldReopen) {
   const [hashing, context, contextAuthorities, provenance] = await Promise.all(
@@ -1841,12 +2054,14 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     note: 'Synthetic retained comparison.',
   });
   const pendingFlow = await o.load('runtime/pending-request-flow');
+  // New person work must not append Items to the recovered sealed Worker Turn.
+  const pendingTurn = await store.createTurn(workspaceId, threadId, content, actor);
   sql.pendingRequestId = '00000000-0000-4000-8000-000000000901';
   await pendingFlow.raiseRecordedPendingRequest(store, workspace.sqlite, {
     requestId: sql.pendingRequestId,
     workspaceId,
     threadId,
-    raisingTurnId: turn.id,
+    raisingTurnId: pendingTurn.id,
     requestItemId: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
     kind: 'approval',
     requesterKind: 'person',
@@ -1857,23 +2072,27 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
       title: 'Synthetic corpus',
       description: 'Retained approval fixture.',
     },
-    now: turn.startedAt,
+    now: pendingTurn.startedAt,
   });
   await store.createItem({
     id: o.pending.pendingRequestItemId(sql.pendingRequestId, 'request'),
     owner: turn.owner,
     threadId,
-    turnId: turn.id,
+    turnId: pendingTurn.id,
     type: 'approval-request',
     approvalRequestId: sql.pendingRequestId,
     kind: 'permission',
     title: 'Synthetic corpus',
     description: 'Retained approval fixture.',
     status: 'completed',
-    createdAt: turn.startedAt,
-    completedAt: turn.startedAt,
+    createdAt: pendingTurn.startedAt,
+    completedAt: pendingTurn.startedAt,
   });
-  await seedChannelEvidence(o, core, workspace, sql, { workspaceId, threadId, turnId: turn.id });
+  await seedChannelEvidence(o, core, workspace, sql, {
+    workspaceId,
+    threadId,
+    turnId: pendingTurn.id,
+  });
   const presentation = await o.ui.publishGenerativePresentation(
     {
       store,
@@ -1886,7 +2105,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     },
     {
       threadId,
-      turnId: turn.id,
+      turnId: pendingTurn.id,
       title: 'Synthetic continuity',
       fallbackText: content,
       source: { kind: 'answer', text: content },
@@ -1911,13 +2130,17 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     }
   );
   sql.presentationId = presentation.id;
+  await store.completeTurn(pendingTurn.id, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
   const workspaceRoot = join(workspace.dataRoot, 'workspaces', workspaceId);
   const authorities = contextAuthorities.createWorkerContextPackageAuthorityReader({
     coreDb: core,
     workspaceDb: workspace,
     store,
   });
-  // A stopped pre-effect producer cannot author an accepted backend handoff or trace.
+  // The native executor already accepted this exact handoff and trace before the process cut.
   const trace = context.readWorkerContextPackageTrace({
     authorities,
     workspaceId,
@@ -1954,85 +2177,8 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     threadId,
     turnId: turn.id,
   };
-  const nativeSessionId = '019f0000-0000-7000-8000-000000000010';
-  const nativeThreadId = '019f0000-0000-7000-8000-000000000001';
-  const sessionFrame = Buffer.from(
-    `${JSON.stringify({
-      timestamp: NOW,
-      type: 'session_meta',
-      payload: {
-        session_id: nativeSessionId,
-        id: nativeThreadId,
-        timestamp: NOW,
-        cwd: '/workspace/synthetic',
-        originator: 'codex_exec',
-        cli_version: '0.153.4',
-        source: 'exec',
-      },
-    })}\n`
-  );
-  const threadFrame = Buffer.from(
-    `${JSON.stringify({ type: 'thread.started', thread_id: nativeThreadId })}\n`
-  );
-  const raw = Buffer.concat([sessionFrame, threadFrame]);
-  const nativeIndex = [
-    {
-      schemaVersion: 1,
-      lineage,
-      runtimeFamily: 'codex',
-      adapterVersion: '0.153.4',
-      streamRef: 'stream-0000.jsonl',
-      frameSequence: 0,
-      byteOffset: 0,
-      byteLength: sessionFrame.length,
-      frameSha256: `sha256:${digest(sessionFrame)}`,
-      eventKind: 'session_meta',
-      parseStatus: 'parsed',
-      nativeSessionId,
-      nativeThreadId,
-    },
-    {
-      schemaVersion: 1,
-      lineage,
-      runtimeFamily: 'codex',
-      adapterVersion: '0.153.4',
-      streamRef: 'stream-0000.jsonl',
-      frameSequence: 1,
-      byteOffset: sessionFrame.length,
-      byteLength: threadFrame.length,
-      frameSha256: `sha256:${digest(threadFrame)}`,
-      eventKind: 'thread.started',
-      parseStatus: 'parsed',
-      nativeThreadId,
-    },
-  ];
-  const manifest = {
-    schemaVersion: 1,
-    lineage,
-    runtimeFamily: 'codex',
-    adapterVersion: '0.153.4',
-    primaryStreamRef: 'stream-0000.jsonl',
-    captureStatus: 'complete',
-    streams: [
-      {
-        streamRef: 'stream-0000.jsonl',
-        sourceKind: 'primary',
-        bytes: raw.length,
-        sha256: `sha256:${digest(raw)}`,
-        frameCount: 2,
-        captureStatus: 'complete',
-        stableTerminal: true,
-      },
-    ],
-  };
   const captureRoot = join(retainedRoot, 'synthetic-runtime-capture');
-  mkdirSync(captureRoot, { recursive: true });
-  writeFileSync(join(captureRoot, 'raw-streams.json'), `${JSON.stringify(manifest)}\n`);
-  writeFileSync(
-    join(captureRoot, 'native-origin-index.jsonl'),
-    `${nativeIndex.map((entry) => JSON.stringify(entry)).join('\n')}\n`
-  );
-  writeFileSync(join(captureRoot, 'stream-0000.jsonl'), raw);
+  writeSqlContextCapture(environmentPackage, captureRoot);
   const imported = await provenance.importWorkerRuntimeProvenance({
     backend: { kind: 'openshell', placement: 'local', version: 'synthetic' },
     collectedAt: NOW,
@@ -2092,7 +2238,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
   );
   const body = Buffer.from('Synthetic restricted evidence body.\n');
   const observations = await o.load('storage/work-observations');
-  observations.appendWorkObservation(workspace, {
+  await observations.appendWorkObservation(workspace, {
     threadId,
     turnId: turn.id,
     // The selected revision's reader maps this historical fixture to its own strict writer name.
@@ -2134,10 +2280,6 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     workspace.dataRoot,
     join(workspaceRoot, 'evidence', 'backend', sql.restrictedBody.bundleId, 'raw', 'content')
   );
-  sql.observationsPath = relative(
-    workspace.dataRoot,
-    join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'observations.jsonl')
-  );
   const tools = [{ name: 'synthetic_inspect', inputSchema: { type: 'object', properties: {} } }];
   sql.mcpSchemaSnapshotId = 'mcp_upgrade-corpus';
   o.mcp.importMcpToolSchemaSnapshots(workspace, [
@@ -2165,6 +2307,11 @@ async function readLinkedEvidence(o, core, workspace, store, sql) {
       'runtime/worker-runtime-provenance',
     ].map(o.load)
   );
+  const [recovery, journal, terminal] = await Promise.all([
+    o.load('runtime/worker-recovery'),
+    o.load('runtime/execution-journal'),
+    o.load('runtime/worker-turn-failure'),
+  ]);
   const dataRoot = workspace.dataRoot;
   const workspaceId = workspace.workspaceId;
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
@@ -2185,6 +2332,60 @@ async function readLinkedEvidence(o, core, workspace, store, sql) {
     turnId: sql.contextTurnId,
     workspaceRoot,
   });
+  const { scope } = snapshot.snapshot;
+  const { checkpoint, attempt: original } = sql.contextStopped;
+  required(checkpoint, 'Original native Task checkpoint');
+  assert.equal(checkpoint.turnId, scope.turnId);
+  const attempt = o.attempts.requireSchedulerExecutionAttempt(core, original.attemptId);
+  assert.equal(attempt.turnId, scope.turnId);
+  const lineage = { ...scope, packageSnapshotId: snapshot.snapshotId };
+  const final = o.control.getWorkerControlAcceptedFinalStatus(core, lineage);
+  required(final, 'Task final');
+  assert.equal(
+    recovery.recoverWorkerCheckpointStopReason(core, store, workspace, checkpoint),
+    o.control.canonicalStopReasonForAcceptedWorkerFinalStatus(final, attempt.terminalCause)
+  );
+  const commandScope = { actorId: sql.userId, workspaceId, threadId: scope.threadId };
+  const key = o.store.commandRequestKey('task.start', scope.requestId, commandScope);
+  const receipts = o.commands.readCommandRequestRecordsFromSqlite(workspace.sqlite);
+  const command = receipts.find((record) => record.key === key);
+  required(command, 'Task receipt');
+  assert.equal(command.inputHash, checkpoint.requestInputHash);
+  assert.deepEqual(command.response, { kind: 'turn', id: scope.turnId });
+  assert.deepEqual(command.scope, commandScope);
+  const { execution } = await terminal.workerTurnTerminalPublication(
+    workspace,
+    scope.turnId,
+    'failed'
+  );
+  const ref = { owner: { kind: 'workspace', workspaceId }, executionId: execution.executionId };
+  const reader = journal.createExecutionStepJournalReader(workspace, ref.owner);
+  const root = await reader.readExecution(ref);
+  assert.equal(root.phase, 'closed', 'Original Task execution is not closed.');
+  assert.deepEqual(root.openSteps, []);
+  assert.deepEqual(root.exclusionRefs, []);
+  const steps = await reader.readEndedSteps(ref);
+  assert.deepEqual(steps.map((step) => step.control.kind).sort(), [
+    'collect',
+    'inspect-cleanup',
+    'materialize',
+    'release',
+    'terminal-publication',
+  ]);
+  for (const step of steps) {
+    assert.equal(step.state, 'completed', 'Original Task has an incomplete obligation.');
+    assert.equal(step.control.attemptId, attempt.attemptId);
+  }
+  assert.deepEqual(
+    steps.find((step) => step.control.kind === 'release').control.outputRefs,
+    [attempt.fenceRef],
+    'Original Task release fence contradicts its accepted attempt.'
+  );
+  assert.equal(
+    o.checkpoints.getWorkerCheckpoint(workspace, workspaceId, scope.threadId, scope.turnId),
+    null,
+    'The completed original Task checkpoint was not collected.'
+  );
   const body = required(
     o.evidence.readWorkObservationBody(workspace, sql.restrictedBody),
     'Restricted evidence bytes'
@@ -2232,7 +2433,20 @@ async function readLinkedEvidence(o, core, workspace, store, sql) {
     threadId: sql.goalThreadId,
     turnId: sql.contextTurnId,
   });
+  const observationRecord = workspace.sqlite.prepare(
+    'SELECT CAST(record_json AS BLOB) AS bytes FROM control_work_observations WHERE turn_id=? AND id=?'
+  );
+  const observationBytes = workObservations.map(({ id }) => {
+    const { bytes } = observationRecord.get(sql.contextTurnId, id);
+    return {
+      path: `sqlite/workspace/${workspaceId}/control_work_observations/${id}`,
+      byteLength: bytes.length,
+      sha256: digest(bytes),
+    };
+  });
   return {
+    closedContext: [attempt, command, final],
+    observationBytes,
     manifest,
     nativeEntryCount: nativeEntries.length,
     workObservations,
@@ -2429,7 +2643,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
       [SQL_CORPUS_FAMILIES[12]]: one(SQL_CORPUS_FAMILIES[12], [
         pending,
         receipt(workspace, sql.receiptKeys.workspace),
-        o.checkpoints.getWorkerCheckpoint(workspace, workspaceId, threadId, turnId),
+        ...linked.closedContext,
       ]),
       [SQL_CORPUS_FAMILIES[13]]: one(SQL_CORPUS_FAMILIES[13], [
         o.materials.getWorkspaceMaterial(workspace, sql.materialId),
@@ -2570,7 +2784,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
                     : row.obs,
           })),
         ],
-        [fileBytes(dataRoot, join(dataRoot, sql.observationsPath))]
+        linked.observationBytes
       ),
       [SQL_CORPUS_FAMILIES[29]]: one(
         SQL_CORPUS_FAMILIES[29],
