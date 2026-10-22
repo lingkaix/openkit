@@ -2412,41 +2412,10 @@ describe('worker MCP routes', () => {
         },
       ],
     };
-    const setup = createTestAgentSetup({ mcpIds: ['echo'] });
-    const makePackage = async (requestId: string) => {
-      const turn = await store.createTurn(workspaceId, threadId, 'Use current MCP schema', actor);
-      const pkg = resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: testEntityId('as', requestId),
-        agentSetup: setup,
-        backend: { kind: 'openshell' },
-        createdAt: new Date().toISOString(),
-        requestId,
-        triggerActor: actor,
-        turn,
-        workspaceCwd: '/workspace',
-        workspaceRoots: [],
-        workspaceMcpServerCatalog: catalog,
-      });
-      await store.createAgentSession({
-        id: pkg.scope.agentSessionId,
-        agentId: pkg.agent.agentId,
-        workspaceId,
-        threadId,
-        status: 'busy',
-        message: null,
-        createdAt: pkg.createdAt,
-        updatedAt: pkg.createdAt,
-      });
-      await store.updateTurn(turn.id, {
-        agentId: pkg.agent.agentId,
-        agentSessionId: pkg.scope.agentSessionId,
-      });
-      recordMcpWorkerLineage(coreDb, pkg);
-      return pkg;
-    };
-    let environmentPackage = await makePackage('req_schema_first');
-    const firstTurnId = environmentPackage.scope.turnId;
+    const setup = createTestAgentSetup({
+      mcpIds: ['echo'],
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
     const original = [mcpEchoTool(), { ...mcpEchoTool(), name: 'review-echo' }];
     const changed = [
       {
@@ -2471,7 +2440,17 @@ describe('worker MCP routes', () => {
     } satisfies WorkerMcpGateway;
     const runtimeConfig = createInMemoryRuntimeConfigSnapshot({
       dataRoot,
-      agentManifests: [],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Schema fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+      agentManifests: [setup.manifest],
       workspaceMcpServerCatalogs: [
         {
           catalog,
@@ -2489,9 +2468,39 @@ describe('worker MCP routes', () => {
         toolName: 'review-echo',
         userId: actor.id,
         threadId,
-        turnId: environmentPackage.scope.turnId,
+        turnId: testEntityId('tu', 'schema-mcp-policy'),
       }),
     };
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => runtimeConfig,
+    });
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const taskApp = createApp({
+      coreDb,
+      store,
+      workerMcpGateway,
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: runtimeConfig,
+      }),
+    });
+    const task = (requestId: string) =>
+      taskApp.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId, threadId },
+          {
+            body: JSON.stringify({ input: 'Use current MCP schema', requestId }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
+    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    let capabilityToken = '';
     const register = () => {
       const app = new Hono();
       registerWorkerMcpRoutes({
@@ -2500,9 +2509,7 @@ describe('worker MCP routes', () => {
         runtimeConfig: () => runtimeConfig,
         store,
         workerMcpGateway,
-        workerControlGateway: {
-          authenticatePackageToken: vi.fn(() => environmentPackage),
-        } as unknown as WorkerControlGateway,
+        workerControlGateway: native.workerControlGateway,
         workspaceMutationAdmission: new WorkspaceMutationAdmission(),
       });
       return app;
@@ -2514,7 +2521,7 @@ describe('worker MCP routes', () => {
         method: 'POST',
         headers: {
           accept: 'application/json, text/event-stream',
-          authorization: 'Bearer capability-token',
+          authorization: `Bearer ${capabilityToken}`,
           'content-type': 'application/json',
         },
         body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params }),
@@ -2523,6 +2530,23 @@ describe('worker MCP routes', () => {
       return response.json();
     };
     try {
+      const firstRequestId = '0190f4c8-0000-7000-8000-000000000731';
+      const started = await task(firstRequestId);
+      expect(started.status, await started.clone().text()).toBe(202);
+      const firstTurn = StartTaskModeResponseSchema.parse(await started.json()).turn;
+      const first = native.executionFor(firstTurn.id);
+      await first.launched.promise;
+      capabilityToken = native.executor.capabilityToken;
+      let environmentPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      const firstTurnId = firstTurn.id;
+      expect(environmentPackage.scope).toMatchObject({
+        workspaceId,
+        threadId,
+        turnId: firstTurnId,
+      });
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
       const pending = await request('tools/call', {
         name: 'review-echo',
@@ -2578,38 +2602,30 @@ describe('worker MCP routes', () => {
       // Route reconstruction loses process-local state but must keep the Turn selection.
       app = register();
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
-      await store.updateTurn(firstTurnId, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
+      first.completion.resolve();
+      await first.execution;
+      expect(store.getTurnById(firstTurnId).status).toBe('completed');
+      const replay = await task(firstRequestId);
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(firstTurnId);
+      expect(native.executor.launches).toBe(1);
+      const next = await task('0190f4c8-0000-7000-8000-000000000732');
+      expect(next.status, await next.clone().text()).toBe(202);
+      const secondTurn = StartTaskModeResponseSchema.parse(await next.json()).turn;
+      expect(secondTurn.id).not.toBe(firstTurnId);
+      const second = native.executionFor(secondTurn.id);
+      await second.launched.promise;
+      capabilityToken = native.executor.capabilityToken;
+      environmentPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(environmentPackage.scope).toMatchObject({
+        workspaceId,
+        threadId,
+        turnId: secondTurn.id,
       });
-      const closing = markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${firstTurnId}`),
-        cause: 'worker-final-status',
-        outcomeRef: 'fixture-schema:completed',
-      });
-      const proof = {
-        terminalHandoff: true,
-        output: true,
-        evidence: true,
-        outsideWorkspaceCollection: true,
-        integrationDrain: true,
-        routesRevoked: true,
-      } as const;
-      const correlation = schedulerExecutionCorrelation(closing);
-      const release = await new SimulatedTurnExecutor({ coreDb }).release({
-        ...correlation,
-        proof,
-      });
-      closeSchedulerExecutionAttemptWithFence(coreDb, {
-        correlation,
-        proof,
-        fenceRef: release.fenceRef!,
-      });
-      await store.updateAgentSession(environmentPackage.scope.agentSessionId, {
-        status: 'closed',
-        updatedAt: new Date().toISOString(),
-      });
-      environmentPackage = await makePackage('req_schema_second');
+      expect(native.executor.launches).toBe(2);
       expect(await request('tools/list')).toMatchObject({ result: { tools: changed } });
       expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
         result: { content: [{ text: 'called' }] },
@@ -2620,56 +2636,68 @@ describe('worker MCP routes', () => {
       expect(workerMcpGateway.callTool).toHaveBeenCalledTimes(2);
       const db = openWorkspaceDb(dataRoot, workspaceId);
       try {
-        const bindings = db.sqlite
-          .prepare(`
-          SELECT turn_id, schema_snapshot_id FROM capability_calls
-          WHERE family = 'mcp' ORDER BY rowid
-        `)
-          .all() as Array<{ turn_id: string; schema_snapshot_id: string | null }>;
+        const bindings = listWorkspaceCapabilityCalls(db, workspaceId).filter(
+          (call) => call.family === 'mcp' && call.providerRef === 'echo'
+        );
+        const references: string[] = [];
         for (const [turnId, expected] of [
           [firstTurnId, original],
           [environmentPackage.scope.turnId, changed],
         ] as const) {
           const ids = bindings
-            .filter((row) => row.turn_id === turnId)
-            .map((row) => row.schema_snapshot_id);
+            .filter((row) => row.turnId === turnId)
+            .map((row) => row.schemaSnapshotId);
           expect(ids.length).toBeGreaterThan(0);
-          expect(new Set(ids)).toEqual(
-            new Set([`mcpsnap_echo_${mcpToolSchemaContentDigest(expected)}`])
-          );
+          expect(new Set(ids).size).toBe(1);
+          const schemaSnapshotId = ids[0]!;
+          expect(schemaSnapshotId).toEqual(expect.any(String));
+          references.push(schemaSnapshotId);
+          expect(
+            readRetainedMcpToolSchemaSnapshot({
+              workspaceDb: db,
+              workspaceId,
+              catalogEntryId: 'echo',
+              schemaSnapshotId,
+            })
+          ).toEqual({ schemaSnapshotId, tools: expected });
         }
-        const prior = db.sqlite
-          .prepare(
-            "SELECT call_id FROM capability_calls WHERE turn_id = ? AND family = 'mcp' AND schema_snapshot_id IS NOT NULL ORDER BY started_at, call_id LIMIT 1"
-          )
-          .get(environmentPackage.scope.turnId) as { call_id: string };
+        expect(new Set(references).size).toBe(2);
+        const prior = bindings.find(
+          (row) => row.turnId === environmentPackage.scope.turnId && row.schemaSnapshotId !== null
+        )!;
+        // Corrupt only an owner-created retained header after both live schema checks pass.
         db.sqlite
           .prepare(
             'UPDATE capability_calls SET schema_version = 2, extensions_json = ? WHERE call_id = ?'
           )
-          .run('{', prior.call_id);
+          .run('{', prior.id);
         const retainedCall = db.sqlite
           .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
-          .get(prior.call_id);
-        const retainedSchemas = db.sqlite
-          .prepare('SELECT * FROM mcp_tool_schema_snapshots ORDER BY snapshot_id')
-          .all();
+          .get(prior.id);
+        const retainedSchemas = listExportableMcpToolSchemaSnapshots(db, workspaceId);
         const contacts = vi.mocked(workerMcpGateway.listTools).mock.calls.length;
         expect(await request('tools/list')).toHaveProperty('error');
         expect(workerMcpGateway.listTools).toHaveBeenCalledTimes(contacts);
         expect(
-          db.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(prior.call_id)
+          db.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(prior.id)
         ).toEqual(retainedCall);
-        expect(
-          db.sqlite.prepare('SELECT * FROM mcp_tool_schema_snapshots ORDER BY snapshot_id').all()
-        ).toEqual(retainedSchemas);
+        expect(listExportableMcpToolSchemaSnapshots(db, workspaceId)).toEqual(retainedSchemas);
       } finally {
         db.sqlite.close();
       }
     } finally {
+      for (const turn of store.listThreadTurns(workspaceId, threadId))
+        native.executionFor(turn.id).completion.resolve();
+      await Promise.allSettled(
+        taskAdmissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      taskAdmissions.mockRestore();
+      native.restore();
       await workerMcpGateway.close();
-      coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

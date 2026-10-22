@@ -53,6 +53,7 @@ import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-le
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
+  listSchedulerExecutionAttemptsForTurn,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
@@ -74,6 +75,7 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import * as checkpointOwners from './runtime/worker-checkpoints.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { getWorkerControlAcceptedFinalStatus } from './runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from './runtime/worker-governance-backend.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import * as recoveryOwners from './runtime/worker-recovery.js';
@@ -725,11 +727,35 @@ describe('conversation.submit worker storage choice', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new CompletingTurnExecutor({ coreDb });
-    const workerSetup = createTestAgentSetup();
+    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const executor = native.executor;
+    const itemPublications: {
+      itemId: string;
+      input: Parameters<typeof store.updateItem>[1];
+      completion: ReturnType<typeof store.updateItem>;
+    }[] = [];
+    const updateItem = store.updateItem.bind(store);
+    const publicationObservation = vi.spyOn(store, 'updateItem').mockImplementation((...args) => {
+      const completion = updateItem(...args);
+      itemPublications.push({ itemId: args[0], input: args[1], completion });
+      return completion;
+    });
+    const workerLoops: ReturnType<typeof loopOwners.runWorkerTurnLoop>[] = [];
+    const originalLoop = loopOwners.runWorkerTurnLoop;
+    const loopObservation = vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation((args) => {
+      const pending = originalLoop(args);
+      if (args.store === store) workerLoops.push(pending);
+      return pending;
+    });
+    const workerSetup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      dataRoot,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
       store,
       turnExecutor: executor,
@@ -740,9 +766,6 @@ describe('conversation.submit worker storage choice', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const threadsBefore = store.listThreads('ws_00000000-0000-7000-8000-000000000001');
-    const createThread = vi.spyOn(store, 'createThread');
-    const createTurn = vi.spyOn(store, 'createTurn');
-    let accepted: ReturnType<typeof SubmitConversationResponseSchema.parse> | undefined;
     const submit = (input: string, requestId: string) =>
       app.request(
         ...operationRequest(
@@ -764,10 +787,7 @@ describe('conversation.submit worker storage choice', () => {
       expect(rejected.status).toBe(400);
       await expect(rejected.json()).resolves.toMatchObject({
         code: 'invalid_request',
-        message: 'Too big: expected string to have <=2000 characters',
       });
-      expect(createThread).not.toHaveBeenCalled();
-      expect(createTurn).not.toHaveBeenCalled();
       expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toEqual(threadsBefore);
       for (const thread of threadsBefore) {
         expect(store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual(
@@ -780,39 +800,70 @@ describe('conversation.submit worker storage choice', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
       ).toEqual([]);
-      expect(executor.startContexts).toEqual([]);
+      expect(executor.launches).toBe(0);
 
       const input = 'x'.repeat(2000);
       const response = await submit(input, '0190f4c8-0000-7000-8000-000000000602');
       expect(response.status, await response.clone().text()).toBe(202);
-      accepted = SubmitConversationResponseSchema.parse(await response.json());
-      await waitForSelectedWorkerLoopCloseout({
-        coreDb,
-        dataRoot,
+      const accepted = SubmitConversationResponseSchema.parse(await response.json());
+      const workerScope = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: accepted.turn.threadId,
         turnId: accepted.turn.id,
+      };
+      const createdThreads = store
+        .listThreads(workerScope.workspaceId)
+        .filter((thread) => !threadsBefore.some((before) => before.id === thread.id));
+      expect(createdThreads).toEqual([
+        expect.objectContaining({
+          id: workerScope.threadId,
+          parentThreadId: 'th_00000000-0000-7000-8000-000000000001',
+          visibility: 'workspace',
+        }),
+      ]);
+      expect(store.listThreadTurns(workerScope.workspaceId, workerScope.threadId)).toHaveLength(1);
+      expect(accepted.turn.agentId).toBe(workerSetup.manifest.id);
+      await executor.launched.promise;
+      // Task structured input preserves every accepted objective byte through native delivery.
+      expect(JSON.parse(executor.inputs[0]!).objective).toBe(input);
+      executor.completion.resolve();
+      await executor.execution;
+      await Promise.all(workerLoops);
+      await vi.waitFor(() => {
+        const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope);
+        expect(attempts.length).toBeGreaterThan(0);
+        expect(attempts.every((attempt) => attempt.phase === 'closed')).toBe(true);
+        expect(
+          itemPublications.some(
+            (publication) =>
+              publication.itemId === accepted.item.id &&
+              'level' in publication.input &&
+              publication.input.level === 'info'
+          )
+        ).toBe(true);
       });
-      expect(createThread).toHaveBeenCalledTimes(1);
-      expect(createTurn).toHaveBeenCalledTimes(1);
-      expect(executor.startContexts).toHaveLength(1);
-      const delivered = store
-        .getTurnById(accepted.turn.id)
-        .items.find((item) => item.type === 'assistant-message');
-      expect(JSON.parse(delivered?.text ?? '{}')).toMatchObject({ objective: input });
+      await Promise.all(itemPublications.map((publication) => publication.completion));
+      const completed = await app.request(...operationRequest('turn.read', workerScope));
+      expect(completed.status).toBe(200);
+      expect(await completed.json()).toMatchObject({ id: workerScope.turnId, status: 'completed' });
+      expect(executor.launches).toBe(1);
     } finally {
-      if (accepted) {
-        await waitForSelectedWorkerLoopCloseout({
-          coreDb,
-          dataRoot,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: accepted.turn.threadId,
-          turnId: accepted.turn.id,
-        });
+      executor.completion.resolve();
+      try {
+        // Always join the actual loop, including when an earlier assertion or execution failed.
+        await Promise.allSettled([
+          ...(executor.launches ? [executor.execution] : []),
+          ...workerLoops,
+        ]);
+        await Promise.allSettled(itemPublications.map((publication) => publication.completion));
+      } finally {
+        publicationObservation.mockRestore();
+        loopObservation.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        native.restore();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { force: true, recursive: true });
       }
-      vi.restoreAllMocks();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { force: true, recursive: true });
     }
   });
 
@@ -923,6 +974,8 @@ describe('conversation.submit worker storage choice', () => {
       workerStorageChoice: SELECTED_CHOICE,
     });
 
+    const loops = vi.spyOn(loopOwners, 'runWorkerTurnLoop');
+    const publications = vi.spyOn(store, 'updateItem');
     try {
       const response = await app.request(
         ...operationRequest(
@@ -940,6 +993,18 @@ describe('conversation.submit worker storage choice', () => {
       );
       expect(response.status, await response.clone().text()).toBe(202);
       const accepted = SubmitConversationResponseSchema.parse(await response.json());
+      const receipts = structuredClone(store.listCommandRequests());
+      expect(receipts).toContainEqual(
+        expect.objectContaining({
+          command: 'conversation.submit',
+          requestId,
+          response: expect.objectContaining({
+            kind: 'turn',
+            id: accepted.turn.id,
+          }),
+        })
+      );
+      const threadIds = store.listThreads(accepted.receivingWorkspaceId).map((thread) => thread.id);
       await vi.waitFor(() => expect(executor.startContexts).toHaveLength(1));
       const admittedChoice = { ...SELECTED_CHOICE, goalId: null, taskId: null };
       expect(executor.startContexts[0]?.workerStorageChoice).toEqual(admittedChoice);
@@ -965,15 +1030,33 @@ describe('conversation.submit worker storage choice', () => {
         )
       );
       expect(replay.status, await replay.clone().text()).toBe(202);
-      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(
-        SubmitConversationResponseSchema.parse({
-          ...accepted,
-          turn: store.getTurnById(accepted.turn.id),
-          item: store
-            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', accepted.turn.threadId)
-            .find((item) => item.id === accepted.item.id),
-        })
-      );
+      const replayed = SubmitConversationResponseSchema.parse(await replay.json());
+      // Replay preserves lineage; the receiving Worker's Items can advance after the response.
+      expect(replayed).toMatchObject({
+        outcome: accepted.outcome,
+        handoff: accepted.handoff,
+        originatingWorkspaceId: accepted.originatingWorkspaceId,
+        originatingThreadId: accepted.originatingThreadId,
+        receivingWorkspaceId: accepted.receivingWorkspaceId,
+        receivingThreadId: accepted.receivingThreadId,
+        targetRef: accepted.targetRef,
+        logicalModelId: accepted.logicalModelId,
+        turn: {
+          id: accepted.turn.id,
+          owner: accepted.turn.owner,
+          threadId: accepted.turn.threadId,
+          triggerActor: accepted.turn.triggerActor,
+          agentId: accepted.turn.agentId,
+        },
+        item: {
+          id: accepted.item.id,
+          owner: accepted.item.owner,
+          threadId: accepted.item.threadId,
+          turnId: accepted.item.turnId,
+          type: accepted.item.type,
+          createdAt: accepted.item.createdAt,
+        },
+      });
       expect(executor.startContexts).toHaveLength(1);
 
       const conflict = await app.request(
@@ -998,12 +1081,45 @@ describe('conversation.submit worker storage choice', () => {
       expect(conflict.status).toBe(409);
       await expect(conflict.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
       expect(executor.startContexts).toHaveLength(1);
+      expect(store.listCommandRequests()).toEqual(expect.arrayContaining(receipts));
+      expect(store.listCommandRequests()).toHaveLength(receipts.length);
+      expect(store.listThreads(accepted.receivingWorkspaceId).map((thread) => thread.id)).toEqual(
+        expect.arrayContaining(threadIds)
+      );
+      expect(store.listThreads(accepted.receivingWorkspaceId)).toHaveLength(threadIds.length);
+      expect(
+        store
+          .listThreadTurns(accepted.receivingWorkspaceId, accepted.receivingThreadId)
+          .map((turn) => turn.id)
+      ).toEqual([accepted.turn.id]);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          workspaceId: accepted.receivingWorkspaceId,
+        })
+      ).toEqual([
+        expect.objectContaining({
+          turnId: accepted.turn.id,
+          threadId: accepted.receivingThreadId,
+          workerStorageChoice: admittedChoice,
+        }),
+      ]);
     } finally {
-      try {
-        coreDb.sqlite.close();
-      } finally {
-        rmSync(dataRoot, { force: true, recursive: true });
-      }
+      await Promise.allSettled(
+        loops.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      await Promise.allSettled(
+        publications.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      publications.mockRestore();
+      loops.mockRestore();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
     }
   });
 });
@@ -1015,11 +1131,35 @@ describe('conversation.submit worker acceptance wait', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor(coreDb);
-    const workerSetup = createTestAgentSetup();
+    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const executor = native.executor;
+    const itemPublications: {
+      itemId: string;
+      input: Parameters<typeof store.updateItem>[1];
+      completion: ReturnType<typeof store.updateItem>;
+    }[] = [];
+    const updateItem = store.updateItem.bind(store);
+    const publicationObservation = vi.spyOn(store, 'updateItem').mockImplementation((...args) => {
+      const completion = updateItem(...args);
+      itemPublications.push({ itemId: args[0], input: args[1], completion });
+      return completion;
+    });
+    const workerLoops: ReturnType<typeof loopOwners.runWorkerTurnLoop>[] = [];
+    const originalLoop = loopOwners.runWorkerTurnLoop;
+    const loopObservation = vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation((args) => {
+      const pending = originalLoop(args);
+      if (args.store === store) workerLoops.push(pending);
+      return pending;
+    });
+    const workerSetup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      dataRoot,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
       store,
       turnExecutor: executor,
@@ -1042,7 +1182,7 @@ describe('conversation.submit worker acceptance wait', () => {
       artifact.workspaceId,
       'Advance selected Artifact'
     );
-    store.commitArtifactVersion({
+    await store.commitArtifactVersion({
       workspaceId: artifact.workspaceId,
       threadId: publicationThread.id,
       artifactId: artifact.id,
@@ -1055,27 +1195,27 @@ describe('conversation.submit worker acceptance wait', () => {
       content: { format: 'text', body: 'This newer version must not replace selected v1.' },
     });
 
-    const pending = app.request(
-      ...operationRequest(
-        'conversation.submit',
-        {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-        },
-        {
-          body: conversationBody({
-            artifactRefs,
-            input: 'Keep this Task Worker running.',
-            requestId,
-            targetRef: 'new-task-worker',
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
-    let receivingId: string | undefined;
-    let workerTurnId: string | undefined;
+    const replayAcceptedRequest = () =>
+      app.request(
+        ...operationRequest(
+          'conversation.submit',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
+          {
+            body: conversationBody({
+              artifactRefs,
+              input: 'Keep this Task Worker running.',
+              requestId,
+              targetRef: 'new-task-worker',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
+    const pending = replayAcceptedRequest();
 
     try {
       await Promise.race([
@@ -1092,11 +1232,9 @@ describe('conversation.submit worker acceptance wait', () => {
         .filter((thread) => thread.parentThreadId === 'th_00000000-0000-7000-8000-000000000001');
       expect(receivingThreads).toHaveLength(1);
       const receiving = receivingThreads[0]!;
-      receivingId = receiving.id;
       const workerTurn = store
         .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', receiving.id)
         .at(-1);
-      workerTurnId = workerTurn?.id;
       expect(workerTurn?.status).toBe('running');
 
       let acceptedBeforeRelease = false;
@@ -1111,14 +1249,13 @@ describe('conversation.submit worker acceptance wait', () => {
       expect(acceptedBeforeRelease).toBe(true);
       expect(closedBeforeRelease).toBe(false);
 
-      const currentAttempt = observeExecutionAttempts(coreDb).find(
-        (attempt) =>
-          attempt.turn_id ===
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: workerTurn!.threadId,
-            turnId: workerTurn!.id,
-          }.turnId
+      const workerScope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: workerTurn!.threadId,
+        turnId: workerTurn!.id,
+      };
+      const currentAttempt = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope).find(
+        (attempt) => attempt.agentSessionId === workerTurn!.agentSessionId
       );
       expect(
         currentAttempt,
@@ -1126,8 +1263,17 @@ describe('conversation.submit worker acceptance wait', () => {
       ).toBeDefined();
       expect(executor.checkpointAtLaunch).toMatchObject({
         stage: 'running_worker',
-        workerSessionId: currentAttempt!.agent_session_id,
+        workerSessionId: currentAttempt!.agentSessionId,
         stopReason: null,
+      });
+      // Artifact history and pinned Context input resolve v1 after the current head advances (S16).
+      expect(store.getArtifact(artifact.workspaceId, artifact.id).version).toBe(2);
+      const delivered = JSON.parse(executor.inputs[0]!);
+      expect(delivered.objective).toBe('Keep this Task Worker running.');
+      expect(delivered.contextRefs).toContainEqual({
+        kind: 'artifact',
+        id: artifact.id,
+        artifactVersion: artifact.version,
       });
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(202);
@@ -1140,7 +1286,7 @@ describe('conversation.submit worker acceptance wait', () => {
       expect(accepted).toMatchObject({
         outcome: 'accepted',
         receivingThreadId: receiving.id,
-        turn: expect.objectContaining({ id: workerTurn!.id, status: 'pending' }),
+        turn: expect.objectContaining({ id: workerTurn!.id }),
       });
       expect(
         store.getCommandRequest('conversation.submit', requestId, {
@@ -1160,25 +1306,15 @@ describe('conversation.submit worker acceptance wait', () => {
           }),
         }),
       });
-      const replay = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            body: conversationBody({
-              artifactRefs,
-              input: 'Keep this Task Worker running.',
-              requestId,
-              targetRef: 'new-task-worker',
-            }),
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        )
+      expect(['pending', 'running']).toContain(accepted.turn.status);
+      const receipt = structuredClone(
+        store.getCommandRequest('conversation.submit', requestId, {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: workerScope.workspaceId,
+        })
       );
+      const replay = await replayAcceptedRequest();
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(
         SubmitConversationResponseSchema.parse({
@@ -1195,50 +1331,12 @@ describe('conversation.submit worker acceptance wait', () => {
           .filter((item) => item.id === accepted.item.id)
       ).toHaveLength(1);
       await store.updateItem(accepted.item.id, { title: 'Worker Turn failed' });
-      const contradictedReplay = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            body: conversationBody({
-              artifactRefs,
-              input: 'Keep this Task Worker running.',
-              requestId,
-              targetRef: 'new-task-worker',
-            }),
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        )
-      );
+      const contradictedReplay = await replayAcceptedRequest();
       expect(contradictedReplay.status).toBe(409);
       await expect(contradictedReplay.json()).resolves.toMatchObject({
         code: 'recovery_required',
       });
       await store.updateItem(accepted.item.id, { title: accepted.item.title });
-      const replayAcceptedRequest = () =>
-        app.request(
-          ...operationRequest(
-            'conversation.submit',
-            {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-            },
-            {
-              body: conversationBody({
-                artifactRefs,
-                input: 'Keep this Task Worker running.',
-                requestId,
-                targetRef: 'new-task-worker',
-              }),
-              headers: { 'content-type': 'application/json' },
-              method: 'POST',
-            }
-          )
-        );
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const checkpoint = getWorkerCheckpoint(
         workspaceDb,
@@ -1247,6 +1345,7 @@ describe('conversation.submit worker acceptance wait', () => {
         accepted.turn.id
       )!;
       try {
+        // Deliberately contradict the already admitted request; setup used only real owners.
         workspaceDb.sqlite
           .prepare(
             'UPDATE worker_turn_checkpoints SET request_input_hash = ? WHERE checkpoint_id = ?'
@@ -1264,21 +1363,63 @@ describe('conversation.submit worker acceptance wait', () => {
         workspaceDb.sqlite.close();
       }
       expect((await replayAcceptedRequest()).status).toBe(202);
+      expect(
+        store.getCommandRequest('conversation.submit', requestId, {
+          actorId: 'usr_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: workerScope.workspaceId,
+        })
+      ).toEqual(receipt);
+      // Task exact replay preserves one receiving Task, admission and native launch.
+      expect(executor.launches).toBe(1);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: workerScope.workspaceId,
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+        })
+      ).toHaveLength(1);
+      expect(
+        store
+          .listThreads(workerScope.workspaceId)
+          .filter((thread) => thread.parentThreadId === 'th_00000000-0000-7000-8000-000000000001')
+          .map((thread) => thread.id)
+      ).toEqual([receiving.id]);
+      expect(store.listThreadTurns(workerScope.workspaceId, receiving.id)).toHaveLength(1);
+      executor.completion.resolve();
+      await executor.execution;
+      await Promise.all(workerLoops);
+      await vi.waitFor(() => {
+        const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope);
+        expect(attempts.length).toBeGreaterThan(0);
+        expect(attempts.every((attempt) => attempt.phase === 'closed')).toBe(true);
+        expect(
+          itemPublications.some(
+            (publication) =>
+              publication.itemId === accepted.item.id &&
+              'level' in publication.input &&
+              publication.input.level === 'info'
+          )
+        ).toBe(true);
+      });
+      await Promise.all(itemPublications.map((publication) => publication.completion));
+      const completed = await app.request(...operationRequest('turn.read', workerScope));
+      expect(completed.status).toBe(200);
+      expect(await completed.json()).toMatchObject({ id: workerScope.turnId, status: 'completed' });
     } finally {
       executor.completion.resolve();
       await pending.catch(() => undefined);
-      if (receivingId && workerTurnId) {
-        await waitForSelectedWorkerLoopCloseout({
-          coreDb,
-          dataRoot,
-          threadId: receivingId,
-          turnId: workerTurnId,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        });
-      }
       try {
-        coreDb.sqlite.close();
+        await Promise.allSettled([
+          ...(executor.launches ? [executor.execution] : []),
+          ...workerLoops,
+        ]);
+        await Promise.allSettled(itemPublications.map((publication) => publication.completion));
       } finally {
+        publicationObservation.mockRestore();
+        loopObservation.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        native.restore();
+        coreDb.sqlite.close();
         rmSync(dataRoot, { force: true, recursive: true });
       }
     }
@@ -1411,11 +1552,24 @@ describe('conversation.submit worker acceptance wait', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor(coreDb);
-    const workerSetup = createTestAgentSetup();
+    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const executor = native.executor;
+    const workerLoops: ReturnType<typeof loopOwners.runWorkerTurnLoop>[] = [];
+    const originalLoop = loopOwners.runWorkerTurnLoop;
+    const loopObservation = vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation((args) => {
+      const pending = originalLoop(args);
+      if (args.store === store) workerLoops.push(pending);
+      return pending;
+    });
+    const workerSetup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
+      dataRoot,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
       store,
       turnExecutor: executor,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
@@ -1453,106 +1607,160 @@ describe('conversation.submit worker acceptance wait', () => {
           }
         )
       );
-    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const pending = submit();
     let accepted: ReturnType<typeof SubmitConversationResponseSchema.parse> | undefined;
+    const itemPublications: {
+      itemId: string;
+      turnStatus: string | undefined;
+      completion: ReturnType<typeof store.updateItem>;
+    }[] = [];
+    const updateItem = store.updateItem.bind(store);
+    const publicationObservation = vi.spyOn(store, 'updateItem').mockImplementation((...args) => {
+      const turnStatus = accepted && store.getTurnById(accepted.turn.id).status;
+      const failedResult = args[0] === accepted?.item.id && turnStatus === 'failed';
+      const completion =
+        projectionFailure && failedResult
+          ? Promise.reject(new Error('Controlled result publication loss.'))
+          : updateItem(...args);
+      itemPublications.push({ itemId: args[0], turnStatus, completion });
+      return completion;
+    });
+    const pending = submit();
     try {
       await executor.launched.promise;
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(202);
       accepted = SubmitConversationResponseSchema.parse(await response.json());
       const turnId = accepted.turn.id;
-      expect(accepted.turn.status).toBe('pending');
-      const reference = expectedArtifactReferenceItem({ artifact, requestId, turnId });
-      expect(accepted.turn.items).toContainEqual(expect.objectContaining(reference));
-      if (projectionFailure) {
-        // The executor owns terminal state; only the later result projection fails.
-        await store.updateTurn(turnId, {
-          status: 'failed',
-          completedAt: new Date().toISOString(),
-          error: { code: 'worker_failed', message: 'private failure detail' },
-        });
-        const updateItem = store.updateItem.bind(store);
-        vi.spyOn(store, 'updateItem').mockImplementation(async (itemId, input) => {
-          if (itemId === accepted!.item.id) throw new Error('private projection detail');
-          return await updateItem(itemId, input);
-        });
-      }
-      executor.completion.reject(new Error('private executor detail'));
-      await waitForSelectedWorkerLoopCloseout({
-        checkpointOutcome: 'preserved',
-        coreDb,
-        dataRoot,
+      const workerScope = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: accepted.turn.threadId,
         turnId,
+      };
+      const receiptScope = {
+        actorId: 'usr_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: workerScope.workspaceId,
+      };
+      const receipt = structuredClone(
+        store.getCommandRequest('conversation.submit', requestId, receiptScope)
+      );
+      const threadIds = store
+        .listThreads(workerScope.workspaceId)
+        .map((thread) => thread.id)
+        .sort();
+      expect(['pending', 'running']).toContain(accepted.turn.status);
+      expect(accepted.turn.agentId).toBe(workerSetup.manifest.id);
+      expect(store.getThread(workerScope.workspaceId, workerScope.threadId).parentThreadId).toBe(
+        receiptScope.threadId
+      );
+      const reference = expectedArtifactReferenceItem({ artifact, requestId, turnId });
+      expect(accepted.turn.items).toContainEqual(expect.objectContaining(reference));
+      expect(JSON.parse(executor.inputs[0]!)).toMatchObject({
+        objective: 'Keep this Task Worker running.',
+        contextRefs: expect.arrayContaining([
+          { kind: 'artifact', id: artifact.id, artifactVersion: artifact.version },
+        ]),
       });
-      await setImmediate();
-      const closeoutDiagnostics = diagnostics.mock.calls.filter(
-        ([message]) =>
-          message === 'scheduler_dispatch_failed_after_admission' ||
-          message === 'selected_worker_closeout_failed_after_acceptance'
-      );
-      expect(closeoutDiagnostics).toEqual(
-        projectionFailure
-          ? [['scheduler_dispatch_failed_after_admission', 'private executor detail']]
-          : [
-              ['scheduler_dispatch_failed_after_admission', 'private executor detail'],
-              ['selected_worker_closeout_failed_after_acceptance'],
-            ]
-      );
+      expect(executor.nativeLineage).toMatchObject(workerScope);
+      native.peerFaults.failedFinal = true;
+      native.peerFaults.failFileExport = true;
+      executor.completion.resolve();
+      await expect(executor.execution).rejects.toBeDefined();
+      await Promise.allSettled(workerLoops);
+      const nativeFinal = getWorkerControlAcceptedFinalStatus(coreDb, executor.nativeLineage!);
       const current = store.getTurnById(turnId);
-      expect(current.status).toBe('failed');
-      expect(current.items).toContainEqual(expect.objectContaining(reference));
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope);
+      const workspaceDb = openWorkspaceDb(dataRoot, workerScope.workspaceId);
+      let checkpoint: ReturnType<typeof getWorkerCheckpoint>;
       try {
-        expect(
-          getWorkerCheckpoint(
-            workspaceDb,
-            'ws_00000000-0000-7000-8000-000000000001',
-            current.threadId,
-            turnId
-          )
-        ).toMatchObject({
-          stage: 'running_worker',
-          stopReason: null,
-          requestId,
-        });
+        checkpoint = getWorkerCheckpoint(
+          workspaceDb,
+          workerScope.workspaceId,
+          workerScope.threadId,
+          turnId
+        );
       } finally {
         workspaceDb.sqlite.close();
       }
-      expect(
-        observeExecutionAttempts(coreDb).filter(
-          (attempt) =>
-            attempt.turn_id ===
-            {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: current.threadId,
-              turnId,
-            }.turnId
-        )
-      ).toEqual([expect.objectContaining({ phase: 'closing' })]);
+      expect(nativeFinal).toMatchObject({ status: 'failed', stopReason: 'error' });
+      expect(native.peerFaults.failedExportPaths.length).toBeGreaterThan(0);
+      // A failed native final is transport evidence; the real Core owner must publish failure.
+      expect(current.status).toBe('failed');
+      expect(current.items).toContainEqual(expect.objectContaining(reference));
+      expect(store.getTurnEvents(turnId)).toContainEqual(
+        expect.objectContaining({
+          event: 'turn.completed',
+          data: expect.objectContaining({ type: 'turn-completed', stopReason: 'error' }),
+        })
+      );
+      expect(checkpoint).toMatchObject({
+        requestId,
+        workerSessionId: executor.nativeLineage!.agentSessionId,
+      });
+      expect(attempts).toEqual([expect.objectContaining({ phase: 'closing' })]);
+      expect(executor.releaseResults).not.toContainEqual(
+        expect.objectContaining({ state: 'released' })
+      );
+      await vi.waitFor(() =>
+        expect(
+          itemPublications.some(
+            (publication) =>
+              publication.itemId === accepted!.item.id && publication.turnStatus === 'failed'
+          )
+        ).toBe(true)
+      );
+      const publication = itemPublications.find(
+        (entry) => entry.itemId === accepted!.item.id && entry.turnStatus === 'failed'
+      )!;
+      const acknowledged = await publication.completion.then(
+        () => true,
+        () => false
+      );
+      expect(acknowledged).toBe(!projectionFailure);
+      if (projectionFailure)
+        expect(
+          store.getTurnById(turnId).items.find((item) => item.id === accepted!.item.id)
+        ).toEqual(accepted.item);
+      const read = await app.request(...operationRequest('turn.read', workerScope));
+      expect(read.status).toBe(200);
+      expect(await read.json()).toMatchObject({ id: turnId, status: 'failed' });
       const replay = await submit();
       expect(replay.status).toBe(409);
       await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(store.getCommandRequest('conversation.submit', requestId, receiptScope)).toEqual(
+        receipt
+      );
+      expect(store.listThreadTurns(workerScope.workspaceId, current.threadId)).toHaveLength(1);
       expect(
-        store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', current.threadId)
+        store
+          .listThreads(workerScope.workspaceId)
+          .map((thread) => thread.id)
+          .sort()
+      ).toEqual(threadIds);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: workerScope.workspaceId,
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+        })
       ).toHaveLength(1);
+      expect(
+        store.listCommandRequests().filter((entry) => entry.command === 'task.start')
+      ).toHaveLength(0);
+      expect(executor.launches).toBe(1);
     } finally {
       executor.completion.resolve();
       await pending.catch(() => undefined);
       try {
-        if (accepted)
-          await waitForSelectedWorkerLoopCloseout({
-            checkpointOutcome: 'preserved',
-            coreDb,
-            dataRoot,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: accepted.turn.threadId,
-            turnId: accepted.turn.id,
-          });
+        await Promise.allSettled([
+          ...(executor.launches ? [executor.execution] : []),
+          ...workerLoops,
+        ]);
+        await Promise.allSettled(itemPublications.map((publication) => publication.completion));
       } finally {
-        vi.restoreAllMocks();
+        publicationObservation.mockRestore();
+        loopObservation.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        native.restore();
         coreDb.sqlite.close();
         rmSync(dataRoot, { force: true, recursive: true });
       }
@@ -2766,9 +2974,12 @@ describe('Task terminal replay closeout ownership', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor(coreDb);
+    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const executor = native.executor;
     executor.failCloseout = entry === 'assistant' && failCollection;
-    const setup = createTestAgentSetup();
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
     const brief = 'Implement a focused change and run its tests.';
     const provider = taskProposalProvider(brief, setup.manifest.id);
     const app = createAppWithWorkspaceAuthority({
@@ -2776,14 +2987,11 @@ describe('Task terminal replay closeout ownership', () => {
       dataRoot,
       store,
       turnExecutor: executor,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
       ...(entry === 'assistant' ? { llmPiAiClient: provider.client } : {}),
-    });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const requestId = '0190f4c8-0000-7000-8000-000000000602';
     const scope = {
@@ -2791,15 +2999,17 @@ describe('Task terminal replay closeout ownership', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
     };
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: scope.actorId,
+      workspaceId: scope.workspaceId,
+    });
     const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
     const submit = () =>
       app.request(
         ...operationRequest(
           command,
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
+          { workspaceId: scope.workspaceId, threadId: scope.threadId },
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -2813,56 +3023,60 @@ describe('Task terminal replay closeout ownership', () => {
           }
         )
       );
+    const workspaceDb = openWorkspaceDb(dataRoot, scope.workspaceId);
     const collecting = Promise.withResolvers<void>();
+    void collecting.promise.catch(() => undefined);
     const release = Promise.withResolvers<void>();
-    const collected = Promise.withResolvers<void>();
+    let workerTurnId: string | undefined;
+    let collectionFault = entry === 'direct' && failCollection;
     const originalCollect = recoveryOwners.clearWorkerCheckpointAfterTerminalState;
     const collector = vi
       .spyOn(recoveryOwners, 'clearWorkerCheckpointAfterTerminalState')
       .mockImplementation(async (...args) => {
-        const collectionIndex = collector.mock.calls.length;
-        collecting.resolve();
-        await release.promise;
-        try {
-          if (failCollection && collectionIndex === 1)
-            throw new Error('Controlled checkpoint collection failure.');
-          return await originalCollect(...args);
-        } finally {
-          collected.resolve();
+        if (collectionFault && args[1].turnId === workerTurnId) {
+          expect(store.getCommandRequest(command, requestId, scope)).toMatchObject({
+            command,
+            requestId,
+            response: { kind: 'turn', id: workerTurnId },
+          });
+          collecting.resolve();
+          await release.promise;
+          throw new Error('Controlled checkpoint collection failure.');
         }
+        return originalCollect(...args);
       });
     const originalLoop = loopOwners.runWorkerTurnLoop;
     const loopCloseout =
       entry === 'assistant'
-        ? vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation(async (...args) => {
-            let result: Awaited<ReturnType<typeof originalLoop>> | undefined;
-            let failure: unknown;
+        ? vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation(async (args) => {
             try {
-              result = await originalLoop(...args);
+              return await originalLoop(args);
             } catch (error) {
-              failure = error;
-            }
-            collecting.resolve();
-            await release.promise;
-            try {
-              if (failure) throw failure;
-              return result!;
-            } finally {
-              collected.resolve();
+              if (
+                executor.checkpointAtLaunch?.turnId !== args.reservedTurnId ||
+                store.getTurnById(args.reservedTurnId).status !== 'completed'
+              ) {
+                collecting.reject(error);
+                throw error;
+              }
+              collecting.resolve();
+              await release.promise;
+              throw error;
             }
           })
         : undefined;
-    const closeoutOwner = loopCloseout ?? collector;
+    const admissions = vi.spyOn(productOwners, 'observeTurnAdmission');
+    const publications = vi.spyOn(store, 'completeTurn');
     const pending = submit();
     let replay: Promise<Response> | undefined;
+    let dispatch: ReturnType<typeof runSchedulerDispatchLoop> | undefined;
     try {
       const admitted = await pending;
       expect(admitted.status, await admitted.clone().text()).toBe(202);
       const admittedBody = await admitted.json();
-      const receipt = store.getCommandRequest(command, requestId, scope)!;
-      let turnId: string = admittedBody.turn.id;
-      let answerBody: unknown;
+      const receipt = structuredClone(store.getCommandRequest(command, requestId, scope)!);
       let answerRequest: ReturnType<typeof confirmTaskRequest> | undefined;
+      let answerBody: unknown;
       if (entry === 'assistant') {
         const confirmation = SubmitConversationResponseSchema.parse(admittedBody);
         expect(confirmation.outcome).toBe('clarification-needed');
@@ -2870,7 +3084,7 @@ describe('Task terminal replay closeout ownership', () => {
           type: 'user-input-request',
           assistantHandoff: {
             kind: 'task',
-            targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            targetWorkspaceId: scope.workspaceId,
             input: brief,
             agentId: setup.manifest.id,
           },
@@ -2885,169 +3099,211 @@ describe('Task terminal replay closeout ownership', () => {
         const answer = await app.request(...answerRequest);
         expect(answer.status, await answer.clone().text()).toBe(200);
         answerBody = await answer.json();
-        await vi.waitFor(() =>
-          expect(
-            listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              statuses: ['queued', 'admitted'],
-            })
-          ).toHaveLength(1)
-        );
-        turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          statuses: ['queued', 'admitted'],
-        })[0]!.turnId;
-        await runSchedulerDispatchLoop({
-          coreDb,
-          store,
-          turnExecutor: executor,
-          executionBackend: executor.executionBackend,
-          agentManifests: [setup.manifest],
-          providerRegistry: new ProviderRegistry([
-            {
-              id: 'agent-openrouter',
-              displayName: 'Fixture',
-              kind: 'local',
-              models: ['openai/gpt-5.2'],
-            },
-          ]),
-          gatewayConfig: createTestGatewayConfig(),
-          maxDispatches: 1,
-        });
       }
-      await vi.waitFor(() => expect(executor.launches).toBe(1));
-      executor.completion.resolve();
-      await collecting.promise;
-      // The Worker outcome is durable; the native failure keeps its backend closeout incomplete.
-      expect(store.getTurnById(turnId).status).toBe('completed');
-      expect(
-        observeExecutionAttempts(coreDb).filter(
-          (attempt) =>
-            attempt.turn_id ===
-            {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId,
-            }.turnId
-        )[0]?.phase
-      ).toBe(entry === 'assistant' && failCollection ? 'closing' : 'closed');
-      let replayObserved = false;
-      replay = submit().then((response) => {
-        replayObserved = true;
-        return response;
+      if (entry === 'direct') await executor.launched.promise;
+      else
+        await Promise.race([
+          vi.waitFor(() =>
+            expect(
+              listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+                workspaceId: scope.workspaceId,
+                statuses: ['queued', 'admitted'],
+              })
+            ).toHaveLength(1)
+          ),
+          collecting.promise,
+        ]);
+      const queued = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: scope.workspaceId,
+        statuses: ['queued', 'admitted'],
       });
+      expect(queued).toHaveLength(1);
+      workerTurnId = queued[0]!.turnId;
+      if (entry === 'assistant')
+        await Promise.race([
+          vi.waitFor(() =>
+            expect(store.listThreadItems(scope.workspaceId, scope.threadId)).toContainEqual(
+              expect.objectContaining({ causationId: workerTurnId, status: 'completed' })
+            )
+          ),
+          collecting.promise,
+        ]);
+      await Promise.all(
+        publications.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
       if (entry === 'assistant') {
-        await vi.waitFor(() => expect(replayObserved).toBe(true));
+        // A handoff's initial dispatch can precede its required source publication.
+        if (
+          listQueuedSchedulerAdmissionEntries(coreDb).some(
+            (entry) => entry.queueEntryId === queued[0]!.queueEntryId
+          ) &&
+          !getSchedulerPreparationClaims(coreDb).has(queued[0]!.queueEntryId)
+        ) {
+          dispatch = runSchedulerDispatchLoop({
+            coreDb,
+            store,
+            turnExecutor: executor,
+            executionBackend: executor.executionBackend,
+            agentManifests: [setup.manifest],
+            providerRegistry: new ProviderRegistry([
+              {
+                id: 'agent-openrouter',
+                displayName: 'Fixture',
+                kind: 'local',
+                models: ['openai/gpt-5.2'],
+              },
+            ]),
+            gatewayConfig: createTestGatewayConfig(),
+            maxDispatches: 1,
+          });
+          void dispatch.catch(() => undefined);
+        }
+        await Promise.race([executor.launched.promise, collecting.promise]);
+      }
+      const workerScope = {
+        ...scope,
+        threadId: store.getTurnById(workerTurnId).threadId,
+        turnId: workerTurnId,
+      };
+      const receipts = structuredClone(store.listCommandRequests());
+      const threads = structuredClone(store.listThreads(scope.workspaceId));
+      if (entry === 'assistant')
+        expect(receipts).toContainEqual(expect.objectContaining({ command: 'user_input.answer' }));
+      expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
+      if (entry === 'direct') expect(admittedBody.turn.id).toBe(workerTurnId);
+      const owners = admissions.mock.results
+        .filter((result) => result.type === 'return')
+        .map((result) => result.value);
+      if (!owners.length) throw new Error('Task admission has no observed closeout.');
+      const closeout = Promise.all(owners.map((owner) => owner.closeout));
+      void closeout.catch(() => undefined);
+      const checkpoint = () =>
+        getWorkerCheckpoint(workspaceDb, scope.workspaceId, workerScope.threadId, workerTurnId!);
+      executor.completion.resolve();
+      if (entry === 'direct') await executor.execution;
+      else await expect(executor.execution).rejects.toThrow('Controlled release response loss.');
+      await Promise.race([
+        collecting.promise,
+        closeout.then(() => {
+          throw new Error('Task closeout completed before the held collection crossing.');
+        }),
+      ]);
+      expect(store.getTurnById(workerTurnId).status).toBe('completed');
+      const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, workerScope);
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          phase: entry === 'assistant' ? 'closing' : 'closed',
+          fenceRef: entry === 'assistant' ? null : expect.any(String),
+        }),
+      ]);
+      const publication = await workerTurnTerminalPublication(workspaceDb, workerTurnId);
+      expect(publication.evidence!.length).toBeGreaterThan(0);
+      expect(executor.releaseResults).toContainEqual(
+        expect.objectContaining({
+          state: 'released',
+          fenceRef: expect.any(String),
+          attemptId: attempts[0]!.attemptId,
+        })
+      );
+      const retained = checkpoint();
+      expect(retained).toMatchObject({ stage: 'completed', stopReason: 'completed' });
+      const terminalTurn = structuredClone(store.getTurnById(workerTurnId));
+      expect(terminalTurn).toMatchObject({
+        triggerActor: { kind: 'user', id: scope.actorId },
+        agentId: setup.manifest.id,
+      });
+      if (entry === 'assistant')
+        expect(store.getThread(scope.workspaceId, workerScope.threadId)).toMatchObject({
+          parentThreadId: scope.threadId,
+        });
+      const terminalEvents = structuredClone(store.getTurnEvents(workerTurnId));
+      expect(terminalEvents.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
+      replay = submit();
+      if (entry === 'direct') release.resolve();
+      const result = await replay;
+      expect(result.status).toBe(entry === 'direct' ? 409 : 202);
+      if (entry === 'direct') {
+        await expect(result.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        await expect(closeout).rejects.toThrow('Controlled checkpoint collection failure.');
+        collectionFault = false;
+      } else {
+        expect(await result.json()).toEqual(admittedBody);
+        const answerDuringHold = await app.request(...answerRequest!);
+        expect(answerDuringHold.status).toBe(200);
+        expect(await answerDuringHold.json()).toEqual(answerBody);
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store,
+            workspaceDb,
+            checkpoint: retained!,
+          })
+        ).rejects.toMatchObject({ code: 'recovery_required' });
+        release.resolve();
+        await expect(closeout).rejects.toThrow('Controlled release response loss.');
+      }
+      expect(checkpoint()).toEqual(retained);
+      const subsequent = await submit();
+      expect(subsequent.status).toBe(202);
+      if (entry === 'direct') {
+        expect(StartTaskModeResponseSchema.parse(await subsequent.json())).toMatchObject({
+          state: 'completed',
+          turn: { id: workerTurnId },
+          completion: {
+            itemId: terminalTurn.items.find((item) => item.type === 'assistant-message')!.id,
+          },
+        });
+        expect(checkpoint()).toBeNull();
+      } else {
+        expect(await subsequent.json()).toEqual(admittedBody);
         const answerReplay = await app.request(...answerRequest!);
         expect(answerReplay.status, await answerReplay.clone().text()).toBe(200);
         expect(await answerReplay.json()).toEqual(answerBody);
-        expect(executor.launches).toBe(1);
-      } else await setImmediate();
-      const collectorEntriesDuringHold = closeoutOwner.mock.calls.length;
-      const replayObservedDuringHold = replayObserved;
-      release.resolve();
-      const result = await replay;
-      expect({
-        collectorEntriesDuringHold,
-        replayObservedDuringHold,
-        status: result.status,
-      }).toEqual({
-        collectorEntriesDuringHold: 1,
-        replayObservedDuringHold: entry === 'assistant',
-        status: entry === 'direct' && failCollection ? 409 : 202,
-      });
-      if (entry === 'direct' && failCollection) {
-        await expect(result.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      } else if (entry === 'assistant') {
-        expect(await result.json()).toEqual(admittedBody);
-      } else {
-        expect(StartTaskModeResponseSchema.parse(await result.json())).toMatchObject({
-          state: 'completed',
-          turn: { id: turnId },
-          completion: { itemId: testEntityId('it', `it_assistant_${turnId}`) },
-        });
-      }
-      expect(closeoutOwner).toHaveBeenCalledTimes(1);
-      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
-      // Direct replay can recover after collection; native selection receipts keep their accepted result.
-      const subsequent = await submit();
-      expect(subsequent.status).toBe(202);
-      expect(closeoutOwner).toHaveBeenCalledTimes(
-        entry === 'assistant' ? 1 : failCollection ? 2 : 1
-      );
-      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
-      expect(executor.launches).toBe(1);
-      if (entry === 'assistant') {
-        await collected.promise;
-        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        try {
-          const workerThreadId = store.getTurnById(turnId).threadId;
-          if (failCollection) {
-            const retained = getWorkerCheckpoint(
-              workspaceDb,
-              'ws_00000000-0000-7000-8000-000000000001',
-              workerThreadId,
-              turnId
-            );
-            expect(retained).toMatchObject({ stage: 'completed', stopReason: 'completed' });
-            await expect(
-              classifyDirectTaskCheckpointAfterSchedulerRecovery({
-                coreDb,
-                store,
-                workspaceDb,
-                checkpoint: retained!,
-              })
-            ).rejects.toMatchObject({ code: 'recovery_required' });
-            expect(
-              getWorkerCheckpoint(
-                workspaceDb,
-                'ws_00000000-0000-7000-8000-000000000001',
-                workerThreadId,
-                turnId
-              )
-            ).toEqual(retained);
-            expect(collector).not.toHaveBeenCalled();
-          } else {
-            await vi.waitFor(() =>
-              expect(
-                getWorkerCheckpoint(
-                  workspaceDb,
-                  'ws_00000000-0000-7000-8000-000000000001',
-                  workerThreadId,
-                  turnId
-                )
-              ).toBeNull()
-            );
-            expect(collector).toHaveBeenCalledTimes(1);
-          }
-        } finally {
-          workspaceDb.sqlite.close();
-        }
         expect(provider.createResponses).toHaveBeenCalledTimes(2);
-        expect(JSON.parse(executor.inputs[0]!).objective).toBe(brief);
         expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toHaveLength(
           0
         );
         expect(
           store.listCommandRequests().filter((r) => r.command === 'conversation.submit')
         ).toHaveLength(1);
-        const answerReplay = await app.request(...answerRequest!);
-        expect(answerReplay.status, await answerReplay.clone().text()).toBe(200);
-        expect(await answerReplay.json()).toEqual(answerBody);
-        expect(executor.launches).toBe(1);
+        expect(checkpoint()).toEqual(retained);
       }
+      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
+      expect(store.listCommandRequests()).toEqual(expect.arrayContaining(receipts));
+      expect(store.listCommandRequests()).toHaveLength(receipts.length);
+      expect(store.listThreads(scope.workspaceId)).toEqual(expect.arrayContaining(threads));
+      expect(store.listThreads(scope.workspaceId)).toHaveLength(threads.length);
+      expect(store.getTurnById(workerTurnId)).toEqual(terminalTurn);
+      expect(store.getTurnEvents(workerTurnId)).toEqual(terminalEvents);
+      expect(store.listThreadTurns(scope.workspaceId, workerScope.threadId)).toHaveLength(1);
+      expect(listSchedulerExecutionAttemptsForTurn(coreDb, workerScope)).toEqual(attempts);
+      expect(executor.launches).toBe(1);
     } finally {
       executor.completion.resolve();
       release.resolve();
       await pending.catch(() => undefined);
-      if (executor.launches > 0) {
-        await executor.finished.promise;
-        await collected.promise;
-      }
+      if (executor.launches > 0) await executor.execution.catch(() => undefined);
+      await dispatch?.catch(() => undefined);
+      await Promise.allSettled(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
       await replay?.catch(() => undefined);
-      await setImmediate();
+      await Promise.allSettled(
+        publications.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      publications.mockRestore();
+      admissions.mockRestore();
       loopCloseout?.mockRestore();
       collector.mockRestore();
+      native.restore();
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -3570,16 +3826,64 @@ describe('route B queued Task receipts', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor(coreDb);
-    executor.holdSubmitResponse = true;
-    const setup = createTestAgentSetup();
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const config = createRuntimeConfigManager({
+      dataRoot,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        ...loadRuntimeConfig(dataRoot),
+        agentManifests: [setup.manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        openKitConfig: {
+          defaults: { defaultAgentId: setup.manifest.id },
+          nanohost: { maxActiveTurnsPerSandbox: 1 },
+        },
+      }),
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => config.current(),
+    });
+    const executor = native.executor;
+    const backend = executor.executionBackend!;
+    const submit = backend.submit.bind(backend);
+    const ackEntered = Promise.withResolvers<void>();
+    const ackRelease = Promise.withResolvers<void>();
+    let firstSubmit: Parameters<typeof submit>[0] | undefined;
+    // Hold only delivery of the real native ACK; Main still owns an unknown submit.
+    const submitObservation = vi.spyOn(backend, 'submit').mockImplementation(async (input) => {
+      if (firstSubmit) return submit(input);
+      firstSubmit = input;
+      const result = await submit(input);
+      ackEntered.resolve();
+      await ackRelease.promise;
+      return result;
+    });
+    const admissions = vi.spyOn(productOwners, 'observeTurnAdmission');
+    let secondExecution: ReturnType<typeof native.executionFor> | undefined;
+    let dispatch: ReturnType<typeof runSchedulerDispatchLoop> | undefined;
+    const attempts = (turn: { id: string; threadId: string }) =>
+      listSchedulerExecutionAttemptsForTurn(coreDb, {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: turn.threadId,
+        turnId: turn.id,
+      });
     const app = createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
       store,
       turnExecutor: executor,
-      agentManifests: [setup.manifest],
-      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      runtimeConfigManager: config,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -3610,7 +3914,12 @@ describe('route B queued Task receipts', () => {
       const firstResponse = await post('0190f4c8-0000-7000-8000-000000000991');
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const first = await firstResponse.json();
-      await executor.launched.promise;
+      const firstCloseout = admissions.mock.results.find((r) => r.type === 'return')?.value
+        .closeout;
+      expect(firstCloseout).toBeDefined();
+      await Promise.race([executor.launched.promise, firstCloseout!]);
+      await Promise.race([ackEntered.promise, firstCloseout!]);
+      expect(firstSubmit).toBeDefined();
       const secondResponse = await post(
         '0190f4c8-0000-7000-8000-000000000992',
         'th_00000000-0000-7097-b0d8-3022e574cd4d'
@@ -3623,17 +3932,15 @@ describe('route B queued Task receipts', () => {
       expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([
         expect.objectContaining({ turnId: second.turn.id, status: 'queued' }),
       ]);
-      expect(
-        observeExecutionAttempts(coreDb).filter((attempt) => attempt.turn_id === second.turn.id)
-      ).toEqual([]);
-      expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.turn_id === first.turn.id)
-      ).toMatchObject({
-        phase: 'open',
-        disposition: 'unknown',
-        operation_id: `modeled:${first.turn.id}`,
-        fence_ref: null,
-      });
+      expect(attempts(second.turn)).toEqual([]);
+      expect(attempts(first.turn)).toEqual([
+        expect.objectContaining({
+          phase: 'open',
+          disposition: 'unknown',
+          operationId: firstSubmit!.operationId,
+          fenceRef: null,
+        }),
+      ]);
       const queuedDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         const checkpoint = getWorkerCheckpoint(
@@ -3677,54 +3984,70 @@ describe('route B queued Task receipts', () => {
       expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([
         expect.objectContaining({ turnId: second.turn.id, status: 'queued' }),
       ]);
+      ackRelease.resolve();
       executor.completion.resolve();
-      await executor.finished.promise;
-      await vi.waitFor(() =>
-        expect(
-          observeExecutionAttempts(coreDb).find((a) => a.turn_id === first.turn.id)?.phase
-        ).toBe('closed')
-      );
-      await runSchedulerDispatchLoop({
+      await native.executionFor(first.turn.id).execution;
+      await firstCloseout;
+      expect(attempts(first.turn)[0]).toMatchObject({
+        phase: 'closed',
+        disposition: 'accepted',
+        fenceRef: expect.any(String),
+      });
+      expect(store.getTurnById(first.turn.id).status).toBe('completed');
+      secondExecution = native.executionFor(second.turn.id);
+      void secondExecution.execution.catch(() => undefined);
+      dispatch = runSchedulerDispatchLoop({
         coreDb,
         store,
         turnExecutor: executor,
         agentManifests: [setup.manifest],
-        providerRegistry: new ProviderRegistry([
-          {
-            id: 'agent-openrouter',
-            displayName: 'Fixture',
-            kind: 'local',
-            models: ['openai/gpt-5.2'],
-          },
-        ]),
-        gatewayConfig: createTestGatewayConfig(),
-        executionBackend: executor.executionBackend,
+        providerRegistry: config.current().providerRegistry,
+        gatewayConfig: config.current().gatewayConfig,
+        executionBackend: backend,
         maxDispatches: 1,
       });
-      await vi.waitFor(() => expect(executor.launches).toBe(2));
-      await vi.waitFor(() =>
-        expect(
-          observeExecutionAttempts(coreDb).find((a) => a.turn_id === second.turn.id)?.phase
-        ).toBe('closed')
-      );
-      expect(
-        (
-          await post(
-            '0190f4c8-0000-7000-8000-000000000992',
-            'th_00000000-0000-7097-b0d8-3022e574cd4d'
-          )
-        ).status
-      ).toBe(202);
+      void dispatch.catch(() => undefined);
+      await Promise.race([secondExecution.launched.promise, dispatch]);
       expect(executor.launches).toBe(2);
+      secondExecution.completion.resolve();
+      await secondExecution.execution;
+      await dispatch;
+      await Promise.all([...getSchedulerPreparationClaims(coreDb).values()]);
       expect(
-        observeExecutionAttempts(coreDb).filter(
-          (a) => a.turn_id === second.turn.id && a.disposition === 'accepted'
-        )
-      ).toHaveLength(1);
+        attempts(second.turn).find((a) => a.inputRef === executor.nativeLineage?.packageSnapshotId)
+      ).toMatchObject({
+        phase: 'closed',
+        disposition: 'accepted',
+        fenceRef: expect.any(String),
+      });
+      expect(store.getTurnById(second.turn.id).status).toBe('completed');
+      const replay = await post(
+        '0190f4c8-0000-7000-8000-000000000992',
+        'th_00000000-0000-7097-b0d8-3022e574cd4d'
+      );
+      expect(replay.status).toBe(202);
+      expect((await replay.json()).turn.id).toBe(second.turn.id);
+      expect(executor.launches).toBe(2);
+      expect(attempts(second.turn).filter((a) => a.disposition === 'accepted')).toHaveLength(1);
     } finally {
+      ackRelease.resolve();
       executor.completion.resolve();
-      if (executor.launches) await executor.finished.promise;
-      await setImmediate();
+      secondExecution?.completion.resolve();
+      if (dispatch) await Promise.allSettled([dispatch]);
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      await Promise.allSettled(
+        admissions.mock.results.filter((r) => r.type === 'return').map((r) => r.value.closeout)
+      );
+      await Promise.allSettled(
+        vi
+          .mocked(executor.startTurn)
+          .mock.results.filter((r) => r.type === 'return')
+          .map((r) => r.value)
+      );
+      submitObservation.mockRestore();
+      admissions.mockRestore();
+      native.restore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

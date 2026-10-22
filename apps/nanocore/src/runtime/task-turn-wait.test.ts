@@ -71,13 +71,14 @@ describe('waitForWorkerTurnTerminalState', () => {
     const settled = settleOrSentinel(store, turnId);
     const cancelled = await store.updateTurn(turnId, { status: 'cancelled' });
 
-    store.emitTurnEvent(turnId, {
+    const event = await store.persistTurnEvent(turnId, {
       data: { type: 'turn-updated', turn: cancelled },
       event: 'turn.updated',
       threadId,
       turnId,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    store.emitTurnEvent(turnId, event);
 
     const result = await settled;
 

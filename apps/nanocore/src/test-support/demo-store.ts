@@ -11,6 +11,7 @@ import {
   allocateEntityId,
   type KnowledgeNotebookPageSchema,
   type ThreadSchema,
+  type TurnSchema,
   type WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
@@ -196,14 +197,24 @@ export async function seedRetainedPersonalWorkspace(
 }
 
 /**
- * Cold-imports completed Worker history into a fresh unpublished Demo Workspace.
+ * Cold-imports terminal Worker history into a fresh unpublished Demo Workspace.
  * @param options Caller-owned fixture root; existing Workspace roots are refused.
  * @param entries Explicit earlier work, with no native execution, receipt or release claim.
  * @returns Store whose retained products passed the real snapshot import owner.
  */
 export async function createRetainedDemoStore(
   options: { dataRoot: string },
-  entries: readonly { name: string; input: string; agentId: string; timestamp: string }[]
+  entries: readonly {
+    name: string;
+    input: string;
+    agentId: string;
+    timestamp: string;
+    failed?: {
+      completedAt: string;
+      message: string;
+      error: NonNullable<z.infer<typeof TurnSchema>['error']>;
+    };
+  }[]
 ): Promise<FsStore> {
   const retained = await createDemoStore();
   for (const entry of entries) {
@@ -221,16 +232,17 @@ export async function createRetainedDemoStore(
       agentId: entry.agentId,
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
-      status: 'idle',
-      message: null,
+      status: entry.failed ? 'failed' : 'idle',
+      message: entry.failed?.message ?? null,
       createdAt: entry.timestamp,
-      updatedAt: entry.timestamp,
+      updatedAt: entry.failed?.completedAt ?? entry.timestamp,
     });
     await retained.updateTurn(turn.id, {
       agentId: entry.agentId,
       agentSessionId: session.id,
-      status: 'completed',
-      completedAt: entry.timestamp,
+      status: entry.failed ? 'failed' : 'completed',
+      completedAt: entry.failed?.completedAt ?? entry.timestamp,
+      ...(entry.failed ? { error: entry.failed.error } : {}),
     });
   }
   await shutdownControlStoreWorkerClient();
