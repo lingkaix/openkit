@@ -29,8 +29,14 @@ import {
   recordWorkspaceEvidenceBundle,
 } from '../evidence-bundles.js';
 import { AutomationStore } from '../lib/automation-store.js';
+import { cleanCancelledAdmissionTaskCheckpoints } from '../runtime/cancelled-admission-checkpoint-cleanup.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
 import { pendingRequestItemId } from '../runtime/pending-requests.js';
+import { upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
+import {
+  cancelSchedulerAdmissionEntry,
+  createSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
@@ -45,6 +51,7 @@ import {
   parseWorkspaceBackupManifest,
   withVerifiedWorkspaceBackupBundle,
 } from './workspace-backup-bundle.js';
+import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
@@ -104,7 +111,7 @@ function copyInventory(source: string, target: string, relative = '') {
 }
 
 /** Makes a sealed input through existing native and hot-backup owners, independently of D0 capture. */
-async function fixture(channelHistory = false) {
+async function fixture(channelHistory = false, unfinished = false) {
   const root = mkdtempSync(join(tmpdir(), 'd0-restore-'));
   roots.push(root);
   const dataRoot = join(root, 'source');
@@ -142,6 +149,15 @@ async function fixture(channelHistory = false) {
     });
   } finally {
     db.sqlite.close();
+  }
+  let capturedTurnId: string | undefined;
+  if (unfinished) {
+    const turn = await store.createTurn(workspaceId, DEMO_THREAD_ID, 'Captured unfinished Turn', {
+      kind: 'user',
+      id: ownerId,
+    });
+    capturedTurnId = turn.id;
+    expect(['completed', 'interrupted', 'cancelled', 'failed']).not.toContain(turn.status);
   }
   const pendingId = randomUUID();
   if (channelHistory) {
@@ -340,6 +356,7 @@ async function fixture(channelHistory = false) {
     requestId,
     argv,
     inspectChannel,
+    capturedTurnId,
   };
 }
 
@@ -356,6 +373,196 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('WM restore step 4: a captured unfinished Turn without a Pending Request is interrupted without replacement work', async () => {
+    const f = await fixture(false, true);
+    expect(f.capturedTurnId).toBeDefined();
+    const dbPath = workspaceDbPath(f.dataRoot, workspaceId);
+    expect(rows(dbPath, 'pending_requests')).toEqual([]);
+    const beforeTurns = rows(dbPath, 'control_turns');
+    const beforeAdmissions = rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries');
+    const beforeAttempts = rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts');
+    await expect(runCli(f.argv, () => {}, f)).resolves.toMatchObject({
+      disposition: 'restored',
+      workspaceId,
+    });
+    const restored = readNativeTurnHistory(
+      nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId }),
+      f.capturedTurnId!
+    )!.turn;
+    expect(restored).toMatchObject({
+      id: f.capturedTurnId,
+      owner: { kind: 'workspace', workspaceId },
+      threadId: DEMO_THREAD_ID,
+      status: 'interrupted',
+      completedAt: expect.any(String),
+    });
+    expect(rows(dbPath, 'control_turns')).toHaveLength(beforeTurns.length);
+    expect(rows(dbPath, 'pending_requests')).toEqual([]);
+    expect(rows(dbPath, 'control_executions')).toEqual([]);
+    expect(rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries')).toEqual(beforeAdmissions);
+    expect(rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts')).toEqual(beforeAttempts);
+  }, 120_000);
+
+  it.each([
+    {
+      history: 'absent',
+      outcome: 'succeeded',
+      decision: 'removable',
+      reason: 'cancelled-admission',
+    },
+    {
+      history: 'retained-turn',
+      outcome: 'succeeded',
+      decision: 'refused',
+      reason: 'mismatched-turn-lineage',
+    },
+    { history: 'corrupt', outcome: 'blocked', decision: 'refused', reason: 'unreadable-history' },
+  ] as const)('WM restore / scheduler maintenance: $history predecessor history preserves the global absence proof', async ({
+    history,
+    outcome,
+    decision,
+    reason,
+  }) => {
+    const f = await fixture();
+    const sibling = await f.store.createWorkspace('Healthy checkpoint-maintenance sibling');
+    const thread = await f.store.createThread(sibling.id, 'Failed pre-admission Task');
+    const identity = {
+      workspaceId: sibling.id,
+      threadId: thread.id,
+      turnId: allocateEntityId('tu'),
+    };
+    const requestId = randomUUID();
+    // The Turn is newer than the backup cut and survives restore only in the predecessor.
+    if (history === 'retained-turn') {
+      await f.store.createTurn(
+        workspaceId,
+        DEMO_THREAD_ID,
+        'Retained contradictory Turn',
+        { kind: 'user', id: f.ownerId },
+        null,
+        { turnId: identity.turnId }
+      );
+    }
+    await shutdownControlStoreWorkerClient();
+    const core = openCoreDb(f.dataRoot);
+    const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
+    try {
+      recordWorkspaceOwnerMembership({
+        coreDb: core,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
+      });
+      const queueEntryId = `restore-maintenance-${requestId}`;
+      createSchedulerAdmissionEntry(core, {
+        backendId: 'nanohost',
+        queueEntryId,
+        requestId,
+        requestedAgentId: 'agent_codex_host',
+        triggerActor: { kind: 'user', id: f.ownerId },
+        turnInput: 'Cancelled before Turn publication.',
+        ...identity,
+      });
+      cancelSchedulerAdmissionEntry(core, { queueEntryId, workspaceId: sibling.id });
+      upsertWorkerCheckpoint(siblingDb, {
+        ...identity,
+        requestId,
+        requestInputHash: `sha256:${requestId}`,
+        stage: 'failed',
+        stopReason: 'error',
+        workerSessionId: null,
+        goalId: null,
+        taskId: null,
+        iteration: 0,
+        contextDigest: null,
+      });
+    } finally {
+      siblingDb.sqlite.close();
+      core.sqlite.close();
+    }
+    const backupRoot = join(f.root, 'checkpoint-backups');
+    if (history === 'absent') {
+      await expect(
+        cleanCancelledAdmissionTaskCheckpoints({
+          dataRoot: f.dataRoot,
+          backupRoot,
+          checkpoints: [identity],
+        })
+      ).resolves.toMatchObject({
+        outcome: 'succeeded',
+        rows: [{ ...identity, decision: 'removable', reason: 'cancelled-admission' }],
+      });
+    }
+    // Enumerate only this finite fixture tree; recovery decides predecessor placement.
+    const databasePaths = () =>
+      readdirSync(f.root, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name === 'workspace.sqlite')
+        .map((entry) => join(entry.parentPath, entry.name));
+    const databasePathsBefore = new Set(databasePaths());
+    const canonicalRootsBefore = readdirSync(join(f.dataRoot, 'workspaces')).sort();
+    const originalWorkspaceBytes = sha(readFileSync(workspaceDbPath(f.dataRoot, workspaceId)));
+    await expect(runCli(f.argv, () => {}, f)).resolves.toMatchObject({ disposition: 'restored' });
+    const predecessors = databasePaths()
+      .filter((path) => !databasePathsBefore.has(path))
+      .filter((path) =>
+        rows(path, 'control_workspaces').some(
+          (row) => typeof row === 'object' && row !== null && 'id' in row && row.id === workspaceId
+        )
+      );
+    expect(predecessors).toHaveLength(1);
+    const predecessorDb = predecessors[0]!;
+    expect(sha(readFileSync(predecessorDb))).toBe(originalWorkspaceBytes);
+    expect(rows(predecessorDb, 'control_workspaces')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: workspaceId })])
+    );
+    if (history === 'retained-turn') {
+      expect(rows(predecessorDb, 'control_turns')).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: identity.turnId })])
+      );
+      expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_turns')).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: identity.turnId })])
+      );
+    }
+    if (history === 'corrupt') {
+      // Corrupt stopped retained metadata; production writers and constraints stay unchanged.
+      const db = new Database(predecessorDb, { fileMustExist: true });
+      try {
+        db.pragma('ignore_check_constraints = ON');
+        expect(
+          db
+            .prepare('UPDATE control_threads SET record_json = ? WHERE id = ?')
+            .run('{', DEMO_THREAD_ID).changes
+        ).toBe(1);
+      } finally {
+        db.close();
+      }
+    }
+    const predecessorBytes = sha(readFileSync(predecessorDb));
+    const siblingPath = workspaceDbPath(f.dataRoot, sibling.id);
+    const checkpointsBefore = rows(siblingPath, 'worker_turn_checkpoints');
+    const siblingTurnsBefore = rows(siblingPath, 'control_turns');
+    const admissionsBefore = rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries');
+    const attemptsBefore = rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts');
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      dataRoot: f.dataRoot,
+      backupRoot,
+      checkpoints: [identity],
+    });
+    expect(result).toMatchObject({
+      applied: false,
+      backupRoot: null,
+      outcome,
+      removedCount: 0,
+      rows: [{ ...identity, decision, reason }],
+    });
+    expect(rows(siblingPath, 'worker_turn_checkpoints')).toEqual(checkpointsBefore);
+    expect(rows(siblingPath, 'control_turns')).toEqual(siblingTurnsBefore);
+    expect(rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries')).toEqual(admissionsBefore);
+    expect(rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts')).toEqual(attemptsBefore);
+    expect(sha(readFileSync(predecessorDb))).toBe(predecessorBytes);
+    expect(readdirSync(join(f.dataRoot, 'workspaces')).sort()).toEqual(canonicalRootsBefore);
+    expect(existsSync(backupRoot)).toBe(false);
+  }, 120_000);
+
   it('WM 377–381: current registry, membership, grants, restrictions, holds and expiry win over backup state', async () => {
     const f = await fixture();
     const core = openCoreDb(f.dataRoot);

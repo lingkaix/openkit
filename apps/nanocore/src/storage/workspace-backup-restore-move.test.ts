@@ -69,8 +69,8 @@ function retainedBytes(root: string) {
   );
 }
 
-/** Real current authority, with optional uncompleted work raised through the native Pending owner. */
-async function fixture(history = false) {
+/** Real current authority with optional unfinished Turn, Pending Request and unknown-effect history. */
+async function fixture(history = false, withPending = true) {
   const root = mkdtempSync(join(tmpdir(), 'd0-lifecycle-'));
   roots.push(root);
   const dataRoot = join(root, 'source');
@@ -88,30 +88,32 @@ async function fixture(history = false) {
       id: ownerId,
     });
     turnId = turn.id;
-    pendingId = randomUUID();
     callId = allocateEntityId('cap');
     const db = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      await raiseRecordedPendingRequest(store, db.sqlite, {
-        requestId: pendingId,
-        workspaceId,
-        threadId: DEMO_THREAD_ID,
-        raisingTurnId: turn.id,
-        requestItemId: pendingRequestItemId(pendingId, 'request'),
-        kind: 'approval',
-        requesterKind: 'person',
-        responsibleUserId: ownerId,
-        governedIntent: {
-          operation: 'fixture.effect',
-          input: 'Never replay this captured request',
-        },
-        approval: {
-          kind: 'destructive-action',
-          title: 'Captured approval',
-          description: 'Historical request only',
-        },
-        now: new Date().toISOString(),
-      });
+      if (withPending) {
+        pendingId = randomUUID();
+        await raiseRecordedPendingRequest(store, db.sqlite, {
+          requestId: pendingId,
+          workspaceId,
+          threadId: DEMO_THREAD_ID,
+          raisingTurnId: turn.id,
+          requestItemId: pendingRequestItemId(pendingId, 'request'),
+          kind: 'approval',
+          requesterKind: 'person',
+          responsibleUserId: ownerId,
+          governedIntent: {
+            operation: 'fixture.effect',
+            input: 'Never replay this captured request',
+          },
+          approval: {
+            kind: 'destructive-action',
+            title: 'Captured approval',
+            description: 'Historical request only',
+          },
+          now: new Date().toISOString(),
+        });
+      }
       startCapabilityCall({
         workspaceDb: db,
         workspaceId,
@@ -242,6 +244,57 @@ async function refuses(f: Fixture, argv: readonly string[], code: string) {
 }
 
 describe('D0-2 actual source lifecycle and inert transfer', () => {
+  it('WM MOVE interruption: an unfinished Turn without a Pending Request retains identity and unknown effects without redispatch', async () => {
+    const f = await fixture(true, false);
+    expect(f.turnId).toBeDefined();
+    expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'pending_requests')).toEqual([]);
+    const { report } = await movedOut(f);
+    expect(report.capture!.unknownEffectTurnIds).toContain(f.turnId);
+    const targetRoot = join(f.root, 'target-without-pending');
+    const core = openCoreDb(targetRoot);
+    applyMigrations(core);
+    const ownerId = ensureLocalUser(core);
+    core.sqlite.close();
+    await expect(
+      runCli(
+        [
+          'move-in',
+          '--data-root',
+          targetRoot,
+          '--bundle-root',
+          f.bundleRoot,
+          '--request-id',
+          randomUUID(),
+          '--target-owner-id',
+          ownerId,
+        ],
+        () => {},
+        f
+      )
+    ).resolves.toMatchObject({ disposition: 'imported', workspaceId });
+    const targetDb = workspaceDbPath(targetRoot, workspaceId);
+    const restored = readNativeTurnHistory(
+      nativeProductScope(targetRoot, { kind: 'workspace', workspaceId }),
+      f.turnId!
+    )!.turn;
+    expect(restored).toMatchObject({
+      id: f.turnId,
+      owner: { kind: 'workspace', workspaceId },
+      threadId: DEMO_THREAD_ID,
+      status: 'interrupted',
+      completedAt: expect.any(String),
+    });
+    expect(rows(targetDb, 'control_turns')).toHaveLength(
+      rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_turns').length
+    );
+    expect(rows(targetDb, 'pending_requests')).toEqual([]);
+    expect(rows(targetDb, 'capability_calls')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ call_id: f.callId, status: 'unknown' })])
+    );
+    expect(rows(coreDbPath(targetRoot), 'scheduler_admission_entries')).toEqual([]);
+    expect(rows(coreDbPath(targetRoot), 'scheduler_execution_attempts')).toEqual([]);
+  }, 120_000);
+
   it('WM 410–413: move-out binds the seal, disposition and one Audit fact to the same capture and raw digest', async () => {
     const f = await fixture();
     // Restore has its own valid backup-purpose input; the moved-out source is the only refusal.
@@ -457,10 +510,34 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
     expect(closed).toHaveLength(1);
     expect(targetTurns).toHaveLength(sourceTurns.length + closed.length);
     expect(addedTurns).toHaveLength(closed.length);
+    // WM restore step 4 interrupts captured unfinished Turns and preserves sealed terminal history.
     expect(
       targetTurns.filter((turn) => sourceIds.has(turn.id)).map(({ id, status }) => ({ id, status }))
-    ).toEqual(sourceTurns.map(({ id, status }) => ({ id, status })));
+    ).toEqual(
+      sourceTurns.map(({ id, status }) => ({
+        id,
+        status: status === 'pending' || status === 'running' ? 'interrupted' : status,
+      }))
+    );
     const scope = nativeProductScope(targetRoot, { kind: 'workspace', workspaceId });
+    const sourceScope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId });
+    for (const { id } of sourceTurns) {
+      const original = readNativeTurnHistory(sourceScope, String(id))!.turn;
+      const restored = readNativeTurnHistory(scope, String(id))!.turn;
+      expect(restored.id).toBe(original.id);
+      expect(restored.owner).toEqual(original.owner);
+      expect(restored.threadId).toBe(original.threadId);
+      expect(restored.triggerActor).toEqual(original.triggerActor);
+      expect(restored.triggerSource).toEqual(original.triggerSource);
+      expect(restored.agentId).toBe(original.agentId);
+      expect(restored.agentSessionId).toBe(original.agentSessionId);
+      expect(restored.startedAt).toBe(original.startedAt);
+    }
+    expect(readNativeTurnHistory(scope, f.turnId!)!.turn).toMatchObject({
+      id: f.turnId,
+      status: 'interrupted',
+      completedAt: expect.any(String),
+    });
     for (const request of closed) {
       expect(request).toMatchObject({
         request_id: f.pendingId,
