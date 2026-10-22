@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import { readPendingRequest, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -404,52 +406,17 @@ describe('workspace dashboard app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Readonly attention'
     );
-    const approvalTurn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Request approval',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
     const timestamp = '2026-07-19T00:00:00.000Z';
-    const approval = store.createApproval({
-      id: 'ap_workspace_readonly',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: approvalTurn.id,
-      kind: 'permission',
-      status: 'pending',
-      title: 'Readonly approval',
-      description: 'Readonly actors cannot respond.',
-      createdAt: timestamp,
-      resolvedAt: null,
-    });
-    await store.createItem({
-      id: 'it_00000000-0000-73b2-97a8-ad8ddcd0adb2',
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      threadId: thread.id,
-      turnId: approvalTurn.id,
-      type: 'approval-request',
-      status: 'completed',
-      approvalRequestId: approval.id,
-      title: approval.title,
-      description: approval.description,
-      kind: approval.kind,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
     const failedTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
@@ -464,24 +431,59 @@ describe('workspace dashboard app API', () => {
       error: { code: 'worker_failed', message: 'Shared worker failure.' },
       status: 'failed',
     });
-    const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
-      expiresAt: '2999-01-01T00:00:00.000Z',
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      scope: 'workspace-readonly',
-      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-    });
-    const app = createApp({
-      auth: {
-        api: { getSession: async () => null },
-        handler: async () => new Response(null, { status: 404 }),
-      },
-      coreDb,
-      dataRoot,
-      mode: 'server',
-      store,
-    });
-
+    const approvalTurn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Request approval',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
+      const approval = await raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+        requestId: 'ap_workspace_readonly',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: thread.id,
+        raisingTurnId: approvalTurn.id,
+        requestItemId: 'it_00000000-0000-73b2-97a8-ad8ddcd0adb2',
+        kind: 'approval',
+        requesterKind: 'person',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        // The projection needs real Pending authority; this fixture intent executes no command.
+        governedIntent: { operation: 'fixture', scenario: 'workspace-dashboard-readonly' },
+        approval: {
+          kind: 'permission',
+          title: 'Readonly approval',
+          description: 'Readonly actors cannot respond.',
+        },
+        now: timestamp,
+      });
+      expect(readPendingRequest(workspaceDb.sqlite, approval.requestId)).toEqual(approval);
+      expect(
+        validateCanonicalLoad(
+          approval,
+          store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
+        )
+      ).toBeNull();
+      const readonlyToken = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+      });
+      const app = createApp({
+        auth: {
+          api: { getSession: async () => null },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        store,
+      });
+
       const response = await app.request(
         ...operationRequest(
           'workspace.dashboard',
@@ -504,7 +506,9 @@ describe('workspace dashboard app API', () => {
           },
         ],
       });
+      expect(readPendingRequest(workspaceDb.sqlite, approval.requestId)).toEqual(approval);
     } finally {
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
