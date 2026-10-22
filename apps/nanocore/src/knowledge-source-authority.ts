@@ -6,6 +6,10 @@ import { createWorkerContextPackageAuthorityReader } from './context/worker-cont
 import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
+  currentWorkspaceNotebookRead,
+  type WorkspaceNotebookRead,
+} from './knowledge/notebook-index-source.js';
+import {
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
   parseKnowledgePageSourceReference,
@@ -148,6 +152,8 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
   readonly notebookRevision?: string | undefined;
   /** Exact selected page identities; omission requests the full current notebook inventory. */
   readonly pageIds?: readonly string[] | undefined;
+  /** Exact content from this already loaded synchronous boundary, with no authority grant. */
+  readonly notebookRead?: WorkspaceNotebookRead | undefined;
 }): ReadonlyMap<string, KnowledgePageReferenceProof> {
   const referenceProofs = new Map<string, KnowledgePageReferenceProof>();
   const dataRoot = input.store.getDataRoot();
@@ -160,16 +166,26 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
   });
-  const revision = input.notebookRevision ?? notebook.publishedRevision();
-  if (input.notebookRevision !== undefined) notebook.history({ revision, limit: 1 });
-  const entries = notebook.inspectRevision(revision).entries;
+  const prepared = currentWorkspaceNotebookRead(
+    input.notebookRead,
+    join(dataRoot, 'workspaces', input.workspaceId)
+  );
+  const revision =
+    input.notebookRevision ?? prepared?.current.revision ?? notebook.publishedRevision();
+  if (!prepared && input.notebookRevision !== undefined) notebook.history({ revision, limit: 1 });
+  const record =
+    prepared && (revision === prepared.current.revision ? prepared.current : prepared.selected);
+  if (record && record.revision !== revision) throw new NotebookError('recovery_required');
+  const entries = record ? record.entries : notebook.inspectRevision(revision).entries;
   const ids = input.pageIds ?? Object.keys(entries).map((path) => path.slice(0, -3));
   // Source-free pages need no Source byte or metadata backend. Resolve only the references actually read.
   let sources: Map<string, string | null> | undefined;
-  const files = notebook.readRevision(
-    revision,
-    ids.filter((id) => Object.hasOwn(entries, `${id}.md`)).map((id) => `${id}.md`)
-  ).files;
+  const files = record
+    ? record.files
+    : notebook.readRevision(
+        revision,
+        ids.filter((id) => Object.hasOwn(entries, `${id}.md`)).map((id) => `${id}.md`)
+      ).files;
   for (const id of ids) {
     const path = `${id}.md`;
     if (!Object.hasOwn(entries, path)) continue;
@@ -194,9 +210,10 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
       for (const reference of sourceReferences) {
         if (reference.startsWith('source:')) {
           sources ??= new Map(
-            input.store
-              .listKnowledgeSources(input.workspaceId)
-              .map((source) => [source.id, source.contentDigest])
+            (prepared?.sources
+              ? [...prepared.sources.values()].map(({ source }) => source)
+              : input.store.listKnowledgeSources(input.workspaceId)
+            ).map((source) => [source.id, source.contentDigest])
           );
           const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
           if (!resolution.resolved || !resolution.targetId)
@@ -207,7 +224,9 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
           if (!parsedReference) throw new KnowledgePageValidationError();
           const sourcePath = `${parsedReference.reference.objectId}.md`;
           if (!Object.hasOwn(entries, sourcePath)) throw new KnowledgePageValidationError();
-          const source = notebook.readRevision(revision, [sourcePath]).files[sourcePath]!;
+          const source =
+            record?.files[sourcePath] ??
+            notebook.readRevision(revision, [sourcePath]).files[sourcePath]!;
           if (
             parsedReference.contentDigest !== undefined &&
             sha256(source) !== parsedReference.contentDigest

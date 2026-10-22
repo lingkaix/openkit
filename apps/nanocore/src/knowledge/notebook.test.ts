@@ -7,7 +7,7 @@ import { deflateSync } from 'node:zlib';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { KnowledgeNotebook } from './notebook.js';
+import { KnowledgeNotebook, NotebookError } from './notebook.js';
 
 const localUserId = allocateEntityId('usr');
 const execFileAsync = promisify(execFile);
@@ -88,6 +88,105 @@ afterEach(async () => {
 });
 
 describe('KnowledgeNotebook real Git content publication', () => {
+  // Notebook owner: immutable revision bytes and published ancestry remain distinct.
+  it('async reads retain exact selected bytes while published ancestry advances', async () => {
+    const content = '\uFEFF# Nested index\r\nExact retained bytes.\r\n';
+    const { notebook, revision } = await fixture({
+      'nested/index.md': content,
+    });
+    const selected = {
+      revision,
+      parentRevision: null,
+      metadata: metadata(),
+      files: { 'nested/index.md': content },
+    };
+    const later = await notebook.prepare({
+      baseRevision: revision,
+      changes: { 'nested/index.md': '# Later index\n' },
+      metadata: metadata('later'),
+    });
+    await notebook.publish({ baseRevision: revision, candidateRevision: later });
+    await expect(notebook.assertPublishedAncestryAsync(later)).resolves.toBeUndefined();
+    await expect(notebook.assertPublishedAncestryAsync(revision)).resolves.toBeUndefined();
+    await expect(notebook.readRevisionAsync(revision, ['nested/index.md'])).resolves.toEqual(
+      selected
+    );
+    expect((await notebook.readRevisionAsync(later, ['nested/index.md'])).files).toEqual({
+      'nested/index.md': '# Later index\n',
+    });
+    const pending = await notebook.prepare({
+      baseRevision: later,
+      changes: { 'pending.md': page('Pending', 'Unpublished') },
+      metadata: metadata('pending'),
+    });
+    await expect(notebook.assertPublishedAncestryAsync(pending)).rejects.toBeInstanceOf(
+      NotebookError
+    );
+  });
+
+  it('async inspection and Source reads preserve exact candidate bytes without publishing them', async () => {
+    const { notebook, revision } = await fixture();
+    const sourceId = allocateEntityId('ks');
+    const facts = metadata('async-source');
+    const content = '# Source pointer\r\nExact source bytes.\r\n';
+    const candidate = await notebook.prepareSourcePointers({
+      baseRevision: revision,
+      changes: { [sourceId]: content },
+      metadata: facts,
+    });
+    expect((await notebook.inspectRevisionAsync(candidate)).metadata).toEqual(facts);
+    await expect(notebook.readSourcePointersAsync(candidate)).resolves.toEqual({
+      [sourceId]: content,
+    });
+    await expect(notebook.publishedRevisionAsync()).resolves.toBe(revision);
+  });
+
+  it.each([
+    'a.md',
+    'b.md',
+  ])('async selected reads verify addressed bytes with %s damaged', async (damaged) => {
+    const content = page('A', 'Exact selected body');
+    const { notebook, repositoryPath, revision } = await fixture({
+      'a.md': content,
+      'b.md': page('B', 'Unrelated body'),
+    });
+    const object = await git(repositoryPath, ['rev-parse', `${revision}:pages/${damaged}`]);
+    const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+    const changed = Buffer.from(page('Damaged', 'Valid encoding, false Git identity'));
+    await chmod(objectPath, 0o600);
+    await writeFile(
+      objectPath,
+      deflateSync(Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed]))
+    );
+    if (damaged === 'a.md')
+      await expect(notebook.readRevisionAsync(revision, ['a.md'])).rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+    else
+      expect((await notebook.readRevisionAsync(revision, ['a.md'])).files).toEqual({
+        'a.md': content,
+      });
+    await expect(notebook.readRevisionAsync(revision)).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+  });
+
+  it('async current-head reads refuse a missing initialized ref without replacing it', async () => {
+    const { notebook, repositoryPath, revision } = await fixture({ 'a.md': page('A', 'Retained') });
+    await expect(notebook.publishedRevisionAsync()).resolves.toBe(revision);
+    await expect(notebook.assertPublishedAncestryAsync(revision)).resolves.toBeUndefined();
+    await git(repositoryPath, ['update-ref', '-d', 'refs/heads/published', revision]);
+    await expect(notebook.publishedRevisionAsync()).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+    await expect(notebook.assertPublishedAncestryAsync(revision)).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+    expect(
+      await git(repositoryPath, ['for-each-ref', '--format=%(refname)', 'refs/heads/published'])
+    ).toBe('');
+  });
+
   it('rejects selected blob bytes that do not match their Git identity', async () => {
     const { repositoryPath, notebook, revision } = await fixture({
       'a.md': page('A', 'Exact selected body'),

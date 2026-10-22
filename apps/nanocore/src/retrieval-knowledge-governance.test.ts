@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { lstat, rename, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatReferenceUri, KnowledgeNotebookPageSchema } from '@openkit/protocol';
@@ -10,7 +11,13 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
-import { admitKnowledgeRetrieval, knowledgePageDelegated } from './retrieval-knowledge-adapter.js';
+import { OperationError } from './operation-error.js';
+import {
+  admitKnowledgeRetrieval,
+  knowledgePageDelegated,
+  prepareAuthorizedWorkspaceNotebookRead,
+  readAuthorizedWorkspaceNotebookPages,
+} from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
@@ -69,6 +76,74 @@ describe('canonical local retrieval identity', () => {
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
+  it('refuses async preparation through a linked Knowledge root', async () => {
+    const fixture = await createFixture('linked-knowledge-root');
+    const input = {
+      dataRoot: fixture.dataRoot,
+      workspaceId: fixture.workspaceId,
+      access: fixture.access,
+    };
+    await expect(prepareAuthorizedWorkspaceNotebookRead(input)).resolves.toHaveProperty(
+      'selected.revision',
+      fixture.notebook.publishedRevision()
+    );
+    const knowledgeRoot = join(fixture.workspaceRoot, 'knowledge');
+    const retainedRoot = join(fixture.workspaceRoot, 'knowledge-retained');
+    await rename(knowledgeRoot, retainedRoot);
+    await symlink(retainedRoot, knowledgeRoot, 'dir');
+    expect((await lstat(knowledgeRoot)).isSymbolicLink()).toBe(true);
+    expect((await lstat(join(knowledgeRoot, 'notebook.git'))).isDirectory()).toBe(true);
+    await expect(prepareAuthorizedWorkspaceNotebookRead(input)).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+  });
+
+  it.each([
+    'restrict the referenced page',
+    'publish an unrelated page',
+  ])('rechecks current Source authority after prepared content: %s', async (change) => {
+    const fixture = await createFixture('prepared-currency');
+    const source = await createEntry(fixture, 'Supporting page', 'source-currency-marker');
+    const dependent = await createEntry(fixture, 'Dependent page', 'dependent-currency-marker', [
+      formatReferenceUri(pageReference(fixture, source.id)),
+    ]);
+    const input = {
+      dataRoot: fixture.dataRoot,
+      workspaceId: fixture.workspaceId,
+      access: fixture.access,
+    };
+    const notebookRead = await prepareAuthorizedWorkspaceNotebookRead(input);
+    const target = {
+      ...input,
+      notebookRead,
+      notebookRevision: notebookRead.selected.revision,
+      pageIds: [dependent.id],
+    };
+    const before = await readAuthorizedWorkspaceNotebookPages(target);
+    expect(before.pages).toEqual([dependent]);
+    if (change === 'restrict the referenced page')
+      await updatePageFields(fixture, source.id, { sensitivity: 'confidential' });
+    else await createEntry(fixture, 'Unrelated page', 'unrelated-currency-marker');
+    expect(fixture.notebook.publishedRevision()).not.toBe(target.notebookRevision);
+    if (change === 'restrict the referenced page') {
+      const refusal = Promise.resolve().then(() => readAuthorizedWorkspaceNotebookPages(target));
+      await expect(refusal).rejects.toBeInstanceOf(OperationError);
+      await expect(refusal).rejects.toMatchObject({ code: 'workspace_access_denied' });
+      const diagnostic = await refusal.catch(({ code, message, status }: OperationError) => ({
+        code,
+        message,
+        status,
+      }));
+      for (const secret of [dependent.id, source.id, 'dependent-currency-marker'])
+        expect(JSON.stringify(diagnostic)).not.toContain(secret);
+    } else {
+      const after = await readAuthorizedWorkspaceNotebookPages(target);
+      expect(after.notebookRevision).toBe(target.notebookRevision);
+      expect(after.pages).toEqual([dependent]);
+      expect(after.pages[0]!.contentDigest).toBe(sha256(dependent.content));
+    }
+  });
+
   it('excludes an unpublished proposal despite its delegated label and exact candidate bytes', async () => {
     const fixture = await createFixture('unpublished-proposal');
     const id = 'pending-rule';

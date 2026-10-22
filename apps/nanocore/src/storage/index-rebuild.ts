@@ -19,7 +19,10 @@ import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
+import {
+  readWorkspaceNotebookIndexSource,
+  type WorkspaceNotebookRead,
+} from '../knowledge/notebook-index-source.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -51,6 +54,7 @@ import {
   knowledgePageDelegated,
   knowledgePageReadable,
   knowledgeSourceReferencesReadable,
+  prepareAuthorizedWorkspaceNotebookRead,
   readAuthorizedServerNotebookPages,
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
@@ -170,6 +174,8 @@ export interface WorkspaceKnowledgeSourceReferenceIndex {
  * Input for rebuilding one workspace's derived indexes.
  */
 export interface RebuildWorkspaceDerivedIndexesInput {
+  /** Content-only bytes loaded before this synchronous derived projection. */
+  notebookRead?: WorkspaceNotebookRead | undefined;
   /** Data root that owns the workspace. */
   dataRoot: string;
   /** Workspace to rebuild. */
@@ -198,6 +204,8 @@ export interface RebuildWorkspaceDerivedIndexesResult {
  * Input for reading one workspace's derived Knowledge Store indexes.
  */
 export interface ReadWorkspaceKnowledgeDerivedIndexesInput {
+  /** Content-only bytes loaded before this synchronous derived projection. */
+  notebookRead?: WorkspaceNotebookRead | undefined;
   /** Optional server-selected retained published Notebook revision. */
   notebookRevision?: string | undefined;
   /** Data root that owns the workspace. */
@@ -334,7 +342,12 @@ export function rebuildWorkspaceDerivedIndexes(
   const indexPath = join(indexesRoot, 'knowledge-validation.json');
   const rebuiltAt = input.now?.() ?? new Date().toISOString();
   const pageScopeId = currentKnowledgePageScope(input, 'workspace');
-  const source = readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision);
+  const source = readWorkspaceNotebookIndexSource(
+    workspaceRoot,
+    input.notebookRevision,
+    undefined,
+    input.notebookRead
+  );
   const linkGraph: WorkspaceKnowledgeLinkGraph = {
     notebookRevision: source.notebookRevision,
     schemaVersion: 1,
@@ -700,14 +713,21 @@ async function retrieveNotebookSelection(
   const createdAt = input.now?.() ?? new Date().toISOString();
   const traceId = input.traceId ?? allocateEntityId('krt');
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
+  const notebookRead =
+    memory || server ? undefined : await prepareAuthorizedWorkspaceNotebookRead(input);
+  const preparedInput = {
+    ...input,
+    notebookRevision: notebookRead?.selected.revision ?? input.notebookRevision,
+    notebookRead,
+  };
   const scopedPages = memory
     ? readAuthorizedUserMemoryPages(input)
     : server
       ? readAuthorizedServerNotebookPages(input)
       : undefined;
-  const admittedPages = scopedPages ?? readAuthorizedWorkspaceNotebookPages(input);
+  const admittedPages = scopedPages ?? readAuthorizedWorkspaceNotebookPages(preparedInput);
   const notebookRevision = admittedPages.notebookRevision;
-  const pinnedInput = { ...input, notebookRevision };
+  const pinnedInput = { ...preparedInput, notebookRevision };
   const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
   const conflictNotebook = new KnowledgeNotebook({
     repositoryPath: join(
@@ -720,13 +740,20 @@ async function retrieveNotebookSelection(
     ),
   });
   const conflictSubjects = unresolvedNotebookSubjects(
-    conflictNotebook.readRevision(conflictNotebook.publishedRevision()).files,
+    (await conflictNotebook.readRevisionAsync(await conflictNotebook.publishedRevisionAsync()))
+      .files,
     sourceScope
   );
   const scopeSchemaText =
     scopedPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources =
-    scopedPages?.registeredSources ?? readRegisteredSources(workspaceRoot, input.workspaceId);
+    scopedPages?.registeredSources ??
+    new Map(
+      [...(notebookRead?.sources?.values() ?? [])].map(({ source }) => [
+        source.id,
+        source.contentDigest,
+      ])
+    );
   const expectedOwnerScope = memory
     ? { kind: 'user' as const, userId: input.access.requestActor!.userId }
     : server
@@ -762,13 +789,16 @@ async function retrieveNotebookSelection(
     sourceReferencesByConcept.set(reference.conceptId, references);
   }
 
-  const collect = () =>
-    memory
+  const collect = async () => {
+    if (!memory && !server)
+      pinnedInput.notebookRead = await prepareAuthorizedWorkspaceNotebookRead(pinnedInput);
+    return memory
       ? collectUserMemoryInventory(pinnedInput)
       : server
         ? collectServerKnowledgeInventory(pinnedInput)
         : collectKnowledgeInventory(pinnedInput);
-  const before = collect();
+  };
+  const before = await collect();
   await service.publish(before.view, await service.inspect(before.view.scope));
   const matches = await service.search({
     mode: 'lexical',
@@ -782,7 +812,7 @@ async function retrieveNotebookSelection(
       'Knowledge retrieval is incomplete.',
       503
     );
-  const after = collect();
+  const after = await collect();
   if (canonicalJson(before.view) !== canonicalJson(after.view))
     throw new OperationError(
       'knowledge_retrieval_failed',
@@ -1125,7 +1155,7 @@ async function retrieveNotebookSelection(
   });
 
   admit();
-  if (canonicalJson(before.view) !== canonicalJson(collect().view))
+  if (canonicalJson(before.view) !== canonicalJson((await collect()).view))
     throw new OperationError(
       'knowledge_retrieval_failed',
       'Knowledge eligibility changed during retrieval.',

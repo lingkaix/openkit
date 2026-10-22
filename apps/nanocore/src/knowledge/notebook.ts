@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import {
   KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION,
   KnowledgeNotebookCommitMetadataSchema,
@@ -9,6 +10,8 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import { assertSourcePointerEdit } from './source-pointers.js';
+
+const execFileAsync = promisify(execFile);
 
 const PUBLISHED_REF = 'refs/heads/published';
 const FILE_BYTES = 2 * 1024 * 1024;
@@ -113,16 +116,15 @@ export class KnowledgeNotebook {
     this.repositoryPath = resolve(input.repositoryPath);
   }
 
-  /** Runs fixed plumbing with ambient Git configuration, hooks, network and callbacks disabled. */
-  private gitBytes(args: readonly string[], input?: string, author = 'OpenKit'): Buffer {
+  /** Builds fixed plumbing policy with ambient Git configuration, hooks, network and callbacks disabled. */
+  private gitInvocation(args: readonly string[], input?: string, author = 'OpenKit') {
     try {
       // The repository itself is canonical storage; Git may not follow a substituted root.
       const root = lstatSync(this.repositoryPath, { throwIfNoEntry: false });
       if (root && (!root.isDirectory() || root.isSymbolicLink()))
         throw new NotebookError('recovery_required');
-      const output = execFileSync(
-        'git',
-        [
+      return {
+        args: [
           '-c',
           'core.hooksPath=/dev/null',
           '-c',
@@ -146,11 +148,11 @@ export class KnowledgeNotebook {
           `--git-dir=${this.repositoryPath}`,
           ...args,
         ],
-        {
-          encoding: 'buffer',
+        options: {
+          encoding: 'buffer' as const,
           input: input === undefined ? undefined : Buffer.from(input),
           maxBuffer: EDITING_BYTES + 1024 * 1024,
-          stdio: ['pipe', 'pipe', 'pipe'],
+          stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
           env: {
             PATH: process.env.PATH,
             LANG: 'C',
@@ -163,9 +165,38 @@ export class KnowledgeNotebook {
             GIT_COMMITTER_NAME: 'OpenKit',
             GIT_COMMITTER_EMAIL: 'openkit',
           },
-        }
-      );
-      return output;
+        },
+      };
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Runs synchronous publication plumbing with the shared fixed policy. */
+  private gitBytes(args: readonly string[], input?: string, author = 'OpenKit'): Buffer {
+    try {
+      const command = this.gitInvocation(args, input, author);
+      return execFileSync('git', command.args, command.options);
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Reads fixed plumbing off the event loop with the original output and error bounds. */
+  private async gitBytesAsync(args: readonly string[]): Promise<Buffer> {
+    try {
+      const command = this.gitInvocation(args);
+      return (await execFileAsync('git', command.args, command.options)).stdout;
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
+  /** Decodes asynchronous text with the original strict UTF-8 boundary. */
+  private async gitAsync(args: readonly string[]): Promise<string> {
+    try {
+      const bytes = await this.gitBytesAsync(args);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
       throw new NotebookError('recovery_required');
     }
@@ -185,6 +216,11 @@ export class KnowledgeNotebook {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
       throw new NotebookError('recovery_required');
     const bytes = this.gitBytes(['cat-file', 'blob', object]);
+    return this.decodeBlob(object, bytes);
+  }
+
+  /** Shares exact Git blob identity and strict content decoding across both read paths. */
+  private decodeBlob(object: string, bytes: Buffer): string {
     const observed = createHash(object.length === 40 ? 'sha1' : 'sha256')
       .update(`blob ${bytes.length}\0`)
       .update(bytes)
@@ -245,6 +281,18 @@ export class KnowledgeNotebook {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
     const commit = this.git(['cat-file', 'commit', revision]);
+    const record = this.decodeCommit(revision, commit);
+    const tree = this.git(['ls-tree', '-r', '-z', '--full-tree', revision]);
+    return {
+      revision,
+      parentRevision: record.parentRevision,
+      entries: this.decodeTree(tree),
+      metadata: record.metadata,
+    };
+  }
+
+  /** Decodes the same canonical service commit metadata for both read paths. */
+  private decodeCommit(revision: string, commit: string): Omit<NotebookRevision, 'files'> {
     const boundary = commit.indexOf('\n\n');
     const headers = commit.slice(0, boundary).split('\n');
     const parents = headers.filter((header) => header.startsWith('parent '));
@@ -269,8 +317,13 @@ export class KnowledgeNotebook {
       !headers.some((header) => header.startsWith('author '))
     )
       throw new NotebookError('recovery_required');
+    return { revision, parentRevision: parents[0]?.slice('parent '.length) ?? null, metadata };
+  }
+
+  /** Validates Page and Source tree entries and requires the reserved index. */
+  private decodeTree(tree: string): Readonly<Record<string, string>> {
     const entries: Record<string, string> = Object.create(null);
-    for (const row of this.git(['ls-tree', '-r', '-z', '--full-tree', revision]).split('\0')) {
+    for (const row of tree.split('\0')) {
       if (!row) continue;
       const match = /^100644 blob ([a-f0-9]+)\t(pages|sources)\/(.+)$/.exec(row);
       if (!match || !validPath(match[3]!)) throw new NotebookError('recovery_required');
@@ -280,12 +333,7 @@ export class KnowledgeNotebook {
       } else entries[match[3]!] = match[1]!;
     }
     if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('recovery_required');
-    return {
-      revision,
-      parentRevision: parents[0]?.slice('parent '.length) ?? null,
-      entries,
-      metadata,
-    };
+    return entries;
   }
 
   /** Reads selected exact immutable page bytes; no omitted page enters the editing workspace. */
@@ -309,6 +357,68 @@ export class KnowledgeNotebook {
         this.readBlob(object),
       ])
     );
+  }
+
+  /** Pins current validated metadata without blocking on Git subprocesses. */
+  async publishedRevisionAsync(): Promise<string> {
+    const ref = `${PUBLISHED_REF}^{commit}`;
+    const revision = (await this.gitAsync(['rev-parse', '--verify', ref])).trim();
+    await this.inspectRevisionAsync(revision);
+    return revision;
+  }
+
+  /** Pins strict metadata and tree identities through the shared pure decoders. */
+  async inspectRevisionAsync(revision: string) {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
+      throw new NotebookError('recovery_required');
+    const commit = await this.gitAsync(['cat-file', 'commit', revision]);
+    const record = this.decodeCommit(revision, commit);
+    const tree = await this.gitAsync(['ls-tree', '-r', '-z', '--full-tree', revision]);
+    return {
+      revision,
+      parentRevision: record.parentRevision,
+      entries: this.decodeTree(tree),
+      metadata: record.metadata,
+    };
+  }
+
+  /** Reads selected exact immutable Pages sequentially under the original bounds. */
+  async readRevisionAsync(revision: string, paths?: readonly string[]): Promise<NotebookRevision> {
+    const { entries, ...record } = await this.inspectRevisionAsync(revision);
+    const files: Record<string, string> = Object.create(null);
+    for (const path of paths ?? Object.keys(entries)) {
+      const object = entries[path];
+      if (!object) throw new NotebookError('invalid_request');
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
+        throw new NotebookError('recovery_required');
+      files[path] = this.decodeBlob(object, await this.gitBytesAsync(['cat-file', 'blob', object]));
+    }
+    return { ...record, files };
+  }
+
+  /** Reads native Source pointers sequentially without reading raw originals. */
+  async readSourcePointersAsync(revision: string): Promise<Readonly<Record<string, string>>> {
+    await this.inspectRevisionAsync(revision);
+    const args = ['ls-tree', '-r', '-z', '--full-tree', revision, '--', 'sources/'];
+    const sources = this.decodeSourceObjects(await this.gitAsync(args));
+    const content: [string, string][] = [];
+    for (const [id, object] of Object.entries(sources)) {
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
+        throw new NotebookError('recovery_required');
+      content.push([
+        id,
+        this.decodeBlob(object, await this.gitBytesAsync(['cat-file', 'blob', object])),
+      ]);
+    }
+    return Object.fromEntries(content);
+  }
+
+  /** Checks history's limit-one published ancestry without loading Page bodies. */
+  async assertPublishedAncestryAsync(revision: string): Promise<void> {
+    const published = await this.publishedRevisionAsync();
+    await this.inspectRevisionAsync(revision);
+    if ((await this.gitAsync(['merge-base', revision, published])).trim() !== revision)
+      throw new NotebookError('invalid_request');
   }
 
   /** Reads exact path-qualified content for edit and Proposal deltas; Page projections stay separate. */
@@ -351,16 +461,14 @@ export class KnowledgeNotebook {
 
   /** Gets immutable Source objects without loading raw originals or admitting metadata for disclosure. */
   private sourceObjects(revision: string): Readonly<Record<string, string>> {
+    const tree = this.git(['ls-tree', '-r', '-z', '--full-tree', revision, '--', 'sources/']);
+    return this.decodeSourceObjects(tree);
+  }
+
+  /** Applies the same strict native Source tree grammar to both read paths. */
+  private decodeSourceObjects(tree: string): Readonly<Record<string, string>> {
     const sources: Record<string, string> = Object.create(null);
-    for (const row of this.git([
-      'ls-tree',
-      '-r',
-      '-z',
-      '--full-tree',
-      revision,
-      '--',
-      'sources/',
-    ]).split('\0')) {
+    for (const row of tree.split('\0')) {
       if (!row) continue;
       const match = /^100644 blob ([a-f0-9]+)\tsources\/([^/]+)\.md$/.exec(row);
       if (!match || !KnowledgeSourceIdSchema.safeParse(match[2]).success)

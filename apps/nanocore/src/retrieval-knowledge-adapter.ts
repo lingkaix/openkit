@@ -26,6 +26,11 @@ import { admitMemoryContext, memoryPageFacts } from './knowledge/memory-lifecycl
 import { readMemorySuppressions } from './knowledge/memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
+  currentWorkspaceNotebookRead,
+  prepareWorkspaceNotebookRead,
+  type WorkspaceNotebookRead,
+} from './knowledge/notebook-index-source.js';
+import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   type KnowledgePageReferenceProof,
   parseKnowledgePageSourceReference,
@@ -292,6 +297,8 @@ export type UserMemoryRetrievalAccess = KnowledgeRetrievalAccess & {
   outputThreadId: string;
 };
 interface Target {
+  /** Content loaded for this synchronous disclosure boundary only; never a retained permission. */
+  notebookRead?: WorkspaceNotebookRead | undefined;
   dataRoot: string;
   workspaceId: string;
   access: KnowledgeRetrievalAccess;
@@ -638,7 +645,7 @@ export function knowledgeSourceLineageReadable(
 
 /** Exact published bytes and external work owners establish source proof, never a human Review. */
 export function currentKnowledgeReferenceProofs(
-  input: Pick<Target, 'workspaceId' | 'access' | 'notebookRevision' | 'pageIds'>
+  input: Pick<Target, 'workspaceId' | 'access' | 'notebookRevision' | 'pageIds' | 'notebookRead'>
 ): ReadonlyMap<string, KnowledgePageReferenceProof> {
   const { access, workspaceId } = input;
   const db = access.coreDb ? openWorkspaceDb(access.coreDb.dataRoot, workspaceId) : undefined;
@@ -650,6 +657,7 @@ export function currentKnowledgeReferenceProofs(
       workspaceId,
       notebookRevision: input.notebookRevision,
       pageIds: input.pageIds,
+      notebookRead: input.notebookRead,
     });
   } finally {
     db?.sqlite.close();
@@ -665,8 +673,8 @@ interface PinnedNotebookTarget extends Target {
   readonly contents: Map<string, string>;
 }
 
-/** Derives the physical root from the Store and admits only current published ancestry. */
-function pinNotebook(input: Target): PinnedNotebookTarget {
+/** Checks the physical owner before content I/O; neither a pin nor an index supplies authority. */
+function admitWorkspaceNotebookTarget(input: Target): string {
   admitKnowledgeRetrieval(input);
   const dataRoot = input.access.store.getDataRoot();
   if (
@@ -676,6 +684,12 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
   )
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
   input.access.store.getWorkspace(input.workspaceId);
+  return dataRoot;
+}
+
+/** Derives the physical root from the Store and admits only current published ancestry. */
+function pinNotebook(input: Target): PinnedNotebookTarget {
+  const dataRoot = admitWorkspaceNotebookTarget(input);
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot,
     scope: { kind: 'workspace', workspaceId: input.workspaceId },
@@ -683,9 +697,19 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
   });
-  const notebookRevision = input.notebookRevision ?? notebook.publishedRevision();
-  if (input.notebookRevision !== undefined)
+  const prepared = currentWorkspaceNotebookRead(
+    input.notebookRead,
+    join(dataRoot, 'workspaces', input.workspaceId)
+  );
+  if (prepared !== input.notebookRead) input = { ...input, notebookRead: prepared };
+  const notebookRevision =
+    input.notebookRevision ?? prepared?.current.revision ?? notebook.publishedRevision();
+  if (!prepared && input.notebookRevision !== undefined)
     notebook.history({ revision: notebookRevision, limit: 1 });
+  const record =
+    prepared &&
+    (notebookRevision === prepared.current.revision ? prepared.current : prepared.selected);
+  if (record && record.revision !== notebookRevision) throw new NotebookError('recovery_required');
   return {
     ...input,
     dataRoot,
@@ -693,8 +717,12 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     pageScopeId: `page/workspace/${input.workspaceId}/${knowledgeBaseId}`,
     notebook,
     notebookRevision,
-    entries: notebook.inspectRevision(notebookRevision).entries,
-    contents: new Map(),
+    entries: record ? record.entries : notebook.inspectRevision(notebookRevision).entries,
+    contents: new Map(
+      record
+        ? Object.entries(record.files).map(([path, content]) => [path.slice(0, -3), content])
+        : []
+    ),
   };
 }
 
@@ -760,7 +788,12 @@ function pinnedSourcesReadable(
     for (const reference of refs) {
       if (reference.startsWith('source:')) {
         // Reuse only this synchronous guard's fresh metadata; later disclosure rechecks authority.
-        sources ??= store.listKnowledgeSources(input.workspaceId);
+        sources ??= input.notebookRead?.sources
+          ? [...input.notebookRead.sources.values()].map(({ source }) => ({
+              ...source,
+              workspaceId: input.workspaceId,
+            }))
+          : store.listKnowledgeSources(input.workspaceId);
         const resolution = resolveRegisteredKnowledgeSourceReference(
           reference,
           new Map(sources.map((source) => [source.id, source.contentDigest]))
@@ -780,7 +813,8 @@ function pinnedSourcesReadable(
           return false;
         if (!pinnedKnowledgeSourceReadable(input, sourceId, content, visiting)) return false;
         // Exact history stays pinned; later source restrictions still govern its disclosure.
-        const currentRevision = input.notebook.publishedRevision();
+        const currentRevision =
+          input.notebookRead?.current.revision ?? input.notebook.publishedRevision();
         if (currentRevision !== input.notebookRevision) {
           const current = pinNotebook({ ...input, notebookRevision: currentRevision });
           const currentContent = pinnedPage(current, sourceId);
@@ -877,7 +911,7 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
       .map((path) => path.slice(0, -3))
       .sort();
   // Inventory owns the complete body enumeration; selected reads keep unrelated blobs unloaded.
-  if (input.pageIds === undefined) {
+  if (input.pageIds === undefined && !pinned.notebookRead) {
     const files = pinned.notebook.readRevision(
       pinned.notebookRevision,
       ids.map((id) => `${id}.md`)
@@ -912,6 +946,11 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
     pages: currentPages,
     referenceProofs: new Map([...referenceProofs].filter(([id]) => currentIds.has(id))),
   };
+}
+/** Admits the physical owner before async query inventory loading; live checks still follow I/O. */
+export async function prepareAuthorizedWorkspaceNotebookRead(input: Target) {
+  const dataRoot = admitWorkspaceNotebookTarget(input);
+  return prepareWorkspaceNotebookRead({ ...input, dataRoot });
 }
 /** Declares only body, description and tags as body fields; title has its own kernel weight. */
 function textRanges(content: string, body: string): { start: number; end: number }[] {
