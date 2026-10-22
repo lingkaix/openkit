@@ -596,7 +596,7 @@ it('retains an interrupted claim as unknown after restart and never issues again
     } finally {
       db.sqlite.close();
     }
-    recoverPendingRequestsAtBoot(f.store, {
+    await recoverPendingRequestsAtBoot(f.store, {
       coreDb: f.coreDb,
       openWorkspace: (workspaceId) => openWorkspaceDb(f.dataRoot, workspaceId),
     });
