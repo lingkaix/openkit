@@ -537,12 +537,12 @@ describe('bounded scheduled poll event admission', () => {
       f.admit({ input: 'Concurrent changed source content' }),
     ]);
     expect(replay.admission).toEqual(first.admission);
-    expect(replay.duplicate).toBe(true);
+    expect([first.duplicate, replay.duplicate].sort()).toEqual([false, true]);
     const second = await f.admit({
       eventKey: 'mail:message-2',
       input: 'Handle the second message.',
     });
-    expect(first.duplicate).toBe(false);
+    expect(replay.entry.turnInput).toBe(first.entry.turnInput);
     expect(second.entry.threadId).not.toBe(first.entry.threadId);
     expect(second.entry.turnId).not.toBe(first.entry.turnId);
     for (const result of [first, second]) {
@@ -561,7 +561,9 @@ describe('bounded scheduled poll event admission', () => {
       expect(result.entry.triggerActor).toEqual(f.schedule.actor);
       expect(result.admission.sourceTurnId).toBe(f.source.turnId);
     }
-    expect(first.entry.turnInput).toBe(f.dependencies.input);
+    expect(first.entry.turnInput).toBe(
+      first.duplicate ? 'Concurrent changed source content' : f.dependencies.input
+    );
     expect(queueCount(f.db)).toBe(3);
   });
 
