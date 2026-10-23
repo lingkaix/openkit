@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: Accepted
 date: "2026-10-23"
 decider: Engineer, on the coordinator's proposal; numerical profiles accepted provisionally by the coordinator
 ---
