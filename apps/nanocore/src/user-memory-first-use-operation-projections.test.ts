@@ -24,6 +24,7 @@ import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
@@ -151,6 +152,46 @@ async function fixture() {
 }
 
 describe('first private User Memory query', () => {
+  it('returns empty Memory on the first list for a fresh canonical User', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'memory-first-list-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const invoke = createOperationInvocation({
+      coreDb,
+      store: new FsStore({ dataRoot }),
+      runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
+      inflightCommands: new WeakMap(),
+    });
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    expect(existsSync(userDbPath(dataRoot, userId))).toBe(false);
+    expect(existsSync(userMemoryRoot(dataRoot, userId))).toBe(false);
+
+    // S63 Content, Revisions And History: fresh empty initialization is distinct from loss.
+    const result = OPERATION_DEFINITIONS['memory.list'].outputSchema.parse(
+      await invoke(
+        'memory.list',
+        {},
+        {
+          kind: 'public',
+          actor: { kind: 'local', userId },
+          delivery: 'app-api',
+        }
+      )
+    );
+    expect(result.pages).toEqual([]);
+    expect(result.notebookRevision).toBe(
+      new KnowledgeNotebook({
+        repositoryPath: join(userMemoryRoot(dataRoot, userId), 'notebook.git'),
+      }).publishedRevision()
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('returns an empty schema-valid public search with real User KB, Notebook and Timeline references', async () => {
     const f = await fixture();
     const credential = createOpenKitAccessTokenRecord(f.coreDb, {
@@ -275,13 +316,19 @@ describe('first private User Memory query', () => {
     }[lost];
     for (const path of missing) rmSync(path, { recursive: true });
     if (lost === 'Notebook Git' || lost === 'Scope schema') expect(existsSync(root)).toBe(true);
-    for (const operation of ['memory.search', 'memory.ask'] as const) {
+    for (const operation of ['memory.list', 'memory.search', 'memory.ask'] as const) {
       const input =
-        operation === 'memory.search'
-          ? { query: 'saved preference' }
-          : { question: 'My saved preference?' };
+        operation === 'memory.list'
+          ? {}
+          : operation === 'memory.search'
+            ? { query: 'saved preference' }
+            : { question: 'My saved preference?' };
       await expect(
-        f.invoke(operation, { workspaceId: f.workspace.id, ...input }, f.context)
+        f.invoke(
+          operation,
+          operation === 'memory.list' ? input : { workspaceId: f.workspace.id, ...input },
+          f.context
+        )
       ).rejects.toMatchObject({ code: 'recovery_required', status: 503 });
       for (const path of missing) expect(existsSync(path)).toBe(false);
     }

@@ -511,8 +511,11 @@ export function createMemoryOperationImplementations(
         });
       }),
     'memory.list': (_input, context) =>
-      self(context, (writer) =>
-        MEMORY_OPERATION_DEFINITIONS['memory.list'].outputSchema.parse(listMemoryPages(writer))
+      self(
+        context,
+        (writer) =>
+          MEMORY_OPERATION_DEFINITIONS['memory.list'].outputSchema.parse(listMemoryPages(writer)),
+        'query'
       ),
     'memory.read': (input, context) =>
       self(context, (writer) =>

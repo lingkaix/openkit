@@ -699,6 +699,23 @@ export async function prepareUserMemoryMaintenance(
                     },
                   ],
                 };
+              } catch (error) {
+                if (context.signal.aborted || !(error instanceof NotebookError)) throw error;
+                // Only closed reserved-file categories are safe author feedback, never exception text.
+                const diagnostics = [...new Set(error.diagnostics ?? [])].filter(
+                  (code) =>
+                    code === 'okf.invalid_index_frontmatter' || code === 'okf.reserved_frontmatter'
+                );
+                if (error.code !== 'invalid_request' || !diagnostics.length) throw error;
+                return {
+                  isError: true,
+                  content: [
+                    {
+                      type: 'text',
+                      text: JSON.stringify({ code: error.code, diagnostics }),
+                    },
+                  ],
+                };
               } finally {
                 context.signal.removeEventListener('abort', abort);
               }

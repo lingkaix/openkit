@@ -47,6 +47,96 @@ import {
 } from './user-memory-proposals.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
+/** Retained DIAG-MEM script structure with only synthetic owner and Source fixture pins. */
+function retainedMemoryScript(sourceReference: string): string {
+  return `mkdir -p /notebook/sources /notebook/claims && cat > /notebook/sources/km16-color-preference.md << 'EOF'
+---
+type: SourceSummary
+title: Synthetic KM16 color-code preference
+schema_version: "openkit-scope-knowledge-schema-v4"
+openkit_status: active
+scope:
+  kind: user
+  userId: "${userId}"
+requiredFeatures:
+  - "openkit.knowledge-owner-scope.v1"
+  - "openkit.knowledge-git-notebook.v1"
+source_refs:
+  - "${sourceReference}"
+review_state: unreviewed
+sensitivity: confidential
+freshness: current
+created_at: "2026-04-09T00:00:00Z"
+updated_at: "2026-04-09T00:00:00Z"
+---
+
+# Synthetic KM16 color-code preference
+
+The admitted source asks that a personal preference be remembered: the synthetic KM16 test color code is ORCHID-TEAL-42. The source states that this is synthetic test data.
+
+Original text remains in the admitted Source and is not rewritten here.
+EOF
+cat > /notebook/claims/km16-color-code.md << 'EOF'
+---
+type: Claim
+title: Synthetic KM16 test color code
+schema_version: "openkit-scope-knowledge-schema-v4"
+openkit_status: active
+scope:
+  kind: user
+  userId: "${userId}"
+requiredFeatures:
+  - "openkit.knowledge-owner-scope.v1"
+  - "openkit.knowledge-git-notebook.v1"
+source_refs:
+  - "${sourceReference}"
+review_state: unreviewed
+sensitivity: confidential
+freshness: current
+confidence: 1
+created_at: "2026-04-09T00:00:00Z"
+updated_at: "2026-04-09T00:00:00Z"
+---
+
+# Synthetic KM16 test color code
+
+The user asked that this personal preference be remembered: the synthetic KM16 test color code is ORCHID-TEAL-42. The source identifies the value as synthetic test data.
+
+See [source summary](../sources/km16-color-preference.md).
+EOF
+cat > /notebook/index.md << 'EOF'
+---
+okf_version: "0.2"
+type: Index
+title: Notebook
+schema_version: "openkit-scope-knowledge-schema-v4"
+openkit_status: active
+scope:
+  kind: user
+  userId: "${userId}"
+requiredFeatures:
+  - "openkit.knowledge-owner-scope.v1"
+  - "openkit.knowledge-git-notebook.v1"
+source_refs:
+  - "${sourceReference}"
+review_state: unreviewed
+sensitivity: confidential
+freshness: current
+created_at: "2026-04-09T00:00:00Z"
+updated_at: "2026-04-09T00:00:00Z"
+---
+
+# Notebook
+
+Personal memory for this user scope.
+
+## Contents
+
+- [Synthetic KM16 test color code](claims/km16-color-code.md) — remembered preference: ORCHID-TEAL-42 (synthetic test data).
+- [Source summary](sources/km16-color-preference.md) — short synthesis of the admitted source.
+EOF`;
+}
+
 /** Real scoped persistence and virtual editor surround the bounded fake role runner. */
 function fixture(enabled = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'user-memory-agent-'));
@@ -366,6 +456,95 @@ describe('User-private bounded Memory maintenance', () => {
     } else {
       expect(f.notebook().publishedRevision()).toBe(first.notebookRevision);
     }
+  });
+
+  // DIAG-MEM retained publication regression and its frontmatter-only success control.
+  it.each([
+    'exact',
+    'no-index-refs',
+    'frontmatter-only',
+  ] as const)('retains strict publication validation and safe author feedback for %s retained script', async (mode) => {
+    const f = fixture();
+    let script = '';
+    let feedback: unknown;
+    let baseRevision: string | undefined;
+    f.run.mockImplementation(async (run) => {
+      const payload = JSON.parse(
+        run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join(
+          ''
+        )
+      );
+      script = retainedMemoryScript(payload.sources[0].reference);
+      const indexOffset = script.indexOf('cat > /notebook/index.md');
+      if (mode === 'no-index-refs')
+        script =
+          script.slice(0, indexOffset) +
+          script.slice(indexOffset).replace(/source_refs:\n {2}- .*\n/, '');
+      if (mode === 'frontmatter-only')
+        script =
+          script.slice(0, indexOffset) +
+          script
+            .slice(indexOffset)
+            .replace(/\n---\n[\s\S]*?\n---\n/, '\n---\nokf_version: "0.2"\n---\n');
+      baseRevision = f.notebook().publishedRevision();
+      const execute = (name: string, value: unknown) =>
+        run.tools
+          .find((tool) => tool.name === name)!
+          .execute(value, {
+            callId: randomUUID(),
+            toolOccurrence: 1,
+            signal: run.signal,
+          });
+      await execute('knowledge.notebook-workspace.update', { script });
+      feedback = await execute('knowledge.notebook.update', {
+        summary: 'Record synthetic preference.',
+      });
+      await f.store.updateTurn(run.turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      return { turnId: run.turn.id, text: 'Done.' };
+    });
+    const result = await runUserMemoryMaintenanceCommand(f.dependencies, {
+      ...f.input,
+      tellContent: 'Remember the synthetic color code ORCHID-TEAL-42.',
+    });
+    if (mode !== 'frontmatter-only') {
+      expect(result.outcome).toBe('failed');
+      expect(f.notebook().publishedRevision()).toBe(baseRevision);
+      expect(Object.keys(f.notebook().readRevision(baseRevision!).files)).toEqual(['index.md']);
+      // S63 final-tree validation and MEM-1: only closed native codes reach the author.
+      expect(feedback).toMatchObject({ isError: true });
+      const text = (feedback as { content: Array<{ type: string; text?: string }> }).content
+        .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        .join('');
+      expect(JSON.parse(text)).toEqual({
+        code: 'invalid_request',
+        diagnostics: ['okf.invalid_index_frontmatter'],
+      });
+      expect(text).not.toContain('ORCHID-TEAL-42');
+      expect(text).not.toContain(userId);
+      expect(text).not.toContain(f.coreDb.dataRoot);
+      return;
+    }
+    expect(result.outcome).toBe('published');
+    if (result.outcome !== 'published') return;
+    const published = f.notebook().readRevision(result.notebookRevision);
+    expect(Object.keys(published.files).sort()).toEqual([
+      'claims/km16-color-code.md',
+      'index.md',
+      'sources/km16-color-preference.md',
+    ]);
+    // Only index frontmatter was corrected; both concepts and the complete overview body survive.
+    for (const match of script.matchAll(/cat > \/notebook\/([^ ]+) << 'EOF'\n([\s\S]*?)\nEOF/g)) {
+      const path = match[1]!;
+      const authored = `${match[2]}\n`;
+      expect(parseOkfDocument({ path, content: published.files[path]! }).document?.body).toBe(
+        parseOkfDocument({ path, content: authored }).document?.body
+      );
+    }
+    expect(published.files['index.md']).toMatch(/^---\nokf_version: "0\.2"\n---\n/);
+    expect(published.metadata.sourceReferences).toHaveLength(1);
   });
 
   it('publishes an Agent candidate with explicit Source provenance and replays without another model run', async () => {

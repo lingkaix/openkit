@@ -151,7 +151,12 @@ export function attributedNotebookPageBytes(
   reviewState: 'user-authored' | 'delegated' | 'accepted'
 ): string {
   const parsed = parseOkfDocument({ path, content });
-  if (!parsed.ok) throw new NotebookError('invalid_request');
+  if (!parsed.ok)
+    throw new NotebookError(
+      'invalid_request',
+      undefined,
+      parsed.errors.map(({ code }) => code)
+    );
   if (parsed.document.reserved) return content;
   const profile = validateOpenKitKnowledgeProfile(parsed.document, ownerScope);
   if (profile.conformance !== 'OpenKit-profile-valid') throw new NotebookError('invalid_request');

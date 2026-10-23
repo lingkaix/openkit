@@ -53,3 +53,19 @@ it('counts fixed field guidance as well as the complete schema in the UTF-8 limi
   expect(guidance).not.toContain('雪');
   expect(Buffer.byteLength(guidance)).toBeLessThanOrEqual(16 * 1024);
 });
+
+// S61 OKF conformance pins the reserved-document rules to the v0.2 snapshot.
+it.each([
+  { kind: 'server' },
+  { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+  { kind: 'user', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+] as const)('states reserved index and log frontmatter exceptions for $kind authoring', (scope) => {
+  const guidance = notebookAuthoringGuidance(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, scope);
+  expect(guidance).toMatch(/(?:root|bundle-root)[^\n]*index\.md[^\n]*only[^\n]*okf_version/);
+  expect(guidance).toMatch(/okf_version[^\n]*["']0\.2["']/);
+  expect(guidance).toMatch(
+    /(?:nested|non-root|other)[^\n]*index\.md[^\n]*(?:no|not|without)[^\n]*frontmatter/i
+  );
+  expect(guidance).toMatch(/log\.md[^\n]*(?:no|not|without)[^\n]*frontmatter/);
+  expect(Buffer.byteLength(guidance)).toBeLessThanOrEqual(16 * 1024);
+});

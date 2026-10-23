@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { redactInternalAgentText } from './redaction.js';
@@ -304,9 +305,31 @@ export async function runInternalAgentLoop(
             content,
             isError: result.isError === true,
           });
-        } catch {
+        } catch (error) {
           const toolCancelled = exitForCancellation();
           if (toolCancelled) return toolCancelled;
+          try {
+            console.warn(
+              JSON.stringify({
+                code: 'internal_agent_tool_failed',
+                message: 'Internal Agent Tool failed.',
+                logicalModelId: redactInternalAgentText(input.model.logicalModelId).slice(0, 128),
+                operation: redactInternalAgentText(tool.name).slice(0, 128),
+                // Provider call IDs may contain arbitrary prose; diagnostics retain only correlation.
+                callIdDigest: createHash('sha256').update(call.callId).digest('hex'),
+                exceptionClass:
+                  error instanceof TypeError
+                    ? 'TypeError'
+                    : error instanceof RangeError
+                      ? 'RangeError'
+                      : error instanceof SyntaxError
+                        ? 'SyntaxError'
+                        : 'Error',
+              })
+            );
+          } catch {
+            // Optional diagnostics cannot replace the original safe Tool failure or closeout.
+          }
           messages.push(toolError(call.callId, 'The Tool failed without a safe result.'));
         }
       }

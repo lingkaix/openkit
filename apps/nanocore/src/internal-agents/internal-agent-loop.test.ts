@@ -36,7 +36,158 @@ function input(tools: readonly AgentTool[] = []) {
   };
 }
 
+/** Reads the diagnostic bridge without prescribing object-versus-JSON sink formatting. */
+function warningRecord(args: readonly unknown[]): Record<string, unknown> {
+  const object = args.find((value) => value !== null && typeof value === 'object');
+  if (object) return object as Record<string, unknown>;
+  const json = args.find((value) => typeof value === 'string' && value.startsWith('{'));
+  expect(json).toBeDefined();
+  return JSON.parse(json as string) as Record<string, unknown>;
+}
+
+/** Observes the warning's call correlation independently of its encoding or digest choice. */
+function warningCallCorrelation(record: Record<string, unknown>): string {
+  const field = Object.entries(record).find(
+    ([key, value]) => /call|correlation/i.test(key) && typeof value === 'string'
+  );
+  expect(field).toBeDefined();
+  expect(field![1]).not.toBe('');
+  return field![1] as string;
+}
+
 describe('internal Agent loop', () => {
+  it.each([
+    false,
+    true,
+  ])('logs one safe warning per unexpected Tool failure with failing sink=%s', async (failingSink) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+      if (failingSink) throw new Error('Synthetic diagnostic sink failure.');
+    });
+    try {
+      const tool: AgentTool = {
+        name: 'environment.status',
+        description: 'Read admitted native state.',
+        inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+        execute: async () => {
+          const error = Object.assign(new TypeError('exception-body-canary token=secret-canary'), {
+            code: 'token=code-value-canary',
+            body: 'result-body-canary',
+          });
+          error.stack =
+            'TypeError: exception-body-canary\n at /private/fixture/host-path-canary:1:1';
+          throw error;
+        },
+      };
+      const calls = ['unexpected-1', 'unexpected-2'];
+      const call = vi
+        .fn()
+        .mockResolvedValueOnce({
+          message: assistantMessage(
+            calls.map((callId) => ({
+              type: 'toolCall' as const,
+              callId,
+              name: tool.name,
+              arguments: { query: 'argument-body-canary' },
+            }))
+          ),
+        })
+        .mockResolvedValueOnce({ message: assistantMessage([{ type: 'text', text: 'Stopped.' }]) });
+      const result = await runInternalAgentLoop(input([tool]), call);
+      expect(result.kind).toBe('quiescent');
+      const feedback = call.mock.calls[1]?.[0].messages.filter(
+        (message: AgentMessage) => message.role === 'tool'
+      );
+      // MEM-1 preserves the existing model-visible unexpected-failure observation verbatim.
+      expect(feedback).toEqual(
+        calls.map((callId) => ({
+          role: 'tool',
+          callId,
+          isError: true,
+          content: [{ type: 'text', text: 'The Tool failed without a safe result.' }],
+        }))
+      );
+      expect(warn).toHaveBeenCalledTimes(2);
+      const records = warn.mock.calls.map(warningRecord);
+      const correlations = records.map(warningCallCorrelation);
+      expect(new Set(correlations).size).toBe(calls.length);
+      for (const record of records) {
+        const values = JSON.stringify(record);
+        expect(values).toContain(model.logicalModelId);
+        expect(values).toContain(tool.name);
+        expect(values).toContain('TypeError');
+      }
+      // The Log Contract permits a fixed event code, not arbitrary exception properties.
+      const eventCodes = records.map((record) =>
+        Object.entries(record)
+          .filter(([key, value]) => /(?:code|event)/i.test(key) && typeof value === 'string')
+          .map(([, value]) => value)
+      );
+      expect(eventCodes[0]?.length).toBeGreaterThan(0);
+      expect(eventCodes[1]).toEqual(eventCodes[0]);
+      const logged = JSON.stringify(warn.mock.calls);
+      for (const canary of [
+        'argument-body-canary',
+        'result-body-canary',
+        'exception-body-canary',
+        'secret-canary',
+        'code-value-canary',
+        '/private/fixture/host-path-canary',
+      ])
+        expect(logged).not.toContain(canary);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps hostile provider call IDs out of warnings while retaining deterministic call correlation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const tool: AgentTool = {
+        name: 'environment.status',
+        description: 'Read admitted native state.',
+        inputSchema: { type: 'object' },
+        execute: async () => {
+          throw new TypeError('Synthetic Tool failure.');
+        },
+      };
+      const hostileIds = [
+        '/private/fixture/host-path-call-id-canary',
+        'private prose with source-body-call-id-canary',
+        '/private/fixture/host-path-call-id-canary',
+      ];
+      for (const callId of hostileIds) {
+        const call = vi
+          .fn()
+          .mockResolvedValueOnce({
+            message: assistantMessage([
+              { type: 'toolCall', callId, name: tool.name, arguments: {} },
+            ]),
+          })
+          .mockResolvedValueOnce({
+            message: assistantMessage([{ type: 'text', text: 'Stopped.' }]),
+          });
+        const result = await runInternalAgentLoop(input([tool]), call);
+        expect(result.kind).toBe('quiescent');
+        expect(call.mock.calls[1]?.[0].messages.at(-1)).toEqual({
+          role: 'tool',
+          callId,
+          isError: true,
+          content: [{ type: 'text', text: 'The Tool failed without a safe result.' }],
+        });
+      }
+      // S64 correlation-only IDs do not override the telemetry Data Safety boundary.
+      expect(warn).toHaveBeenCalledTimes(hostileIds.length);
+      const correlations = warn.mock.calls.map(warningRecord).map(warningCallCorrelation);
+      expect(correlations[0]).toBe(correlations[2]);
+      expect(correlations[0]).not.toBe(correlations[1]);
+      const logged = JSON.stringify(warn.mock.calls);
+      for (const canary of ['host-path-call-id-canary', 'source-body-call-id-canary'])
+        expect(logged).not.toContain(canary);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('binds one-based accepted Tool occurrences independently of model call IDs', async () => {
     const accepted: unknown[] = [];
     const tool: AgentTool = {

@@ -1,5 +1,7 @@
 # Internal Core Roles
 
+Unexpected Tool failures emit one best-effort structured warning with bounded logical-model, Tool and call correlation and an allowlisted exception class. Arguments, result bodies, exception text, stack and arbitrary error codes are excluded. Provider-authored call IDs enter diagnostics only as opaque digests. A failing diagnostic sink preserves the fixed model-visible failure and normal closeout.
+
 An internal Stop uses the existing live cancellation handle to carry its original command to the first terminal publication. Knowledge Manager publishes that Stop receipt and Audit with its cancelled Turn. Native refusal remains recovery_required; cancellation knowledge does not imply a committed terminal result.
 
 This directory owns the deterministic Workflow Coordinator, Internal Role Execution Profile resolution, the bounded shared Internal Agent Loop, structured worker delegation payloads, and shared redaction helpers used by NanoCore services.
