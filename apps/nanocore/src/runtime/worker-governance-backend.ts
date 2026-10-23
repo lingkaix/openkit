@@ -240,7 +240,7 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   /** Hands off accepted ready proof before inspection permits replacement or retirement. */
   readonly recordNativeHandleDigest?: (
     digest: string,
-    retainedStorage: { storageRef: string; workSlotRef: string }
+    retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
   ) => void | Promise<void>;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
@@ -992,8 +992,8 @@ interface OpenShellWorkspaceBundleFileInventoryEntry {
  * Backend materialization result with product-safe summaries and private attachment provenance.
  */
 export interface WorkerGovernanceMaterializationRecord {
-  /** Actual admitted private association and slot, recorded before native work. */
-  retainedStorage?: { storageRef: string; workSlotRef: string };
+  /** Actual admitted private attachment, including its generation, recorded before native work. */
+  retainedStorage?: { storageRef: string; workSlotRef: string; attachmentGeneration: number };
   /** Comparable accepted-base commit contexts for retained Git work slots, never capture cursors. */
   workspaceBaseCommits?: Record<string, string>;
   /** Backend kind selected for materialization. */
@@ -1181,7 +1181,7 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
     packageSnapshotId: string,
     record: (
       digest: string,
-      retainedStorage: { storageRef: string; workSlotRef: string }
+      retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
     ) => void | Promise<void>
   ): void | Promise<void>;
 

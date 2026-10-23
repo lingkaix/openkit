@@ -920,6 +920,10 @@ describe('FsStore persistence', () => {
       retainedStorage,
       nativeHandleDigest: 'a'.repeat(64),
     });
+    // Continuity Decision: an omitted historical generation remains unknown after reopen.
+    expect(restarted.getAgentSession(session.id).retainedStorage).not.toHaveProperty(
+      'attachmentGeneration'
+    );
     await restarted.updateAgentSession(session.id, { retainedStorage });
     await expect(
       restarted.updateAgentSession(session.id, {

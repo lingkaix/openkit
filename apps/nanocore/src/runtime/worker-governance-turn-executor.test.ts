@@ -4891,6 +4891,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const retainedStorage = {
       storageRef: 'wst_00000000-0000-75ec-bb52-9171c38651e9',
       workSlotRef: 'actual-nondefault',
+      attachmentGeneration: 1,
     };
     const backend = new FakeWorkerGovernanceBackend();
     const materialize = backend.materialize.bind(backend);
@@ -4898,7 +4899,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let record:
       | ((
           digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string }
+          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
         ) => void | Promise<void>)
       | null = null;
     Object.assign(backend, {
@@ -4906,7 +4907,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         _id: string,
         recorder: (
           digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string }
+          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
         ) => void | Promise<void>
       ) => {
         record = recorder;
@@ -5156,7 +5157,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const materialize = backend.materialize.bind(backend);
     backend.materialize = async (...args) => ({
       ...(await materialize(...args)),
-      retainedStorage: predecessor.retainedStorage!,
+      retainedStorage: { ...predecessor.retainedStorage!, attachmentGeneration: 1 },
     });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
@@ -5280,6 +5281,53 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it.each([
+    1,
+    undefined,
+  ])('checks ready generation without inferring historical absence: generation=%s', async (attachmentGeneration) => {
+    const coreDb = openCommitFixtureCore();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const retainedStorage = {
+      storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
+      workSlotRef: 'slot-exact',
+      ...(attachmentGeneration === undefined ? {} : { attachmentGeneration }),
+    };
+    const session = await store.createAgentSession({
+      id: testEntityId('as', 'as_generation_proof'),
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      status: 'idle',
+      message: null,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+      nativeHandleDigest: null,
+      retainedStorage,
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend: new FakeWorkerGovernanceBackend(),
+      coreDb,
+    });
+    const digest = 'd'.repeat(64);
+    const actual = { ...retainedStorage, attachmentGeneration: 1 };
+    // Continuity Decision: the exact generation agrees; absent historical facts stay unknown.
+    if (attachmentGeneration !== undefined) {
+      await expect(
+        executor.recordNativeHandleDigest(store, session.id, digest, {
+          ...actual,
+          attachmentGeneration: 2,
+        })
+      ).rejects.toThrow();
+      expect(new FsStore({ dataRoot: coreDb.dataRoot }).getAgentSession(session.id)).toStrictEqual(
+        session
+      );
+    } else expect(session.retainedStorage).not.toHaveProperty('attachmentGeneration');
+    await executor.recordNativeHandleDigest(store, session.id, digest, actual);
+    const reopened = new FsStore({ dataRoot: coreDb.dataRoot }).getAgentSession(session.id);
+    expect(reopened.nativeHandleDigest).toBe(digest);
+    expect(reopened.retainedStorage).toStrictEqual(retainedStorage);
+  });
+
   it('records the accepted ready handle digest and offers it as the successor resume pair', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-resume-pair-')));
     applyMigrations(coreDb);
@@ -5293,7 +5341,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let record:
       | ((
           digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string }
+          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
         ) => void | Promise<void>)
       | null = null;
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
@@ -5301,7 +5349,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         _packageSnapshotId: string,
         recorder: (
           digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string }
+          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
         ) => void | Promise<void>
       ) => {
         record = recorder;
@@ -5316,6 +5364,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       awaitWorkerCompletion: async () => {
         // The backend accepts the ready proof during the Turn, after materialization.
         await record?.(digest, {
+          attachmentGeneration: 1,
           storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
           workSlotRef: workerStorageDefaultWorkSlotRef(
             'ws_00000000-0000-7000-8000-000000000001',
@@ -5404,7 +5453,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let record:
       | ((
           digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string }
+          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
         ) => void | Promise<void>)
       | null = null;
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
@@ -5412,7 +5461,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         _packageSnapshotId: string,
         recorder: (
           digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string }
+          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
         ) => void | Promise<void>
       ) => {
         record = recorder;
@@ -5422,6 +5471,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend.calls.push('prepareLaunch');
       // The backend accepts the open proof, then a later import fails the launch.
       await record?.(digest, {
+        attachmentGeneration: 1,
         storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
         workSlotRef: workerStorageDefaultWorkSlotRef(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -11726,6 +11776,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
     return {
       retainedStorage: {
+        attachmentGeneration: 1,
         storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
         workSlotRef: workerStorageDefaultWorkSlotRef(
           environmentPackage.scope.workspaceId,

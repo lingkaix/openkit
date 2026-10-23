@@ -475,7 +475,7 @@ interface NanoHostBackendTurnSession {
   recordNativeHandleDigest:
     | ((
         digest: string,
-        retainedStorage: { storageRef: string; workSlotRef: string }
+        retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
       ) => void | Promise<void>)
     | null;
   readonly environmentPackage: AgentEnvironmentPackage;
@@ -678,7 +678,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly recordNativeHandleDigest: (
       agentSessionId: string,
       digest: string,
-      retainedStorage: { storageRef: string; workSlotRef: string }
+      retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
     ) => void | Promise<void>,
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
@@ -3243,6 +3243,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       retainedStorage: {
         storageRef: sharedSandbox.workerStorageBinding.storageRef,
         workSlotRef: plannedWorkSlotRef,
+        attachmentGeneration: sharedSandbox.workerStorageBinding.attachmentGeneration,
       },
       backendKind: 'openshell',
       command: {
@@ -3748,7 +3749,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     packageSnapshotId: string,
     record: (
       digest: string,
-      retainedStorage: { storageRef: string; workSlotRef: string }
+      retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
     ) => void | Promise<void>
   ): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
@@ -3779,6 +3780,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     await session.recordNativeHandleDigest(digest, {
       storageRef: session.sharedHarness.sandbox.workerStorageBinding.storageRef,
       workSlotRef: packageWorkerStorageWorkSlotRef(session.environmentPackage),
+      attachmentGeneration: session.sharedHarness.sandbox.workerStorageBinding.attachmentGeneration,
     });
     session.acceptedProofUnrecorded = false;
   }
@@ -5017,6 +5019,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       storage !== null &&
       storage.runtimeTargetId === latest.runtimeTargetId &&
       storage.storageRef === session.retainedStorage.storageRef &&
+      (session.retainedStorage.attachmentGeneration === undefined ||
+        storage.attachmentGeneration === session.retainedStorage.attachmentGeneration) &&
       storage.workspaceId === session.workspaceId &&
       storage.contributors.some(
         (contributor) =>
@@ -5034,7 +5038,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     inspection: NanoHostAgentSessionContinuityInspection,
     record?: (
       digest: string,
-      retainedStorage: { storageRef: string; workSlotRef: string }
+      retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
     ) => void | Promise<void>,
     retirement?: NanoHostIdleSandboxEviction
   ): Promise<void> {
@@ -5076,16 +5080,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const retainedStorage = {
       storageRef: storage.storageRef,
       workSlotRef: packageWorkerStorageWorkSlotRef(environmentPackage),
+      attachmentGeneration: storage.attachmentGeneration,
     };
     const recorder =
       record ??
       liveSession?.recordNativeHandleDigest ??
-      ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) =>
-        this.recordNativeHandleDigest(inspection.agentSessionId, digest, retainedStorage));
+      ((
+        digest: string,
+        retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
+      ) => this.recordNativeHandleDigest(inspection.agentSessionId, digest, retainedStorage));
     if (liveSession) {
       if (
         liveSession.sharedHarness.sandbox.workerStorageBinding.storageRef !==
           retainedStorage.storageRef ||
+        liveSession.sharedHarness.sandbox.workerStorageBinding.attachmentGeneration !==
+          retainedStorage.attachmentGeneration ||
         packageWorkerStorageWorkSlotRef(liveSession.environmentPackage) !==
           retainedStorage.workSlotRef
       ) {

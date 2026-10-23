@@ -6088,7 +6088,10 @@ describe('createConfiguredTurnExecutor', () => {
       );
       expect(workerStorageDefaultWorkSlotRef(workspaceId, a)).not.toBe(selectedWorkSlotRef);
       assertWorktree(first.pkg, selectedWorkSlotRef);
-      expect(first.session.retainedStorage).toEqual(original);
+      expect(first.session.retainedStorage).toEqual({
+        ...original,
+        attachmentGeneration: getWorkerStorageBinding(coreDb, original)!.attachmentGeneration,
+      });
       expect(getWorkerStorageBinding(coreDb, original)).toMatchObject({
         state: 'attached',
         currentWorkSlotRef: selectedWorkSlotRef,
@@ -6101,7 +6104,7 @@ describe('createConfiguredTurnExecutor', () => {
       const second = await run(await entryFor('b', a), first.session.id);
       expect(second.entry.workerStorageChoice).toBeNull();
       assertWorktree(second.pkg, selectedWorkSlotRef);
-      expect(second.session.retainedStorage).toEqual(original);
+      expect(second.session.retainedStorage).toEqual(first.session.retainedStorage);
       expect(second.session.id).toBe(first.session.id);
       expect(second.start.body.agentSessionRuntimeBindingId).toBe(
         first.start.body.agentSessionRuntimeBindingId
@@ -11546,7 +11549,12 @@ describe('createConfiguredTurnExecutor', () => {
             state: 'idle',
             currentSandboxBindingRef: null,
           });
-        } else expect(next.retainedStorage).toEqual(original.retainedStorage);
+        } else
+          expect(next.retainedStorage).toEqual({
+            ...original.retainedStorage,
+            attachmentGeneration: getWorkerStorageBinding(coreDb, next.retainedStorage!)!
+              .attachmentGeneration,
+          });
         if (!crossThread) {
           expect(store.getAgentSession(original.id)).toMatchObject({
             status: expect.stringMatching(/^(closed|failed)$/),
@@ -11579,9 +11587,11 @@ describe('createConfiguredTurnExecutor', () => {
           restart();
           const third = await entryFor(3, 0, 0);
           await run(third, resume);
-          expect(store.getAgentSession(third.agentSessionId).retainedStorage).toEqual(
-            original.retainedStorage
-          );
+          expect(store.getAgentSession(third.agentSessionId).retainedStorage).toEqual({
+            ...original.retainedStorage,
+            attachmentGeneration: getWorkerStorageBinding(coreDb, original.retainedStorage!)!
+              .attachmentGeneration,
+          });
           expect(
             outside.effects
               .filter((effect) => effect.kind === 'sandbox.create')
@@ -12591,7 +12601,11 @@ describe('createConfiguredTurnExecutor', () => {
               .filter(({ active }) => active)
               .map(({ target, volumeRef }) => ({ target, volumeRef })),
           });
-          if (!fresh) expect(current.retainedStorage).toEqual(predecessor!.retainedStorage);
+          if (!fresh)
+            expect(current.retainedStorage).toEqual({
+              ...predecessor!.retainedStorage,
+              attachmentGeneration: reattached.attachmentGeneration,
+            });
           expect(store.getAgentSession(predecessor!.id).status).toBe(
             eviction || fresh ? 'idle' : 'closed'
           );
@@ -13174,6 +13188,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(peerSession.retainedStorage).toEqual({
         storageRef: original.storageRef,
         workSlotRef: peerSlot,
+        attachmentGeneration: getWorkerStorageBinding(coreDb, original)!.attachmentGeneration,
       });
       expect(native.effects.filter((e) => e.kind === 'sandbox.create')).toHaveLength(1);
       expect(native.effects.filter((e) => e.kind === 'sandbox.delete')).toHaveLength(0);
@@ -13226,8 +13241,11 @@ describe('createConfiguredTurnExecutor', () => {
       proceed.resolve();
       await completing;
       const otherSession = await finish(other, await admit(other));
-      expect(otherSession.retainedStorage).toEqual(original);
       const replaced = getWorkerStorageBinding(coreDb, original)!;
+      expect(otherSession.retainedStorage).toEqual({
+        ...original,
+        attachmentGeneration: replaced.attachmentGeneration,
+      });
       expect(replaced).toMatchObject({
         state: 'attached',
         targets: idleOriginal.targets,
@@ -13313,6 +13331,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect((await finish(handoff, handoffWork)).retainedStorage).toEqual({
         storageRef: original.storageRef,
         workSlotRef: peerSlot,
+        attachmentGeneration: replaced.attachmentGeneration + 1,
       });
       expect(getWorkerStorageBinding(coreDb, original)).toMatchObject({
         state: 'attached',
@@ -14859,6 +14878,7 @@ describe('createConfiguredTurnExecutor', () => {
     let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
     const joins: Array<() => Promise<void>> = [];
     let restoreRelease: (() => void) | undefined;
+    let restoreOpenObservation: (() => void) | undefined;
     try {
       const scopePackage = completeNanoHostPackage({
         scope: {
@@ -14892,6 +14912,37 @@ describe('createConfiguredTurnExecutor', () => {
         });
       native = createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
       const outside = native.outside;
+      const preOpen: Readonly<{
+        retainedStorage?: unknown;
+        generation?: number;
+        readFailed?: boolean;
+      }>[] = [];
+      const acceptOpen = native.runtime.acceptNanoHostHarnessCommand;
+      const openObservation = vi
+        .spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
+        .mockImplementation((request) => {
+          const command = acceptOpen(request);
+          if (command.operation === 'session.open') {
+            try {
+              const session = store.getAgentSession(String(command.body.agentSessionId));
+              const attachment = session.retainedStorage
+                ? getWorkerStorageBinding(coreDb, session.retainedStorage)
+                : null;
+              preOpen.push(
+                Object.freeze({
+                  retainedStorage: session.retainedStorage
+                    ? Object.freeze({ ...session.retainedStorage })
+                    : session.retainedStorage,
+                  generation: attachment?.attachmentGeneration,
+                })
+              );
+            } catch {
+              preOpen.push(Object.freeze({ readFailed: true }));
+            }
+          }
+          return command;
+        });
+      restoreOpenObservation = () => openObservation.mockRestore();
       native.peerFaults.failedFinal = failedTurn;
       const previous = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
@@ -14913,6 +14964,13 @@ describe('createConfiguredTurnExecutor', () => {
       joins.push(original.cleanup);
       await original.complete();
       await joins.pop()!();
+      // Continuity Decision: observe pre-open facts without throwing into native dispatch.
+      expect(preOpen.length).toBeGreaterThan(0);
+      for (const fact of preOpen) {
+        expect(fact.readFailed).not.toBe(true);
+        expect(fact.generation).toBeGreaterThan(0);
+        expect(fact.retainedStorage).toMatchObject({ attachmentGeneration: fact.generation });
+      }
       const predecessor = store.getAgentSession(scopePackage.scope.agentSessionId);
       expect(predecessor).toMatchObject({ status: 'idle', nativeHandleDigest: expect.any(String) });
       const previousTurn = store.getTurnById(previous.turnId);
@@ -14935,6 +14993,11 @@ describe('createConfiguredTurnExecutor', () => {
         state: 'attached',
         attachmentGeneration: expect.any(Number),
       });
+      expect(openObservation).toHaveReturnedWith(
+        expect.objectContaining({ operation: 'session.open' })
+      );
+      restoreOpenObservation();
+      restoreOpenObservation = undefined;
       await native.restore();
       native = undefined;
       await shutdownControlStoreWorkerClient();
@@ -14950,6 +15013,19 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       store = new FsStore({ dataRoot });
+      // Continuity Decision: reopen preserves the original attachment fact.
+      expect(store.getAgentSession(predecessor.id).retainedStorage).toEqual({
+        ...predecessor.retainedStorage,
+        attachmentGeneration: retained.attachmentGeneration,
+      });
+      const changedAttachment = {
+        ...predecessor.retainedStorage,
+        attachmentGeneration: retained.attachmentGeneration + 1,
+      };
+      await expect(
+        store.updateAgentSession(predecessor.id, { retainedStorage: changedAttachment })
+      ).rejects.toBeInstanceOf(Error);
+      expect(store.getAgentSession(predecessor.id)).toEqual(predecessor);
       // A real environment change requires replacement; it does not erase the predecessor proof.
       setup = createTestAgentSetup({
         imageRef: `sha256:${'5'.repeat(64)}`,
@@ -15050,6 +15126,13 @@ describe('createConfiguredTurnExecutor', () => {
           expect(creates).toEqual([]);
         } else {
           expect(creates).toHaveLength(1);
+          // Persistent Worker Volumes: a new attachment has its own historical generation.
+          expect(
+            store.getAgentSession(testEntityId('as', 'as_restart_selected_next')).retainedStorage
+          ).toEqual({
+            ...predecessor.retainedStorage,
+            attachmentGeneration: retained.attachmentGeneration + 1,
+          });
           expect(creates[0]!.input.storage).toMatchObject({
             storageRef: retained.storageRef,
             attachmentGeneration: retained.attachmentGeneration + 1,
@@ -15072,6 +15155,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(attempts.requireSchedulerExecutionAttempt(coreDb, closed.attemptId)).toEqual(closed);
     } finally {
       for (const join of joins) await join();
+      restoreOpenObservation?.();
       await native?.restore();
       restoreRelease?.();
       await shutdownControlStoreWorkerClient();

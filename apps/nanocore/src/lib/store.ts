@@ -271,8 +271,12 @@ export type AgentSession = ProtocolAgentSession & {
   environmentPackageSnapshotId: string | null;
   /** Accepted ready native handle digest; with `id` as locator it is the resume pair. */
   nativeHandleDigest: string | null;
-  /** Historical admitted association and slot; grants no current attachment authority. */
-  retainedStorage: { storageRef: string; workSlotRef: string } | null;
+  /** Immutable original attachment; an absent historical generation remains unknown. */
+  retainedStorage: {
+    storageRef: string;
+    workSlotRef: string;
+    attachmentGeneration?: number;
+  } | null;
   policySnapshotId: string | null;
   sessionCompatibilityKey: string | null;
   stale: boolean;
@@ -5635,7 +5639,9 @@ export class FsStore {
       input.retainedStorage !== undefined &&
       agentSession.retainedStorage !== null &&
       (input.retainedStorage?.storageRef !== agentSession.retainedStorage.storageRef ||
-        input.retainedStorage?.workSlotRef !== agentSession.retainedStorage.workSlotRef)
+        input.retainedStorage?.workSlotRef !== agentSession.retainedStorage.workSlotRef ||
+        input.retainedStorage?.attachmentGeneration !==
+          agentSession.retainedStorage.attachmentGeneration)
     ) {
       throw new Error('AgentSession retained-storage attachment cannot change.');
     }

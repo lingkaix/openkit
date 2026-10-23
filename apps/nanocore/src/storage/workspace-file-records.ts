@@ -214,11 +214,12 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
   createdAt: CanonicalTimestampSchema,
   updatedAt: CanonicalTimestampSchema,
 }).strip();
-/** Private historical attachment provenance; current admission remains with WorkerStorageBinding. */
+/** Original attachment provenance; an absent generation remains unknown and grants no authority. */
 export const AgentSessionRetainedStorageSchema = z
   .object({
     storageRef: WorkerStorageTargetIdSchema,
     workSlotRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+    attachmentGeneration: z.number().int().positive().optional(),
   })
   .strip();
 

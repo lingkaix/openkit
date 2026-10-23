@@ -34,7 +34,7 @@ The canonical Turn record preserves optional `reasoningEffort` at creation and r
 
 `getKnowledgeSource` and `listKnowledgeSources` project current canonical SourceSummary pointers from Notebook Git. Capture uses the shared asynchronous Source publisher and current native Knowledge admission; `FsStore` owns no parallel Source registry, original byte reader or generated text view. The Knowledge operation preserves its definite lineage refusals before capture; unrelated storage and implementation exceptions remain unclassified.
 
-`FsStore.updateAgentSession` admits the materializer's private `retainedStorage` association and slot once and refuses any later replacement or erasure. It remains historical provenance after terminalization and does not enter the public AgentSession projection or grant attachment authority.
+`FsStore.updateAgentSession` admits the materializer's private `retainedStorage` association, slot and original positive attachment generation once and refuses any later replacement or erasure. An absent generation in older facts remains unknown and is not backfilled. It remains historical provenance after terminalization and does not enter the public AgentSession projection or grant attachment authority.
 
 The simulator Material fixtures invoke the canonical definition-derived JSON operations and retain their queue, projection and worker-delivery assertions.
 

@@ -459,6 +459,8 @@ export const StoredAgentSessionPayloadV1Shape = {
     .object({
       storageRef: WorkerStorageTargetIdSchema,
       workSlotRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+      /** Older records lack the original generation; absence remains unknown. */
+      attachmentGeneration: z.number().int().positive().optional(),
     })
     .strip()
     .nullable()

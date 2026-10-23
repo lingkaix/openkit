@@ -2380,10 +2380,24 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         materialization.sandbox ? [materialization.sandbox.name] : []
       );
       if (materialization.retainedStorage) {
+        const retainedStorage = AgentSessionRetainedStorageSchema.parse(
+          materialization.retainedStorage
+        );
+        if (retainedStorage.attachmentGeneration === undefined)
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'Materialization has no original retained-storage attachment generation.',
+            409
+          );
         const sourceStorage = nativeResume
           ? store.getAgentSession(nativeResume.locator).retainedStorage
           : null;
-        if (sourceStorage && !isDeepStrictEqual(sourceStorage, materialization.retainedStorage)) {
+        // A successor preserves the association and slot, but receives its own admitted generation.
+        if (
+          sourceStorage &&
+          (sourceStorage.storageRef !== retainedStorage.storageRef ||
+            sourceStorage.workSlotRef !== retainedStorage.workSlotRef)
+        ) {
           throw new TurnStartValidationError(
             'recovery_required',
             'The admitted storage differs from the native resume attachment.',
@@ -2391,7 +2405,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           );
         }
         await store.updateAgentSession(agentSessionId, {
-          retainedStorage: materialization.retainedStorage,
+          // Materialization must not backfill an older immutable fact from current binding state.
+          retainedStorage:
+            existingAgentSession?.retainedStorage &&
+            existingAgentSession.retainedStorage.attachmentGeneration === undefined
+              ? { storageRef: retainedStorage.storageRef, workSlotRef: retainedStorage.workSlotRef }
+              : { ...retainedStorage, attachmentGeneration: retainedStorage.attachmentGeneration },
           updatedAt: this.now(),
         });
       }
@@ -3374,19 +3393,26 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param store Store that owns the proof-producing AgentSession.
    * @param agentSessionId Exact binding's durable AgentSession identity.
    * @param digest Ready proof accepted by that binding.
-   * @param retainedStorage Actual association and work slot held by that binding.
+   * @param retainedStorage Actual association, work slot and generation held by that binding.
    * @throws TurnStartValidationError when immutable attachment provenance is missing or disagrees.
    */
   public async recordNativeHandleDigest(
     store: FsStore,
     agentSessionId: string,
     digest: string,
-    retainedStorage: { storageRef: string; workSlotRef: string }
+    retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
   ): Promise<void> {
     const session = store.getAgentSession(agentSessionId);
+    const recordedStorage = AgentSessionRetainedStorageSchema.safeParse(session.retainedStorage);
+    const actualStorage = AgentSessionRetainedStorageSchema.safeParse(retainedStorage);
     if (
-      !AgentSessionRetainedStorageSchema.safeParse(session.retainedStorage).success ||
-      !isDeepStrictEqual(session.retainedStorage, retainedStorage)
+      !recordedStorage.success ||
+      !actualStorage.success ||
+      actualStorage.data.attachmentGeneration === undefined ||
+      recordedStorage.data.storageRef !== actualStorage.data.storageRef ||
+      recordedStorage.data.workSlotRef !== actualStorage.data.workSlotRef ||
+      (recordedStorage.data.attachmentGeneration !== undefined &&
+        recordedStorage.data.attachmentGeneration !== actualStorage.data.attachmentGeneration)
     ) {
       throw new TurnStartValidationError(
         'recovery_required',
