@@ -376,6 +376,17 @@ export function getArtifactReview(
   return toView(row);
 }
 
+/** Reads only the owned retained Material selector before native preparation waits for that Material's writer. */
+export function readControlReviewMaterialId(
+  db: WorkspaceDb,
+  artifactId: string,
+  artifactVersion: number
+): string | null {
+  const row = requireReview(db, artifactId, artifactVersion);
+  const stored = readStoredReviewV1(row);
+  return stored.materialProposal?.materialId ?? null;
+}
+
 /** Appends a validated annotation to its existing exact version Review without changing decision authority. */
 export function appendArtifactReviewJudgement(
   workspaceDb: WorkspaceDb,

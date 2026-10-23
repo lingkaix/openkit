@@ -896,7 +896,9 @@ describe('native Thread publication', () => {
   it('retains committed Thread authority while its native acknowledgement is withheld', async () => {
     const f = await threadPublicationFixture();
     const other = await f.store.createWorkspace('Unaffected Workspace');
-    const client = getControlStoreWorkerClient() as unknown as { receive(value: unknown): void };
+    const client = getControlStoreWorkerClient() as unknown as {
+      receive(value: unknown, host: unknown): void;
+    };
     const receive = client.receive.bind(client);
     let release!: () => void;
     let committed!: () => void;
@@ -905,14 +907,14 @@ describe('native Thread publication', () => {
       committed = resolve;
       failed = reject;
     });
-    const hold = vi.spyOn(client, 'receive').mockImplementation((value) => {
+    const hold = vi.spyOn(client, 'receive').mockImplementation((value, host) => {
       if (
         (value as { status?: string; operation?: string }).status === 'ok' &&
         (value as { operation?: string }).operation === 'products'
       ) {
-        release = () => receive(value);
+        release = () => receive(value, host);
         committed();
-      } else receive(value);
+      } else receive(value, host);
     });
     let acknowledged = false;
     const mutation = f.store

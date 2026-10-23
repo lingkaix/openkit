@@ -10,6 +10,7 @@ import {
   statSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import {
@@ -17,23 +18,35 @@ import {
   applyControlReviewCommand,
   type PreparedControlReviewCommand,
   prepareControlReviewCommand,
+  readControlReviewMaterialId,
 } from '../artifact-reviews.js';
 import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import { OperationError } from '../operation-error.js';
-import { applyControlExecutionJournal } from '../runtime/execution-journal.js';
+import {
+  applyControlExecutionJournal,
+  decodeExecutionJournalIntent,
+  decodeExecutionJournalSettlement,
+  readExecutionJournalRoot,
+} from '../runtime/execution-journal.js';
 import {
   applyControlGoalCommand,
   GoalCommandError,
   type PreparedControlGoalCommand,
   prepareControlGoalCommand,
 } from '../runtime/goal-owner.js';
+import { StoredGoalCompletionCandidateV1Schema } from '../runtime/goal-retained-v1.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
-import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
+import type {
+  ControlPendingCommandInput,
+  PreparedControlPendingCommand,
+} from '../runtime/pending-requests.js';
 import {
   applyControlPendingCommand,
   assertControlPendingArchive,
   PendingRequestCommandError,
+  pendingRequestItemId,
+  readPendingRequest,
 } from '../runtime/pending-requests.js';
 import {
   ProjectWorkerBackendCleanupInputSchema,
@@ -60,12 +73,16 @@ import {
   type ControlProductContentMount,
   type ControlProductOwner,
   ControlProductPreconditionError,
+  type ControlProductTransition,
+  type ControlTerminalTransition,
+  decode as decodeControlProduct,
   type PreparedControlEntry,
   type PreparedControlPublication,
   type PreparedControlTerminal,
   prepareControlEntries,
   prepareControlPublication,
   prepareControlTerminal,
+  readProduct,
 } from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
@@ -93,7 +110,7 @@ if (isMainThread || parentPort === null) {
 const port = parentPort;
 
 /** A queued transition, not a durable request or a second command receipt. */
-type WriteRequest = Extract<
+type WriteCommand = Extract<
   ControlWorkerRequest,
   {
     operation:
@@ -111,7 +128,19 @@ type WriteRequest = Extract<
       | 'review'
       | 'terminal';
   }
-> & {
+>;
+
+/** One slot is reserved before preparation; readiness never changes admitted causal order. */
+type WriteRequest = WriteCommand & {
+  readonly lanes: ReadonlySet<string>;
+  /** Existing opaque SQL and archive commands retain their database-wide ordering boundary. */
+  readonly barrier: boolean;
+  readonly settled: Promise<void>;
+  readonly finish: () => void;
+  preparation?: Promise<void>;
+  ready: boolean;
+  predecessorFailed: boolean;
+  refusal?: ControlWorkerReply;
   readonly preparedPublication?: PreparedControlPublication | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
@@ -309,12 +338,457 @@ function unschedule(owner: OwnedDatabase): void {
 }
 
 /** Identifies existing standalone metadata tuples; complete closeout uses the terminal/Pending owner. */
-function archivedThreads(request: WriteRequest): string[] {
+function archivedThreads(request: WriteCommand): string[] {
   return request.operation === 'products' || request.operation === 'transition'
     ? request.transition.products
         .filter((input) => input.kind === 'thread' && input.record.status === 'archived')
         .map((input) => String(input.record.id))
     : [];
+}
+
+/** Collects only actions which publish or associate state with the named Turn. */
+function pendingTurns(command: ControlPendingCommandInput, turns: Set<string>): void {
+  if (command.action === 'raise') turns.add(command.input.raisingTurnId);
+  else if (command.action === 'closeout') turns.add(command.closeoutTurnId);
+  else if ('turnId' in command) turns.add(command.turnId);
+}
+
+/** Derives native Turn and AgentSession ordering lanes from executed owners, never read-only provenance. */
+function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<string> {
+  const lanes = new Set<string>();
+  const add = (transition: Pick<ControlProductTransition, 'products' | 'entries'>) => {
+    for (const product of transition.products) {
+      if (product.kind !== 'turn') continue;
+      if (!owner.productOwner) throw new ControlProductPreconditionError();
+      const turn = decodeControlProduct('turn', product.record, owner.productOwner);
+      lanes.add(turn.id as string);
+      if (typeof turn.agentSessionId === 'string') lanes.add(`session:${turn.agentSessionId}`);
+    }
+    for (const product of transition.products) {
+      if (product.kind !== 'agent-session') continue;
+      if (!owner.productOwner) throw new ControlProductPreconditionError();
+      lanes.add(
+        `session:${decodeControlProduct('agent-session', product.record, owner.productOwner).id}`
+      );
+    }
+    for (const entry of transition.entries) lanes.add(entry.turnId);
+  };
+  const pending = (commands: readonly ControlPendingCommandInput[] = []) => {
+    for (const command of commands) pendingTurns(command, lanes);
+  };
+  const terminal = (input: ControlTerminalTransition) => {
+    add({ products: [input.turn, ...input.products], entries: input.entries });
+    pending(input.pending);
+  };
+  const journal = (input: Extract<WriteCommand, { operation: 'journal' }>['input']) => {
+    if (input.kind === 'intent') {
+      lanes.add(decodeExecutionJournalIntent(input.inputJson).execution.workId);
+      return;
+    }
+    if (!owner.scopeDb) throw new ControlProductPreconditionError();
+    const ref = decodeExecutionJournalSettlement(input.inputJson).ref.execution;
+    let workId: string | undefined;
+    if (owner.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(ref.executionId))
+      workId = readExecutionJournalRoot(owner.scopeDb, ref).workId;
+    // An earlier admitted intent is a causal dependency, never a replacement for its SQL root.
+    for (const earlier of owner.pending) {
+      const intents =
+        earlier.operation === 'products'
+          ? (earlier.transition.journalIntents ?? [])
+          : earlier.operation === 'journal' && earlier.input.kind === 'intent'
+            ? [earlier.input.inputJson]
+            : [];
+      for (const json of intents) {
+        const execution = decodeExecutionJournalIntent(json).execution;
+        if (!isDeepStrictEqual(execution.ref, ref)) continue;
+        if (workId !== undefined && workId !== execution.workId)
+          throw new ControlProductPreconditionError();
+        workId = execution.workId;
+      }
+    }
+    if (workId === undefined) throw new ControlProductPreconditionError();
+    lanes.add(workId);
+  };
+  switch (request.operation) {
+    case 'transition':
+    case 'products':
+      add(request.transition);
+      pending(request.transition.pending);
+      if (request.operation === 'products')
+        for (const inputJson of request.transition.journalIntents ?? [])
+          journal({ kind: 'intent', inputJson });
+      break;
+    case 'review':
+      if (request.input.mode === 'submit') {
+        add({ products: [], entries: request.input.transition.entries });
+        if (request.input.artifact.origin.kind === 'turn-output')
+          lanes.add(request.input.artifact.origin.turnId);
+      }
+      break;
+    case 'pending':
+      add(request.input);
+      pending([request.input.input]);
+      if (request.input.admission) add(request.input.admission);
+      if (request.input.terminal) terminal(request.input.terminal);
+      break;
+    case 'terminal':
+      terminal(request.input);
+      break;
+    case 'publication':
+    case 'observation':
+    case 'project-cleanup':
+    case 'maintenance':
+      lanes.add(request.input.turnId);
+      break;
+    case 'journal':
+      journal(request.input);
+      break;
+    case 'goal':
+      if (
+        request.input.command.operation === 'goal.plan.propose' &&
+        !request.input.context.coordinatorTurnId &&
+        request.input.proposalTurnId
+      )
+        lanes.add(request.input.proposalTurnId);
+      for (const entry of request.input.pendingAdmission?.entries ?? []) lanes.add(entry.turnId);
+      pending(request.input.pendingAdmission?.pending);
+      if (request.input.pendingItem) lanes.add(request.input.pendingItem.entry.turnId);
+      break;
+    case 'write':
+    case 'material':
+      break;
+  }
+  if (owner.productOwner) {
+    for (const turnId of [...lanes].filter((id) => !id.startsWith('session:'))) {
+      const sessionId = readProduct(owner.sqlite, owner.productOwner, 'turn', turnId)?.record
+        .agentSessionId;
+      if (typeof sessionId === 'string') lanes.add(`session:${sessionId}`);
+      else
+        for (const earlier of owner.pending.filter((request) => request.lanes.has(turnId)))
+          for (const lane of earlier.lanes) if (lane.startsWith('session:')) lanes.add(lane);
+    }
+  }
+  return lanes;
+}
+
+/** Returns only Pending commands executed by this request's actual owner branch. */
+function pendingCommands(request: WriteCommand): readonly ControlPendingCommandInput[] {
+  if (request.operation === 'transition' || request.operation === 'products')
+    return request.transition.pending ?? [];
+  if (request.operation === 'terminal') return request.input.pending ?? [];
+  if (request.operation === 'pending')
+    return [request.input.input, ...(request.input.terminal?.pending ?? [])];
+  if (request.operation === 'goal') return request.input.pendingAdmission?.pending ?? [];
+  return [];
+}
+
+/** Captures existing Pending selectors before expanding their retained Item dependencies. */
+function pendingScope(owner: OwnedDatabase, request: WriteCommand, expand = true) {
+  const ids = new Set<string>();
+  const threads = new Set<string>();
+  const goals = new Set<string>();
+  const deliveries = new Set<string>();
+  for (const command of pendingCommands(request)) {
+    for (const expected of command.expected ?? []) ids.add(expected.requestId);
+    if ('requestId' in command) ids.add(command.requestId);
+    if ('threadId' in command) threads.add(command.threadId);
+    if ('turnId' in command) deliveries.add(command.turnId);
+    if (command.action === 'raise') ids.add(command.input.requestId);
+    if (command.action === 'associate-invalidation')
+      for (const id of command.requestIds) ids.add(id);
+    if (
+      expand &&
+      (command.action === 'delivery-prove' ||
+        command.action === 'delivery-release' ||
+        command.action === 'delivery-unknown')
+    ) {
+      const rows = owner.sqlite
+        .prepare(
+          "SELECT request_id FROM pending_requests WHERE delivery='frozen' AND delivery_turn_id=?"
+        )
+        .all(command.turnId) as { request_id: string }[];
+      for (const row of rows) ids.add(row.request_id);
+    }
+  }
+  if (request.operation === 'goal') {
+    const args = request.input.command.arguments;
+    if ('pendingRequestId' in args && args.pendingRequestId) ids.add(args.pendingRequestId);
+    if ('goalId' in args && args.goalId) goals.add(args.goalId);
+    if ('threadId' in args) threads.add(args.threadId);
+    if (
+      request.input.command.operation === 'goal.plan.propose' ||
+      (request.input.command.operation === 'goal.completion.accept' &&
+        'candidate' in args &&
+        Boolean(args.candidate))
+    )
+      ids.add(`ap_${request.input.command.arguments.requestId}`);
+  }
+  if (expand)
+    for (const id of ids) {
+      const record = readPendingRequest(owner.sqlite, id);
+      if (record) {
+        threads.add(record.threadId);
+        if (record.deliveryTurnId) deliveries.add(record.deliveryTurnId);
+        if (typeof record.governedIntent?.goalId === 'string')
+          goals.add(record.governedIntent.goalId);
+      }
+    }
+  return { ids, threads, goals, deliveries };
+}
+
+/** Names the exact Review version; no source Turn is inferred from provenance. */
+function reviewVersion(request: WriteCommand): string | undefined {
+  if (request.operation !== 'review') return undefined;
+  const input = request.input;
+  if (input.mode === 'submit') return `${input.artifact.id}:${input.artifact.version}`;
+  const target =
+    input.mode === 'judgement'
+      ? input.judgement.target.kind === 'artifact-version'
+        ? input.judgement.target
+        : undefined
+      : input.input;
+  return target ? `${target.artifactId}:${target.artifactVersion}` : undefined;
+}
+
+/** Waits only the admitted writers of canonical proof; original expected values are never refreshed. */
+async function prepareAfterPredecessors(
+  owner: OwnedDatabase,
+  queued: WriteRequest,
+  earlier: readonly WriteRequest[]
+): Promise<void> {
+  const overlaps = (left: ReadonlySet<string>, right: ReadonlySet<string>) =>
+    [...left].some((id) => right.has(id));
+  const wait = async (predicate: (request: WriteRequest) => boolean) => {
+    await Promise.all(earlier.filter(predicate).map((request) => request.settled));
+    if (queued.predecessorFailed || owner.poisoned) throw new ControlProductPreconditionError();
+  };
+  await wait(
+    (request) => request.barrier || queued.barrier || overlaps(queued.lanes, request.lanes)
+  );
+  const commands = pendingCommands(queued);
+  const goalPending =
+    queued.operation === 'goal' && 'pendingRequestId' in queued.input.command.arguments
+      ? queued.input.command.arguments.pendingRequestId
+      : undefined;
+  if (commands.length || goalPending) {
+    // First resolve a possibly queued row creation, then its newly discoverable Thread/Goal selectors.
+    for (let pass = 0; pass < 2; pass += 1) {
+      const scope = pendingScope(owner, queued);
+      await wait((request) => {
+        if (!pendingCommands(request).length && request.operation !== 'goal') return false;
+        // Unrelated retained rows are not this request's proof and cannot cause its refusal.
+        const source = pendingScope(owner, request, false);
+        return (
+          overlaps(scope.ids, source.ids) ||
+          overlaps(scope.threads, source.threads) ||
+          overlaps(scope.goals, source.goals) ||
+          overlaps(scope.deliveries, source.deliveries)
+        );
+      });
+    }
+    // A queued raise/proposal can introduce the row and its source Items; expand only after it commits.
+    const ids = new Set<string>();
+    for (const id of pendingScope(owner, queued).ids) {
+      const record = readPendingRequest(owner.sqlite, id);
+      if (!record) continue;
+      ids.add(record.requestItemId);
+      if (goalPending === id && record.governedIntent?.operation === 'goal.completion.accept') {
+        for (const evidence of StoredGoalCompletionCandidateV1Schema.parse(
+          record.governedIntent.candidate
+        ).evidence)
+          if (evidence.kind === 'item') ids.add(evidence.id);
+      }
+      if (commands.length)
+        for (const role of [
+          'decision',
+          'answer',
+          'disposition',
+          'disposition-status',
+          'ending',
+          'invalidation',
+        ] as const)
+          ids.add(pendingRequestItemId(id, role));
+    }
+    for (const command of commands)
+      if (command.action === 'raise') ids.add(command.input.requestItemId);
+    for (const id of ids) {
+      const row = owner.sqlite
+        .prepare(
+          "SELECT turn_id FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+        )
+        .get(id) as { turn_id: string } | undefined;
+      if (row) {
+        await wait((request) => request.lanes.has(row.turn_id));
+        continue;
+      }
+      // Entry IDs live in verified bodies, not JSON framing. Resolve unknown earlier byte identities first.
+      for (const request of earlier) {
+        if (request.refusal || request.predecessorFailed) continue;
+        if (
+          request.operation === 'terminal' ||
+          request.operation === 'publication' ||
+          (request.operation === 'pending' && request.input.terminal)
+        ) {
+          // These opaque native proof tokens do not expose their verified Item identities.
+          await request.settled;
+          continue;
+        }
+        const hasEntries =
+          request.operation === 'products' || request.operation === 'transition'
+            ? request.transition.entries.length
+            : request.operation === 'pending'
+              ? request.input.entries.length
+              : request.operation === 'goal'
+                ? Number(Boolean(request.input.pendingItem)) +
+                  (request.input.pendingAdmission?.entries.length ?? 0)
+                : request.operation === 'review' && request.input.mode === 'submit'
+                  ? request.input.transition.entries.length
+                  : 0;
+        if (!hasEntries) continue;
+        if (
+          request.preparedEntries === undefined &&
+          request.preparedGoal === undefined &&
+          request.preparedReview === undefined
+        )
+          await request.preparation;
+        const entries = [
+          ...(request.preparedEntries ?? []),
+          ...(request.preparedGoal?.entries ?? []),
+          ...(request.preparedGoal?.pendingAdmission?.entries ?? []),
+          ...(request.preparedReview?.entries ?? []),
+        ];
+        if (entries.some((entry) => entry.input.kind === 'item' && entry.id === id))
+          await request.settled;
+      }
+    }
+  }
+  const terminal =
+    queued.operation === 'terminal'
+      ? queued.input
+      : queued.operation === 'pending'
+        ? queued.input.terminal
+        : undefined;
+  if (terminal?.execution)
+    // The owner follows retained parent invocations; the earlier local journal prefix covers that dynamic read.
+    await wait(
+      (request) =>
+        request.operation === 'journal' ||
+        (request.operation === 'products' && Boolean(request.transition.journalIntents?.length))
+    );
+  if (
+    queued.operation === 'review' &&
+    queued.input.mode === 'decide' &&
+    queued.input.input.artifactOriginal
+  ) {
+    const version = reviewVersion(queued);
+    await wait((request) => reviewVersion(request) === version);
+    if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+    const materialId = readControlReviewMaterialId(
+      owner.scopeDb,
+      queued.input.input.artifactId,
+      queued.input.input.artifactVersion
+    );
+    if (materialId)
+      for (const request of earlier) {
+        if (request.refusal || request.predecessorFailed) continue;
+        if (request.operation === 'material') {
+          if (request.input.mode === 'create') continue;
+          const input = request.input.input;
+          if (('materialId' in input ? input.materialId : input.target.materialId) === materialId)
+            await request.settled;
+          continue;
+        }
+        if (
+          request.operation !== 'review' ||
+          request.input.mode !== 'decide' ||
+          request.input.input.decision !== 'accepted'
+        )
+          continue;
+        const input = request.input.input;
+        const submission = earlier.find(
+          (prior) =>
+            prior.operation === 'review' &&
+            prior.input.mode === 'submit' &&
+            prior.input.artifact.id === input.artifactId &&
+            prior.input.artifact.version === input.artifactVersion
+        );
+        let target: string | null | undefined;
+        try {
+          target =
+            submission?.operation === 'review' && submission.input.mode === 'submit'
+              ? submission.input.review.materialProposal?.materialId
+              : readControlReviewMaterialId(owner.scopeDb, input.artifactId, input.artifactVersion);
+        } catch {
+          // An unresolved candidate can refuse only itself; finish it before reading our own Material proof.
+          await request.settled;
+          continue;
+        }
+        if (target === materialId) await request.settled;
+      }
+  }
+  if (queued.predecessorFailed || owner.poisoned) throw new ControlProductPreconditionError();
+}
+
+/** Removes one admitted slot only after its ordered response and wakes its dependent preparation. */
+function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWorkerReply): void {
+  owner.pending.splice(owner.pending.indexOf(request), 1);
+  try {
+    reply(result);
+  } finally {
+    request.finish();
+  }
+}
+
+/** Selects ready causal prefixes, so one Turn's file preparation cannot stop an independent Turn. */
+function readyBatch(owner: OwnedDatabase): WriteRequest[] {
+  const blocked = new Set<string>();
+  const result: WriteRequest[] = [];
+  for (const request of owner.pending) {
+    if (request.barrier) {
+      if (result.length === 0 && owner.pending[0] === request && request.ready)
+        result.push(request);
+      break;
+    }
+    if (!request.ready || [...request.lanes].some((turn) => blocked.has(turn))) {
+      for (const turn of request.lanes) blocked.add(turn);
+      continue;
+    }
+    result.push(request);
+    if (result.length === CONTROL_WORKER_LIMITS.batchTransitions) break;
+  }
+  return result;
+}
+
+/** Refuses only already admitted successors; a fresh later invocation gets its normal SQL checks. */
+function refuseSuccessors(
+  owner: OwnedDatabase,
+  failed: WriteRequest,
+  excluded: ReadonlySet<WriteRequest> = new Set()
+): void {
+  const turns = new Set(failed.lanes);
+  let barrierFailed = failed.barrier;
+  for (const request of owner.pending.slice(owner.pending.indexOf(failed) + 1)) {
+    if (
+      excluded.has(request) ||
+      (!barrierFailed && !request.barrier && ![...request.lanes].some((turn) => turns.has(turn)))
+    )
+      continue;
+    request.predecessorFailed = true;
+    barrierFailed ||= request.barrier;
+    for (const turn of request.lanes) turns.add(turn);
+  }
+}
+
+/** A poisoned handle disposes only ready causal prefixes after their started file work drains. */
+function refusePoisonedPending(owner: OwnedDatabase): void {
+  let ready = readyBatch(owner);
+  while (ready.length) {
+    for (const request of ready) {
+      releaseContentPublications(owner.publications, request.preparedPublications ?? []);
+      complete(owner, request, failure(request.id, 'unavailable'));
+    }
+    ready = readyBatch(owner);
+  }
 }
 
 /**
@@ -326,37 +800,23 @@ function flush(owner: OwnedDatabase): void {
   unschedule(owner);
   // Archive starts a batch so its immutable canonical proof includes every earlier committed writer.
   const archiveIndex = owner.pending.findIndex((request) => archivedThreads(request).length > 0);
-  const nextArchive =
-    archiveIndex === 0
-      ? owner.pending.findIndex(
-          (request, index) => index > 0 && archivedThreads(request).length > 0
-        )
-      : archiveIndex;
-  const count =
-    nextArchive > 0
-      ? Math.min(nextArchive, CONTROL_WORKER_LIMITS.batchTransitions)
-      : CONTROL_WORKER_LIMITS.batchTransitions;
   if (archiveIndex === 0 && owner.scopeDb?.scope === 'workspace') {
-    // Keep the head stable while any admitted immutable proof is still being prepared.
-    if (owner.preparations.size) {
-      void Promise.all([...owner.preparations]).then(() => schedule(owner));
-      return;
-    }
     const first = owner.pending[0]!;
+    if (!first.ready) return;
     // Both synchronous receipt reads and asynchronous proof failures stay with this scope.
     const refuse = (error: unknown) => {
-      owner.pending.shift();
+      refuseSuccessors(owner, first);
       releaseContentPublications(owner.publications, first.preparedPublications ?? []);
       const code = failureCode(error);
       if (code === 'integrity') owner.poisoned = true;
-      if (owner.poisoned) {
-        for (const request of owner.pending.splice(0)) {
-          releaseContentPublications(owner.publications, request.preparedPublications ?? []);
-          reply(failure(request.id, 'unavailable'));
-        }
-      } else if (owner.pending.length) schedule(owner);
       const domain = domainRefusal(first.operation, error);
-      reply(domain ? { ...failure(first.id, 'precondition'), domain } : failure(first.id, code));
+      complete(
+        owner,
+        first,
+        domain ? { ...failure(first.id, 'precondition'), domain } : failure(first.id, code)
+      );
+      if (owner.poisoned) refusePoisonedPending(owner);
+      else schedule(owner);
     };
     // Exact replay needs no new immutable proof; admission still verifies the original receipt.
     let retainedReceipt: unknown;
@@ -371,21 +831,23 @@ function flush(owner: OwnedDatabase): void {
       return;
     }
     if (!retainedReceipt && !first.preparedPending) {
+      first.ready = false;
       let preparation: Promise<void>;
       preparation = prepareControlPendingArchive(owner.scopeDb, owner.contentMount)
         .then((preparedPending) => {
           if (owner.poisoned || databases.get(first.database) !== owner)
             throw new ControlProductPreconditionError();
-          owner.pending[0] = { ...first, preparedPending };
+          Object.assign(first, { preparedPending, ready: true });
           schedule(owner);
         })
         .catch(refuse)
         .finally(() => owner.preparations.delete(preparation));
+      first.preparation = preparation;
       owner.preparations.add(preparation);
       return;
     }
   }
-  const selected = owner.pending.splice(0, count);
+  const selected = readyBatch(owner);
   if (selected.length === 0) return;
   const publications = new Map(
     selected.flatMap((request) =>
@@ -428,18 +890,26 @@ function flush(owner: OwnedDatabase): void {
       directoryErrors.set(directory, failureCode(error));
     }
   }
-  const batch = selected.filter((request) => {
+  for (const request of selected) {
+    if (request.refusal || request.predecessorFailed) refuseSuccessors(owner, request);
     for (const directory of requiredDirectories.get(request) ?? []) {
       const code = directoryErrors.get(directory);
       if (code) {
-        reply(failure(request.id, code, 'not-committed'));
-        return false;
+        refuseSuccessors(owner, request);
+        request.refusal ??= failure(request.id, code, 'not-committed');
+        break;
       }
     }
-    return true;
-  });
-  if (batch.length === 0) {
-    if (owner.pending.length) owner.immediate = setImmediate(() => flush(owner));
+  }
+  const batch = selected;
+  if (batch.every((request) => request.refusal || request.predecessorFailed)) {
+    for (const request of batch)
+      complete(
+        owner,
+        request,
+        request.refusal ?? failure(request.id, 'precondition', 'not-committed')
+      );
+    if (readyBatch(owner).length) owner.immediate = setImmediate(() => flush(owner));
     return;
   }
   let bodyFinished = false;
@@ -448,6 +918,10 @@ function flush(owner: OwnedDatabase): void {
     replies = owner.writer.write((sqlite) => {
       const outcomes: ControlWorkerReply[] = [];
       for (const request of batch) {
+        if (request.refusal || request.predecessorFailed) {
+          outcomes.push(request.refusal ?? failure(request.id, 'precondition', 'not-committed'));
+          continue;
+        }
         sqlite.exec('SAVEPOINT control_transition');
         try {
           let outcome: ControlWorkerReply;
@@ -658,6 +1132,7 @@ function flush(owner: OwnedDatabase): void {
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
           if (failureCode(error) === 'integrity') throw error;
+          refuseSuccessors(owner, request);
           const domain = domainRefusal(request.operation, error);
           outcomes.push(
             domain
@@ -673,21 +1148,24 @@ function flush(owner: OwnedDatabase): void {
     const unknown = bodyFinished || owner.sqlite.inTransaction;
     const code = failureCode(error);
     owner.poisoned = unknown || code === 'integrity';
-    replies = batch.map((request) =>
-      failure(
-        request.id,
-        code === 'integrity' ? code : unknown ? 'commit-unknown' : code,
-        unknown ? 'unknown' : 'not-committed'
-      )
+    for (const request of batch) refuseSuccessors(owner, request, new Set(batch));
+    replies = batch.map(
+      (request) =>
+        request.refusal ??
+        (request.predecessorFailed
+          ? failure(request.id, 'precondition', 'not-committed')
+          : failure(
+              request.id,
+              code === 'integrity' ? code : unknown ? 'commit-unknown' : code,
+              unknown ? 'unknown' : 'not-committed'
+            ))
     );
   }
-  for (const result of replies) reply(result);
+  for (let index = 0; index < replies.length; index += 1)
+    complete(owner, batch[index]!, replies[index]!);
   if (owner.poisoned) {
-    for (const request of owner.pending.splice(0)) {
-      releaseContentPublications(owner.publications, request.preparedPublications ?? []);
-      reply(failure(request.id, 'unavailable'));
-    }
-  } else if (owner.pending.length > 0) {
+    refusePoisonedPending(owner);
+  } else if (readyBatch(owner).length > 0) {
     // One batch per turn lets ready sibling owners progress on the shared thread.
     owner.immediate = setImmediate(() => flush(owner));
   }
@@ -695,7 +1173,10 @@ function flush(owner: OwnedDatabase): void {
 
 /** Starts the fixed wait, or promptly flushes a full batch without another wait window. */
 function schedule(owner: OwnedDatabase): void {
-  if (owner.pending.length >= CONTROL_WORKER_LIMITS.batchTransitions) {
+  if (owner.poisoned) return;
+  const ready = readyBatch(owner).length;
+  if (!ready) return;
+  if (ready >= CONTROL_WORKER_LIMITS.batchTransitions) {
     if (owner.timer !== null) clearTimeout(owner.timer);
     owner.timer = null;
     owner.immediate ??= setImmediate(() => flush(owner));
@@ -706,14 +1187,17 @@ function schedule(owner: OwnedDatabase): void {
 
 /** Drains accepted local work before an ordered close or maintenance request. */
 async function drain(owner: OwnedDatabase): Promise<void> {
-  // A queued archive can start preparation during flush, so one snapshot cannot drain this owner.
   while (owner.pending.length || owner.preparations.size) {
-    await Promise.all([...owner.preparations]);
-    while (owner.pending.length) {
-      const count = owner.pending.length;
-      flush(owner);
-      if (owner.pending.length === count) break;
-    }
+    const count = owner.pending.length;
+    if (owner.poisoned) refusePoisonedPending(owner);
+    else flush(owner);
+    if (owner.pending.length < count) continue;
+    // Ready predecessors must commit before a dependent preparation can finish; never await them first.
+    const preparing = owner.pending
+      .filter((request) => !request.ready)
+      .map((request) => request.preparation!);
+    if (preparing.length) await Promise.race(preparing);
+    else if (owner.preparations.size) await Promise.all(owner.preparations);
   }
   unschedule(owner);
 }
@@ -972,110 +1456,80 @@ function receive(value: unknown): void {
       value.operation === 'review' ||
       value.operation === 'terminal'
     ) {
-      if (
-        owner.pending.length + owner.preparations.size >=
-        CONTROL_WORKER_LIMITS.pendingTransitions
-      ) {
+      if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));
       } else {
+        let lanes: ReadonlySet<string>;
+        try {
+          lanes = requestLanes(owner, value);
+        } catch (error) {
+          const domain = domainRefusal(value.operation, error);
+          reply(
+            domain
+              ? { ...failure(value.id, 'precondition'), domain }
+              : failure(value.id, failureCode(error))
+          );
+          return;
+        }
+        let finish!: () => void;
+        const settled = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const queued: WriteRequest = {
+          ...value,
+          lanes,
+          settled,
+          finish,
+          barrier:
+            archivedThreads(value).length > 0 ||
+            (value.operation === 'write' && owner.scopeDb !== undefined),
+          ready: false,
+          predecessorFailed: false,
+        };
+        // This is the existing bounded FIFO slot, retained throughout asynchronous preparation.
+        const earlier = [...owner.pending];
+        owner.pending.push(queued);
         const newDirectories: ControlContentPreparation = {
           db: owner.scopeDb,
           directories: new Set(),
           publications: owner.publications,
           published: new Set(),
         };
-        if (value.operation === 'pending' && value.input.terminal) {
-          if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner) {
-            reply(failure(value.id, 'precondition'));
-            return;
-          }
-          const db = owner.scopeDb;
-          let preparation: Promise<void>;
-          preparation = prepareControlTerminal(
-            owner.scopeDb,
-            value.input.terminal,
-            owner.contentMount,
-            newDirectories
-          )
-            .then(async (preparedTerminal) => {
-              if (owner.poisoned || databases.get(value.database) !== owner)
-                throw new ControlProductPreconditionError();
-              const preparedPending = await prepareControlPendingCommands(
-                db,
-                [value.input.input],
-                owner.contentMount,
-                [],
-                undefined,
-                newDirectories
-              );
-              if (owner.poisoned || databases.get(value.database) !== owner)
-                throw new ControlProductPreconditionError();
-              owner.pending.push({
-                ...value,
-                preparedTerminal,
-                preparedPending,
-                preparedDirectories: [...newDirectories.directories],
-                preparedPublications: [...newDirectories.published],
-              });
-              schedule(owner);
-            })
-            .catch(async (error) => {
-              await releaseContentPreparation(newDirectories);
-              const domain = domainRefusal('pending', error);
-              reply(
-                domain
-                  ? { ...failure(value.id, 'precondition'), domain }
-                  : failure(value.id, failureCode(error), 'not-committed')
-              );
-            })
-            .finally(() => owner.preparations.delete(preparation));
-          owner.preparations.add(preparation);
-          return;
-        }
-        if (value.operation === 'terminal') {
-          if (!owner.scopeDb || !owner.productOwner) {
-            reply(failure(value.id, 'precondition'));
-            return;
-          }
-          let preparation: Promise<void>;
-          preparation = prepareControlTerminal(
-            owner.scopeDb,
-            value.input,
-            owner.contentMount,
-            newDirectories
-          )
-            .then((preparedTerminal) => {
-              if (owner.poisoned || databases.get(value.database) !== owner)
-                throw new ControlProductPreconditionError();
-              owner.pending.push({
-                ...value,
-                preparedTerminal,
-                preparedDirectories: [...newDirectories.directories],
-                preparedPublications: [...newDirectories.published],
-              });
-              schedule(owner);
-            })
-            .catch(async (error) => {
-              await releaseContentPreparation(newDirectories);
-              reply(failure(value.id, failureCode(error), 'not-committed'));
-            })
-            .finally(() => {
-              owner.preparations.delete(preparation);
-            });
-          owner.preparations.add(preparation);
-          return;
-        }
-        // Archive must not overtake an earlier admitted producer while its bytes synchronize.
-        const earlier = archivedThreads(value).length ? [...owner.preparations] : [];
         const prepare = async () => {
-          if (earlier.length) await Promise.all(earlier);
           let preparedPublication: PreparedControlPublication | undefined;
           let preparedEntries: WriteRequest['preparedEntries'];
           let preparedPending: PreparedControlPendingCommand | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
           let preparedMaterial: ControlMaterialCommandInput | undefined;
           let preparedReview: PreparedControlReviewCommand | undefined;
+          let preparedTerminal: PreparedControlTerminal | undefined;
           try {
+            if (value.operation === 'pending' && !value.input.terminal) {
+              if (!owner.productOwner) throw new ControlProductPreconditionError();
+              preparedEntries = await prepareControlEntries(
+                owner.productOwner,
+                owner.contentMount,
+                value.input.entries,
+                newDirectories
+              );
+              Object.assign(queued, { preparedEntries });
+            }
+            // Canonical-dependent preparation observes its admitted predecessor's committed state.
+            if (['terminal', 'publication', 'pending', 'goal'].includes(value.operation))
+              await prepareAfterPredecessors(owner, queued, earlier);
+            if (
+              value.operation === 'terminal' ||
+              (value.operation === 'pending' && value.input.terminal)
+            ) {
+              if (!owner.scopeDb || !owner.productOwner)
+                throw new ControlProductPreconditionError();
+              preparedTerminal = await prepareControlTerminal(
+                owner.scopeDb,
+                value.operation === 'terminal' ? value.input : value.input.terminal!,
+                owner.contentMount,
+                newDirectories
+              );
+            }
             if (value.operation === 'publication') {
               if (!owner.scopeDb || !owner.productOwner)
                 throw new ControlProductPreconditionError();
@@ -1093,8 +1547,8 @@ function receive(value: unknown): void {
                 owner.scopeDb,
                 [value.input.input],
                 owner.contentMount,
-                value.input.entries,
-                undefined,
+                value.input.terminal ? [] : value.input.entries,
+                preparedEntries,
                 newDirectories
               );
               preparedEntries = preparedPending.entries;
@@ -1104,6 +1558,8 @@ function receive(value: unknown): void {
               preparedMaterial = prepareControlMaterialCommand(value.input, value.content);
             }
             if (value.operation === 'review') {
+              if (value.input.mode === 'decide' && value.input.input.artifactOriginal)
+                await prepareAfterPredecessors(owner, queued, earlier);
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               preparedReview = await prepareControlReviewCommand(
                 owner.scopeDb,
@@ -1129,7 +1585,9 @@ function receive(value: unknown): void {
                 value.transition.entries,
                 newDirectories
               );
+              Object.assign(queued, { preparedEntries });
               if (value.transition.pending?.length && archivedThreads(value).length === 0) {
+                await prepareAfterPredecessors(owner, queued, earlier);
                 if (owner.scopeDb?.scope !== 'workspace')
                   throw new ControlProductPreconditionError();
                 preparedPending = await prepareControlPendingCommands(
@@ -1144,36 +1602,37 @@ function receive(value: unknown): void {
             }
             if (owner.poisoned || databases.get(value.database) !== owner)
               throw new ControlProductPreconditionError();
-          } catch (error) {
-            await releaseContentPreparation(newDirectories);
-            // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
-            const domain = domainRefusal(value.operation, error);
-            reply(
-              domain
-                ? { ...failure(value.id, 'precondition'), domain }
-                : failure(value.id, failureCode(error), 'not-committed')
-            );
-            return;
-          }
-          if (value.operation === 'material') {
-            const { content: _content, ...framing } = value;
-            owner.pending.push({ ...framing, preparedMaterial });
-          } else {
-            owner.pending.push({
-              ...value,
+            Object.assign(queued, {
+              ready: true,
               preparedEntries,
               preparedGoal,
               preparedReview,
               preparedPending,
               preparedPublication,
+              preparedTerminal,
+              preparedMaterial,
               preparedDirectories: [...newDirectories.directories],
               preparedPublications: [...newDirectories.published],
+              ...(value.operation === 'material' ? { content: undefined } : {}),
             });
+            schedule(owner);
+          } catch (error) {
+            refuseSuccessors(owner, queued);
+            await releaseContentPreparation(newDirectories);
+            const domain = domainRefusal(value.operation, error);
+            queued.refusal = owner.poisoned
+              ? failure(value.id, 'unavailable')
+              : domain
+                ? { ...failure(value.id, 'precondition'), domain }
+                : failure(value.id, failureCode(error), 'not-committed');
+            queued.ready = true;
+            if (owner.poisoned) refusePoisonedPending(owner);
+            else schedule(owner);
           }
-          schedule(owner);
         };
         let preparation: Promise<void>;
         preparation = prepare().finally(() => owner.preparations.delete(preparation));
+        queued.preparation = preparation;
         owner.preparations.add(preparation);
       }
       return;

@@ -453,6 +453,9 @@ function readRoot(db: CoreDb | WorkspaceDb, ref: ExecutionJournalRef): Execution
   };
 }
 
+/** Shares the existing validated root read with native causal admission; SQL remains the deciding owner. */
+export { readRoot as readExecutionJournalRoot };
+
 /** Decodes retained step facts without interpreting diagnostic values as control authority. */
 function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
   stepRefSchema.parse(ref);
