@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +44,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
@@ -46,7 +55,7 @@ import {
   createSchedulerAdmissionEntry,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
-import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { FileAdmissionError, FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
@@ -92,6 +101,8 @@ import {
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+import { createExecutionStepJournalReader } from './execution-journal.js';
+import type { ExecutionJournalRef } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
   bindNanoHostAttemptPreparation,
@@ -174,7 +185,11 @@ import {
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
-import { WorkspaceCollectionRecoveryCauseSchema } from './workspace-collect-wire.js';
+import {
+  listWorkspaceReconciliationRecords,
+  resolveWorkspaceReconciliationRecord,
+} from './workspace-reconciliation-records.js';
+import * as captureOwner from './workspace-snapshot-chain.js';
 import {
   acceptWorkspaceBaseline,
   authorizeWorkspaceBaselineInitialization,
@@ -2341,6 +2356,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
     const runtime = createConfiguredWorkerLifecycleRuntime({
       coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       ...(options.vaultBackend ? { vaultBackend: options.vaultBackend } : {}),
       ...(options.capacity === undefined
         ? {}
@@ -4076,20 +4092,6 @@ describe('createConfiguredTurnExecutor', () => {
           (effect) => effect.kind === 'workspace.collect' && effect.input.mode === 'baseline'
         )
       ).toHaveLength(1);
-      db.sqlite.exec(
-        'DELETE FROM workspace_snapshot_collections; DELETE FROM workspace_snapshot_cursors;'
-      );
-      authorizeWorkspaceBaselineInitialization(db, identity);
-      for (const report of [
-        undefined,
-        { commit: 'f'.repeat(40), tree },
-        { commit, tree: 'invalid' },
-      ]) {
-        await expect(collector.ensureWorkspaceBaseline(f.session, true, report)).rejects.toThrow(
-          report?.commit === 'f'.repeat(40) ? 'baseline_mismatch' : 'baseline_source_unavailable'
-        );
-        expect(readWorkspaceSnapshotCursor(db, identity)).toBeNull();
-      }
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -4330,12 +4332,666 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
-  it('preserves every closed collection failure without a cursor advance, receipt, or review', async () => {
-    let failure: Record<string, unknown> = { outcome: 'effect_failed' };
-    let baselineFails = false;
+  const capturePublicationFaults = [
+    'body',
+    'capture-result',
+    'idle',
+    'idle-epoch',
+    'idle-concurrent',
+  ] as const;
+  it.each(capturePublicationFaults)('capture publication: %s', async (fault) => {
+    const idleCapture = fault === 'idle' || fault === 'idle-epoch' || fault === 'idle-concurrent';
+    let coreDb = createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+    const manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Capture fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const options = { readRuntimeConfig: () => configuration };
+    let native = createNativeTaskAdmissionFixture(coreDb, store, options);
+    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    let journalRef: ExecutionJournalRef | undefined;
+    const writeIntent = vi
+      .mocked(store.writeWorkspaceExecutionJournalIntent)
+      .getMockImplementation();
+    if (!writeIntent) throw new Error('Native admission has no real journal observer.');
+    const intents = vi
+      .spyOn(store, 'writeWorkspaceExecutionJournalIntent')
+      .mockImplementation(async (...args) => {
+        const invocation = await writeIntent(...args);
+        journalRef = invocation.ref.execution;
+        return invocation;
+      });
+    onTestFinished(() => intents.mockRestore());
+    let db: ReturnType<typeof openWorkspaceDb> | undefined;
+    const workingRoot = mkdtempSync(join(tmpdir(), 'refused-capture-work-'));
+    const workingFile = join(workingRoot, 'current.patch');
+    let durableCore: ReturnType<typeof openCoreDb> | undefined;
+    let durableCapacity: WorkerGovernanceBackend | undefined;
+    let concurrentArmed = false;
+    let concurrentScans = 0;
+    const concurrentEntered = Promise.withResolvers<void>();
+    const concurrentRelease = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    let concurrentSibling: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    let idleCollection = false;
+    let arrivedStage: string | undefined;
+    const a = Buffer.from(
+      'diff --git a/file.txt b/file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+A\n'
+    );
+    const b = Buffer.from(
+      'diff --git a/file.txt b/file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+B\n'
+    );
+    writeFileSync(workingFile, idleCapture ? Buffer.alloc(0) : a);
+    onTestFinished(async () => {
+      for (const gate of concurrentRelease) gate.resolve();
+      await concurrentSibling?.cleanup();
+      if (durableCore?.sqlite.open) durableCore.sqlite.close();
+      if (db?.sqlite.open) db.sqlite.close();
+      await admitted?.cleanup();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(workingRoot, { recursive: true, force: true });
+    });
+    const backend = native.executor.executionBackend as WorkerGovernanceBackend & {
+      sessionDispatch: NanoHostSessionDispatch;
+    };
+    const effect = backend.sessionDispatch.effect.bind(backend.sessionDispatch);
+    const injected = vi
+      .spyOn(backend.sessionDispatch, 'effect')
+      .mockImplementation(async (...args) => {
+        const request = (args[1] ?? args[0]) as NanoHostSessionEffectRequest;
+        if (
+          concurrentArmed &&
+          request.kind === 'workspace.collect' &&
+          request.input.mode !== 'baseline'
+        ) {
+          const gate = concurrentRelease[concurrentScans++];
+          if (!gate) throw new Error('Concurrent idle close dispatched an extra scan.');
+          if (concurrentScans === 2) concurrentEntered.resolve();
+          await gate.promise;
+          return await effect(...args);
+        }
+        if (
+          request.kind !== 'workspace.collect' ||
+          request.input.mode === 'baseline' ||
+          (idleCapture && !idleCollection)
+        )
+          return await effect(...args);
+        if (idleCollection) {
+          if (!admitted || !durableCapacity) throw new Error('Idle scan lacks its durable reader.');
+          expect(await durableCapacity.inspectMaterializationCapacity!(admitted.pkg)).toBe(
+            'capacity-saturated'
+          );
+        }
+        native.outside.effects.push(request);
+        const bytes = readFileSync(workingFile);
+        const stagingPath = join(mkdtempSync(join(dataRoot, 'arrived-capture-')), 'complete');
+        writeFileSync(stagingPath, bytes);
+        arrivedStage = stagingPath;
+        return {
+          outcome: 'candidate',
+          head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+          previousHead: request.input.previousHead,
+          acceptedBase: request.input.acceptedBase,
+          unstable: false,
+          byteLength: bytes.length,
+          sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          stagingPath,
+        };
+      });
+    onTestFinished(() => injected.mockRestore());
+    const attemptId = testEntityId('attempt', 'capture_insert_rollback');
+    const agentSessionId = testEntityId('as', 'capture_insert_rollback');
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue:${attemptId}`,
+      requestId: testEntityId('tu', 'capture_insert_rollback_request').slice(3),
+      requestedAgentId: manifest.id,
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      turnId: testEntityId('tu', 'capture_insert_rollback'),
+      turnInput: 'Retain the original arrived capture after a local refusal.',
+      triggerActor: { kind: 'user', id: ownerUserId },
+    });
+    await publishFactoryAdmission(store, entry);
+    admitted = await native.admitTurn(entry, {
+      attemptId,
+      agentSessionId,
+      candidateAgentSessionId: agentSessionId,
+    });
+    expect(admitted.pkg.workspace.inputs).toEqual([]);
+    const originalSession = store.getAgentSession(agentSessionId);
+    expect(originalSession.retainedStorage?.attachmentGeneration).toBeGreaterThan(0);
+    const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+    expect(anchor.packageSnapshotId).toBe(admitted.pkg.snapshotId);
+    db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+    const cursor = db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all();
+    const receipts = db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all();
+    if (fault === 'idle-concurrent') {
+      await admitted.complete();
+      if (!journalRef) throw new Error('Original idle Turn has no acknowledged journal.');
+      const firstRef = journalRef;
+      const siblingThread = await store.createThread(
+        entry.workspaceId,
+        'Independent concurrent idle capture',
+        testEntityId('th', 'capture_concurrent_sibling')
+      );
+      const storage = getWorkerStorageBinding(
+        coreDb,
+        store.getAgentSession(agentSessionId).retainedStorage!
+      )!;
+      const siblingAttemptId = testEntityId('attempt', 'capture_concurrent_sibling');
+      const siblingAgentSessionId = testEntityId('as', 'capture_concurrent_sibling');
+      const siblingEntry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${siblingAttemptId}`,
+        requestId: testEntityId('tu', 'capture_concurrent_sibling_request').slice(3),
+        requestedAgentId: manifest.id,
+        workspaceId: entry.workspaceId,
+        threadId: siblingThread.id,
+        turnId: testEntityId('tu', 'capture_concurrent_sibling'),
+        turnInput: 'Complete an independent binding in the same shared Sandbox.',
+        triggerActor: { kind: 'user', id: ownerUserId },
+        workerStorageChoice: {
+          kind: 'selected',
+          storageRef: storage.storageRef,
+          expectedRevision: storage.revision,
+          purpose: 'work',
+          goalId: null,
+          taskId: null,
+        },
+      });
+      await publishFactoryAdmission(store, siblingEntry);
+      concurrentSibling = await native.admitTurn(siblingEntry, {
+        attemptId: siblingAttemptId,
+        agentSessionId: siblingAgentSessionId,
+        candidateAgentSessionId: siblingAgentSessionId,
+      });
+      await concurrentSibling.complete();
+      if (!journalRef) throw new Error('Sibling idle Turn has no acknowledged journal.');
+      expect(journalRef.executionId).not.toBe(firstRef.executionId);
+      const residents = [admitted, concurrentSibling];
+      const bindings = residents.map(({ pkg }) =>
+        harnessRecords.inspectNanoHostAgentSessionContinuity(coreDb, {
+          agentSessionId: pkg.scope.agentSessionId,
+          threadId: pkg.scope.threadId,
+          workspaceId: pkg.scope.workspaceId,
+        })
+      );
+      expect(bindings[0]?.harnessInstanceId).toBeTruthy();
+      expect(bindings[1]?.harnessInstanceId).toBe(bindings[0]!.harnessInstanceId);
+      const originals = await Promise.all(
+        [firstRef, journalRef].map(async (ref) => {
+          const reader = createExecutionStepJournalReader(db!, ref.owner);
+          const root = await reader.readExecution(ref);
+          expect(root.phase).toBe('closed');
+          return { ref, root, steps: await reader.readEndedSteps(ref) };
+        })
+      );
+      durableCore = openCoreDb(dataRoot);
+      const durableOwner = createConfiguredWorkerLifecycleRuntime({
+        ...options,
+        coreDb: durableCore,
+        store,
+      });
+      durableCapacity = (durableOwner.turnExecutor as WorkerGovernanceTurnExecutor)
+        .executionBackend as WorkerGovernanceBackend;
+      for (const { pkg } of residents)
+        expect(await durableCapacity.inspectMaterializationCapacity!(pkg)).toBe('available');
+      const closing: Array<Promise<number>> = [];
+      const finished: number[] = [];
+      let outcomes: PromiseSettledResult<number>[] = [];
+      try {
+        concurrentArmed = true;
+        for (const [index, { pkg }] of residents.entries()) {
+          closing.push(
+            backend.prepareAgentSessionContinuity!({
+              agentSessionId: pkg.scope.agentSessionId,
+              threadId: pkg.scope.threadId,
+              workspaceId: pkg.scope.workspaceId,
+              environmentPackage: pkg,
+              reuseAllowed: false,
+            }).then((disposition) => {
+              expect(disposition).toBe('closed');
+              finished.push(index);
+              return index;
+            })
+          );
+        }
+        await Promise.race([
+          concurrentEntered.promise,
+          Promise.all(closing).then(() => {
+            throw new Error('Both closes finished before both external scans arrived.');
+          }),
+        ]);
+        concurrentRelease[0]!.resolve();
+        const completed = await Promise.race(closing);
+        expect(finished).toEqual([completed]);
+        expect(
+          await durableCapacity.inspectMaterializationCapacity!(residents[1 - completed]!.pkg)
+        ).toBe('capacity-saturated');
+        for (const original of originals) {
+          const reader = createExecutionStepJournalReader(db, original.ref.owner);
+          expect(await reader.readExecution(original.ref)).toStrictEqual(original.root);
+          expect(await reader.readEndedSteps(original.ref)).toStrictEqual(original.steps);
+        }
+      } finally {
+        for (const gate of concurrentRelease) gate.resolve();
+        outcomes = await Promise.allSettled(closing);
+      }
+      for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+      return;
+    }
+    if (idleCapture) {
+      await admitted.complete();
+      if (!journalRef) throw new Error('Completed native Turn has no acknowledged journal.');
+      const closedRef = journalRef;
+      const reader = createExecutionStepJournalReader(db, closedRef.owner);
+      const closed = await reader.readExecution(closedRef);
+      const ended = await reader.readEndedSteps(closedRef);
+      expect(closed).toMatchObject({ phase: 'closed', openSteps: [], exclusionRefs: [] });
+      const completedTurn = store.getTurnById(entry.turnId);
+      expect(completedTurn.status).toBe('completed');
+      const idle = harnessRecords.inspectNanoHostAgentSessionContinuity(coreDb, {
+        agentSessionId,
+        threadId: entry.threadId,
+        workspaceId: entry.workspaceId,
+      });
+      if (!idle) throw new Error('Completed native Turn has no retained idle binding.');
+      const cursor = db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all();
+      const receipts = db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all();
+      durableCore = openCoreDb(dataRoot);
+      const durableOwner = createConfiguredWorkerLifecycleRuntime({
+        ...options,
+        coreDb: durableCore,
+        store,
+      });
+      durableCapacity = (durableOwner.turnExecutor as WorkerGovernanceTurnExecutor)
+        .executionBackend as WorkerGovernanceBackend;
+      expect(await durableCapacity.inspectMaterializationCapacity!(admitted.pkg)).toBe('available');
+      writeFileSync(workingFile, a);
+      idleCollection = true;
+      let reserveRefused = false;
+      const reserve = native.fileAdmission.reserve.bind(native.fileAdmission);
+      const refusal = vi.spyOn(native.fileAdmission, 'reserve').mockImplementation((writes) => {
+        if (!reserveRefused && arrivedStage && writes.publicationBytes > 0n) {
+          expect(readFileSync(arrivedStage)).toEqual(a);
+          reserveRefused = true;
+          throw new FileAdmissionError('storage_capacity_unavailable');
+        }
+        return reserve(writes);
+      });
+      const beforeIdle = native.effects.length;
+      try {
+        await expect(
+          backend.prepareAgentSessionContinuity!({
+            agentSessionId,
+            threadId: entry.threadId,
+            workspaceId: entry.workspaceId,
+            environmentPackage: admitted.pkg,
+            reuseAllowed: false,
+          })
+        ).rejects.toThrow();
+      } finally {
+        refusal.mockRestore();
+      }
+      durableCore.sqlite.close();
+      expect(reserveRefused).toBe(true);
+      expect(
+        native.effects.slice(beforeIdle).filter((effect) => effect.kind === 'workspace.collect')
+      ).toHaveLength(1);
+      expect(
+        native.effects
+          .slice(beforeIdle)
+          .filter((effect) => ['bridge.close', 'sandbox.delete'].includes(effect.kind))
+      ).toEqual([]);
+      expect(await reader.readExecution(closedRef)).toStrictEqual(closed);
+      expect(await reader.readEndedSteps(closedRef)).toStrictEqual(ended);
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(cursor);
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all()).toEqual(
+        receipts
+      );
+      writeFileSync(workingFile, b);
+      await admitted.cleanup();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.close();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+      const coldStore = await createDemoStore({ dataRoot });
+      native = createNativeTaskAdmissionFixture(coreDb, coldStore, options, native.outside);
+      const coldBackend = native.executor.executionBackend as WorkerGovernanceBackend;
+      const afterReopen = native.effects.length;
+      expect(admitted.pkg.workspace.inputs).toEqual([]);
+      expect(await coldBackend.inspectMaterializationCapacity!(admitted.pkg)).toBe(
+        'capacity-saturated'
+      );
+      expect(native.effects.slice(afterReopen)).toEqual([]);
+      if (fault === 'idle-epoch') {
+        const retainedSession = coldStore.getAgentSession(agentSessionId);
+        const storageBefore = getWorkerStorageBinding(coreDb, retainedSession.retainedStorage!)!;
+        expect(storageBefore).toBeTruthy();
+        const current = getNanoHostRuntimeTarget(coreDb, anchor.runtimeTargetId!)!;
+        expect(anchor.originPhysicalEpoch).toBe('a'.repeat(64));
+        const generation = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+          deploymentId: current.deploymentId,
+          identityId: current.identityId,
+          targetId: current.targetId,
+          observedAt: new Date().toISOString(),
+        });
+        // The outside peer proves a fenced predecessor and ready fresh Epoch B.
+        const replacement = upsertNanoHostRuntimeTarget(coreDb, {
+          ...generation,
+          physicalEpoch: 'b'.repeat(64),
+          predecessorFenced: true,
+          freshEmpty: true,
+          ready: true,
+          observedAt: new Date().toISOString(),
+        });
+        expect(replacement).toMatchObject({
+          physicalEpoch: 'b'.repeat(64),
+          predecessorFenced: true,
+          freshEmpty: true,
+          ready: true,
+        });
+        expect(replacement.connectionGeneration).toBeGreaterThan(current.connectionGeneration);
+        await native.restore();
+        native.outside.bindings.clear();
+        native.outside.integrationBindingRef = undefined;
+        native = createNativeTaskAdmissionFixture(coreDb, coldStore, options, native.outside);
+        const incomingThread = await coldStore.createThread(
+          entry.workspaceId,
+          'Fresh Epoch with unresolved predecessor capture',
+          testEntityId('th', 'capture_partial_fresh_epoch')
+        );
+        const nextAttemptId = testEntityId('attempt', 'capture_partial_fresh_epoch');
+        const incomingEntry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${nextAttemptId}`,
+          requestId: testEntityId('tu', 'capture_partial_fresh_request').slice(3),
+          requestedAgentId: manifest.id,
+          workspaceId: entry.workspaceId,
+          threadId: incomingThread.id,
+          turnId: testEntityId('tu', 'capture_partial_fresh_epoch'),
+          turnInput: 'Refuse reuse before the original partial capture has a disposition.',
+          triggerActor: { kind: 'user', id: ownerUserId },
+        });
+        await publishFactoryAdmission(coldStore, incomingEntry);
+        const incoming: { admission?: Awaited<ReturnType<typeof native.admitTurn>> } = {};
+        try {
+          await expect(
+            native
+              .admitTurn(incomingEntry, {
+                attemptId: nextAttemptId,
+                agentSessionId: testEntityId('as', 'capture_partial_fresh_epoch'),
+                candidateAgentSessionId: testEntityId('as', 'capture_partial_fresh_epoch'),
+              })
+              .then((admission) => {
+                incoming.admission = admission;
+              })
+          ).rejects.toThrow();
+        } finally {
+          await incoming.admission?.cleanup();
+        }
+        const retained = getWorkerStorageBinding(coreDb, retainedSession.retainedStorage!)!;
+        expect(retained).toMatchObject({
+          attachmentGeneration: storageBefore.attachmentGeneration,
+          currentSandboxBindingRef: storageBefore.currentSandboxBindingRef,
+          currentWorkSlotRef: storageBefore.currentWorkSlotRef,
+          targets: storageBefore.targets,
+        });
+        expect(['attached', 'unknown']).toContain(retained.state);
+        expect(coldStore.getAgentSession(agentSessionId)).toMatchObject({
+          retainedStorage: retainedSession.retainedStorage,
+          nativeHandleDigest: retainedSession.nativeHandleDigest,
+        });
+        expect(native.effects.slice(afterReopen)).toEqual([]);
+      }
+      const coldReader = createExecutionStepJournalReader(db, closedRef.owner);
+      expect(await coldReader.readExecution(closedRef)).toStrictEqual(closed);
+      expect(await coldReader.readEndedSteps(closedRef)).toStrictEqual(ended);
+      expect(coldStore.getTurnById(entry.turnId)).toStrictEqual(completedTurn);
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(cursor);
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all()).toEqual(
+        receipts
+      );
+      return;
+    }
+    // Real SQLite refusal after valid native setup; this is ABORT, not a claimed BUSY result.
+    if (fault === 'body')
+      db.sqlite.exec(`CREATE TRIGGER refuse_capture_insert BEFORE INSERT ON workspace_snapshot_collections
+      BEGIN SELECT RAISE(ABORT, 'capture INSERT refused'); END`);
+    let ambiguousBoundaryReached = false;
+    const acceptCapture = captureOwner.acceptWorkspaceCapture;
+    const captureFault = vi
+      .spyOn(captureOwner, 'acceptWorkspaceCapture')
+      .mockImplementation((...args) => {
+        const receipt = acceptCapture(...args);
+        if (fault === 'capture-result') {
+          ambiguousBoundaryReached = true;
+          throw new Error('Controlled capture-result ambiguity');
+        }
+        return receipt;
+      });
+    onTestFinished(() => captureFault.mockRestore());
+    const before = native.effects.length;
+    try {
+      if (fault === 'body')
+        await expect(admitted.complete()).rejects.toThrow('capture INSERT refused');
+      else await expect(admitted.complete()).rejects.toThrow('Controlled capture-result ambiguity');
+    } finally {
+      if (fault === 'body') db.sqlite.exec('DROP TRIGGER refuse_capture_insert');
+    }
+    captureFault.mockRestore();
+    if (!journalRef) throw new Error('Native admission did not acknowledge its real journal.');
+    const ended = await createExecutionStepJournalReader(db, journalRef.owner).readEndedSteps(
+      journalRef
+    );
+    if (fault === 'capture-result') {
+      expect(ambiguousBoundaryReached).toBe(true);
+      expect(
+        ended.filter((step) => step.control.kind === 'collect' && step.state === 'failed')
+      ).toEqual([]);
+      expect(native.executor.releaseResults).toEqual([]);
+      const unknown = ended.filter((step) => step.state === 'unknown');
+      expect(unknown.length).toBeGreaterThan(0);
+      await admitted.cleanup();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.close();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+      const ambiguousStore = await createDemoStore({ dataRoot });
+      native = createNativeTaskAdmissionFixture(coreDb, ambiguousStore, options, native.outside);
+      const ambiguousBackend = native.executor.executionBackend as WorkerGovernanceBackend;
+      const coldEffects = native.effects.length;
+      expect(await ambiguousBackend.inspectMaterializationCapacity?.(admitted.pkg)).toBe(
+        'capacity-saturated'
+      );
+      expect(native.effects.slice(coldEffects)).toEqual([]);
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        phase: 'closing',
+        fenceRef: null,
+      });
+      const retained = await createExecutionStepJournalReader(db, journalRef.owner).readEndedSteps(
+        journalRef
+      );
+      for (const original of unknown)
+        expect(retained.find((step) => step.ref.stepId === original.ref.stepId)).toStrictEqual(
+          original
+        );
+      return;
+    }
+    expect(
+      ended.some((step) => step.control.kind === 'collect' && step.state === 'completed')
+    ).toBe(true);
+    const captureFailure = ended.find(
+      (step) => step.control.kind === 'collect' && step.state === 'failed'
+    );
+    if (!captureFailure) throw new Error('Known capture refusal has no failed invocation.');
+    expect(ended.some((step) => step.state === 'unknown')).toBe(false);
+    const failedTurn = store.getTurnById(entry.turnId);
+    expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(cursor);
+    expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all()).toEqual(
+      receipts
+    );
+    expect(
+      native.effects.slice(before).filter((request) => request.kind === 'workspace.collect')
+    ).toHaveLength(1);
+    expect(
+      native.effects
+        .slice(before)
+        .filter((request) => ['bridge.close', 'sandbox.delete'].includes(request.kind))
+    ).toEqual([]);
+    writeFileSync(workingFile, b);
+    await admitted.cleanup();
+    injected.mockRestore();
+    await native.restore();
+    await shutdownControlStoreWorkerClient();
+    db.sqlite.close();
+    coreDb.sqlite.close();
+    coreDb = openCoreDb(dataRoot);
+    const coldStore = new FsStore({ dataRoot });
+    native = createNativeTaskAdmissionFixture(coreDb, coldStore, options, native.outside);
+    db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+    expect(coldStore.getAgentSession(agentSessionId).retainedStorage).toStrictEqual(
+      originalSession.retainedStorage
+    );
+    expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+      attemptId,
+      agentSessionId,
+      packageSnapshotId: admitted.pkg.snapshotId,
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      turnId: entry.turnId,
+      backendSessionId: anchor.backendSessionId,
+      originPhysicalEpoch: anchor.originPhysicalEpoch,
+    });
+    expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(cursor);
+    expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all()).toEqual(
+      receipts
+    );
+    // Inventory observes the owned restricted mount; it supplies no recovery or execution authority.
+    const evidenceRoot = join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'evidence', 'backend');
+    expect(existsSync(evidenceRoot)).toBe(true);
+    const retainedBytes = readdirSync(evidenceRoot, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => readFileSync(join(entry.parentPath, entry.name)));
+    expect(retainedBytes.some((bytes) => bytes.equals(a))).toBe(true);
+    expect(retainedBytes.some((bytes) => bytes.equals(b))).toBe(false);
+    const afterReopen = native.effects.length;
+    const coldBackend = native.executor.executionBackend as WorkerGovernanceBackend;
+    expect(await coldBackend.inspectMaterializationCapacity!(admitted.pkg)).toBe(
+      'capacity-saturated'
+    );
+    expect(native.effects.slice(afterReopen)).toEqual([]);
+    await native.runtime.reconcileAcceptedFinalStatus(getWorkerBackendSession(coreDb, attemptId)!);
+    const digest = `sha256:${createHash('sha256').update(a).digest('hex')}`;
+    const bundle = listStoredWorkspaceEvidenceBundles(db, DEMO_WORKSPACE_ID).find(
+      (value) =>
+        value.turnId === entry.turnId &&
+        value.agentSessionId === agentSessionId &&
+        value.contentDigests.includes(digest)
+    );
+    expect(bundle).toMatchObject({
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      retentionClass: 'restricted-raw',
+      sensitivityClass: 'restricted',
+    });
+    if (!bundle) throw new Error('Cold recovery omitted the exact original capture bundle.');
+    expect(['collected', 'verified']).toContain(bundle.importStatus);
+    expect(bundle.rawEvidenceRefs.length).toBeGreaterThan(0);
+    const reconciliation = listWorkspaceReconciliationRecords(db, DEMO_WORKSPACE_ID).find((value) =>
+      value.evidenceBundleIds.includes(bundle.id)
+    );
+    expect(reconciliation).toMatchObject({
+      stateAfter: 'requires-human',
+      retentionDecision: 'retain-backend',
+    });
+    if (!reconciliation)
+      throw new Error('Cold recovery omitted its original-capture reconciliation.');
+    const physicalKinds = ['workspace.collect', 'bridge.close', 'sandbox.delete'];
+    expect(
+      native.effects.slice(afterReopen).filter((effect) => physicalKinds.includes(effect.kind))
+    ).toEqual([]);
+    expect(native.executor.releaseResults).toEqual([]);
+    resolveWorkspaceReconciliationRecord({
+      workspaceDb: db,
+      workspaceId: DEMO_WORKSPACE_ID,
+      reconciliationRecordId: reconciliation.id,
+      decision: 'abandon',
+      decidedAt: new Date().toISOString(),
+    });
+    await native.runtime.reconcileAcceptedFinalStatus(getWorkerBackendSession(coreDb, attemptId)!);
+    const released = native.executor.releaseResults.find((value) => value.attemptId === attemptId);
+    expect(released).toMatchObject({
+      attemptId,
+      backendId: coldBackend.id,
+      bindingRef: admitted.attempt.bindingRef,
+      inputRef: admitted.pkg.snapshotId,
+      state: 'released',
+      fenceRef: expect.any(String),
+    });
+    expect(released?.operationId).toBe(
+      attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).operationId
+    );
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+      phase: 'closed',
+      fenceRef: expect.any(String),
+    });
+    const reader = createExecutionStepJournalReader(db, journalRef.owner);
+    expect(await reader.readExecution(journalRef)).toMatchObject({
+      phase: 'closed',
+      exclusionRefs: [],
+    });
+    expect(
+      native.effects
+        .slice(afterReopen)
+        .filter((effect) => ['bridge.close', 'sandbox.delete'].includes(effect.kind))
+        .map((effect) => effect.kind)
+    ).toEqual(['bridge.close', 'sandbox.delete']);
+    const settled = await reader.readEndedSteps(journalRef);
+    for (const original of ended)
+      expect(settled.find((step) => step.ref.stepId === original.ref.stepId)).toStrictEqual(
+        original
+      );
+    expect(coldStore.getTurnById(entry.turnId)).toStrictEqual(failedTurn);
+    expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(cursor);
+    expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all()).toEqual(
+      receipts
+    );
+    expect(
+      readdirSync(evidenceRoot, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .some((entry) => readFileSync(join(entry.parentPath, entry.name)).equals(a))
+    ).toBe(true);
+  });
+
+  it('preserves a refused collection without a cursor advance, receipt, or review', async () => {
+    const failure = { outcome: 'credential_hit' };
     const f = await admitIdleSupplyResident('closed_failures', {
       onCollection: async (request) =>
-        request.input.mode === 'baseline' && !baselineFails
+        request.input.mode === 'baseline'
           ? {
               outcome: 'baseline',
               head: { tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', manifest: '2'.repeat(40) },
@@ -4344,57 +5000,20 @@ describe('createConfiguredTurnExecutor', () => {
     });
     const collector = f.backend as unknown as {
       collectWorkspaceSnapshot(session: unknown, boundary: 'turn-end'): Promise<unknown>;
-      ensureWorkspaceBaseline(session: unknown, opensNewBinding: boolean): Promise<void>;
     };
     const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
     try {
       const before = db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all();
-      for (const result of [
-        { outcome: 'credential_hit' },
-        { outcome: 'effect_failed' },
-        ...WorkspaceCollectionRecoveryCauseSchema.options.map((cause) => ({
-          outcome: 'recovery_required',
-          cause,
-        })),
-      ]) {
-        failure = result;
-        await expect(
-          collector.collectWorkspaceSnapshot(f.session, 'turn-end')
-        ).rejects.toMatchObject({ ...result, name: 'WorkspaceCollectionError' });
-        expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(before);
-        expect(
-          db.sqlite.prepare('SELECT COUNT(*) AS count FROM workspace_snapshot_collections').get()
-        ).toEqual({ count: 0 });
-        expect(
-          db.sqlite.prepare('SELECT COUNT(*) AS count FROM staged_workspace_reviews').get()
-        ).toEqual({ count: 0 });
-      }
-      baselineFails = true;
-      db.sqlite.exec(
-        'UPDATE workspace_snapshot_cursors SET accepted_base_json = NULL, head_json = NULL, accepted_commit = NULL'
-      );
-      for (const result of [
-        { outcome: 'credential_hit' },
-        { outcome: 'effect_failed' },
-        ...WorkspaceCollectionRecoveryCauseSchema.options.map((cause) => ({
-          outcome: 'recovery_required',
-          cause,
-        })),
-      ]) {
-        failure = result;
-        await expect(collector.ensureWorkspaceBaseline(f.session, true)).rejects.toMatchObject({
-          ...result,
-          name: 'WorkspaceCollectionError',
-        });
-        expect(
-          db.sqlite
-            .prepare('SELECT accepted_base_json, head_json FROM workspace_snapshot_cursors')
-            .get()
-        ).toEqual({ accepted_base_json: null, head_json: null });
-      }
       await expect(collector.collectWorkspaceSnapshot(f.session, 'turn-end')).rejects.toMatchObject(
-        { outcome: 'recovery_required', cause: 'accepted_base_unknown' }
+        { ...failure, name: 'WorkspaceCollectionError' }
       );
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(before);
+      expect(
+        db.sqlite.prepare('SELECT COUNT(*) AS count FROM workspace_snapshot_collections').get()
+      ).toEqual({ count: 0 });
+      expect(
+        db.sqlite.prepare('SELECT COUNT(*) AS count FROM staged_workspace_reviews').get()
+      ).toEqual({ count: 0 });
       const ids = f.effects
         .filter((effect) => effect.kind === 'workspace.collect')
         .map((effect) => effect.requestId);
@@ -6801,7 +7420,10 @@ describe('createConfiguredTurnExecutor', () => {
       },
       expectResultOnly() {
         resultOnlyRegistrations += 1;
-        return new Promise<never>((_, reject) => resultOnlyRejectors.push(reject));
+        const result = new Promise<never>((_, reject) => resultOnlyRejectors.push(reject));
+        // Keep the controlled failure observable before the recovery owner awaits it.
+        void result.catch(() => undefined);
+        return result;
       },
       async poll() {
         return null;

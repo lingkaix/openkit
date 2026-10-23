@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { lstat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type WorkerOutputManifest,
@@ -5,11 +8,34 @@ import {
   WorkspaceReconciliationRecordSchema,
   type WorkspaceRecoveryDecision,
 } from '@openkit/app-api-schemas';
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  listStoredWorkspaceEvidenceBundles,
+  recordWorkspaceEvidenceBundle,
+} from '../evidence-bundles.js';
+import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import { readProduct } from '../storage/control-store-products.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
+import {
+  getWorkerBackendSession,
+  type WorkerBackendSessionRecord,
+} from './worker-backend-sessions.js';
+import { workerStorageScopeDigest } from './worker-storage-bindings.js';
+import {
+  type RawWorkspaceCapture,
+  readRawWorkspaceCapture,
+  readWorkspaceCollection,
+  type WorkspaceCollectionIdentity,
+  WorkspaceCollectionIdentitySchema,
+} from './workspace-snapshot-chain.js';
 import { StoredWorkspaceReconciliationRecordV1Schema } from './workspace-sync-outcomes-v1.js';
+import { listWorkspaceMaterializationRecords } from './workspace-sync-records.js';
 
 interface WorkspaceReconciliationRecordRow {
   readonly schemaVersion: unknown;
@@ -171,6 +197,14 @@ export function resolveWorkspaceReconciliationRecord(
     );
   }
 
+  if (record.id.startsWith('wrr_capture_') && input.decision !== 'abandon') {
+    throw new OperationError(
+      'workspace_recovery_decision_failed',
+      'Unaccepted capture source supports only abandon with evidence retained.',
+      409
+    );
+  }
+
   const resumeCollection =
     input.decision === 'resume_collection'
       ? resolveResumeCollection({
@@ -305,4 +339,393 @@ export function importWorkspaceReconciliationRecords(
       StoredWorkspaceReconciliationRecordV1Schema.parse(record)
     );
   }
+}
+
+/** Derives original capture lineage from admitted records, never replacement attachment state. */
+function originalCaptureIdentity(
+  db: WorkspaceDb,
+  anchor: WorkerBackendSessionRecord,
+  retained: AgentEnvironmentPackage,
+  store?: FsStore
+): Omit<WorkspaceCollectionIdentity, 'collectionId'> {
+  // Callers supply the exact snapshot and anchor from their validated owning readers.
+  if (
+    retained.snapshotId !== anchor.packageSnapshotId ||
+    retained.scope.workspaceId !== anchor.workspaceId ||
+    retained.scope.threadId !== anchor.threadId ||
+    retained.scope.turnId !== anchor.turnId ||
+    retained.scope.agentSessionId !== anchor.agentSessionId ||
+    retained.backend.preferred !== anchor.backendKind
+  )
+    throw new Error('Workspace capture original package or backend lineage conflicts.');
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  const session = AgentSessionRecordSchema.parse(
+    store
+      ? store.getAgentSession(anchor.agentSessionId)
+      : readProduct(db.sqlite, owner, 'agent-session', anchor.agentSessionId)?.record
+  );
+  const turn = readProduct(db.sqlite, owner, 'turn', anchor.turnId)?.record;
+  const slot = (retained.extensions.openkit as { workerStorage?: { workSlotRef?: string } })
+    .workerStorage?.workSlotRef;
+  const original = session.retainedStorage;
+  if (
+    !turn ||
+    turn.threadId !== anchor.threadId ||
+    turn.agentSessionId !== anchor.agentSessionId ||
+    turn.agentId !== retained.agent.agentId ||
+    session.id !== anchor.agentSessionId ||
+    session.workspaceId !== anchor.workspaceId ||
+    session.threadId !== anchor.threadId ||
+    session.agentId !== retained.agent.agentId ||
+    !original ||
+    original.workSlotRef !== slot ||
+    !Number.isSafeInteger(original.attachmentGeneration) ||
+    (original.attachmentGeneration ?? 0) <= 0
+  )
+    throw new Error('Workspace capture original AgentSession attachment is unavailable.');
+  return {
+    workspaceId: anchor.workspaceId,
+    threadId: anchor.threadId,
+    turnId: anchor.turnId,
+    agentSessionId: anchor.agentSessionId,
+    packageSnapshotId: anchor.packageSnapshotId,
+    storageRef: original.storageRef,
+    workSlot: original.workSlotRef,
+    attachmentGeneration: original.attachmentGeneration!,
+    scopeDigest: workerStorageScopeDigest(anchor.workspaceId),
+    sandboxId: nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId),
+  };
+}
+
+/**
+ * Links arrived source to existing restricted evidence and recovery authority, without accepting capture.
+ * @param db Admitted owning Workspace connection.
+ * @param anchor Exact original durable backend anchor.
+ * @param value Original attachment identity, derived by its caller from owned lineage.
+ * @param source Verified immutable raw source, or null when publication remains incomplete.
+ * @returns Existing recovery decision or a requires-human record that retains the backend.
+ * @throws For conflicting source, original lineage, materialization, or retained recovery authority.
+ */
+export function recordWorkspaceCaptureRecovery(
+  db: WorkspaceDb,
+  anchor: WorkerBackendSessionRecord,
+  value: WorkspaceCollectionIdentity,
+  source: RawWorkspaceCapture | null
+): WorkspaceReconciliationRecord {
+  const identity = WorkspaceCollectionIdentitySchema.parse(value);
+  const hash = createHash('sha256').update(anchor.packageSnapshotId).digest('hex');
+  if (
+    db.workspaceId !== anchor.workspaceId ||
+    identity.workspaceId !== anchor.workspaceId ||
+    identity.threadId !== anchor.threadId ||
+    identity.turnId !== anchor.turnId ||
+    identity.agentSessionId !== anchor.agentSessionId ||
+    identity.packageSnapshotId !== anchor.packageSnapshotId ||
+    identity.scopeDigest !== workerStorageScopeDigest(anchor.workspaceId) ||
+    identity.sandboxId !== nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId) ||
+    !['turn-end', 'release', 'successor'].some(
+      (boundary) => identity.collectionId === `${boundary}-${hash}`
+    ) ||
+    (source &&
+      (!isDeepStrictEqual(source.identity, identity) ||
+        source.result.byteLength !== source.candidate.length ||
+        source.result.sha256 !==
+          `sha256:${createHash('sha256').update(source.candidate).digest('hex')}`))
+  )
+    throw new Error('Workspace capture recovery source or owner conflicts.');
+  const id = `wrr_capture_${identity.collectionId}`;
+  const prior = listWorkspaceReconciliationRecords(db, identity.workspaceId).find(
+    (row) => row.id === id
+  );
+  const summary = {
+    attemptId: anchor.attemptId,
+    backendSessionId: anchor.backendSessionId,
+    sandboxBindingRef: anchor.sandboxBindingRef,
+    identity,
+    candidateDigest: source?.result.sha256 ?? null,
+  };
+  if (prior) {
+    const old = prior.backendHandleSummary;
+    if (
+      prior.workspaceId !== identity.workspaceId ||
+      ![anchor.attemptId, anchor.agentSessionId, anchor.packageSnapshotId].every((id) =>
+        prior.affectedRecordIds.includes(id)
+      ) ||
+      old.attemptId !== summary.attemptId ||
+      old.backendSessionId !== summary.backendSessionId ||
+      old.sandboxBindingRef !== summary.sandboxBindingRef ||
+      !isDeepStrictEqual(WorkspaceCollectionIdentitySchema.parse(old.identity), identity) ||
+      (old.candidateDigest !== null && source && old.candidateDigest !== source.result.sha256)
+    )
+      throw new Error('Workspace capture recovery retained lineage conflicts.');
+    if (source && old.candidateDigest === null && prior.stateAfter !== 'requires-human')
+      throw new Error(
+        'Terminal Workspace capture disposition lacks the newly available source proof.'
+      );
+    if (!source || old.candidateDigest !== null) return prior;
+  }
+  const timestamp = source?.result.collectedAt ?? prior?.startedAt ?? new Date().toISOString();
+  const bundleId = `evb_capture_${identity.collectionId}`;
+  const materializations = listWorkspaceMaterializationRecords(db, identity.workspaceId).filter(
+    (record) => record.packageSnapshotId === anchor.packageSnapshotId
+  );
+  if (
+    materializations.some(
+      (record) =>
+        record.workerSessionId !== anchor.backendSessionId ||
+        record.backendKind !== anchor.backendKind
+    )
+  )
+    throw new Error('Workspace capture materialization lineage conflicts.');
+  return db.sqlite.transaction(() => {
+    if (source)
+      recordWorkspaceEvidenceBundle(db, {
+        id: bundleId,
+        workspaceId: identity.workspaceId,
+        threadId: identity.threadId,
+        turnId: identity.turnId,
+        agentSessionId: identity.agentSessionId,
+        goalId: null,
+        backendType: anchor.backendKind,
+        sourceKind: 'workspace-capture-raw',
+        summary: 'Original capture source; only its SQL receipt establishes collection acceptance.',
+        rawEvidenceRefs: ['complete', 'collection.json'].map((name) => ({
+          kind: 'workspace-capture-raw',
+          ref: `evidence/backend/workspace-capture/${identity.collectionId}/${name}`,
+        })),
+        redactedEvidenceRefs: [],
+        contentDigests: [source.result.sha256],
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: 'collected',
+        requiredFeatures: [],
+        createdAt: timestamp,
+      });
+    return recordWorkspaceReconciliationRecord(db, {
+      ...prior,
+      id,
+      workspaceId: identity.workspaceId,
+      triggerReason: 'backend_takeover',
+      affectedRecordIds: [
+        anchor.attemptId,
+        anchor.agentSessionId,
+        anchor.packageSnapshotId,
+        ...materializations.map((record) => record.id),
+      ],
+      backendHandleSummary: summary,
+      backendReachability: { status: 'unknown', checkedAt: timestamp, detail: null },
+      collectedOutputManifestIds: [],
+      evidenceBundleIds: source ? [bundleId] : [],
+      stateBefore: prior?.stateBefore ?? anchor.state,
+      stateAfter: 'requires-human',
+      quarantineRefs: [],
+      requiredHumanDecision: 'inspect_recovery',
+      retentionDecision: 'retain-backend',
+      startedAt: prior?.startedAt ?? timestamp,
+      finishedAt: null,
+    });
+  })();
+}
+
+/** Resolves only from the exact accepted receipt; caller may include this in capture's transaction. */
+export function completeWorkspaceCaptureRecovery(
+  db: WorkspaceDb,
+  anchor: WorkerBackendSessionRecord,
+  identity: WorkspaceCollectionIdentity,
+  source: RawWorkspaceCapture | null
+): WorkspaceReconciliationRecord {
+  const receipt = readWorkspaceCollection(db, identity);
+  if (
+    !receipt ||
+    (source &&
+      (!receipt.candidate?.equals(source.candidate) ||
+        ['head', 'previousHead', 'acceptedBase', 'unstable', 'sha256', 'byteLength'].some(
+          (key) =>
+            !isDeepStrictEqual(
+              receipt.result[key],
+              source.result[key as keyof typeof source.result]
+            )
+        )))
+  )
+    throw new Error('Workspace recovery requires its exact accepted capture receipt.');
+  return db.sqlite.transaction(() => {
+    const record = recordWorkspaceCaptureRecovery(db, anchor, identity, source);
+    if (
+      record.backendHandleSummary.candidateDigest !== null &&
+      (!receipt.candidate || record.backendHandleSummary.candidateDigest !== receipt.result.sha256)
+    )
+      throw new Error('Accepted Workspace capture contradicts its recorded original digest.');
+    if (
+      record.stateAfter === 'recovered' &&
+      record.stateBefore === 'requires-human' &&
+      record.requiredHumanDecision === null &&
+      record.retentionDecision === 'teardown-backend' &&
+      record.finishedAt === receipt.result.collectedAt
+    )
+      return record;
+    if (record.stateAfter !== 'requires-human')
+      throw new Error('Workspace capture disposition changed before receipt resolution.');
+    return recordWorkspaceReconciliationRecord(db, {
+      ...record,
+      stateBefore: 'requires-human',
+      stateAfter: 'recovered',
+      requiredHumanDecision: null,
+      retentionDecision: 'teardown-backend',
+      finishedAt: String(receipt.result.collectedAt),
+    });
+  })();
+}
+
+/**
+ * Normalizes exact original sources; false proves no pending source, not completed invocation.
+ * @param coreDb Existing Core connection owning the exact backend anchor.
+ * @param db Caller-admitted and migrated Workspace connection.
+ * @param anchor Original backend identity or Core identity projection; full owner proof is required only when capture is present.
+ * @param environmentPackage Already verified original snapshot; absent callers defer its owning read until a source or preclaim exists.
+ * @param store Optional current Store; absent callers read the same admitted native database.
+ * @returns Whether any of the three original boundaries lacks its exact durable abandon.
+ * @throws For unavailable or contradictory original proof, source, evidence, or recovery authority.
+ */
+export async function hasPendingWorkspaceCapture(
+  coreDb: CoreDb,
+  db: WorkspaceDb,
+  anchor: (
+    | WorkerBackendSessionRecord
+    | Pick<WorkerBackendSessionRecord, 'attemptId' | 'workspaceId' | 'packageSnapshotId'>
+  ) &
+    Partial<
+      Pick<
+        WorkerBackendSessionRecord,
+        | 'backendSessionId'
+        | 'runtimeTargetId'
+        | 'originPhysicalEpoch'
+        | 'agentSessionId'
+        | 'sandboxBindingRef'
+      >
+    >,
+  environmentPackage?: AgentEnvironmentPackage,
+  store?: FsStore
+): Promise<boolean> {
+  if (
+    coreDb.dataRoot !== db.dataRoot ||
+    db.workspaceId !== anchor.workspaceId ||
+    (environmentPackage && environmentPackage.snapshotId !== anchor.packageSnapshotId)
+  )
+    throw new Error('Workspace capture recovery scope conflicts.');
+  const hash = createHash('sha256').update(anchor.packageSnapshotId).digest('hex');
+  const records = listWorkspaceReconciliationRecords(db, db.workspaceId);
+  let original: Omit<WorkspaceCollectionIdentity, 'collectionId'> | undefined;
+  let fullOwner: WorkerBackendSessionRecord | undefined =
+    'backendLineage' in anchor ? anchor : undefined;
+  let blocked = false;
+  for (const boundary of ['turn-end', 'release', 'successor']) {
+    const collectionId = `${boundary}-${hash}`;
+    const prior = records.find((row) => row.id === `wrr_capture_${collectionId}`);
+    // The exact package key is safe to probe before requiring optional historical attachment proof.
+    const metadata = await lstat(
+      join(
+        db.dataRoot,
+        'workspaces',
+        db.workspaceId,
+        'evidence',
+        'backend',
+        'workspace-capture',
+        collectionId
+      )
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!metadata && !prior) continue;
+    fullOwner ??= getWorkerBackendSession(coreDb, anchor.attemptId) ?? undefined;
+    const owner = fullOwner;
+    if (
+      !owner ||
+      (
+        [
+          'attemptId',
+          'workspaceId',
+          'packageSnapshotId',
+          'backendSessionId',
+          'runtimeTargetId',
+          'originPhysicalEpoch',
+          'agentSessionId',
+          'sandboxBindingRef',
+        ] as const
+      ).some((key) => anchor[key] !== undefined && owner[key] !== anchor[key])
+    )
+      throw new Error('Workspace capture original backend owner is unavailable or changed.');
+    if (!original) {
+      environmentPackage ??= requireAgentEnvironmentPackageSnapshot(
+        db,
+        anchor.workspaceId,
+        anchor.packageSnapshotId
+      ).snapshot;
+      original = originalCaptureIdentity(db, fullOwner!, environmentPackage, store);
+    }
+    const identity = WorkspaceCollectionIdentitySchema.parse({ ...original, collectionId });
+    const source = await readRawWorkspaceCapture(db.dataRoot, identity);
+    const receipt = readWorkspaceCollection(db, identity);
+    if (
+      source &&
+      receipt &&
+      (!receipt.candidate?.equals(source.candidate) ||
+        ['head', 'previousHead', 'acceptedBase', 'unstable', 'sha256', 'byteLength'].some(
+          (key) =>
+            !isDeepStrictEqual(
+              receipt.result[key],
+              source.result[key as keyof typeof source.result]
+            )
+        ))
+    )
+      throw new Error('Accepted Workspace capture conflicts with its original source.');
+    if (receipt && !prior) continue;
+    if (
+      receipt &&
+      prior &&
+      (prior.stateAfter === 'requires-human' || prior.stateAfter === 'recovered')
+    ) {
+      completeWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+      continue;
+    }
+    const record = recordWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+    const digest = record.backendHandleSummary.candidateDigest;
+    if (digest !== null) {
+      const bundle = listStoredWorkspaceEvidenceBundles(db, db.workspaceId).find(
+        (row) => row.id === `evb_capture_${collectionId}`
+      );
+      if (
+        !source ||
+        digest !== source.result.sha256 ||
+        !bundle ||
+        !record.evidenceBundleIds.includes(bundle.id) ||
+        bundle.workspaceId !== identity.workspaceId ||
+        bundle.threadId !== identity.threadId ||
+        bundle.turnId !== identity.turnId ||
+        bundle.agentSessionId !== identity.agentSessionId ||
+        bundle.backendType !== fullOwner!.backendKind ||
+        bundle.sourceKind !== 'workspace-capture-raw' ||
+        !['collected', 'verified'].includes(bundle.importStatus) ||
+        bundle.retentionClass !== 'restricted-raw' ||
+        bundle.sensitivityClass !== 'restricted' ||
+        !isDeepStrictEqual(bundle.contentDigests, [digest]) ||
+        !isDeepStrictEqual(
+          bundle.rawEvidenceRefs,
+          ['complete', 'collection.json'].map((name) => ({
+            kind: 'workspace-capture-raw',
+            ref: `evidence/backend/workspace-capture/${collectionId}/${name}`,
+          }))
+        )
+      )
+        throw new Error('Workspace capture recovery has no retained original evidence index.');
+    }
+    blocked ||= !(
+      record.stateBefore === 'requires-human' &&
+      record.stateAfter === 'unrecoverable' &&
+      record.retentionDecision === 'teardown-backend' &&
+      record.requiredHumanDecision === null &&
+      record.finishedAt !== null
+    );
+  }
+  return blocked;
 }

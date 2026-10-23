@@ -2952,7 +2952,10 @@ describe('scheduler restart recovery', () => {
       expectResultOnly(expectations) {
         cleanupExpectations.push(structuredClone(expectations));
         resultOnlyRegistrations += 1;
-        return new Promise<never>((_, reject) => resultOnlyRejectors.push(reject));
+        const result = new Promise<never>((_, reject) => resultOnlyRejectors.push(reject));
+        // Observe the controlled rejection before recovery reaches its awaited cleanup owner.
+        void result.catch(() => undefined);
+        return result;
       },
       async poll() {
         return null;

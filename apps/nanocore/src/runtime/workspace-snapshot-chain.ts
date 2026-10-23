@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { lstat, readdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   AgentSessionIdSchema,
@@ -12,7 +14,16 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import {
+  assertCanonicalDirectory,
+  ensureCanonicalDirectoryAsync,
+  publishCanonicalPathAsync,
+  readCanonicalFile,
+  syncCanonicalDirectoryAsync,
+  syncCanonicalTreeAsync,
+} from '../storage/workspace-file-records.js';
 import {
   sameWorkspaceSnapshot,
   WorkspaceCollectionError,
@@ -26,7 +37,7 @@ const StoredWorkspaceSnapshotPairV1Schema = z.object({
 });
 
 /** Exact admitted volume and collection lineage; no private credentials enter these records. */
-const WorkspaceCollectionIdentitySchema = z.object({
+export const WorkspaceCollectionIdentitySchema = z.object({
   workspaceId: WorkspaceIdSchema,
   storageRef: WorkerStorageTargetIdSchema,
   scopeDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -330,9 +341,16 @@ export function acceptWorkspaceCapture(
   db: WorkspaceDb,
   identity: WorkspaceCollectionIdentity,
   result: Record<string, unknown>,
-  candidate: Buffer | null
+  candidate: Buffer | null,
+  preserved?: RawWorkspaceCapture
 ): WorkspaceCollectionReceipt {
-  return db.sqlite.transaction(() => {
+  if (
+    preserved &&
+    (!isDeepStrictEqual(preserved.identity, identity) ||
+      !isDeepStrictEqual(preserved.candidate, candidate))
+  )
+    throw new Error('Preserved Workspace capture contradicts its publication.');
+  const body = () => {
     const candidateIdentity = candidate
       ? {
           byteLength: candidate.length,
@@ -474,7 +492,29 @@ export function acceptWorkspaceCapture(
         )
         .run(JSON.stringify(head), identity.workspaceId, identity.storageRef, identity.workSlot);
     return receipt;
-  })();
+  };
+  let bodyFailure: unknown;
+  let bodyFailed = false;
+  try {
+    return db.sqlite.transaction(() => {
+      try {
+        return body();
+      } catch (error) {
+        bodyFailed = true;
+        bodyFailure = error;
+        throw error;
+      }
+    })();
+  } catch (error) {
+    // better-sqlite3 rethrows the callback error only after rollback succeeds; COMMIT and
+    // rollback errors take a different path. An absent transaction alone proves nothing.
+    if (preserved && bodyFailed && error === bodyFailure)
+      throw new PreservedWorkspaceCaptureRefusal(
+        error instanceof Error ? error.message : 'Workspace capture SQL body was refused.',
+        { cause: error }
+      );
+    throw error;
+  }
 }
 
 /** Links an existing destination's durable review to its exact immutable candidate. */
@@ -591,4 +631,170 @@ export function readWorkspaceBaselineIdentity(
         WorkspaceCollectionIdentitySchema.parse(JSON.parse(row.baseline_identity_json))
       )
     : null;
+}
+
+/** A pre-effect refusal: retained capture authority forbids another scan or destructive cleanup. */
+export class WorkspaceCaptureRecoveryRequired extends Error {}
+
+/** Known publication failure with retained partial evidence; it says nothing about scan non-execution. */
+export class PreservedWorkspaceCaptureRefusal extends Error {}
+
+/** Closed capture source facts; SQL alone owns receipts, cursors and disposition. */
+const RawWorkspaceCaptureV1Schema = z.object({
+  identity: WorkspaceCollectionIdentitySchema,
+  result: z.object({
+    outcome: z.literal('candidate'),
+    sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    byteLength: z
+      .number()
+      .int()
+      .positive()
+      .max(256 * 1024 * 1024),
+    head: StoredWorkspaceSnapshotPairV1Schema,
+    previousHead: StoredWorkspaceSnapshotPairV1Schema,
+    acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
+    unstable: z.boolean(),
+    collectedAt: z.iso.datetime({ offset: true }),
+  }),
+});
+/** Verified original source material; this value confers no admission or receipt. */
+export type RawWorkspaceCapture = z.infer<typeof RawWorkspaceCaptureV1Schema> & {
+  candidate: Buffer;
+};
+/** Resolves only a caller-derived exact original collection key. */
+function captureSourceRoot(dataRoot: string, identity: WorkspaceCollectionIdentity): string {
+  WorkspaceCollectionIdentitySchema.parse(identity);
+  if (!/^(turn-end|release|successor)-[0-9a-f]{64}$/.test(identity.collectionId))
+    throw new Error('Workspace capture requires an exact code-owned boundary key.');
+  return join(
+    dataRoot,
+    'workspaces',
+    identity.workspaceId,
+    'evidence',
+    'backend',
+    'workspace-capture',
+    identity.collectionId
+  );
+}
+/** Revalidates bounded immutable source bytes against independently supplied original lineage. */
+export async function readRawWorkspaceCapture(
+  dataRoot: string,
+  identity: WorkspaceCollectionIdentity
+): Promise<RawWorkspaceCapture | null> {
+  const root = captureSourceRoot(dataRoot, identity);
+  for (const path of [
+    join(dataRoot, 'workspaces', identity.workspaceId),
+    dirname(dirname(dirname(root))),
+    dirname(dirname(root)),
+    dirname(root),
+    root,
+  ]) {
+    const metadata = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!metadata) return null;
+    assertCanonicalDirectory(path);
+  }
+  if (!isDeepStrictEqual((await readdir(root)).sort(), ['collection.json', 'complete']))
+    throw new Error('Workspace capture source inventory conflicts.');
+  const metadataPath = join(root, 'collection.json');
+  const metadata = await lstat(metadataPath);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 65_536)
+    throw new Error('Workspace capture source metadata is invalid.');
+  const bytes = readCanonicalFile(metadataPath);
+  if (bytes.length > 65_536) throw new Error('Workspace capture source metadata is too large.');
+  const source = readRetainedV1(
+    JSON.parse(new TextDecoder('utf8', { fatal: true }).decode(bytes)),
+    (value) => RawWorkspaceCaptureV1Schema.parse(value)
+  );
+  if (!isDeepStrictEqual(source.identity, WorkspaceCollectionIdentitySchema.parse(identity)))
+    throw new Error('Workspace capture source lineage conflicts.');
+  const candidatePath = join(root, 'complete');
+  const file = await lstat(candidatePath);
+  if (!file.isFile() || file.isSymbolicLink() || file.size !== source.result.byteLength)
+    throw new Error('Workspace capture source candidate size conflicts.');
+  const candidate = readCanonicalFile(candidatePath);
+  if (
+    candidate.length !== source.result.byteLength ||
+    `sha256:${createHash('sha256').update(candidate).digest('hex')}` !== source.result.sha256
+  )
+    throw new Error('Workspace capture source candidate digest conflicts.');
+  return { ...source, candidate };
+}
+/** Adopts the private same-Data-Root export before SQL; failure keeps its remaining bytes and capacity fence. */
+export async function preserveRawWorkspaceCapture(input: {
+  dataRoot: string;
+  identity: WorkspaceCollectionIdentity;
+  result: Record<string, unknown>;
+  staged: { readonly bytes: Buffer; readonly path: string };
+  admission: FileStorageAdmission | undefined;
+}): Promise<RawWorkspaceCapture> {
+  const staged = input.staged;
+  const root = captureSourceRoot(input.dataRoot, input.identity);
+  const existing = await readRawWorkspaceCapture(input.dataRoot, input.identity);
+  const source = RawWorkspaceCaptureV1Schema.parse({
+    identity: input.identity,
+    result: {
+      ...input.result,
+      collectedAt: existing?.result.collectedAt ?? new Date().toISOString(),
+    },
+  });
+  if (
+    staged.bytes.length !== source.result.byteLength ||
+    `sha256:${createHash('sha256').update(staged.bytes).digest('hex')}` !== source.result.sha256
+  )
+    throw new Error('Workspace capture source contradicts its verified export.');
+  const serialized = Buffer.from(JSON.stringify(writeRetainedV1(source)));
+  if (serialized.length > 65_536 || !input.admission)
+    throw new Error('Workspace capture metadata capacity is unavailable.');
+  const reservation = input.admission.reserve({
+    stagingBytes: BigInt(serialized.length),
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 65_536n,
+  });
+  let acknowledged = false;
+  try {
+    if (existing) {
+      if (
+        !isDeepStrictEqual(existing.result, source.result) ||
+        !isDeepStrictEqual(existing.candidate, staged.bytes)
+      )
+        throw new Error('Workspace capture source replay conflicts.');
+      await syncCanonicalTreeAsync(root);
+      await syncCanonicalDirectoryAsync(dirname(root));
+    } else {
+      await ensureCanonicalDirectoryAsync(dirname(root));
+      assertCanonicalDirectory(dirname(staged.path));
+      if (!isDeepStrictEqual((await readdir(dirname(staged.path))).sort(), ['complete']))
+        throw new Error('Workspace capture staging inventory conflicts.');
+      await writeFile(join(dirname(staged.path), 'collection.json'), serialized, {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      reservation.recordWritten(serialized.length);
+      reservation.assertAvailable();
+      try {
+        await publishCanonicalPathAsync(dirname(staged.path), root);
+      } catch (error) {
+        const winner = await readRawWorkspaceCapture(input.dataRoot, input.identity);
+        if (
+          !winner ||
+          !isDeepStrictEqual(winner.result, source.result) ||
+          !isDeepStrictEqual(winner.candidate, staged.bytes)
+        )
+          throw error;
+        await syncCanonicalTreeAsync(root);
+        await syncCanonicalDirectoryAsync(dirname(root));
+      }
+    }
+    reservation.assertAvailable();
+    acknowledged = true;
+    return { ...source, candidate: staged.bytes };
+  } finally {
+    if (acknowledged) {
+      reservation.release();
+    }
+  }
 }

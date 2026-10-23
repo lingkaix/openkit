@@ -54,6 +54,7 @@ import {
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import {
+  hasPendingWorkspaceCapture,
   listWorkspaceReconciliationRecords,
   recordWorkspaceReconciliationRecord,
 } from './workspace-reconciliation-records.js';
@@ -166,6 +167,21 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
       assertSessionMatchesAttempt(session, native);
       const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
+      const captureWorkspace = openRecoveryWorkspace(coreDb, native);
+      try {
+        if (
+          await hasPendingWorkspaceCapture(
+            coreDb,
+            captureWorkspace.db,
+            session,
+            captureWorkspace.environmentPackage,
+            input.store
+          )
+        )
+          continue;
+      } finally {
+        captureWorkspace.db.sqlite.close();
+      }
       const final = getWorkerControlAcceptedFinalStatus(coreDb, {
         agentSessionId: native.agentSessionId,
         packageSnapshotId: native.inputRef,
@@ -361,6 +377,24 @@ export async function runNanoHostAttemptRecoveryMaintenance(
     try {
       const owner = requireSchedulerExecutionAttempt(coreDb, session.attemptId);
       if (owner.phase !== 'closed') continue;
+      const captureWorkspace = openRecoveryWorkspace(
+        coreDb,
+        requireNanoHostExecutionAttempt(coreDb, session.attemptId)
+      );
+      try {
+        if (
+          await hasPendingWorkspaceCapture(
+            coreDb,
+            captureWorkspace.db,
+            session,
+            captureWorkspace.environmentPackage,
+            input.store
+          )
+        )
+          continue;
+      } finally {
+        captureWorkspace.db.sqlite.close();
+      }
       const cleaned = await cleanupPhysicalSession(
         coreDb,
         session,

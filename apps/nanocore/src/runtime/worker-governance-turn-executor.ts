@@ -211,6 +211,11 @@ import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from './workspace-materializer.js';
+import { listWorkspaceReconciliationRecords } from './workspace-reconciliation-records.js';
+import {
+  PreservedWorkspaceCaptureRefusal,
+  WorkspaceCaptureRecoveryRequired,
+} from './workspace-snapshot-chain.js';
 import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
@@ -2785,7 +2790,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       session,
       this.backend.planSession(environmentPackage)
     );
-    if (session.state !== 'cleaned') await this.bindNativeHandleRecorder(store, environmentPackage);
     const turn = store.getTurnById(environmentPackage.scope.turnId);
     const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
       agentSessionId: environmentPackage.scope.agentSessionId,
@@ -2830,6 +2834,32 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         turnId: environmentPackage.scope.turnId,
       };
       const currentTurn = store.getTurnById(environmentPackage.scope.turnId);
+      if (
+        (currentTurn.status === 'failed' ||
+          currentTurn.status === 'cancelled' ||
+          currentTurn.status === 'interrupted') &&
+        listWorkspaceReconciliationRecords(workspaceDb, session.workspaceId).some(
+          (record) =>
+            record.id.startsWith('wrr_capture_') &&
+            record.stateAfter === 'unrecoverable' &&
+            record.backendHandleSummary.attemptId === session.attemptId
+        )
+      ) {
+        // The backend revalidates exact abandon before cleanup. Never recollect or replace the
+        // original failed Turn; physical release still uses its original correlated owner.
+        await this.cleanupBackendLifecycle(
+          store,
+          lifecycle,
+          workspaceDb,
+          environmentPackage,
+          backendCapabilities,
+          true
+        );
+        await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
+        return currentTurn.status;
+      }
+      if (session.state !== 'cleaned')
+        await this.bindNativeHandleRecorder(store, environmentPackage);
       if (
         currentTurn.status === 'interrupted' &&
         currentTurn.error?.code === restartFailure.errorCode
@@ -3120,7 +3150,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     };
   }
 
-  /** Runs the single transcript, workspace, artifact, and backend closeout path. */
+  /** Completes transcript evidence before separately journaled Workspace capture and closeout. */
   private async finishLaunchedTurn(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
@@ -3133,7 +3163,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     recordedAt: string
   ): Promise<void> {
     if (!workspaceDb) throw new Error('Worker collection requires its native journal owner.');
-    const collectionJournal = await beginWorkerTurnJournalStep(
+    let collectionJournal: ExecutionJournalIntent | null = await beginWorkerTurnJournalStep(
       store,
       workspaceDb,
       environmentPackage.scope.turnId,
@@ -3143,7 +3173,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
         : undefined
     );
-    let collectionOutputRefs: readonly string[] = [];
     try {
       await this.backend.collectEvidence(environmentPackage.snapshotId);
       const transcript = await withLifecycleStageTelemetry(
@@ -3226,33 +3255,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               workspaceId: environmentPackage.scope.workspaceId,
             })
           : [];
-        const workspaceChanges = await withLifecycleStageTelemetry(
-          {
-            ...environmentPackage.scope,
-            packageSnapshotId: environmentPackage.snapshotId,
-            workerKind: environmentPackage.agent.runtimeKind,
-            stage: 'collection',
-          },
-          () => this.backend.collectWorkspaceChanges(environmentPackage.snapshotId, true)
-        );
         const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
-        const publishesArtifacts = Boolean(workspaceChanges.length);
         if (
           this.coreDb &&
-          ((publishesWorkspaceContent &&
-            !currentWorkerLineageWorkspaceAuthority(
-              this.coreDb,
-              workerLineage,
-              'workspace.write',
-              true
-            )) ||
-            (publishesArtifacts &&
-              !currentWorkerLineageWorkspaceAuthority(
-                this.coreDb,
-                workerLineage,
-                'artifact.write',
-                true
-              )))
+          publishesWorkspaceContent &&
+          !currentWorkerLineageWorkspaceAuthority(
+            this.coreDb,
+            workerLineage,
+            'workspace.write',
+            true
+          )
         ) {
           throw new TurnStartValidationError(
             'workspace_access_denied',
@@ -3285,6 +3297,73 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           console.error(message);
           throw new Error(message);
         }
+        await this.emitImportedRecords(store, environmentPackage, requestId, importResult);
+        // Settle every transcript/evidence effect before admitting the separate capture invocation.
+        const importedJournal = collectionJournal;
+        collectionJournal = null;
+        await endWorkerTurnJournalStep(store, workspaceDb, importedJournal, 'completed', [
+          ...importResult.itemIds,
+          ...importResult.artifactIds,
+        ]);
+        const captureJournal = await beginWorkerTurnJournalStep(
+          store,
+          workspaceDb,
+          environmentPackage.scope.turnId,
+          'collect',
+          undefined,
+          backendLifecycle.session && this.coreDb
+            ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
+            : undefined
+        );
+        let workspaceChanges: readonly WorkerGovernanceWorkspaceChangeRecord[];
+        try {
+          workspaceChanges = await withLifecycleStageTelemetry(
+            {
+              ...environmentPackage.scope,
+              packageSnapshotId: environmentPackage.snapshotId,
+              workerKind: environmentPackage.agent.runtimeKind,
+              stage: 'collection',
+            },
+            () => this.backend.collectWorkspaceChanges(environmentPackage.snapshotId, true)
+          );
+        } catch (error) {
+          await endWorkerTurnJournalStep(
+            store,
+            workspaceDb,
+            captureJournal,
+            error instanceof PreservedWorkspaceCaptureRefusal ? 'failed' : 'unknown'
+          );
+          throw error;
+        }
+        // An uncertain result acknowledgement leaves its original intent for recovery.
+        await endWorkerTurnJournalStep(store, workspaceDb, captureJournal, 'completed');
+        collectionJournal = await beginWorkerTurnJournalStep(
+          store,
+          workspaceDb,
+          environmentPackage.scope.turnId,
+          'collect',
+          undefined,
+          backendLifecycle.session && this.coreDb
+            ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
+            : undefined
+        );
+        const publishesArtifacts = Boolean(workspaceChanges.length);
+        if (
+          this.coreDb &&
+          publishesArtifacts &&
+          !currentWorkerLineageWorkspaceAuthority(
+            this.coreDb,
+            workerLineage,
+            'artifact.write',
+            true
+          )
+        ) {
+          throw new TurnStartValidationError(
+            'workspace_access_denied',
+            'Workspace access denied.',
+            403
+          );
+        }
         await this.createWorkspaceChangeArtifacts(
           store,
           environmentPackage,
@@ -3301,22 +3380,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           environmentPackage,
           backendCapabilities
         );
-        await this.emitImportedRecords(store, environmentPackage, requestId, importResult);
-        collectionOutputRefs = [...importResult.itemIds, ...importResult.artifactIds];
+        const artifactJournal = collectionJournal;
+        collectionJournal = null;
+        await endWorkerTurnJournalStep(store, workspaceDb, artifactJournal, 'completed');
       } finally {
         releaseMutation?.();
       }
     } catch (error) {
-      await endWorkerTurnJournalStep(store, workspaceDb, collectionJournal, 'unknown');
+      if (collectionJournal)
+        await endWorkerTurnJournalStep(store, workspaceDb, collectionJournal, 'unknown');
       throw error;
     }
-    await endWorkerTurnJournalStep(
-      store,
-      workspaceDb,
-      collectionJournal,
-      'completed',
-      collectionOutputRefs
-    );
   }
 
   /** Stages release and successor captures through the same durable review and Artifact owner as Turn end. */
@@ -3500,7 +3574,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             toState: 'cleanup-failed',
           });
         }
-        await endWorkerTurnJournalStep(store, workspaceDb, cleanupJournal, 'unknown');
+        await endWorkerTurnJournalStep(
+          store,
+          workspaceDb,
+          cleanupJournal,
+          error instanceof WorkspaceCaptureRecoveryRequired ? 'failed' : 'unknown'
+        );
         throw error;
       }
       await endWorkerTurnJournalStep(store, workspaceDb, cleanupJournal, 'completed', [
