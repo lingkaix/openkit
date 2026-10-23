@@ -1,14 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import fsPromises from 'node:fs/promises';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,14 +19,74 @@ import {
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
-import * as immutableContent from './immutable-content.js';
 import { applyMigrations } from './migrate.js';
 import {
   appendCanonicalTextFile,
   loadWorkspaceFileRecords,
+  nativeProductScope,
   writeFileAtomic,
   writeWorkspaceFileRecords,
 } from './workspace-file-records.js';
+
+const immutableFault = vi.hoisted(() => ({ shared: new SharedArrayBuffer(4096) }));
+
+// Fault the real native preparation, leaving its verifier, SQL and replies intact.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(
+          `(${installImmutableFault.toString()})(require, require('node:worker_threads').workerData.immutableFault);` +
+            entry,
+          {
+            ...options,
+            eval: true,
+            workerData: { ...options?.workerData, immutableFault: immutableFault.shared },
+          }
+        );
+      }
+    },
+  };
+});
+
+/** Corrupts the exact private input before native verification, or fails its required sync. */
+function installImmutableFault(require: NodeRequire, shared: SharedArrayBuffer): void {
+  const state = new Int32Array(shared, 0, 4);
+  const fs = require('node:fs') as typeof import('node:fs');
+  const promises = require('node:fs/promises') as typeof import('node:fs/promises');
+  const open = promises.open;
+  promises.open = (async (...args: Parameters<typeof open>) => {
+    const mode = Atomics.load(state, 0);
+    const prefix = Buffer.from(shared, 16, Atomics.load(state, 2)).toString();
+    const path = String(args[0]);
+    const selected = mode && prefix && path.startsWith(prefix) && path.endsWith('.tmp');
+    if (selected && mode !== 4 && Atomics.compareExchange(state, 1, 0, 1) === 0) {
+      if (mode === 1) fs.unlinkSync(path);
+      else {
+        fs.chmodSync(path, 0o600);
+        const bytes = fs.readFileSync(path);
+        if (mode === 2) fs.truncateSync(path, bytes.length - 1);
+        else {
+          bytes[0] = bytes[0]! ^ 1;
+          fs.writeFileSync(path, bytes);
+        }
+      }
+    }
+    const file = await open(...args);
+    if (selected && mode === 4)
+      file.sync = async () => {
+        Atomics.store(state, 1, 1);
+        throw Object.assign(new Error('synchronization fault'), { code: 'EIO' });
+      };
+    return file;
+  }) as typeof open;
+  require('node:module').syncBuiltinESMExports();
+}
 
 const roots: string[] = [];
 const cores: ReturnType<typeof openCoreDb>[] = [];
@@ -292,41 +343,18 @@ it.each([
   });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   const before = db.sqlite.prepare('SELECT * FROM control_product_entries').all();
-  const publish = immutableContent.publishImmutableProductJson;
+  const state = new Int32Array(immutableFault.shared, 0, 4);
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspace.id });
+  const prefix = Buffer.from(`${scope.contentMount.root}/.`);
+  new Uint8Array(immutableFault.shared, 16).set(prefix);
+  Atomics.store(state, 2, prefix.length);
+  Atomics.store(state, 1, 0);
+  Atomics.store(
+    state,
+    0,
+    ['missing', 'short', 'digest-mismatched', 'unsynchronized'].indexOf(fault) + 1
+  );
   let faultApplied = false;
-  const open = fsPromises.open;
-  if (fault === 'unsynchronized') {
-    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
-      const handle = await open(...args);
-      if (String(args[0]).includes('sha256') && args[1] === 'wx') {
-        vi.spyOn(handle, 'sync').mockImplementation(async () => {
-          faultApplied = true;
-          throw Object.assign(new Error('synchronization fault'), { code: 'EIO' });
-        });
-      }
-      return handle;
-    });
-    syncBuiltinESMExports();
-  } else {
-    vi.spyOn(immutableContent, 'publishImmutableProductJson').mockImplementation(
-      async (...args) => {
-        const content = await publish(...args);
-        const path = join(args[0].root, content.reference.locator.path);
-        if (fault === 'missing') rmSync(path);
-        else {
-          const bytes = readFileSync(path);
-          chmodSync(path, 0o600);
-          if (fault === 'short') writeFileSync(path, bytes.subarray(0, bytes.length - 1));
-          else {
-            bytes[0] = bytes[0]! ^ 1;
-            writeFileSync(path, bytes);
-          }
-        }
-        faultApplied = true;
-        return content;
-      }
-    );
-  }
   try {
     await expect(
       (async () =>
@@ -342,6 +370,7 @@ it.each([
           completedAt: null,
         }))()
     ).rejects.toThrow();
+    faultApplied = Atomics.load(state, 1) === 1;
     expect(faultApplied, 'the fault must reach the actual immutable Product bytes').toBe(true);
     expect(db.sqlite.prepare('SELECT * FROM control_product_entries').all()).toEqual(before);
     vi.restoreAllMocks();
@@ -349,6 +378,7 @@ it.each([
     await getControlStoreWorkerClient().shutdown();
     expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([]);
   } finally {
+    Atomics.store(state, 0, 0);
     vi.restoreAllMocks();
     syncBuiltinESMExports();
     await getControlStoreWorkerClient().shutdown();

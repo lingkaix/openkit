@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -55,12 +54,9 @@ function nativeBody(
   prepareInput = input,
   syncFaultPaths: readonly string[] = []
 ): Promise<ControlTerminalResult> {
-  const require = createRequire(import.meta.url);
-  const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
-  const origin = import.meta.url;
-  const nativeEntry = new URL('./control-store-worker.ts', origin).href;
-  const products = new URL('./control-store-products.ts', origin).href;
-  const dbEntry = new URL('./db.ts', origin).href;
+  const compiled = pathToFileURL(
+    join(tmpdir(), 'nanocore-worker', 'dist', 'storage', 'terminal-owner-test.mjs')
+  ).href;
   const worker = new Worker(
     `
     const {parentPort, workerData, isMainThread} = require('node:worker_threads');
@@ -79,12 +75,10 @@ function nativeBody(
         };
         require('node:module').syncBuiltinESMExports();
       }
-      const {register} = await import(${JSON.stringify(loader)});
-      const source = register({namespace: 'terminal-owner-test'});
-      // Initialize the real production worker graph once. No database is opened through its transport.
-      await source.import(${JSON.stringify(nativeEntry)}, ${JSON.stringify(origin)});
-      const p = await source.import(${JSON.stringify(products)}, ${JSON.stringify(origin)});
-      const handles = await source.import(${JSON.stringify(dbEntry)}, ${JSON.stringify(origin)});
+      // Load the same production graph compiled by the existing invocation-private setup.
+      // No database is opened through its transport; the actual body remains on this thread.
+      const p = await import(${JSON.stringify(compiled)});
+      const handles = p;
       const db = input.owner.kind === 'server' ? handles.openCoreDb(root) : handles.openWorkspaceDb(root, input.owner.workspaceId);
       try {
         if (mode === 'generic-entries') await p.prepareControlEntries(input.owner, mount, input.entries);

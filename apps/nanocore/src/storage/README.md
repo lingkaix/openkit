@@ -263,7 +263,7 @@ Task receipt recovery replays the complete native terminal owner with its origin
 
 The source Worker bootstrap registers its ESM TypeScript loader once inside the already isolated native thread. It imports the same native entry without an additional `tsImport` namespace and CommonJS hook; compiled entry selection and all native admission, transaction and acknowledgement predicates are unchanged.
 
-Under Vitest, source clients load the same native Worker from the invocation-private compiled entry produced by NanoCore global setup. The existing Vitest marker selects only this source entry; no native owner, flag, protocol or durability predicate changes. Missing test setup fails closed, and the shared temporary-directory owner removes the build after worker teardown.
+Under Vitest, source clients load the same native Worker from the invocation-private compiled entry produced by NanoCore global setup. The existing Vitest marker selects only this source entry; no native owner, flag, protocol or durability predicate changes. Missing test setup fails closed, and the shared temporary-directory owner removes the build after worker teardown. The same setup compiles a private terminal-owner facet from the unchanged native graph for owner-body tests. Each invocation still uses a real dedicated thread and the original preparation, transaction, fault and rollback paths; repeated source-loader startup does not consume the case deadline.
 
 Offline Workspace restore and MOVE share Core `workspace_recovery_admissions` ownership for exact restart, terminal abandonment and next-boot refusal of partial authority.
 

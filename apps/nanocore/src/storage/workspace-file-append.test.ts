@@ -209,7 +209,8 @@ describe('canonical append writes', () => {
     const scope = nativeProductScope(dataRoot, item.owner);
     const before = store.getTurnById(turn.id);
     const entriesBefore = readNativeProductEntries(scope, turn.id, 'item');
-    partialWriteState.nativeRoot = `${join(scope.contentMount.root, 'sha256')}/`;
+    // The private handoff is written on Main; native preparation verifies, syncs and links it.
+    partialWriteState.nativeRoot = `${scope.contentMount.root}/`;
     partialWriteState.nativeCalls = 0;
     partialWriteState.failNativeWrite = true;
     try {
