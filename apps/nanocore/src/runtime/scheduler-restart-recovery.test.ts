@@ -1854,11 +1854,19 @@ describe('terminal failed-start product recovery', () => {
     const submitGate = new Promise<void>((resolve) => {
       finishSubmit = resolve;
     });
+    let acknowledgeSubmit!: (result: PromiseSettledResult<void>) => void;
+    const submitAcknowledgement = new Promise<PromiseSettledResult<void>>((resolve) => {
+      acknowledgeSubmit = resolve;
+    });
     const executionBackend = new SimulatedTurnExecutor({ coreDb: f.coreDb });
     const backend: WorkerGovernanceBackend = {
       id: executionBackend.id,
       submit: vi.fn(async (input) => {
-        const accepted = await executionBackend.submit(input);
+        const accepted = await executionBackend.submit(input).catch((error: unknown) => {
+          acknowledgeSubmit({ status: 'rejected', reason: error });
+          throw error;
+        });
+        acknowledgeSubmit({ status: 'fulfilled', value: undefined });
         await submitGate;
         return accepted;
       }),
@@ -2014,29 +2022,26 @@ describe('terminal failed-start product recovery', () => {
         },
       });
       expect(body.turn.id).not.toBe(f.turnId);
+      // Queue acceptance does not acknowledge native start. Observe the receiver before its reply.
+      const submitResult = await submitAcknowledgement;
+      if (submitResult.status === 'rejected') throw submitResult.reason;
       // Product responses omit private AgentSession lineage; read its durable Turn and lease owners.
-      let successorAgentSessionId: string | null | undefined;
-      await vi.waitFor(
-        () => {
-          successorAgentSessionId = f.store.getTurnById(body.turn.id).agentSessionId;
-          expect(successorAgentSessionId).toBeTruthy();
-          expect(
-            f.store.getAgentSession(successorAgentSessionId!),
-            JSON.stringify(f.store.getTurnById(body.turn.id).error)
-          ).toMatchObject({
-            id: successorAgentSessionId,
-            status: 'busy',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: f.threadId,
-            agentId: setup.manifest.id,
-          });
-        },
-        { timeout: 10000 }
-      );
+      const successorAgentSessionId = f.store.getTurnById(body.turn.id).agentSessionId;
+      expect(successorAgentSessionId).toBeTruthy();
+      expect(
+        f.store.getAgentSession(successorAgentSessionId!),
+        JSON.stringify(f.store.getTurnById(body.turn.id).error)
+      ).toMatchObject({
+        id: successorAgentSessionId,
+        status: 'busy',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: f.threadId,
+        agentId: setup.manifest.id,
+      });
       expect(successorAgentSessionId).not.toBe(f.agentSessionId);
       expect(backend.prepareAgentSessionContinuity).toHaveBeenCalled();
       expect(starts).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => expect(backend.submit).toHaveBeenCalledTimes(1), { timeout: 10000 });
+      expect(backend.submit).toHaveBeenCalledTimes(1);
       expect(backend.materialize).toHaveBeenCalledTimes(1);
       const launchedPackage = vi.mocked(backend.materialize).mock.calls[0]![0];
       expect(launchedPackage.scope).toMatchObject({
@@ -2101,7 +2106,6 @@ describe('terminal failed-start product recovery', () => {
       starts.mockRestore();
       f.coreDb.sqlite.close();
     }
-    // Allow database/App setup in addition to the two bounded scheduler observations.
   }, 60_000);
 
   it.each([
