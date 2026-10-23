@@ -68,6 +68,7 @@ LABEL org.openkit.smoke="/usr/local/bin/openkit-app-smoke"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+ENV UV_THREADPOOL_SIZE="16"
 ENV PNPM_HOME="/pnpm"
 ENV PATH="${PNPM_HOME}:${PATH}"
 ENV CADDY_HTTP_PORT="8080"

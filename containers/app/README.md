@@ -1,6 +1,6 @@
 # App Image
 
-This image packages NanoCore, Web UI assets, Caddy, migrations, and data templates behind one public HTTP port.
+This image packages NanoCore, Web UI assets, Caddy, migrations, and data templates behind one public HTTP port. The runtime sets `UV_THREADPOOL_SIZE=16` before Node starts, so native content preparation shares a bounded filesystem pool with Main. Direct source and private qualification launches set the same variable on their existing Node command before startup; this does not change file synchronization, native queue bounds or commit acknowledgements.
 
 All build and runtime stages use the exact digest-pinned Node base declared for `app` in `containers/images.json`.
 
