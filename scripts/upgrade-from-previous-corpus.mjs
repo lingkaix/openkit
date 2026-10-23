@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   writeFileSync,
@@ -44,6 +45,7 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Workspace deletion closure',
   'Turn human feedback',
   'Query-owned retrieval traces',
+  'Unaccepted Workspace capture source',
 ]);
 
 /** Mutable metadata compared through native snapshots rather than disposable file projections. */
@@ -103,6 +105,7 @@ async function owners(appRoot) {
     backup: 'storage/data-root-backup.js',
     closure: 'workspace-deletion-evidence.js',
     traces: 'storage/retrieval-traces.js',
+    snapshotChain: 'runtime/workspace-snapshot-chain.js',
     jsonc: 'config/jsonc.js',
   };
   const loaded = Object.fromEntries(
@@ -554,6 +557,41 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       decidedAt: FIXTURE.at,
       verifiedExternalReferences: [],
     });
+    // Raw source is unaccepted evidence; these synthetic claims grant no physical admission.
+    const packageSnapshotId = 'b01-public-unaccepted-package';
+    selectors.rawCaptureIdentity = o.snapshotChain.WorkspaceCollectionIdentitySchema.parse({
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      agentSessionId: selectors.agentSessionId,
+      storageRef: o.protocol.allocateEntityId('wst'),
+      scopeDigest: `sha256:${sha256(Buffer.from('B01 synthetic raw source scope'))}`,
+      attachmentGeneration: 1,
+      sandboxId: 'b01-synthetic-source-sandbox',
+      workSlot: 'b01-source-slot',
+      packageSnapshotId,
+      collectionId: `turn-end-${sha256(Buffer.from(packageSnapshotId))}`,
+    });
+    const captureStaging = join(workspaceRoot, 'runtime', 'staging');
+    mkdirSync(captureStaging, { recursive: true, mode: 0o700 });
+    const capturePath = join(mkdtempSync(join(captureStaging, 'b01-capture-')), 'complete');
+    writeFileSync(capturePath, FIXTURE.original, { flag: 'wx', mode: 0o600 });
+    await o.snapshotChain.preserveRawWorkspaceCapture({
+      dataRoot: r.data,
+      identity: selectors.rawCaptureIdentity,
+      result: {
+        outcome: 'candidate',
+        sha256: `sha256:${sha256(FIXTURE.original)}`,
+        byteLength: FIXTURE.original.length,
+        head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+        previousHead: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+        acceptedBase: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+        unstable: false,
+      },
+      staged: { bytes: FIXTURE.original, path: capturePath },
+      admission: new o.fileAdmission.FileStorageAdmission(r.data, () => 0n),
+    });
+    // Seed before logical export and cold backup; only full Data Root backup retains this source.
     await seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot);
   } finally {
     await o.controlWorker.shutdownControlStoreWorkerClient();
@@ -734,6 +772,17 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       throw new Error(`${family}: retained bytes are missing.`);
   };
   try {
+    const rawCapture = await o.snapshotChain.readRawWorkspaceCapture(
+      r.data,
+      selectors.rawCaptureIdentity
+    );
+    record(
+      'Unaccepted Workspace capture source',
+      rawCapture ? [{ identity: rawCapture.identity, result: rawCapture.result }] : [],
+      [
+        `${workspacePath}/evidence/backend/workspace-capture/${selectors.rawCaptureIdentity.collectionId}`,
+      ]
+    );
     record('Layout marker', [o.layout.readDataRootLayoutMarker(r.data)], ['server/layout.json']);
     const scope = o.records.nativeProductScope(r.data, {
       kind: 'workspace',

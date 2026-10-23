@@ -2365,13 +2365,18 @@ async function readLinkedEvidence(o, core, workspace, store, sql) {
   assert.deepEqual(root.openSteps, []);
   assert.deepEqual(root.exclusionRefs, []);
   const steps = await reader.readEndedSteps(ref);
-  assert.deepEqual(steps.map((step) => step.control.kind).sort(), [
-    'collect',
-    'inspect-cleanup',
-    'materialize',
-    'release',
-    'terminal-publication',
-  ]);
+  // Synchronization owns separate collection responsibilities; a kind is not one fixed invocation.
+  assert.ok(
+    steps.some((step) => step.control.kind === 'collect'),
+    'Original Task lacks collection.'
+  );
+  assert.deepEqual(
+    steps
+      .filter((step) => step.control.kind !== 'collect')
+      .map((step) => step.control.kind)
+      .sort(),
+    ['inspect-cleanup', 'materialize', 'release', 'terminal-publication']
+  );
   for (const step of steps) {
     assert.equal(step.state, 'completed', 'Original Task has an incomplete obligation.');
     assert.equal(step.control.attemptId, attempt.attemptId);

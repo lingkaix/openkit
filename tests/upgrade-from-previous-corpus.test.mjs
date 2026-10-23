@@ -76,6 +76,42 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
   assert.ok(first['Conversation original file inputs'].values[0].length > 0);
   assert.equal(first['Immutable Artifact versions']?.values.length, 2);
   assert.equal(first['Artifact original payload']?.bytes.length, 2);
+  const capture = first['Unaccepted Workspace capture source'];
+  const sourceRoot = `workspaces/${selectors.workspaceId}/evidence/backend/workspace-capture/${selectors.rawCaptureIdentity.collectionId}`;
+  const candidate = Buffer.from('00ffc328800a', 'hex');
+  const { createHash } = await import('node:crypto');
+  const candidateDigest = createHash('sha256').update(candidate).digest('hex');
+  assert.deepEqual(capture.values[0].identity, selectors.rawCaptureIdentity);
+  const { collectedAt, ...captureResult } = capture.values[0].result;
+  assert.match(collectedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(captureResult, {
+    outcome: 'candidate',
+    sha256: `sha256:${candidateDigest}`,
+    byteLength: candidate.length,
+    head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+    previousHead: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+    acceptedBase: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+    unstable: false,
+  });
+  assert.deepEqual(capture.bytes.map((entry) => entry.path).sort(), [
+    `data/${sourceRoot}/collection.json`,
+    `data/${sourceRoot}/complete`,
+  ]);
+  assert.deepEqual(readFileSync(join(input.dataRoot, sourceRoot, 'complete')), candidate);
+  assert.equal(
+    capture.bytes.find((entry) => entry.path.endsWith('/complete')).sha256,
+    candidateDigest
+  );
+  for (const entry of capture.bytes) {
+    assert.ok(
+      first['Data Root backup'].bytes.some(
+        (saved) =>
+          saved.path.endsWith('/' + entry.path.slice('data/'.length)) &&
+          saved.sha256 === entry.sha256
+      ),
+      'Cold backup retains the original capture source bytes'
+    );
+  }
   for (const [family, observed] of Object.entries(first)) {
     assert.ok(observed.values.length > 0, `${family}: no native reader result`);
     if (NATIVE_METADATA_FAMILIES.includes(family)) {
@@ -112,12 +148,54 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
         `${family}: no nonempty retained sample`
       );
   }
+  // Register and Synchronization: descriptive additions are ignored, not rewritten as known truth.
+  const metadataPath = join(input.dataRoot, sourceRoot, 'collection.json');
+  const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+  assert.equal(metadata.schemaVersion, 1);
+  for (const value of [
+    metadata,
+    metadata.identity,
+    metadata.result,
+    metadata.result.head,
+    metadata.result.previousHead,
+    metadata.result.acceptedBase,
+  ]) {
+    value.futureNote = 'Public synthetic descriptive extension';
+  }
+  const annotated = JSON.stringify(metadata);
+  writeFileSync(metadataPath, annotated);
+  const extended = await readFileCorpus({ ...input, selectors });
+  assert.deepEqual(extended['Unaccepted Workspace capture source'].values, capture.values);
+  assert.equal(readFileSync(metadataPath, 'utf8'), annotated);
+  assert.deepEqual(readFileSync(join(input.dataRoot, sourceRoot, 'complete')), candidate);
 });
 
 test('file reader fails on retained history corruption instead of accepting a boot-only result', async (t) => {
   const input = await fixture(t);
   const selectors = await seedFileCorpus(input);
   const before = await readFileCorpus({ ...input, selectors });
+  const { readRawWorkspaceCapture } = await owner('runtime/workspace-snapshot-chain.js');
+  const source = await readRawWorkspaceCapture(input.dataRoot, selectors.rawCaptureIdentity);
+  assert.ok(source, 'The native capture source exists before corruption');
+  const captureFile = before['Unaccepted Workspace capture source'].bytes.find((entry) =>
+    entry.path.endsWith('/complete')
+  );
+  const capturePath = join(input.dataRoot, captureFile.path.slice('data/'.length));
+  const candidate = readFileSync(capturePath);
+  assert.deepEqual(source.candidate, candidate);
+  const corrupt = Buffer.from(candidate);
+  corrupt[0] ^= 1;
+  writeFileSync(capturePath, corrupt);
+  assert.equal(readFileSync(capturePath).length, candidate.length);
+  try {
+    await assert.rejects(readRawWorkspaceCapture(input.dataRoot, selectors.rawCaptureIdentity));
+  } finally {
+    writeFileSync(capturePath, candidate);
+  }
+  assert.deepEqual(
+    (await readRawWorkspaceCapture(input.dataRoot, selectors.rawCaptureIdentity)).candidate,
+    candidate
+  );
   const selected = before['Item revision log'].bytes[0];
   const path = join(input.dataRoot, selected.path.slice('data/'.length));
   chmodSync(path, 0o644);
