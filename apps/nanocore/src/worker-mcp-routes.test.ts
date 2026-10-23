@@ -4400,6 +4400,12 @@ describe('worker MCP routes', () => {
         nativeHandleState: 'ready',
         state: 'open',
       });
+      // The inspection result releases the executor; join its publication before fixture teardown.
+      const running = execution.mock.calls.findIndex(
+        ([, turnId]) => turnId === environmentPackage.scope.turnId
+      );
+      if (running < 0) throw new Error('Expected the admitted Task execution.');
+      await execution.mock.results[running]!.value;
       return { agentSessionId: environmentPackage.scope.agentSessionId, toolCall };
     };
 
@@ -5196,6 +5202,9 @@ describe('worker MCP routes', () => {
       cancellation.abort();
       await expect(cancelled).rejects.toThrow(/AbortError/);
       expect(callTool.mock.calls.length).toBe(callsBeforeCancellation + 1);
+      // Client cancellation precedes server publication; drain its existing admission before the next call.
+      await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
+      workspaceMutationAdmission.reopen('ws_00000000-0000-7000-8000-000000000001');
       const callsBeforePreCancellation = callTool.mock.calls.length;
       await expect(
         echo.callTool({ arguments: { message: 'pre-cancelled' }, name: 'echo' })
@@ -5261,6 +5270,9 @@ describe('worker MCP routes', () => {
       await schemaCancellationObserved;
       schemaCancelBarrier.release();
       expect(String(await schemaCancelledOutcome)).toMatch(/AbortError/);
+      // Client cancellation precedes server publication; drain its existing admission before the next call.
+      await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
+      workspaceMutationAdmission.reopen('ws_00000000-0000-7000-8000-000000000001');
       await vi.waitFor(() => {
         const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
