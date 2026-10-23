@@ -223,8 +223,18 @@ async function runResidentTurnImplementation(
   const credentialValues = [...options.credentialValues, ...Object.values(options.tokens)];
 
   await mkdir(options.sessionDir, { recursive: true });
-  await writeFile(join(options.sessionDir, 'events.jsonl'), '', 'utf8');
-  await writeFile(join(options.sessionDir, 'items.jsonl'), '', 'utf8');
+  await writeFile(join(options.sessionDir, 'events.jsonl'), '', {
+    encoding: 'utf8',
+    flag: 'wx',
+    mode: 0o600,
+    flush: true,
+  });
+  await writeFile(join(options.sessionDir, 'items.jsonl'), '', {
+    encoding: 'utf8',
+    flag: 'wx',
+    mode: 0o600,
+    flush: true,
+  });
   progress.stage = 'runtime_supply';
   await materializeRuntimeSupply(packageManifest);
   await prepareGeneratedOutputSlot(

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isEntityId } from '@openkit/protocol';
@@ -497,8 +497,21 @@ export class WorkerHarness {
     let startupFailure: WorkerStartupFailure | undefined;
     // Reserve activeTurn in this synchronous entry before preparation can yield to another start.
     const run = (async () => {
-      await mkdir(dirname(captureDirectory), { mode: 0o700, recursive: true });
+      const created = await mkdir(dirname(captureDirectory), { mode: 0o700, recursive: true });
       await mkdir(captureDirectory, { mode: 0o700 });
+      // Preserve the new capture name and only its newly created ancestor suffix before exposing source.
+      let directory = dirname(captureDirectory);
+      const last = created ? dirname(created) : directory;
+      for (;;) {
+        const handle = await open(directory, 'r');
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        if (directory === last) break;
+        directory = dirname(directory);
+      }
       await mkdir(turnDirectory, { mode: 0o700, recursive: true });
       return runResidentTurn({
         adapterId: this.adapterId as string,

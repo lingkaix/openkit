@@ -214,6 +214,19 @@ export const NATIVE_CONTENT_CODEC = 'native-content-v1' as const;
 /** Maximum admitted bytes in one observation body, independent from the per-Turn log policy. */
 export const WORKER_OBSERVATION_CONTENT_MAX_BYTES = 16 * 1024 * 1024;
 
+/** Existing authenticated event request limit, also bounding one retained source line. */
+export const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
+
+/** Finite source-file bound derived from the existing body, chunk and request limits. */
+export const WORKER_OBSERVATION_SOURCE_MAX_BYTES =
+  (Math.ceil(WORKER_OBSERVATION_CONTENT_MAX_BYTES / WORKER_OBSERVATION_CHUNK_MAX_BYTES) + 1) *
+  WORKER_CONTROL_EVENT_APPEND_MAX_BYTES;
+
+/** Returns a restricted emission source beneath its existing Turn capture, keyed by original worker sequence. */
+export function workerObservationSourceRelativePath(sequence: number): string {
+  return `runtime/observations/${WorkerSequenceSchema.parse(sequence)}.jsonl`;
+}
+
 const ObservationRefSchema = z
   .string()
   .min(1)

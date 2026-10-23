@@ -1,7 +1,8 @@
-import { appendFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { appendFile, mkdir, open, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import {
   buildWorkerCanonicalTerminalEventRecord,
+  WORKER_CONTROL_EVENT_APPEND_MAX_BYTES,
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordEmissionSchema,
   type WorkerCanonicalNonTerminalEventType,
@@ -9,6 +10,7 @@ import {
   type WorkerLineage,
   type WorkerTextPart,
   WorkerTranscriptItemRecordEmissionSchema,
+  workerObservationSourceRelativePath,
 } from '@openkit/worker-protocol';
 
 import {
@@ -74,6 +76,7 @@ export class WorkerTranscriptWriter {
   private liveIncomplete = false;
   private readonly lineage: WorkerLineage;
   private readonly sessionDir: string;
+  private readonly createdFiles = new Set<string>();
   private sequence = 0;
   private readonly recordLifecycleFact: TurnLifecycleRecorder | undefined;
 
@@ -160,31 +163,38 @@ export class WorkerTranscriptWriter {
       input.content.state === 'expected' && body !== undefined ? input.content.chunkCount : 0;
     const firstChunkSequence = this.sequence;
     this.sequence += chunkCount;
-    const appended = this.appendJsonl('events.jsonl', record);
+    // Freeze the exact admitted envelopes before any await can change caller-owned bytes.
+    const chunks = Array.from({ length: chunkCount }, (_, chunkIndex) => {
+      const byteOffset = chunkIndex * RUNTIME_CONTENT_CHUNK_BYTES;
+      return WorkerCanonicalEventRecordEmissionSchema.parse({
+        kind: 'event',
+        lineage: this.lineage,
+        schemaVersion: 1,
+        sequence: firstChunkSequence + chunkIndex,
+        event: {
+          type: 'observation.content.chunk',
+          data: {
+            observationId: input.observationId,
+            chunkIndex,
+            byteOffset,
+            encoding: 'base64',
+            data: Buffer.from(
+              body!.subarray(byteOffset, byteOffset + RUNTIME_CONTENT_CHUNK_BYTES)
+            ).toString('base64'),
+          },
+        },
+      });
+    });
+    let appended = this.appendJsonl('events.jsonl', record);
+    if (body !== undefined) {
+      appended = this.appendJsonl(workerObservationSourceRelativePath(record.sequence), [
+        record,
+        ...chunks,
+      ]);
+    }
     await this.enqueueLive(appended, async () => {
       await this.appendLive(record);
-      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-        const byteOffset = chunkIndex * RUNTIME_CONTENT_CHUNK_BYTES;
-        const chunk = WorkerCanonicalEventRecordEmissionSchema.parse({
-          kind: 'event',
-          lineage: this.lineage,
-          schemaVersion: 1,
-          sequence: firstChunkSequence + chunkIndex,
-          event: {
-            type: 'observation.content.chunk',
-            data: {
-              observationId: input.observationId,
-              chunkIndex,
-              byteOffset,
-              encoding: 'base64',
-              data: Buffer.from(
-                body!.subarray(byteOffset, byteOffset + RUNTIME_CONTENT_CHUNK_BYTES)
-              ).toString('base64'),
-            },
-          },
-        });
-        await this.appendLive(chunk);
-      }
+      for (const chunk of chunks) await this.appendLive(chunk);
     });
   }
 
@@ -287,10 +297,44 @@ export class WorkerTranscriptWriter {
    * @param record Serializable record.
    * @returns Promise that resolves after the record is appended.
    */
-  private appendJsonl(fileName: string, record: Record<string, unknown>): Promise<void> {
+  private appendJsonl(
+    fileName: string,
+    records: Record<string, unknown> | Record<string, unknown>[]
+  ): Promise<void> {
     this.appendQueue = this.appendQueue.then(async () => {
-      await mkdir(this.sessionDir, { recursive: true });
-      await appendFile(join(this.sessionDir, fileName), `${JSON.stringify(record)}\n`, 'utf8');
+      const path = join(this.sessionDir, fileName);
+      const restricted = Array.isArray(records);
+      const lines = (restricted ? records : [records]).map(
+        (record) => `${JSON.stringify(record)}\n`
+      );
+      if (
+        restricted &&
+        lines.some((line) => Buffer.byteLength(line) > WORKER_CONTROL_EVENT_APPEND_MAX_BYTES)
+      ) {
+        throw new Error('Worker observation source exceeds the existing event transport bound.');
+      }
+      const created = await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      if (restricted) {
+        await writeFile(path, lines.join(''), { flag: 'wx', mode: 0o600, flush: true });
+      } else {
+        await appendFile(path, lines[0]!, { encoding: 'utf8', mode: 0o600, flush: true });
+      }
+      if (restricted || !this.createdFiles.has(fileName)) {
+        // Only changed entries need sync; mkdir identifies the newly created ancestor suffix.
+        let directory = dirname(path);
+        const last = created ? dirname(created) : directory;
+        for (;;) {
+          const handle = await open(directory, 'r');
+          try {
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          if (directory === last) break;
+          directory = dirname(directory);
+        }
+        if (!restricted) this.createdFiles.add(fileName);
+      }
     });
     return this.appendQueue;
   }
