@@ -39,7 +39,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-type BodyMode = 'apply' | 'rollback' | 'generic-entries' | 'generic-products';
+type BodyMode =
+  | 'apply'
+  | 'rollback'
+  | 'generic-entries'
+  | 'generic-products'
+  | 'changed-descriptor';
 
 /** Runs the actual synchronous SQL body on a real dedicated thread; no writer guard, SQL owner or receipt is mocked. */
 function nativeBody(
@@ -47,7 +52,8 @@ function nativeBody(
   input: ControlTerminalTransition,
   mount: ControlProductContentMount,
   mode: BodyMode,
-  prepareInput = input
+  prepareInput = input,
+  syncFaultPaths: readonly string[] = []
 ): Promise<ControlTerminalResult> {
   const require = createRequire(import.meta.url);
   const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
@@ -59,19 +65,35 @@ function nativeBody(
     `
     const {parentPort, workerData, isMainThread} = require('node:worker_threads');
     (async () => {
+      const {root, input, mount, mode, prepareInput, syncFaultPaths} = workerData;
+      // Fail the real native FileHandle synchronization boundary, never preparation itself.
+      if (syncFaultPaths.length) {
+        const faults = syncFaultPaths.map(path => require('node:fs').realpathSync(path));
+        const fs = require('node:fs/promises');
+        const open = fs.open;
+        fs.open = async (path, ...args) => {
+          const fd = await open(path, ...args);
+          if (faults.includes(String(path)))
+            fd.sync = async () => { throw new Error('injected content synchronization failure'); };
+          return fd;
+        };
+        require('node:module').syncBuiltinESMExports();
+      }
       const {register} = await import(${JSON.stringify(loader)});
       const source = register({namespace: 'terminal-owner-test'});
       // Initialize the real production worker graph once. No database is opened through its transport.
       await source.import(${JSON.stringify(nativeEntry)}, ${JSON.stringify(origin)});
       const p = await source.import(${JSON.stringify(products)}, ${JSON.stringify(origin)});
       const handles = await source.import(${JSON.stringify(dbEntry)}, ${JSON.stringify(origin)});
-      const {root, input, mount, mode, prepareInput} = workerData;
       const db = input.owner.kind === 'server' ? handles.openCoreDb(root) : handles.openWorkspaceDb(root, input.owner.workspaceId);
       try {
         if (mode === 'generic-entries') await p.prepareControlEntries(input.owner, mount, input.entries);
         const prepared = mode === 'generic-products' ? null : await p.prepareControlTerminal(db, prepareInput, mount);
         const result = db.sqlite.transaction(() => {
           db.sqlite.exec('SAVEPOINT terminal_body');
+          // Change a real retained descriptor after preparation; refusal must roll this fault back.
+          if (mode === 'changed-descriptor')
+            db.sqlite.prepare("UPDATE control_product_entries SET content_json=json_set(content_json,'$.byteLength',json_extract(content_json,'$.byteLength')+1) WHERE kind='event' AND turn_id=?").run(input.turn.record.id);
           const result = mode === 'generic-products'
             ? p.applyControlProducts(db.sqlite, input.owner, [input.turn], [])
             : p.applyControlTerminal(db, input, prepared);
@@ -83,7 +105,7 @@ function nativeBody(
       } finally { db.sqlite.close(); }
     })().catch(error => parentPort.postMessage({ok: false, message: error.stack, isMainThread}));
   `,
-    { eval: true, workerData: { root, input, mount, mode, prepareInput } }
+    { eval: true, workerData: { root, input, mount, mode, prepareInput, syncFaultPaths } }
   );
   return new Promise((resolve, reject) => {
     let replied = false;
@@ -213,8 +235,12 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
     command: null,
     execution: null,
   };
-  const apply = (value = input, mode: BodyMode = 'apply', prepareInput = value) =>
-    nativeBody(root, value, mount, mode, prepareInput);
+  const apply = (
+    value = input,
+    mode: BodyMode = 'apply',
+    prepareInput = value,
+    syncFaultPaths: readonly string[] = []
+  ) => nativeBody(root, value, mount, mode, prepareInput, syncFaultPaths);
   return { root, db, owner, turnId, threadId, turn, input, mount, apply };
 }
 
@@ -1058,6 +1084,33 @@ describe('complete native terminal owner', () => {
     );
     expect(f.db.sqlite.prepare('SELECT count(*) AS n FROM control_turns').get()).toEqual({ n: 0 });
   });
+  it.each([
+    'file',
+    'parent',
+  ] as const)('refuses a new terminal reference when actual %s synchronization fails', async (target) => {
+    const f = fixture('workspace');
+    const input = withCommand(f);
+    const fault = target === 'file' ? join(f.mount.root, 'event.json') : f.mount.root;
+    // Storage and DX Commit Rule require actual new bytes and their parent to be durable before reference.
+    await expect(f.apply(input, 'apply', input, [fault])).rejects.toThrow(
+      'injected content synchronization failure'
+    );
+    for (const table of [
+      'control_turns',
+      'control_product_entries',
+      'control_work_observations',
+      'idempotency_requests',
+      'audit_events',
+    ])
+      expect(f.db.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+    await expect(f.apply(input)).resolves.toMatchObject({
+      replayed: false,
+      response: { kind: 'turn', id: f.turnId },
+    });
+    expect(f.db.sqlite.prepare('SELECT request_key FROM idempotency_requests').get()).toEqual({
+      request_key: input.command!.receipt.key,
+    });
+  });
   it('fills absent sealed metadata without replacing its original terminal event or changing a populated field', async () => {
     const f = fixture();
     const event = JSON.parse(readFileSync(join(f.mount.root, 'event.json'), 'utf8'));
@@ -1070,13 +1123,49 @@ describe('complete native terminal owner', () => {
     const first = await f.apply(original);
     const filled = {
       ...original,
+      command: withCommand(f).command,
       turn: {
         ...original.turn,
         expectedRevision: first.revision,
         record: { ...f.turn, durationMs: 0 },
       },
     };
-    const result = await f.apply(filled);
+    const state = () =>
+      [
+        'control_threads',
+        'control_turns',
+        'control_product_entries',
+        'control_work_observations',
+        'idempotency_requests',
+        'audit_events',
+      ].map((table) => f.db.sqlite.prepare(`SELECT * FROM ${table}`).all());
+    const before = state();
+    const retainedPath = join(f.mount.root, 'event-unfilled.json');
+    const retainedBytes = readFileSync(retainedPath);
+    // The committed descriptor does not waive the retained byte checks (Storage fail-closed rule).
+    for (const fault of ['missing', 'corrupt']) {
+      if (fault === 'missing') rmSync(retainedPath);
+      else writeFileSync(retainedPath, Buffer.alloc(retainedBytes.length, 0x20));
+      try {
+        await expect(f.apply(filled)).rejects.toThrow();
+        expect(state()).toEqual(before);
+      } finally {
+        writeFileSync(retainedPath, retainedBytes);
+      }
+    }
+    // DX requires current dependency checks inside the transaction after asynchronous preparation.
+    await expect(f.apply(filled, 'changed-descriptor')).rejects.toThrow(
+      'Control product transition precondition failed.'
+    );
+    expect(state()).toEqual(before);
+    // Exercise the same valid tuple and receipt through the real body before the deciding sync fault.
+    await expect(f.apply(filled, 'rollback')).rejects.toThrow('outer rollback');
+    expect(state()).toEqual(before);
+    // COORD23:31Z: already committed immutable content must not need another file or parent sync.
+    const result = await f.apply(filled, 'apply', filled, [retainedPath, f.mount.root]);
+    expect(f.db.sqlite.prepare('SELECT request_key FROM idempotency_requests').get()).toEqual({
+      request_key: filled.command!.receipt.key,
+    });
     expect(result.revision).toBe(first.revision + 1);
     expect((await f.apply(filled)).revision).toBe(result.revision);
     await expect(

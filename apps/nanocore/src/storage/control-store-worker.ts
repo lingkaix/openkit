@@ -1,4 +1,12 @@
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fsyncSync,
+  openSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
@@ -108,6 +116,8 @@ type WriteRequest = Extract<
   readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
+  /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
+  readonly preparedDirectories?: readonly string[];
 };
 
 /** One worker-owned writable connection and its finite, disposable pending work. */
@@ -347,8 +357,41 @@ function flush(owner: OwnedDatabase): void {
       return;
     }
   }
-  const batch = owner.pending.splice(0, count);
-  if (batch.length === 0) return;
+  const selected = owner.pending.splice(0, count);
+  if (selected.length === 0) return;
+  // File sync finished in preparation; directory success lasts only for this bounded batch.
+  const directoryErrors = new Map<string, ControlWorkerFailureCode>();
+  for (const directory of new Set(
+    selected.flatMap((request) => request.preparedDirectories ?? [])
+  )) {
+    try {
+      const fd = openSync(
+        directory,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+      );
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    } catch (error) {
+      directoryErrors.set(directory, failureCode(error));
+    }
+  }
+  const batch = selected.filter((request) => {
+    for (const directory of request.preparedDirectories ?? []) {
+      const code = directoryErrors.get(directory);
+      if (code) {
+        reply(failure(request.id, code, 'not-committed'));
+        return false;
+      }
+    }
+    return true;
+  });
+  if (batch.length === 0) {
+    if (owner.pending.length) owner.immediate = setImmediate(() => flush(owner));
+    return;
+  }
   let bodyFinished = false;
   let replies: ControlWorkerReply[];
   try {
@@ -850,6 +893,7 @@ function receive(value: unknown): void {
       ) {
         reply(failure(value.id, 'busy'));
       } else {
+        const newDirectories = new Set<string>();
         if (value.operation === 'pending' && value.input.terminal) {
           if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner) {
             reply(failure(value.id, 'precondition'));
@@ -860,7 +904,8 @@ function receive(value: unknown): void {
           preparation = prepareControlTerminal(
             owner.scopeDb,
             value.input.terminal,
-            owner.contentMount
+            owner.contentMount,
+            newDirectories
           )
             .then(async (preparedTerminal) => {
               if (owner.poisoned || databases.get(value.database) !== owner)
@@ -869,11 +914,18 @@ function receive(value: unknown): void {
                 db,
                 [value.input.input],
                 owner.contentMount,
-                []
+                [],
+                undefined,
+                newDirectories
               );
               if (owner.poisoned || databases.get(value.database) !== owner)
                 throw new ControlProductPreconditionError();
-              owner.pending.push({ ...value, preparedTerminal, preparedPending });
+              owner.pending.push({
+                ...value,
+                preparedTerminal,
+                preparedPending,
+                preparedDirectories: [...newDirectories],
+              });
               schedule(owner);
             })
             .catch((error) => {
@@ -894,11 +946,20 @@ function receive(value: unknown): void {
             return;
           }
           let preparation: Promise<void>;
-          preparation = prepareControlTerminal(owner.scopeDb, value.input, owner.contentMount)
+          preparation = prepareControlTerminal(
+            owner.scopeDb,
+            value.input,
+            owner.contentMount,
+            newDirectories
+          )
             .then((preparedTerminal) => {
               if (owner.poisoned || databases.get(value.database) !== owner)
                 throw new ControlProductPreconditionError();
-              owner.pending.push({ ...value, preparedTerminal });
+              owner.pending.push({
+                ...value,
+                preparedTerminal,
+                preparedDirectories: [...newDirectories],
+              });
               schedule(owner);
             })
             .catch((error) => {
@@ -927,7 +988,8 @@ function receive(value: unknown): void {
               preparedPublication = await prepareControlPublication(
                 owner.scopeDb,
                 value.input,
-                owner.contentMount
+                owner.contentMount,
+                newDirectories
               );
             }
             if (value.operation === 'pending') {
@@ -937,7 +999,9 @@ function receive(value: unknown): void {
                 owner.scopeDb,
                 [value.input.input],
                 owner.contentMount,
-                value.input.entries
+                value.input.entries,
+                undefined,
+                newDirectories
               );
               preparedEntries = preparedPending.entries;
             }
@@ -950,7 +1014,8 @@ function receive(value: unknown): void {
               preparedReview = await prepareControlReviewCommand(
                 owner.scopeDb,
                 value.input,
-                owner.contentMount
+                owner.contentMount,
+                newDirectories
               );
             }
             if (value.operation === 'goal') {
@@ -958,7 +1023,8 @@ function receive(value: unknown): void {
               preparedGoal = await prepareControlGoalCommand(
                 owner.scopeDb,
                 value.input,
-                owner.contentMount
+                owner.contentMount,
+                newDirectories
               );
             }
             if (value.operation === 'transition' || value.operation === 'products') {
@@ -966,7 +1032,8 @@ function receive(value: unknown): void {
               preparedEntries = await prepareControlEntries(
                 owner.productOwner,
                 owner.contentMount,
-                value.transition.entries
+                value.transition.entries,
+                newDirectories
               );
               if (value.transition.pending?.length && archivedThreads(value).length === 0) {
                 if (owner.scopeDb?.scope !== 'workspace')
@@ -976,7 +1043,8 @@ function receive(value: unknown): void {
                   value.transition.pending,
                   owner.contentMount,
                   value.transition.entries,
-                  preparedEntries
+                  preparedEntries,
+                  newDirectories
                 );
               }
             }
@@ -1003,6 +1071,7 @@ function receive(value: unknown): void {
               preparedReview,
               preparedPending,
               preparedPublication,
+              preparedDirectories: [...newDirectories],
             });
           }
           schedule(owner);

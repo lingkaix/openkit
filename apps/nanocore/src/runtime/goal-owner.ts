@@ -62,6 +62,7 @@ import {
   ControlProductEntrySchema,
   type PreparedControlEntry,
   prepareControlEntries,
+  prepareRetainedControlEntries,
   readProduct,
 } from '../storage/control-store-products.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -669,7 +670,8 @@ export interface PreparedControlGoalCommand {
 export async function prepareControlGoalCommand(
   db: WorkspaceDb,
   input: ControlGoalCommandInput,
-  mount?: ControlProductContentMount
+  mount?: ControlProductContentMount,
+  newDirectories?: Set<string>
 ): Promise<PreparedControlGoalCommand> {
   if (db.sqlite.inTransaction)
     throw new GoalCommandError('invalid_request', 'Goal content preparation must precede SQL.');
@@ -689,7 +691,8 @@ export async function prepareControlGoalCommand(
   const entries = await prepareControlEntries(
     owner,
     binding,
-    input.pendingItem ? [input.pendingItem.entry] : []
+    input.pendingItem ? [input.pendingItem.entry] : [],
+    newDirectories
   );
   const items: PreparedControlGoalCommand['items'][number][] = [];
   for (const id of ids) {
@@ -708,7 +711,7 @@ export async function prepareControlGoalCommand(
       expectedRevision: row.revision - 1,
       content: JSON.parse(row.content_json),
     });
-    await prepareControlEntries(owner, binding, [entry]);
+    await prepareRetainedControlEntries(db, binding, [entry]);
     if (!binding)
       throw new GoalCommandError('recovery_required', 'Goal Item content mount is unavailable.');
     const fd = await open(
@@ -760,7 +763,9 @@ export async function prepareControlGoalCommand(
       db,
       input.pendingAdmission.pending,
       binding,
-      input.pendingAdmission.entries
+      input.pendingAdmission.entries,
+      undefined,
+      newDirectories
     );
   }
   return { entries, items, ...(pendingAdmission ? { pendingAdmission } : {}) };

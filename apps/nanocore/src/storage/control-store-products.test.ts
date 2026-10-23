@@ -1,5 +1,17 @@
-import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+// openkit-test-platform: posix
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -9,7 +21,7 @@ import {
   type StorageContent,
   type StorageResult,
 } from '@openkit/storage';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type CommandRequestRecord, commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { getCommandRequestRecordFromDb } from './command-request-records.js';
@@ -30,6 +42,98 @@ import { StoredEventV1Schema, StoredThreadSnapshotV1Schema } from './retained-wo
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 
+const cohort = vi.hoisted(() => ({ trace: undefined as SharedArrayBuffer | undefined }));
+// Reuse the worker-client fixture's private prelude technique; every owner effect passes through.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (!cohort.trace) {
+          super(filename, options);
+          return;
+        }
+        const prelude = `
+        const {workerData, parentPort} = require('node:worker_threads');
+        const state = new Int32Array(workerData.trace, 0, 4);
+        const bytes = new Uint8Array(workerData.trace, 16);
+        function record(row) {
+          if (!Atomics.load(state, 0)) return;
+          const value = Buffer.from(JSON.stringify(row) + '\\n');
+          const at = Atomics.load(state, 1);
+          if (at + value.length > bytes.length) { Atomics.store(state, 3, 1); return; }
+          bytes.set(value, at); Atomics.store(state, 1, at + value.length);
+        }
+        const Database = require(workerData.databaseModule);
+        const exec = Database.prototype.exec;
+        Database.prototype.exec = function(sql) {
+          record(['sql-before', sql]);
+          const result = exec.call(this, sql);
+          record(['sql-after', sql]); return result;
+        };
+        const fs = require('node:fs/promises'), open = fs.open, closed = [];
+        fs.open = async function(path, ...args) {
+          const fd = await open(path, ...args);
+          if (!Atomics.load(state, 0)) return fd;
+          const file = require('node:path').basename(String(path));
+          const parent = require('node:path').basename(require('node:path').dirname(String(path)));
+          const selected = (parent === 'bad' && ['0.json', '1.json'].includes(file)) || (parent === 'good' && file === '2.json');
+          const close = fd.close;
+          fd.close = async function() {
+            const result = await close.call(fd);
+            if (selected) await new Promise(resolve => {
+              closed.push(resolve); if (closed.length === 3) closed.splice(0).forEach(done => done());
+            });
+            return result;
+          };
+          const sync = fd.sync;
+          fd.sync = async function() {
+            const tag = (await fd.stat()).isDirectory() ? 'parent' : 'file';
+            if (tag === 'parent' && Atomics.load(state, 2) && require('node:path').basename(String(path)) === 'bad') {
+              record(['parent-failed', String(path)]); throw new Error('cohort directory fault');
+            }
+            const result = await sync.call(fd); record([tag, String(path)]); return result;
+          }; return fd;
+        };
+        const syncFs = require('node:fs'), descriptors = new Map();
+        const openSync = syncFs.openSync, synchronize = syncFs.fsyncSync, closeSync = syncFs.closeSync;
+        syncFs.openSync = function(path, ...args) {
+          const fd = openSync.call(this, path, ...args); descriptors.set(fd, String(path)); return fd;
+        };
+        syncFs.fsyncSync = function(fd) {
+          const path = descriptors.get(fd);
+          if (!Atomics.load(state, 0) || path === undefined) return synchronize.call(this, fd);
+          const tag = syncFs.fstatSync(fd).isDirectory() ? 'parent' : 'file';
+          if (tag === 'parent' && Atomics.load(state, 2) && require('node:path').basename(path) === 'bad') {
+            record(['parent-failed', path]); throw new Error('cohort directory fault');
+          }
+          const result = synchronize.call(this, fd); record([tag, path]); return result;
+        };
+        syncFs.closeSync = function(fd) { try { return closeSync.call(this, fd); } finally { descriptors.delete(fd); } };
+        require('node:module').syncBuiltinESMExports();
+        const post = parentPort.postMessage;
+        parentPort.postMessage = function(message, ...args) {
+          if (message.operation === 'transition') record(['ack', String(message.id), message.status]);
+          return post.call(this, message, ...args);
+        };
+      `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            trace: cohort.trace,
+            databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+          },
+        });
+      }
+    },
+  };
+});
 const timestamp = '2026-10-20T00:00:00.000Z';
 const roots: string[] = [];
 let client: ReturnType<typeof getControlStoreWorkerClient> | undefined;
@@ -37,6 +141,7 @@ const storageInstances: LocalStorage[] = [];
 afterEach(async () => {
   await client?.shutdown();
   client = undefined;
+  cohort.trace = undefined;
   for (const storage of storageInstances.splice(0)) await storage.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -1125,6 +1230,128 @@ describe.each(['server', 'workspace'] as const)('native %s immutable products', 
           commit: 'not-committed',
         });
         expect(committedRows(reader, f.owner)).toEqual(before);
+      }
+    } finally {
+      reader.close();
+    }
+  });
+});
+describe('actual native directory cohort', () => {
+  it.each([
+    false,
+    true,
+  ])('keeps new content durable before SQL and isolates a directory fault=%s', async (fault) => {
+    cohort.trace = new SharedArrayBuffer(65_552);
+    const state = new Int32Array(cohort.trace, 0, 4);
+    const f = await nativeFixture('server');
+    const first = await initialEntries(f); // Arm no observation or fault until valid owner initialization.
+    for (const directory of ['bad', 'good']) mkdirSync(join(f.contentRoot, 'entries', directory));
+    const parent = openSync(join(f.contentRoot, 'entries'), 'r');
+    try {
+      fsyncSync(parent);
+    } finally {
+      closeSync(parent);
+    } // Persist directory entries before arming.
+    const inputs = ['bad', 'bad', 'good'].map((directory, index) => {
+      const turnId = allocateEntityId('tu'),
+        threadId = allocateEntityId('th');
+      const next = { ...f, threadId, turnId, turn: { ...f.turn, id: turnId, threadId } };
+      const path = `entries/${directory}/${index}.json`;
+      const bytes = Buffer.from(JSON.stringify(item(next)));
+      writeFileSync(join(f.contentRoot, path), bytes, { flag: 'wx' }); // Deliberately not synchronized.
+      const content = {
+        ...first.itemContent,
+        byteLength: bytes.length,
+        reference: {
+          ...first.itemContent.reference,
+          contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          locator: { ...first.itemContent.reference.locator, path },
+        },
+      };
+      return nativeInput(
+        next,
+        [
+          { kind: 'thread', expectedRevision: 0, record: { ...f.thread, id: threadId } },
+          { kind: 'turn', expectedRevision: 0, record: next.turn },
+        ],
+        [{ kind: 'item', turnId, sequence: 1, expectedRevision: 0, content }]
+      );
+    });
+    Atomics.store(state, 2, Number(fault));
+    Atomics.store(state, 0, 1);
+    const outcomes = await Promise.allSettled(
+      inputs.map((input) => client!.transition('native', input))
+    );
+    Atomics.store(state, 0, 0);
+    expect(Atomics.load(state, 3), 'Cohort trace overflow is an instrument failure.').toBe(0);
+    const events = new TextDecoder()
+      .decode(new Uint8Array(cohort.trace, 16, Atomics.load(state, 1)))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as [string, string, string?]);
+    const find = (tag: string, value: string) =>
+      events.flatMap((row, i) => (row[0] === tag && row[1] === value ? [i] : []));
+    const begins = find('sql-before', 'BEGIN IMMEDIATE'),
+      commits = find('sql-after', 'COMMIT');
+    expect(
+      begins,
+      'Cohort setup incomplete: requests did not share one actual SQL batch.'
+    ).toHaveLength(1);
+    expect(commits).toHaveLength(1);
+    const begin = begins[0]!,
+      commit = commits[0]!;
+    const savepoints = events.filter(
+      (row) => row[0] === 'sql-before' && row[1] === 'SAVEPOINT control_transition'
+    );
+    // DX Write And Space Budget: actual batch membership, not concurrently posted request count.
+    expect(savepoints.length).toBeLessThanOrEqual(32);
+    for (const index of find('sql-before', 'SAVEPOINT control_transition')) {
+      expect(index).toBeGreaterThan(begin);
+      expect(index).toBeLessThan(commit);
+    }
+    if (!fault)
+      expect(savepoints.length, 'Cohort setup incomplete: no multi-transition batch.').toBe(3);
+    for (const input of inputs) {
+      const path = realpathSync(
+        join(f.contentRoot, input.entries[0]!.content.reference.locator.path)
+      );
+      const synchronizations = find('file', path);
+      expect(synchronizations.length).toBeGreaterThanOrEqual(1);
+      for (const index of synchronizations) expect(index).toBeLessThan(begin);
+    }
+    for (const directory of ['bad', 'good']) {
+      const path = realpathSync(join(f.contentRoot, 'entries', directory));
+      expect(find('parent', path)).toHaveLength(fault && directory === 'bad' ? 0 : 1);
+      for (const index of find('parent', path)) expect(index).toBeLessThan(begin);
+    }
+    if (fault) {
+      const failed = find('parent-failed', realpathSync(join(f.contentRoot, 'entries', 'bad')));
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toBeLessThan(begin);
+    }
+    const successes = events.flatMap((row, i) => (row[0] === 'ack' && row[2] === 'ok' ? [i] : []));
+    expect(successes).toHaveLength(fault ? 1 : 3);
+    for (const index of successes) expect(index).toBeGreaterThan(commit); // Actual COMMIT returned before ACK.
+    const reader = openControlStoreProductReadHandle(f.path, f.owner);
+    try {
+      for (const [index, input] of inputs.entries()) {
+        const accepted = !fault || index === 2;
+        expect(outcomes[index]!.status).toBe(accepted ? 'fulfilled' : 'rejected');
+        if (!accepted)
+          expect(outcomes[index]).toMatchObject({ reason: { commit: 'not-committed' } });
+        expect(reader.get('thread', input.audit.threadId!) !== undefined).toBe(accepted);
+        expect(reader.get('turn', input.receipt.response.id) !== undefined).toBe(accepted);
+        expect(reader.entries(input.receipt.response.id, 'item')).toHaveLength(accepted ? 1 : 0);
+        expect(
+          reader.sqlite
+            .prepare('SELECT 1 FROM idempotency_requests WHERE request_key=?')
+            .get(input.receipt.key) !== undefined
+        ).toBe(accepted);
+        expect(
+          reader.sqlite
+            .prepare('SELECT 1 FROM audit_events WHERE request_id=?')
+            .get(input.receipt.requestId) !== undefined
+        ).toBe(accepted);
       }
     } finally {
       reader.close();

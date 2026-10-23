@@ -33,6 +33,7 @@ import {
   type PreparedControlEntry,
   type PreparedControlTerminal,
   prepareControlEntries,
+  prepareRetainedControlEntries,
   readPreparedControlEntry,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
@@ -79,7 +80,8 @@ export async function prepareControlPendingCommands(
   commands: readonly ControlPendingCommandInput[],
   mount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
-  preparedEntries?: readonly PreparedControlEntry[]
+  preparedEntries?: readonly PreparedControlEntry[],
+  newDirectories?: Set<string>
 ): Promise<PreparedControlPendingCommand> {
   if (db.sqlite.inTransaction)
     throw new PendingRequestCommandError(
@@ -88,7 +90,8 @@ export async function prepareControlPendingCommands(
       400
     );
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
-  const prepared = preparedEntries ?? (await prepareControlEntries(owner, mount, entries));
+  const prepared =
+    preparedEntries ?? (await prepareControlEntries(owner, mount, entries, newDirectories));
   if (
     prepared.length !== entries.length ||
     prepared.some((entry, index) => !isDeepStrictEqual(entry.input, entries[index]))
@@ -177,7 +180,6 @@ async function prepareRetainedPendingItems(
   prepared: readonly PreparedControlEntry[],
   ids: Iterable<string>
 ): Promise<PreparedControlPendingCommand> {
-  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   const supplied = new Set(
     prepared.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
   );
@@ -217,7 +219,7 @@ async function prepareRetainedPendingItems(
       expectedRevision: row.revision - 1,
       content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
     };
-    const [entry] = await prepareControlEntries(owner, mount, [input]);
+    const [entry] = await prepareRetainedControlEntries(db, mount, [input]);
     if (!entry || entry.id !== id)
       throw new PendingRequestCommandError(
         'recovery_required',
