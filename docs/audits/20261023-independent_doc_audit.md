@@ -235,7 +235,53 @@ The state `held` means that #440 holds the group and the auditor did not audit i
 
 ## G1 Whole-System Findings
 
-Phase 1 has not run yet.
+Phase 1 ran two methods over the whole system at the audit base. The top-down derivation mapped each capability of the product vision to its owners. The clean-room probe asked eight fresh inspectors to plan a rebuild of one module each from the documents alone. The [G1 probe record](20261023-independent_doc_audit_g1_probe.md) holds the method, the 296 probe findings, and the group that owns each one. Each finding stays an observation until the group record of its owner verifies it.
+
+### Headline
+
+A rebuild from the documents alone could not open or continue an existing data root. Two themes cause this. First, the SQLite schemas, the migration ledgers, and the field schemas of retained records exist only in code (theme T1). Second, the documents disagree about whether files or the control store hold the authority for Workspace, Thread, Turn, and Item records (theme T2). Both themes sit mainly in the storage group, which #440 holds. [The pre-stable data continuity decision](../decisions/20261014-pre_stable_data_continuity.md) starts the retained-data obligation at `v0.1.0`, so these gaps decide whether the released data can be read by a later rebuild. Question Q1 asks the engineer how to close T1.
+
+### Top-Down Derivation
+
+The auditor derived the capabilities that `docs/product-vision.md` requires and mapped each one to the Core document and specification that should own it. The table lists the result. "Owned" means that an accepted Core document and an accepted specification state the contract. "Partial" means that an owner exists but a part of the vision capability has no contract. "Gap" means that no accepted design owns the capability.
+
+| Vision capability (section) | Core owner | Specification owner | Result |
+| --- | --- | --- | --- |
+| Agent-native operations: one semantic operation per capability, discoverable and invocable by agents (1) | `doctrine.md`, `mediation.md` | Operation Definition, Remote MCP Interface | Owned |
+| `App + Core + Agent`, Core as the hub, heavy execution in agents (4.1–4.3) | `architecture.md` | Internal Agent Runtime, the four worker adapter specifications | Owned |
+| Compute and agent-platform neutrality, with NanoHost as a peer of external platforms (4.4) | `architecture.md` | Compute Neutrality Target, which is a Draft | Partial: no accepted specification defines an external placement or harness adapter. [The neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md) puts design and neutrality validation before the `v0.1.0` freeze and platform integrations after it, but the specification is still a Draft. |
+| Conversation-first UI that shows ownership, progress, handoffs, artifacts, and intervention points (5.1, 5.2) | `work-model.md` (held) | Web Product Surface Projection, Human Attention Intervention Model (held), Unified Conversation Composer (held) | Owned; the work-model group is held |
+| `Tauri` desktop app (1, 5) | none | Web UI Rebuild Stack defers all desktop work beyond `v0.1.0` | Gap by decision: [Discord First And Desktop Deferred](../decisions/20261015-discord_first_and_desktop_deferred.md) |
+| Agent orchestration with dynamic selection of an `agent config pack` (6.1) | `work-model.md`, `agent-supply.md` | Workflow Coordinator, Agent Manifest And AEP Resolution | Partial: the vision term `agent config pack` has no mapping in the glossary or in Core. The Workflow Coordinator is deterministic, and dynamic planning is deferred work. |
+| Multi-channel communication gateway: Discord, Signal, Slack, and others (6.2) | `communication.md` | Pending Requests, section External Attention And Discord Responses | Partial: Discord is the only admitted channel, and its adapter contract sits inside the Pending Requests specification. [The Discord decision](../decisions/20261015-discord_first_and_desktop_deferred.md) keeps Slack, Signal, and broader Email actions as separate later channel scope. |
+| Quick answers and lightweight tasks in Core (6.3) | `work-model.md` (held), `architecture.md` | Chat Mode Assistant (held), Quick Chat Workspace (held) | Owned; held |
+| Internal agents: Knowledge Manager, Task Evaluator, Workflow Coordinator (6.4) | `architecture.md`, `knowledge.md` | Knowledge Manager Internal Agent Runtime, Workflow Coordinator, Evaluation Harness Design (Draft), Evaluation Foundation (held) | Partial: the Task Evaluator is a reserved direction, and the Evaluation Harness Draft authorizes no harness. |
+| Unified proxy: LLM provider proxy with fallback and load balancing, MCP proxy, third-party resource proxy, network proxy (6.5) | `mediation.md`, `sandbox.md` | LLM Gateway Responses API, Pi-ai Unified LLM Backend, Worker MCP Tool Supply, Worker Agent Capability, Worker Sandbox Freedom Policy | Partial: the Gateway specification excludes weighted or randomized balancing, and rate limits and budgets are stated only as a baseline direction in Worker Agent Capability. |
+| Secret Vault with proxy-side injection (6.6) | `vault.md` | Vault Secret Injection, Vault Backend Implementation, Worker Credential Access Declarations | Owned |
+| Knowledge Base and Notebook (6.7, 7) | `knowledge.md` | the Knowledge specifications, Retrieval Kernel, Personal Memory And Knowledge Learning | Owned |
+| Generative Kernel and Generative UI, including scheduled agent tasks over Kernel data (6.8) | `generative-apps.md` | Generative Kernel Data And Operations, Generative UI Interaction, Scheduler Recurring Event Triggers (held) | Owned |
+| Ownership-scoped, inspectable, portable storage without an external database (8) | `storage.md` (held) | the storage specifications (held) | Held |
+| Minimal user management burden: NanoCore agents generate and update AEP and Policy, and select and maintain Worker Agents and sandbox images (9.1) | `architecture.md`, `policy.md` | Delegated Worker Policy Maintenance covers only non-secret sandbox and network configuration | Gap: roadmap outcomes R039 (OpenKit maintains Agent and Policy configuration) and R040 (OpenKit selects or builds a sandbox image) in Phase 4 have no accepted design owner |
+| All-in-one Workspace that connects existing systems (9.2) | `core-concepts.md`, `architecture.md` | Workspace Data Source Catalog, MCP Catalog Management | Partial: no Core document owns the data-source concept, although `architecture.md` says that Storage owns data-source boundaries |
+| Improve through work and optimize agents over time (9.3) | `knowledge.md`, `agent-supply.md` | Self-Improvement Evaluation Loop, Skill Catalog Versioning And Pinning, Evaluation Foundation (held) | Partial: roadmap outcome R080 in Phase 7 (exact configuration recorded for comparable work outcomes) has no single owner |
+| Security by design at the Core and proxy layer (9.3) | `policy.md`, `vault.md`, `mediation.md`, `sandbox.md` | Policy and Vault specifications | Owned |
+
+### Cross-Cutting Themes
+
+Each theme collects probe findings that share one cause. The owning group fixes each finding, and the group record names the theme.
+
+| Theme | Statement | Example findings | Owner |
+| --- | --- | --- | --- |
+| T1 | The SQLite schemas, the migration ledgers, and the field schemas of retained records exist only in code. The storage layout specification does not own the schema text. | M1-G02, M1-G15, M2-G02, M2-G03, M3-G01, M4-G02, M5-G03, M8-G08 | storage (held); Question Q1 |
+| T2 | Record authority for Workspace, Thread, Turn, and Item records is files in some documents and the control store in others. The G3 inspection of the Thread visibility specification found Threads in the `control_threads` table. | M1-G01, M2-G01, M2-G25, M5-G01, M8-G27 | storage (held) |
+| T3 | The operation inventory and the per-operation input and output schemas exist only in code or in the generated OpenAPI document. | M1-G11, M3-G16, M4-G15, M8-G03 | mediation, communication |
+| T4 | Closed vocabularies are not enumerated, or their values are scattered across specifications. Examples are statuses, trigger sources, capability families, approval kinds, and error codes. | M1-G03, M1-G04, M1-G21, M3-G28, M4-G01, M4-G04, M4-G17, M8-G16 | protocol, and each vocabulary owner |
+| T5 | A reader cannot tell whether a number is a format contract or a current default. [Documentation Writing](../writing.md) requires the distinction. | M2-G28, M3-G38, M5-G19, M6-G34, M7-G28, M8-G19 | each owning group |
+| T6 | Status and target statements blur in normative text. A reader cannot tell what the release must build. | M3-G14, M3-G39, M4-G33, M4-G37, M5-G02, M8-G27 | each owning group |
+| T7 | Authored configuration schemas are incomplete. Key names, defaults, and precedence are missing. | M3-G10, M4-G10, M4-G11, M6-G05, M6-G23, M7-G10, M8-G28, M8-G29 | identity, mediation |
+| T8 | External formats carry retained or wire data without a pinned description in the repository. | M3-G36, M4-G35, M5-G24, M8-G22 | vault, mediation, sandbox, generative-apps |
+| T9 | Paths and layouts contradict each other across specifications. | M2-G06, M3-G12, M5-G08, M5-G09, M5-G10 | sandbox, storage (held) |
+| T10 | Normative text cites tracker labels, such as S12, R035, D04, and #133, without saying what they mean. | M7-G30 | each owning group |
 
 ## Statistics Per Goal
 
@@ -251,4 +297,23 @@ None yet.
 
 ## Questions For The Engineer
 
-None yet.
+### Q1: How should retained SQLite formats be documented?
+
+- Context: theme T1. The retained-data obligation starts at `v0.1.0`. A rebuild must read the released data roots.
+- Evidence: the storage layout specification says "Do not define table DDL in this spec." The retained format register names the table groups of each database but not their columns or constraints. The schema text exists only in the packaged migrations under `apps/nanocore/drizzle` (M2-G02, M3-G01, M5-G03, M8-G08).
+- Options:
+  - (a) Write the schemas by hand into the storage specifications.
+  - (b) Generate a schema projection from the packaged migrations into `docs/`, with a drift check, under the owner of generated projections.
+  - (c) Accept the code as the only schema record, and say so in the register.
+- Recommendation: option (b). A generated projection keeps one fact in one place, because the migrations stay the source and the document follows them. Option (a) creates a second copy that drifts. Option (c) fails the rebuild test that [Documentation Writing](../writing.md) states.
+- Meanwhile: the auditor changed no storage document. The storage group is held, and a generated projection needs an accepted owner.
+
+### Q2: Should the Compute Neutrality Target be accepted before the `v0.1.0` freeze?
+
+- Context: the top-down derivation, vision section 4.4.
+- Evidence: [the neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md) says that design and neutrality validation precede the `v0.1.0` freeze. The specification `docs/specs/20261020-compute_neutrality_target.md` has `status: Draft`.
+- Options:
+  - (a) Accept the specification before the freeze.
+  - (b) Record that the freeze proceeds with the Draft, and amend the decision.
+- Recommendation: option (a), or an explicit amendment. A freeze that silently drops a decided precondition leaves the decision and the release in conflict.
+- Meanwhile: the auditor recorded the gap. The architecture group record checks the Draft for its own G2 and G5 findings.
