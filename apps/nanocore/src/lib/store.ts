@@ -101,6 +101,7 @@ import { OperationError } from '../operation-error.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import {
   decodeEndedExecutionStep,
+  decodeExecutionJournalIntent,
   decodeExecutionJournalInvocation,
   encodeExecutionJournalValue,
 } from '../runtime/execution-journal.js';
@@ -3281,6 +3282,49 @@ export class FsStore {
     return page;
   }
 
+  /** Orders head capture through ACK; file/effect owners stay outside this boundary. */
+  private publishTurn<I, T>(
+    owner: ControlProductOwner,
+    turns: readonly string[],
+    input: I,
+    prepare: (owned: I) => Promise<T>
+  ): Promise<T> {
+    if (!this.dataRoot) return prepare(input);
+    const scope = this.nativeScope(owner);
+    return getControlStoreWorkerClient().runTurnPublication(
+      `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
+      turns,
+      input,
+      prepare
+    );
+  }
+
+  /** Releases the native boundary before hooks, while retaining their shutdown lifetime. */
+  private publishTurnMutation<I>(
+    owner: ControlProductOwner,
+    turnId: string,
+    input: I,
+    prepare: (owned: I) => Promise<Turn | { turn: Turn; notify: boolean }>
+  ): Promise<Turn> {
+    const publication = this.publishTurn(owner, [turnId], input, prepare);
+    // If shutdown refuses the separate hook lifetime, its caller still owns the refusal below.
+    void publication.catch(() => undefined);
+    const finish = async () => {
+      const result = await publication;
+      const turn = 'turn' in result ? result.turn : result;
+      if ('turn' in result && result.notify && this.terminalHookDepth < 8) {
+        this.terminalHookDepth++;
+        try {
+          await this.turnAdmissionHooks?.onTerminal?.(turn);
+        } finally {
+          this.terminalHookDepth--;
+        }
+      }
+      return turn;
+    };
+    return this.dataRoot ? getControlStoreWorkerClient().runOperation(finish) : finish();
+  }
+
   /** Appends an immutable revision and conditions it on the same native Turn and Item revision. */
   private async persistNativeItem(
     item: Item,
@@ -3468,6 +3512,18 @@ export class FsStore {
 
   /** Executes one closed Pending transition with its complete prepared Item and original receipt tuple. */
   public async applyPendingRequestCommand(
+    ...args: Parameters<FsStore['applyPendingRequestCommandPublication']>
+  ): Promise<ControlPendingCommandResult> {
+    const turns = [...new Set((args[2]?.items ?? []).map((item) => item.turnId))];
+    if (!turns.length) return this.applyPendingRequestCommandPublication(...args);
+    if (args[2] === undefined) args[2] = {};
+    return this.publishTurn({ kind: 'workspace', workspaceId: args[0] }, turns, args, (owned) =>
+      this.applyPendingRequestCommandPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async applyPendingRequestCommandPublication(
     workspaceId: string,
     input: ControlPendingCommandInput,
     publication: { items?: readonly Item[]; receipt?: ControlPendingTransition['receipt'] } = {}
@@ -3517,6 +3573,18 @@ export class FsStore {
 
   /** Publishes an actual Core-local Pending Turn, its row associations, Items and terminal event in one native tuple. */
   public async publishPendingRequestServiceTurn(
+    ...args: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>
+  ): Promise<Turn> {
+    return this.publishTurn(
+      { kind: 'workspace', workspaceId: args[0] },
+      [args[2].turnId],
+      args,
+      (owned) => this.publishPendingRequestServiceTurnPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async publishPendingRequestServiceTurnPublication(
     workspaceId: string,
     threadId: string,
     input: {
@@ -4084,7 +4152,19 @@ export class FsStore {
   }
 
   /** Updates the existing closed lifecycle without changing immutable Server owner or admission facts. */
-  public async updateServerTurn(turnId: string, input: ServerTurnUpdate): Promise<Turn> {
+  public async updateServerTurn(
+    ...args: Parameters<FsStore['updateServerTurnPublication']>
+  ): Promise<Turn> {
+    return this.publishTurnMutation({ kind: 'server' }, args[0], args, (owned) =>
+      this.updateServerTurnPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async updateServerTurnPublication(
+    turnId: string,
+    input: ServerTurnUpdate
+  ): Promise<Turn | { turn: Turn; notify: boolean }> {
     const native = this.dataRoot
       ? readNativeTurnHistory(this.nativeScope({ kind: 'server' }), turnId)
       : undefined;
@@ -4109,7 +4189,7 @@ export class FsStore {
       throw terminalTurnWriteRejected(turn.id);
     }
     if (this.dataRoot) {
-      if (isSealedTurnTerminal(updated.status)) return this.completeTurn(turnId, input);
+      if (isSealedTurnTerminal(updated.status)) return this.completeTurnPublication(turnId, input);
       const scope = this.nativeScope({ kind: 'server' });
       await this.writeNativeProducts(scope, [
         {
@@ -4131,6 +4211,15 @@ export class FsStore {
 
   /** Appends a full Item revision to its Server Turn before publishing its in-memory projection. */
   public async createServerItem(
+    ...args: Parameters<FsStore['createServerItemPublication']>
+  ): Promise<Item> {
+    return this.publishTurn({ kind: 'server' }, [args[0].turnId], args, (owned) =>
+      this.createServerItemPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async createServerItemPublication(
     input: Item,
     admission?: AlreadyDecidedPublicationAdmission
   ): Promise<Item> {
@@ -4184,7 +4273,17 @@ export class FsStore {
   }
 
   /** Updates a Server Item through the same immutable identity and append boundary as creation. */
-  public async updateServerItem(itemId: string, input: Partial<Item>): Promise<Item> {
+  public async updateServerItem(
+    ...args: Parameters<FsStore['updateServerItemPublication']>
+  ): Promise<Item> {
+    const item = this.getServerItemById(args[0]);
+    return this.publishTurn({ kind: 'server' }, [item.turnId], args, (owned) =>
+      this.updateServerItemPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async updateServerItemPublication(itemId: string, input: Partial<Item>): Promise<Item> {
     const item = this.getServerItemById(itemId);
     const native = this.dataRoot
       ? readNativeTurnHistory(this.nativeScope({ kind: 'server' }), item.turnId)
@@ -4194,7 +4293,7 @@ export class FsStore {
     assertServerItemRevision(current, updated);
     return this.dataRoot
       ? this.persistNativeItem(updated, native!)
-      : this.createServerItem(updated);
+      : this.createServerItemPublication(updated);
   }
 
   /** Lists current Server Item projections in chronological order. */
@@ -4204,6 +4303,15 @@ export class FsStore {
 
   /** Publishes an existing transcript event family under a Server Turn without a Workspace selector. */
   public async persistServerTurnEvent(
+    ...args: Parameters<FsStore['persistServerTurnEventPublication']>
+  ): Promise<ServerTurnEventEnvelope> {
+    return this.publishTurn({ kind: 'server' }, [args[0]], args, (owned) =>
+      this.persistServerTurnEventPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async persistServerTurnEventPublication(
     turnId: string,
     event: ServerTurnEventInput,
     admission?: AlreadyDecidedPublicationAdmission
@@ -4812,13 +4920,32 @@ export class FsStore {
   /**
    * Updates a turn and revalidates the protocol record.
    *
-   * @param turnId Turn identifier to update.
-   * @param input Partial turn fields to merge onto the stored turn.
-   * @param admission Declared terminal category or original live command tuple.
+   * @param args Turn identity, metadata patch and optional journal, receipt or terminal admission.
    * @returns Updated turn after protocol validation.
    * @throws Error when the turn does not exist, the merged turn violates the protocol schema, or a post-terminal write is not admitted.
    */
-  public async updateTurn(
+  public async updateTurn(...args: Parameters<FsStore['updateTurnPublication']>): Promise<Turn> {
+    const owner = this.getTurnById(args[0]).owner;
+    // Journal intent timestamps and typed doubles use their existing lossless codec.
+    const { journalIntents, ...admission } = args[2] ?? {};
+    const journal = journalIntents?.map(encodeExecutionJournalValue);
+    const input = [args[0], args[1], args[2] ? admission : undefined, journal] as const;
+    return this.publishTurnMutation(owner, args[0], input, (owned) =>
+      this.updateTurnPublication(
+        owned[0],
+        owned[1],
+        owned[2]
+          ? {
+              ...owned[2],
+              ...(owned[3] ? { journalIntents: owned[3].map(decodeExecutionJournalIntent) } : {}),
+            }
+          : undefined
+      )
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async updateTurnPublication(
     turnId: string,
     input: Partial<
       Pick<
@@ -4840,7 +4967,7 @@ export class FsStore {
       /** Original command receipt and local Audit acknowledged with this live Turn snapshot. */
       commandAdmission?: Pick<ControlAdmission, 'receipt' | 'audit'>;
     }
-  ): Promise<Turn> {
+  ): Promise<Turn | { turn: Turn; notify: boolean }> {
     this.assertTurnPublicationAcknowledged(turnId);
     const lineage = this.dataRoot ? this.getTurnLineage(turnId) : null;
     const native = lineage
@@ -4904,7 +5031,7 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope(turn.owner);
       const previous = { revision: native!.revision, record: native!.metadata };
-      if (isSealedTurnTerminal(updated.status)) return this.completeTurn(turnId, input);
+      if (isSealedTurnTerminal(updated.status)) return this.completeTurnPublication(turnId, input);
       await this.writeNativeProducts(
         scope,
         [
@@ -4949,17 +5076,29 @@ export class FsStore {
   /**
    * Commits the complete terminal snapshot through its immutable Workspace or Server owner.
    *
-   * @param turnId Existing Turn identity; no missing execution or product is manufactured.
-   * @param patch Decided terminal fields with their original completion timestamp.
-   * @param publication Actual Items, evidence, receipt and execution facts joined to this outcome.
+   * @param args Turn identity, terminal metadata patch and optional complete terminal tuple.
    * @returns The authoritative Turn after FULL COMMIT; notifications remain synchronous caller work.
    * @throws When lineage, terminal outcome or conditional native publication cannot be proved.
    */
   public async completeTurn(
+    ...args: Parameters<FsStore['completeTurnPublication']>
+  ): Promise<Turn> {
+    const owner = this.dataRoot
+      ? this.findNativeOwner('turn', args[0])?.owner
+      : (this.serverTurns.get(args[0])?.owner ?? this.turns.get(args[0])?.owner);
+    if (!owner) throw new StoreRecordNotFoundError(`Turn not found: ${args[0]}`);
+    if (args[2] === undefined) args[2] = {};
+    return this.publishTurnMutation(owner, args[0], args, (owned) =>
+      this.completeTurnPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async completeTurnPublication(
     turnId: string,
     patch: Parameters<FsStore['updateTurn']>[1],
     publication: TerminalTurnPublication = {}
-  ): Promise<Turn> {
+  ): Promise<{ turn: Turn; notify: boolean }> {
     const owner = this.dataRoot
       ? this.findNativeOwner('turn', turnId)?.owner
       : this.serverTurns.has(turnId)
@@ -5242,15 +5381,10 @@ export class FsStore {
       ensureTurnFeedback(this, turn, turn.agentId ?? null);
     for (const terminalEvent of [...precedingEvents, event])
       this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
-    if (scope && owner.kind === 'workspace' && !prior && this.terminalHookDepth < 8) {
-      this.terminalHookDepth++;
-      try {
-        await this.turnAdmissionHooks?.onTerminal?.(this.getTurnById(turnId));
-      } finally {
-        this.terminalHookDepth--;
-      }
-    }
-    return owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId);
+    return {
+      turn: owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId),
+      notify: Boolean(scope && owner.kind === 'workspace' && !prior),
+    };
   }
 
   /**
@@ -5265,12 +5399,21 @@ export class FsStore {
   /**
    * Creates or returns one Item, admitting post-terminal completion or display-projection create when declared.
    *
-   * @param input Item to persist.
-   * @param admission Declared post-terminal category when the owning Turn is already sealed.
+   * @param args Full Item identity and payload, plus optional admitted post-terminal category.
    * @returns Stored Item.
    * @throws Error when lineage is invalid or a post-terminal write is not admitted.
    */
-  public async createItem(input: Item, admission?: TerminalTurnWriteAdmission): Promise<Item> {
+  public async createItem(...args: Parameters<FsStore['createItemPublication']>): Promise<Item> {
+    return this.publishTurn(args[0].owner, [args[0].turnId], args, (owned) =>
+      this.createItemPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async createItemPublication(
+    input: Item,
+    admission?: TerminalTurnWriteAdmission
+  ): Promise<Item> {
     const item = ItemSchema.parse(input);
     if (item.owner.kind !== 'workspace')
       throw new Error('Workspace Item requires Workspace ownership.');
@@ -5357,13 +5500,20 @@ export class FsStore {
   /**
    * Updates one Item, admitting a named display-projection refresh after the owning Turn is sealed.
    *
-   * @param itemId Item identifier to update.
-   * @param input Partial Item fields to merge.
-   * @param admission Declared post-terminal category when the owning Turn is already sealed.
+   * @param args Item identity, revision patch and optional admitted post-terminal category.
    * @returns Updated Item.
    * @throws Error when the Item does not exist, identity would change, or a post-terminal write is not admitted.
    */
-  public async updateItem(
+  public async updateItem(...args: Parameters<FsStore['updateItemPublication']>): Promise<Item> {
+    const item = this.workspaceItemById(args[0]);
+    if (!item) throw new StoreRecordNotFoundError(`Item not found: ${args[0]}`);
+    return this.publishTurn(item.owner, [item.turnId], args, (owned) =>
+      this.updateItemPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async updateItemPublication(
     itemId: string,
     input: Partial<Item>,
     admission?: TerminalTurnWriteAdmission
@@ -5879,14 +6029,33 @@ export class FsStore {
     artifact: Artifact,
     version: ArtifactVersionRecord,
     reference: Extract<Item, { type: 'artifact-reference' }>,
-    submission: ArtifactSubmissionPublication
+    submission: ArtifactSubmissionPublication,
+    ordered = false
   ): Promise<Artifact> {
     // The common file owner has published durable bytes. Keep the unacknowledged head out of caches.
     this.pendingArtifactSubmissions.add(artifact.id);
     this.refreshWorkspaceCounts(artifact.workspaceId);
+    let entered = false;
     let submitted = false;
     let acknowledged = false;
     try {
+      // Private re-entry keeps the synchronous file-admission owner outside the retained JSON.
+      if (!ordered)
+        return await this.publishTurn(
+          { kind: 'workspace', workspaceId: artifact.workspaceId },
+          [reference.turnId],
+          { artifact, version, reference, review: submission.review, receipt: submission.receipt },
+          (owned) => {
+            entered = true;
+            return this.publishArtifactSubmission(
+              owned.artifact,
+              owned.version,
+              owned.reference,
+              { ...owned, fileAdmission: submission.fileAdmission },
+              true
+            );
+          }
+        );
       const scope = this.nativeScope({ kind: 'workspace', workspaceId: artifact.workspaceId });
       const turn = this.getTurnById(reference.turnId);
       const stagingRoot = join(dirname(dirname(scope.path)), 'runtime', 'staging');
@@ -5978,6 +6147,7 @@ export class FsStore {
       }
       return artifact;
     } catch (error) {
+      if (entered) throw error; // The ordered body already applied the original compensation rules.
       const rolledBack =
         !submitted ||
         (error instanceof ControlStoreWorkerError && error.commit === 'not-committed') ||
@@ -7031,13 +7201,20 @@ export class FsStore {
   /**
    * Emits one Turn event, admitting completion of an already-decided terminal event after the Turn is sealed.
    *
-   * @param turnId Turn whose stream receives the event.
-   * @param event Event payload without protocol envelope fields.
-   * @param admission Declared post-terminal category when the Turn is already sealed.
+   * @param args Turn identity, event payload and optional admitted post-terminal category.
    * @returns Stored envelope.
    * @throws Error when the stream is missing, lineage is invalid, or a post-terminal write is not admitted.
    */
   public async persistTurnEvent(
+    ...args: Parameters<FsStore['persistTurnEventPublication']>
+  ): Promise<SseEventEnvelope> {
+    return this.publishTurn(this.getTurnById(args[0]).owner, [args[0]], args, (owned) =>
+      this.persistTurnEventPublication(...owned)
+    );
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async persistTurnEventPublication(
     turnId: string,
     event: TurnEventInput,
     admission?: TerminalTurnWriteAdmission

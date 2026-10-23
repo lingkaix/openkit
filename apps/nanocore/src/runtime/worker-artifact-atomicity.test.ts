@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import type { Transferable, WorkerOptions } from 'node:worker_threads';
+import type { WorkerOptions } from 'node:worker_threads';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
@@ -51,7 +51,7 @@ vi.mock('node:worker_threads', async (load) => {
             if(registered.has(db)) return;
             registered.add(db);
             db.function('fixture_submission_writer',kind=>{
-              Atomics.add(state,kind===3?12:kind===1?6:7,1);
+              Atomics.add(state,kind===3?10:kind===1?6:7,1);
               const prior=Atomics.compareExchange(state,8,0,threadId);
               if(prior!==0 && prior!==threadId) Atomics.store(state,9,1);
               return 0;
@@ -83,28 +83,13 @@ vi.mock('node:worker_threads', async (load) => {
           }
         );
       }
-
-      override postMessage(value: unknown, transferList?: readonly Transferable[]): void {
-        const state = native.buffer && new Int32Array(native.buffer);
-        if (
-          state &&
-          Atomics.load(state, 11) &&
-          typeof value === 'object' &&
-          value !== null &&
-          'database' in value &&
-          'operation' in value &&
-          value.operation !== 'open'
-        )
-          Atomics.add(state, 10, 1);
-        super.postMessage(value, transferList);
-      }
     },
   };
 });
 
 /** Uses acknowledged public Store setup and the real Work owner; only external capture is doubled. */
 async function fixture() {
-  native.buffer = new SharedArrayBuffer(13 * Int32Array.BYTES_PER_ELEMENT);
+  native.buffer = new SharedArrayBuffer(11 * Int32Array.BYTES_PER_ELEMENT);
   const state = new Int32Array(native.buffer);
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-artifact-tuple-'));
   const coreDb = openCoreDb(dataRoot);
@@ -150,7 +135,7 @@ async function fixture() {
   });
   let workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   workspaceDb.sqlite.function('fixture_submission_writer', (kind) => {
-    Atomics.add(state, kind === 3 ? 12 : kind === 1 ? 4 : 5, 1);
+    Atomics.add(state, kind === 3 ? 10 : kind === 1 ? 4 : 5, 1);
     return 0;
   });
   workspaceDb.sqlite.exec(`
@@ -291,7 +276,7 @@ it.each([
     BEGIN SELECT fixture_submission_writer(3); SELECT RAISE(ABORT,'submission rejected'); END`);
   const [result] = await Promise.allSettled([f.submit(randomUUID())]);
   expect(result!.status).toBe('rejected');
-  expect(Atomics.load(f.state, 12)).toBe(1);
+  expect(Atomics.load(f.state, 10)).toBe(1);
   await f.drain();
   const live = f.snapshot();
   const reopened = await f
@@ -310,15 +295,30 @@ it('keeps competing submissions on one native writer while its real commit ackno
   const f = await fixture();
   const firstId = randomUUID();
   const secondId = randomUUID();
-  Atomics.store(f.state, 11, 1);
   Atomics.store(f.state, 0, 1);
-  const first = Promise.allSettled([f.submit(firstId)]);
+  let firstSettled = false;
+  let secondSettled = false;
+  const first = Promise.allSettled([f.submit(firstId)]).then((result) => {
+    firstSettled = true;
+    return result;
+  });
   let second: typeof first | undefined;
   try {
     await vi.waitFor(() => expect(Atomics.load(f.state, 1)).toBe(1));
-    second = Promise.allSettled([f.submit(secondId)]);
-    await vi.waitFor(() => expect(Atomics.load(f.state, 10)).toBeGreaterThanOrEqual(2));
+    second = Promise.allSettled([f.submit(secondId)]).then((result) => {
+      secondSettled = true;
+      return result;
+    });
+    // Write And Space Budget keeps one Turn's commits in order through FULL ACK.
+    // Artifact capture stays independent of that ordered SQL publication boundary.
+    await vi.waitFor(() => expect(f.captureArtifact).toHaveBeenCalledTimes(2));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect({ firstSettled, secondSettled }).toEqual({ firstSettled: false, secondSettled: false });
     expect(Atomics.load(f.state, 3)).toBe(0);
+    expect({
+      nativeReviews: Atomics.load(f.state, 6),
+      nativeReceipts: Atomics.load(f.state, 7),
+    }).toEqual({ nativeReviews: 1, nativeReceipts: 1 });
     expect({
       mainReviews: Atomics.load(f.state, 4),
       mainReceipts: Atomics.load(f.state, 5),

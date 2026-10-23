@@ -121,6 +121,7 @@ interface PendingCohort {
 
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
+  readonly counted: boolean;
   readonly host: WriterHost;
   readonly command: ControlWorkerCommand;
   readonly request: ControlWorkerRequest;
@@ -168,9 +169,11 @@ class ControlStoreWorkerClient {
     () => ({ worker: undefined, failed: false, materialBytes: 0, inputBytes: 0, pending: 0 })
   );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
+  private readonly turnTails = new Map<string, Promise<unknown>>();
   private readonly operationContext = new AsyncLocalStorage<{
     active: boolean;
     publication: ControlPublicationIdentity | undefined;
+    reservation: string | undefined;
   }>();
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
@@ -233,10 +236,11 @@ class ControlStoreWorkerClient {
    */
   async runOperation<T>(
     operation: () => Promise<T>,
-    publication?: ControlPublicationIdentity
+    publication?: ControlPublicationIdentity,
+    reservation?: string
   ): Promise<T> {
     this.assertAccepting();
-    const context = { active: true, publication };
+    const context = { active: true, publication, reservation };
     // Register before invoking the producer: its synchronous Core commit may expose this identity.
     const promise = this.operationContext.run(context, () => Promise.resolve().then(operation));
     this.operations.set(promise, publication);
@@ -246,6 +250,55 @@ class ControlStoreWorkerClient {
       context.active = false;
       this.operations.delete(promise);
     }
+  }
+
+  /** Owns bounded JSON input before same-Turn head capture, through its original native ACK. */
+  async runTurnPublication<I, T>(
+    database: string,
+    turns: readonly string[],
+    input: I,
+    prepare: (owned: I) => Promise<T>
+  ): Promise<T> {
+    this.assertAccepting();
+    const json = JSON.stringify(input);
+    const bytes = Buffer.byteLength(json) + 64;
+    if (
+      (this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions ||
+      bytes > CONTROL_WORKER_LIMITS.pendingBytes - this.inputBytes
+    )
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    const physical = realpathSync(database.slice(database.indexOf(':') + 1));
+    const keys = turns.map((turn) => JSON.stringify([physical, turn]));
+    const predecessors = keys.map((key) => this.turnTails.get(key));
+    this.inputBytes += bytes;
+    this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
+    const result = this.runOperation(
+      async () => {
+        try {
+          await Promise.all(predecessors);
+        } catch {
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        }
+        return prepare(JSON.parse(json) as I);
+      },
+      undefined,
+      database
+    );
+    for (const key of keys) this.turnTails.set(key, result);
+    try {
+      return await result;
+    } finally {
+      this.inputBytes -= bytes;
+      this.releaseOutstanding(database);
+      for (const key of keys) if (this.turnTails.get(key) === result) this.turnTails.delete(key);
+    }
+  }
+
+  /** Releases one admitted producer or independently counted native request. */
+  private releaseOutstanding(database: string): void {
+    const remaining = (this.outstanding.get(database) ?? 1) - 1;
+    if (remaining === 0) this.outstanding.delete(database);
+    else this.outstanding.set(database, remaining);
   }
 
   /** Observes only an exact live original admission; absence never authorizes publication or replay. */
@@ -737,6 +790,8 @@ class ControlStoreWorkerClient {
       }
     }
     const database = 'database' in command ? command.database : undefined;
+    const context = this.operationContext.getStore();
+    const borrowed = database !== undefined && context?.active && context.reservation === database;
     const host = target ?? (database === undefined ? undefined : this.openings.get(database)?.host);
     if (!host || host.failed)
       return Promise.reject(
@@ -744,7 +799,8 @@ class ControlStoreWorkerClient {
       );
     if (
       database !== undefined &&
-      (this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions
+      (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
+        CONTROL_WORKER_LIMITS.pendingTransitions
     ) {
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     }
@@ -828,6 +884,7 @@ class ControlStoreWorkerClient {
       host.materialBytes += materialBytes;
       host.pending += 1;
       const entry: Pending = {
+        counted: !borrowed,
         host,
         command: admittedRequest,
         request: admittedRequest,
@@ -838,7 +895,7 @@ class ControlStoreWorkerClient {
         reject,
       };
       this.pending.set(id, entry);
-      if (database !== undefined)
+      if (database !== undefined && !borrowed)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
       worker.ref();
       if (!this.backupPaused && !deferPost) this.post(id, entry);
@@ -900,12 +957,8 @@ class ControlStoreWorkerClient {
       entry.host.materialBytes -= entry.materialBytes;
     }
     entry.host.pending -= 1;
-    if ('database' in entry.command) {
-      const database = entry.command.database;
-      const remaining = (this.outstanding.get(database) ?? 1) - 1;
-      if (remaining === 0) this.outstanding.delete(database);
-      else this.outstanding.set(database, remaining);
-    }
+    if (entry.counted && 'database' in entry.command)
+      this.releaseOutstanding(entry.command.database);
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
     if (entry.host.pending === 0) entry.host.worker?.unref();

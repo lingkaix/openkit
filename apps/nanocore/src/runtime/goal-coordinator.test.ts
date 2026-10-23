@@ -144,14 +144,15 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
   });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(db);
-  const completeTurn = store.completeTurn.bind(store);
+  const updateTurn = store.updateTurn.bind(store);
   let acknowledgeCoordinator!: (turnId: string) => void;
   const coordinatorAcknowledged = new Promise<string>((resolve) => {
     acknowledgeCoordinator = resolve;
   });
-  const terminalObserver = vi.spyOn(store, 'completeTurn').mockImplementation(async (...args) => {
-    const completed = await completeTurn(...args);
-    if (store.getTurnExecutor(completed.id) === 'coordinator') acknowledgeCoordinator(completed.id);
+  const terminalObserver = vi.spyOn(store, 'updateTurn').mockImplementation(async (...args) => {
+    const completed = await updateTurn(...args);
+    if (completed.status === 'completed' && store.getTurnExecutor(completed.id) === 'coordinator')
+      acknowledgeCoordinator(completed.id);
     return completed;
   });
   try {

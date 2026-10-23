@@ -1784,7 +1784,10 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     productOwner: { kind: 'workspace', workspaceId: input.workspaceId },
     contentMount,
   });
-  const invoke = async (receipt: IdempotentCommandReceipt | null): Promise<GoalView> => {
+  const invokePrepared = async (
+    receipt: IdempotentCommandReceipt | null,
+    input: GoalArguments
+  ): Promise<GoalView> => {
     const request = input.pendingRequestId
       ? readPendingRequest(db.sqlite, input.pendingRequestId)
       : null;
@@ -1973,6 +1976,15 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       await store.updateTurn(proposalTurnId, { status: 'completed', completedAt: now() });
     return outcome.view;
   };
+  // These commands alone append to an existing Coordinator Turn; authority is rechecked inside.
+  const invoke = (receipt: IdempotentCommandReceipt | null): Promise<GoalView> =>
+    context.coordinatorTurnId &&
+    (id === 'goal.plan.propose' ||
+      (id === 'goal.completion.accept' && input.candidate && !input.pendingRequestId))
+      ? client.runTurnPublication(database, [context.coordinatorTurnId], input, (owned) =>
+          invokePrepared(receipt, owned)
+        )
+      : invokePrepared(receipt, input);
   const result = context.assistantHandoff
     ? await invoke(null)
     : await runIdempotentCommand<GoalView>({
