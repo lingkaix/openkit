@@ -69,7 +69,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 9;
+export const CONTROL_WORKER_VERSION = 10;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -78,7 +78,9 @@ export const CONTROL_WORKER_LIMITS = {
   batchTransitions: 32,
   batchWaitMs: 5,
   pendingTransitions: 1024,
-  /** Process-wide binary input plus echoed range-text capacity, admitted before postMessage. */
+  /** Process-wide envelopes and ordinary cloned backing, separate from Material binary/echo. */
+  pendingBytes: 64 * 1024 * 1024,
+  /** Binary input plus echoed range-text capacity also remains independently bounded. */
   materialPendingBytes: 64 * 1024 * 1024,
 } as const;
 
@@ -165,6 +167,76 @@ export type ControlWorkerRequest = ControlWorkerCommand & {
   readonly version: typeof CONTROL_WORKER_VERSION;
   readonly id: number;
 };
+
+/** One eligible same-Turn prefix, transported atomically into existing per-request slots. */
+export interface ControlProductCohort {
+  readonly version: typeof CONTROL_WORKER_VERSION;
+  readonly operation: 'products';
+  readonly requests: readonly Extract<ControlWorkerRequest, { operation: 'products' }>[];
+  /** First-idle progress and causal barriers bypass intentional writer coalescing. */
+  readonly immediate: boolean;
+}
+
+/** Counts envelopes and complete cloned backing before copying binary payloads. */
+export function controlWorkerInputBytes(
+  command: ControlWorkerCommand | ControlWorkerRequest
+): number {
+  let binaryBytes = 0;
+  const json = JSON.stringify(
+    command,
+    function (this: Record<string, unknown>, key, value: unknown) {
+      // Read the original holder: Buffer.toJSON otherwise hides its cloned backing.
+      const original = this[key];
+      if (typeof original === 'bigint') return original.toString();
+      if (original instanceof ArrayBuffer || ArrayBuffer.isView(original)) {
+        // Material binary/echo has an independent reservation. Aliased backing is conservatively counted.
+        if (command.operation !== 'material')
+          binaryBytes +=
+            original instanceof ArrayBuffer ? original.byteLength : original.buffer.byteLength;
+        return null;
+      }
+      return value;
+    }
+  );
+  return Buffer.byteLength(json) + binaryBytes;
+}
+
+/** Validates a finite same-Turn Item/event cohort before any member is admitted. */
+export function isControlProductCohort(value: unknown): value is ControlProductCohort {
+  if (
+    !isRecord(value) ||
+    !exactFields(value, ['version', 'operation', 'requests', 'immediate']) ||
+    value.version !== CONTROL_WORKER_VERSION ||
+    value.operation !== 'products' ||
+    typeof value.immediate !== 'boolean' ||
+    !Array.isArray(value.requests) ||
+    value.requests.length === 0 ||
+    value.requests.length > CONTROL_WORKER_LIMITS.batchTransitions
+  )
+    return false;
+  let first: Extract<ControlWorkerRequest, { operation: 'products' }> | undefined;
+  for (const [index, request] of value.requests.entries()) {
+    if (!isControlWorkerRequest(request) || request.operation !== 'products') return false;
+    const { products, entries, pending, journalIntents } = request.transition;
+    if (
+      products.length !== 1 ||
+      products[0]?.kind !== 'turn' ||
+      entries.length !== 1 ||
+      products[0].record.id !== entries[0]?.turnId ||
+      pending?.length ||
+      journalIntents?.length
+    )
+      return false;
+    first ??= request;
+    if (
+      request.database !== first.database ||
+      entries[0]?.turnId !== first.transition.entries[0]?.turnId ||
+      request.id !== first.id + index
+    )
+      return false;
+  }
+  return true;
+}
 
 /** Closed failure categories; SQL text, bindings and native error messages are not returned. */
 export const CONTROL_WORKER_FAILURE_CODES = [

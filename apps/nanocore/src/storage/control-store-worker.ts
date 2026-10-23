@@ -95,7 +95,9 @@ import {
   type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
+  controlWorkerInputBytes,
   hasControlSqlRollback,
+  isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
@@ -137,6 +139,8 @@ type WriteRequest = WriteCommand & {
   readonly barrier: boolean;
   readonly settled: Promise<void>;
   readonly finish: () => void;
+  /** Membership only; all members occupy the same existing pending array. */
+  readonly cohort?: { readonly size: number; readonly immediate: boolean } | undefined;
   preparation?: Promise<void>;
   ready: boolean;
   predecessorFailed: boolean;
@@ -753,7 +757,21 @@ function readyBatch(owner: OwnedDatabase): WriteRequest[] {
       for (const turn of request.lanes) blocked.add(turn);
       continue;
     }
-    result.push(request);
+    if (request.cohort) {
+      if (result.includes(request)) continue;
+      const members = owner.pending.filter((member) => member.cohort === request.cohort);
+      if (
+        members.length !== request.cohort.size ||
+        members.some(
+          (member) => !member.ready || [...member.lanes].some((lane) => blocked.has(lane))
+        ) ||
+        result.length + members.length > CONTROL_WORKER_LIMITS.batchTransitions
+      ) {
+        for (const member of members) for (const lane of member.lanes) blocked.add(lane);
+        continue;
+      }
+      result.push(...members);
+    } else result.push(request);
     if (result.length === CONTROL_WORKER_LIMITS.batchTransitions) break;
   }
   return result;
@@ -1174,9 +1192,18 @@ function flush(owner: OwnedDatabase): void {
 /** Starts the fixed wait, or promptly flushes a full batch without another wait window. */
 function schedule(owner: OwnedDatabase): void {
   if (owner.poisoned) return;
-  const ready = readyBatch(owner).length;
-  if (!ready) return;
-  if (ready >= CONTROL_WORKER_LIMITS.batchTransitions) {
+  const ready = readyBatch(owner);
+  if (!ready.length) return;
+  if (
+    ready.length >= CONTROL_WORKER_LIMITS.batchTransitions ||
+    owner.pending.some(
+      (request) =>
+        request.cohort?.immediate &&
+        owner.pending
+          .filter((member) => member.cohort === request.cohort)
+          .every((member) => member.ready)
+    )
+  ) {
     if (owner.timer !== null) clearTimeout(owner.timer);
     owner.timer = null;
     owner.immediate ??= setImmediate(() => flush(owner));
@@ -1396,7 +1423,43 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
 }
 
 /** Routes trusted protocol messages without transporting connections or executing caller code. */
-function receive(value: unknown): void {
+function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
+  if (value && typeof value === 'object' && 'requests' in value) {
+    if (
+      !isControlProductCohort(value) ||
+      value.requests.some((request) => pendingIds.has(request.id))
+    )
+      throw new Error('Invalid native product cohort.');
+    const first = value.requests[0]!;
+    const owner = databases.get(first.database);
+    let code: ControlWorkerFailureCode | undefined;
+    if (stopping || owner?.poisoned) code = 'unavailable';
+    else if (!owner || owner.closing) code = 'not-open';
+    else if (
+      owner.pending.length + value.requests.length > CONTROL_WORKER_LIMITS.pendingTransitions ||
+      value.requests.reduce((bytes, request) => bytes + controlWorkerInputBytes(request) + 64, 0) >
+        CONTROL_WORKER_LIMITS.pendingBytes
+    )
+      code = 'busy';
+    else {
+      try {
+        // Validate all metadata owners before any member can occupy a native slot.
+        for (const request of value.requests) requestLanes(owner, request);
+      } catch (error) {
+        code = failureCode(error);
+      }
+    }
+    if (code) {
+      for (const request of value.requests) {
+        pendingIds.add(request.id);
+        reply(failure(request.id, code));
+      }
+    } else {
+      const membership = { size: value.requests.length, immediate: value.immediate };
+      for (const request of value.requests) receive(request, membership);
+    }
+    return;
+  }
   const id = value !== null && typeof value === 'object' && 'id' in value ? value.id : undefined;
   // Even a malformed duplicate must not complete an accepted write's correlation id.
   if (typeof id === 'number' && pendingIds.has(id)) {
@@ -1480,6 +1543,7 @@ function receive(value: unknown): void {
           lanes,
           settled,
           finish,
+          cohort,
           barrier:
             archivedThreads(value).length > 0 ||
             (value.operation === 'write' && owner.scopeDb !== undefined),

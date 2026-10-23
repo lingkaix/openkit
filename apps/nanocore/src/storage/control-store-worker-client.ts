@@ -49,6 +49,7 @@ import type {
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
+  type ControlProductCohort,
   type ControlSqlResult,
   type ControlSqlStatement,
   type ControlWorkerCommand,
@@ -57,6 +58,8 @@ import {
   type ControlWorkerReply,
   type ControlWorkerRequest,
   controlMaterialTransferSize,
+  controlWorkerInputBytes,
+  isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
@@ -96,6 +99,7 @@ interface WriterHost {
   failed: boolean;
   /** Includes posted binary bytes whose channel failed until actual worker exit. */
   materialBytes: number;
+  inputBytes: number;
   pending: number;
 }
 
@@ -108,6 +112,13 @@ interface Opening {
   readonly promise: Promise<void>;
 }
 
+/** One immutable transport frame shared by its existing pending request slots. */
+interface PendingCohort {
+  readonly frame: ControlProductCohort;
+  readonly inputBytes: number;
+  remaining: number;
+}
+
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly host: WriterHost;
@@ -117,6 +128,8 @@ interface Pending {
   posted: boolean;
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
+  readonly inputBytes: number;
+  cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
   readonly reject: (error: ControlStoreWorkerError | PendingRequestCommandError) => void;
 }
@@ -152,7 +165,7 @@ export async function shutdownControlStoreWorkerClient(): Promise<void> {
 class ControlStoreWorkerClient {
   private readonly hosts: WriterHost[] = Array.from(
     { length: CONTROL_WORKER_LIMITS.workspaceWorkers + 1 },
-    () => ({ worker: undefined, failed: false, materialBytes: 0, pending: 0 })
+    () => ({ worker: undefined, failed: false, materialBytes: 0, inputBytes: 0, pending: 0 })
   );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
   private readonly operationContext = new AsyncLocalStorage<{
@@ -164,6 +177,7 @@ class ControlStoreWorkerClient {
   private readonly openings = new Map<string, Opening>();
   private nextId = 0;
   private materialBytes = 0;
+  private inputBytes = 0;
   private stopping = false;
   private closed = false;
   private shutdownPromise: Promise<void> | undefined;
@@ -199,6 +213,8 @@ class ControlStoreWorkerClient {
       // Even during producer drain, exit cannot leave a host eligible for later causal work.
       this.fail(host);
       // A failed channel alone cannot prove the worker released its queued bytes. Exit can.
+      this.inputBytes -= host.inputBytes;
+      host.inputBytes = 0;
       this.materialBytes -= host.materialBytes;
       host.materialBytes = 0;
     });
@@ -390,6 +406,82 @@ class ControlStoreWorkerClient {
   /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
   async products(database: string, transition: ControlProductTransition): Promise<void> {
     await this.request({ operation: 'products', database, transition });
+  }
+
+  /**
+   * Admits one finite eligible Item/event prefix atomically into existing native request slots.
+   *
+   * Each member retains its own deciding CAS, savepoint and FULL acknowledgement. The ordered
+   * results preserve an earlier committed member when a later member or its suffix refuses.
+   * This is private writer framing; callers still own progress eligibility and source retention.
+   */
+  async productsCohort(
+    database: string,
+    transitions: readonly ControlProductTransition[],
+    options: { readonly immediate?: boolean } = {}
+  ): Promise<readonly PromiseSettledResult<void>[]> {
+    this.assertAccepting();
+    if (transitions.length === 0 || transitions.length > CONTROL_WORKER_LIMITS.batchTransitions)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const requests = transitions.map(
+      (transition, index) =>
+        ({
+          version: CONTROL_WORKER_VERSION,
+          operation: 'products' as const,
+          database,
+          transition,
+          id: this.nextId + index,
+        }) as const
+    );
+    const frame: ControlProductCohort = {
+      version: CONTROL_WORKER_VERSION,
+      operation: 'products',
+      requests,
+      immediate: options.immediate ?? false,
+    };
+    if (!isControlProductCohort(frame))
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const bytes = requests.reduce(
+      (total, request) => total + controlWorkerInputBytes(request) + 64,
+      0
+    );
+    if (
+      (this.outstanding.get(database) ?? 0) + requests.length >
+        CONTROL_WORKER_LIMITS.pendingTransitions ||
+      this.inputBytes + bytes > CONTROL_WORKER_LIMITS.pendingBytes
+    )
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    // No await or post occurs between the complete admission check and reservation of all slots.
+    const results = requests.map((request) =>
+      this.request(
+        { operation: 'products', database, transition: request.transition },
+        undefined,
+        undefined,
+        true
+      ).then(() => undefined)
+    );
+    const entries = requests.map((request) => this.pending.get(request.id));
+    if (entries.some((entry) => !entry)) {
+      for (const request of requests)
+        this.complete(
+          request.id,
+          undefined,
+          new ControlStoreWorkerError('invalid-request', 'not-committed')
+        );
+    } else {
+      const admitted = entries as Pending[];
+      const cohort: PendingCohort = {
+        frame: {
+          ...frame,
+          requests: admitted.map((entry) => entry.request) as ControlProductCohort['requests'],
+        },
+        inputBytes: admitted.reduce((total, entry) => total + entry.inputBytes, 0),
+        remaining: admitted.length,
+      };
+      for (const entry of admitted) entry.cohort = cohort;
+      if (!this.backupPaused) this.post(requests[0]!.id, admitted[0]!);
+    }
+    return Promise.allSettled(results);
   }
 
   /** Publishes only the named sealed-Turn entry category after native preparation and FULL acknowledgement. */
@@ -623,6 +715,7 @@ class ControlStoreWorkerClient {
         await Promise.all(this.hosts.map((host) => host.worker?.terminate()));
         for (const host of this.hosts) this.fail(host);
         this.materialBytes = 0;
+        this.inputBytes = 0;
         this.closed = true;
       }
     })();
@@ -633,7 +726,8 @@ class ControlStoreWorkerClient {
   private request(
     command: ControlWorkerCommand,
     materialParts?: readonly string[],
-    target?: WriterHost
+    target?: WriterHost,
+    deferPost = false
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -657,6 +751,20 @@ class ControlStoreWorkerClient {
     if (!Number.isSafeInteger(this.nextId)) {
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
+    let inputBytes: number;
+    try {
+      inputBytes =
+        controlWorkerInputBytes({ ...command, version: CONTROL_WORKER_VERSION, id: this.nextId }) +
+        64;
+    } catch {
+      return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+    }
+    // One fixed shutdown message per owned host must still drain accepted work at saturation.
+    if (
+      command.operation !== 'shutdown' &&
+      this.inputBytes + inputBytes > CONTROL_WORKER_LIMITS.pendingBytes
+    )
+      return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     let materialBytes = 0;
     let posted = command;
     if (command.operation === 'material') {
@@ -696,7 +804,7 @@ class ControlStoreWorkerClient {
     // Posting normally transfers ownership immediately. A capture hold must take the same
     // immutable input now, so its caller cannot change a bounded envelope before resume.
     let admittedRequest = request;
-    if (this.backupPaused) {
+    if (this.backupPaused || deferPost) {
       try {
         admittedRequest = structuredClone(request, {
           transfer: request.operation === 'material' && request.content ? [request.content] : [],
@@ -714,6 +822,8 @@ class ControlStoreWorkerClient {
     }
     const id = this.nextId++;
     return new Promise<Success>((resolve, reject) => {
+      this.inputBytes += inputBytes;
+      host.inputBytes += inputBytes;
       this.materialBytes += materialBytes;
       host.materialBytes += materialBytes;
       host.pending += 1;
@@ -723,6 +833,7 @@ class ControlStoreWorkerClient {
         request: admittedRequest,
         posted: false,
         materialBytes,
+        inputBytes,
         resolve,
         reject,
       };
@@ -730,21 +841,32 @@ class ControlStoreWorkerClient {
       if (database !== undefined)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
       worker.ref();
-      if (!this.backupPaused) this.post(id, entry);
+      if (!this.backupPaused && !deferPost) this.post(id, entry);
     });
   }
 
   /** Posts an admitted message once, including a message held by data-root capture. */
   private post(id: number, entry: Pending): void {
-    entry.posted = true;
+    if (entry.posted) return;
+    const members = entry.cohort?.frame.requests.map(
+      (request) => this.pending.get(request.id)!
+    ) ?? [entry];
+    for (const member of members) member.posted = true;
     try {
       const request = entry.request;
       const transferList =
         request.operation === 'material' && request.content !== undefined ? [request.content] : [];
-      entry.host.worker!.postMessage(request, transferList);
+      entry.host.worker!.postMessage(entry.cohort?.frame ?? request, transferList);
     } catch {
-      // Structured cloning fails before a message is enqueued; nothing was submitted.
-      this.complete(id, undefined, new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      // A clone/post failure enqueues none of this one frame, including every cohort member.
+      for (const member of members) {
+        member.posted = false;
+        this.complete(
+          member.request.id,
+          undefined,
+          new ControlStoreWorkerError('invalid-request', 'not-committed')
+        );
+      }
     }
   }
 
@@ -767,6 +889,13 @@ class ControlStoreWorkerClient {
     if (entry === undefined) return;
     this.pending.delete(id);
     if (releaseMaterialBytes) {
+      const releasedInputBytes = entry.cohort
+        ? --entry.cohort.remaining === 0
+          ? entry.cohort.inputBytes
+          : 0
+        : entry.inputBytes;
+      this.inputBytes -= releasedInputBytes;
+      entry.host.inputBytes -= releasedInputBytes;
       this.materialBytes -= entry.materialBytes;
       entry.host.materialBytes -= entry.materialBytes;
     }
