@@ -335,7 +335,7 @@ describe('S39 exact source owner map', () => {
         })
       ).toBeNull();
       await store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
-      store.commitArtifactVersion({
+      await store.commitArtifactVersion({
         workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         artifactId: 'ar_00000000-0000-7000-8000-0000000003eb',
