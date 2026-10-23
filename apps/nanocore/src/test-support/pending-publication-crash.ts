@@ -164,9 +164,9 @@ if (retainedRoot) {
   const pendingCommand = client.pendingCommand.bind(client);
   let awaitingAtomicReply: 'pending' | 'terminal' | null = null;
   // Observe the actual worker reply before it reaches the client; the SQL tuple is already committed.
-  const transport = client as unknown as { receive(value: unknown): void };
+  const transport = client as unknown as { receive(value: unknown, host: unknown): void };
   const receive = transport.receive.bind(client);
-  transport.receive = (value) => {
+  transport.receive = (value, host) => {
     const reply = value as { status?: string; operation?: string };
     if (
       awaitingAtomicReply &&
@@ -179,7 +179,7 @@ if (retainedRoot) {
       console.log(JSON.stringify({ dataRoot, boundary: 'native-commit-before-reply' }));
       process.exit(23);
     }
-    receive(value);
+    receive(value, host);
   };
   /** Seeds adversarial retained history; the real native Turn-and-freeze packet has no association gap. */
   const retainMissingAssociation = async (record: unknown): Promise<never> => {

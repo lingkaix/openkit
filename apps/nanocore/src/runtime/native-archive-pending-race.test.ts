@@ -210,6 +210,8 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(Atomics.load(archiveReadFault.gate, 1)).toBe(1);
     expect(committedRows(f.reader)).toEqual(before);
     expect(f.store.getThread(f.workspace.id, f.thread.id)).toEqual(originalThread);
+    // Check refusal containment before the sibling can lazily open a pool worker.
+    expect(archiveReadFault.workers).toBe(workersBefore);
     const siblingInput = {
       requestId: randomUUID(),
       workspaceId: siblingWorkspace.id,
@@ -235,7 +237,23 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(await createThread(siblingInput, f.dependencies, userId)).toEqual(sibling);
     expect(readCommandRequestRecordsFromSqlite(reader.sqlite)).toEqual(receipts);
     expect(committedRows(f.reader)).toEqual(before);
-    expect(archiveReadFault.workers).toBe(workersBefore);
+
+    // DX Write And Space Budget pins this already-open database to its worker.
+    const workersBeforeOriginalScope = archiveReadFault.workers;
+    const originalScopeInput = {
+      requestId: randomUUID(),
+      workspaceId: f.workspace.id,
+      name: 'Original Workspace after archive read refusal',
+      visibility: 'workspace' as const,
+    };
+    const originalScopeThread = await createThread(originalScopeInput, f.dependencies, userId);
+    expect(originalScopeThread).toMatchObject({
+      status: 'active',
+      name: originalScopeInput.name,
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
+    });
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).toEqual(originalThread);
+    expect(archiveReadFault.workers).toBe(workersBeforeOriginalScope);
   });
 
   it('refuses archive when an unseen real raise commits after the empty Main census', async () => {
