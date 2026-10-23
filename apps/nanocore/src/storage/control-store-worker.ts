@@ -3,11 +3,13 @@ import {
   constants,
   existsSync,
   fsyncSync,
+  lstatSync,
+  mkdirSync,
   openSync,
   realpathSync,
   statSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import {
@@ -50,6 +52,7 @@ import {
   prepareControlPendingArchive,
   prepareControlPendingCommands,
 } from './control-store-pending.js';
+import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlPublication,
@@ -118,6 +121,7 @@ type WriteRequest = Extract<
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
+  readonly preparedPublications?: readonly string[];
 };
 
 /** One worker-owned writable connection and its finite, disposable pending work. */
@@ -131,6 +135,7 @@ interface OwnedDatabase {
   readonly productOwner: ControlProductOwner | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
+  readonly publications: ControlContentPreparation['publications'];
   /** Accepted native-local preparation shares this finite scope lifetime, before SQL. */
   readonly preparations: Set<Promise<void>>;
   closing: boolean;
@@ -144,6 +149,25 @@ const paths = new Set<string>();
 const identities = new Set<string>();
 const pendingIds = new Set<number>();
 let stopping = false;
+
+/** Drops one request's references without discarding work still joined by another admitted request. */
+function releaseContentPublications(
+  publications: ControlContentPreparation['publications'],
+  paths: Iterable<string>
+): void {
+  for (const path of paths) {
+    const publication = publications.get(path);
+    if (publication && --publication.references === 0) publications.delete(path);
+  }
+}
+
+/** Refusal waits for every started file operation before releasing its bounded native lifetime. */
+async function releaseContentPreparation(preparation: ControlContentPreparation): Promise<void> {
+  await Promise.allSettled(
+    [...preparation.published].map((path) => preparation.publications.get(path)?.result)
+  );
+  releaseContentPublications(preparation.publications, preparation.published);
+}
 
 /** Marks a failed SQL condition without leaking statement text or bound data. */
 class PreconditionError extends Error {}
@@ -322,10 +346,14 @@ function flush(owner: OwnedDatabase): void {
     // Both synchronous receipt reads and asynchronous proof failures stay with this scope.
     const refuse = (error: unknown) => {
       owner.pending.shift();
+      releaseContentPublications(owner.publications, first.preparedPublications ?? []);
       const code = failureCode(error);
       if (code === 'integrity') owner.poisoned = true;
       if (owner.poisoned) {
-        for (const request of owner.pending.splice(0)) reply(failure(request.id, 'unavailable'));
+        for (const request of owner.pending.splice(0)) {
+          releaseContentPublications(owner.publications, request.preparedPublications ?? []);
+          reply(failure(request.id, 'unavailable'));
+        }
       } else if (owner.pending.length) schedule(owner);
       const domain = domainRefusal(first.operation, error);
       reply(domain ? { ...failure(first.id, 'precondition'), domain } : failure(first.id, code));
@@ -359,11 +387,31 @@ function flush(owner: OwnedDatabase): void {
   }
   const selected = owner.pending.splice(0, count);
   if (selected.length === 0) return;
-  // File sync finished in preparation; directory success lasts only for this bounded batch.
+  const publications = new Map(
+    selected.flatMap((request) =>
+      (request.preparedPublications ?? []).map(
+        (path) => [path, owner.publications.get(path)] as const
+      )
+    )
+  );
+  const requiredDirectories = new Map(
+    selected.map((request) => [
+      request,
+      (request.preparedDirectories ?? []).filter((directory) => {
+        const shared = (request.preparedPublications ?? []).filter(
+          (path) => dirname(path) === directory
+        );
+        return (
+          !shared.length || shared.some((path) => !publications.get(path)?.directorySynchronized)
+        );
+      }),
+    ])
+  );
+  for (const request of selected)
+    releaseContentPublications(owner.publications, request.preparedPublications ?? []);
+  // A completed parent barrier is shared only while an already admitted reference still owns it.
   const directoryErrors = new Map<string, ControlWorkerFailureCode>();
-  for (const directory of new Set(
-    selected.flatMap((request) => request.preparedDirectories ?? [])
-  )) {
+  for (const directory of new Set([...requiredDirectories.values()].flat())) {
     try {
       const fd = openSync(
         directory,
@@ -374,12 +422,14 @@ function flush(owner: OwnedDatabase): void {
       } finally {
         closeSync(fd);
       }
+      for (const [path, publication] of publications)
+        if (publication && dirname(path) === directory) publication.directorySynchronized = true;
     } catch (error) {
       directoryErrors.set(directory, failureCode(error));
     }
   }
   const batch = selected.filter((request) => {
-    for (const directory of request.preparedDirectories ?? []) {
+    for (const directory of requiredDirectories.get(request) ?? []) {
       const code = directoryErrors.get(directory);
       if (code) {
         reply(failure(request.id, code, 'not-committed'));
@@ -633,7 +683,10 @@ function flush(owner: OwnedDatabase): void {
   }
   for (const result of replies) reply(result);
   if (owner.poisoned) {
-    for (const request of owner.pending.splice(0)) reply(failure(request.id, 'unavailable'));
+    for (const request of owner.pending.splice(0)) {
+      releaseContentPublications(owner.publications, request.preparedPublications ?? []);
+      reply(failure(request.id, 'unavailable'));
+    }
   } else if (owner.pending.length > 0) {
     // One batch per turn lets ready sibling owners progress on the shared thread.
     owner.immediate = setImmediate(() => flush(owner));
@@ -755,18 +808,7 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     request.initialize !== (request.productOwner.kind === 'server' ? 'core' : 'workspace')
   )
     throw new ControlProductPreconditionError();
-  const contentMount =
-    request.contentMount === undefined
-      ? undefined
-      : {
-          ...request.contentMount,
-          root: realpathSync(request.contentMount.root),
-        };
-  if (
-    contentMount !== undefined &&
-    (!request.productOwner || !statSync(contentMount.root).isDirectory())
-  )
-    throw new ControlProductPreconditionError();
+  let contentMount = request.contentMount;
   const path =
     request.create && !existsSync(request.path)
       ? join(realpathSync(dirname(request.path)), basename(request.path))
@@ -794,6 +836,48 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       applyNativeScopeMigrations(sqlite, request.initialize);
       assertSavepointSafeSchema(sqlite);
     }
+    if (contentMount) {
+      if (!request.productOwner) throw new ControlProductPreconditionError();
+      const scopeRoot = dirname(dirname(path));
+      const canonical = join(scopeRoot, 'evidence', 'backend');
+      if (
+        dataRoot &&
+        resolve(contentMount.root) === canonical &&
+        contentMount.mount === 'backend-evidence' &&
+        contentMount.knowledgeBaseId === null
+      ) {
+        const directories = [
+          scopeRoot,
+          join(scopeRoot, 'evidence'),
+          canonical,
+          join(canonical, 'sha256'),
+        ];
+        for (const directory of directories) {
+          if (!lstatSync(directory, { throwIfNoEntry: false })) mkdirSync(directory);
+          const metadata = lstatSync(directory);
+          if (
+            !metadata.isDirectory() ||
+            metadata.isSymbolicLink() ||
+            realpathSync(directory) !== directory
+          )
+            throw new ControlProductPreconditionError();
+        }
+        // A visible directory may remain from interrupted first creation. Commit each parent once at open.
+        for (const directory of directories.slice(0, -1).reverse()) {
+          const fd = openSync(
+            directory,
+            constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+          );
+          try {
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+        }
+      }
+      contentMount = { ...contentMount, root: realpathSync(contentMount.root) };
+      if (!statSync(contentMount.root).isDirectory()) throw new ControlProductPreconditionError();
+    }
     const writer = controlStoreFor(sqlite);
     const metadata = statSync(path);
     const identity = `${metadata.dev}:${metadata.ino}`;
@@ -811,6 +895,7 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       productOwner: request.productOwner,
       contentMount,
       pending: [],
+      publications: new Map(),
       preparations: new Set(),
       closing: false,
       timer: null,
@@ -893,7 +978,12 @@ function receive(value: unknown): void {
       ) {
         reply(failure(value.id, 'busy'));
       } else {
-        const newDirectories = new Set<string>();
+        const newDirectories: ControlContentPreparation = {
+          db: owner.scopeDb,
+          directories: new Set(),
+          publications: owner.publications,
+          published: new Set(),
+        };
         if (value.operation === 'pending' && value.input.terminal) {
           if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner) {
             reply(failure(value.id, 'precondition'));
@@ -924,11 +1014,13 @@ function receive(value: unknown): void {
                 ...value,
                 preparedTerminal,
                 preparedPending,
-                preparedDirectories: [...newDirectories],
+                preparedDirectories: [...newDirectories.directories],
+                preparedPublications: [...newDirectories.published],
               });
               schedule(owner);
             })
-            .catch((error) => {
+            .catch(async (error) => {
+              await releaseContentPreparation(newDirectories);
               const domain = domainRefusal('pending', error);
               reply(
                 domain
@@ -958,11 +1050,13 @@ function receive(value: unknown): void {
               owner.pending.push({
                 ...value,
                 preparedTerminal,
-                preparedDirectories: [...newDirectories],
+                preparedDirectories: [...newDirectories.directories],
+                preparedPublications: [...newDirectories.published],
               });
               schedule(owner);
             })
-            .catch((error) => {
+            .catch(async (error) => {
+              await releaseContentPreparation(newDirectories);
               reply(failure(value.id, failureCode(error), 'not-committed'));
             })
             .finally(() => {
@@ -1051,6 +1145,7 @@ function receive(value: unknown): void {
             if (owner.poisoned || databases.get(value.database) !== owner)
               throw new ControlProductPreconditionError();
           } catch (error) {
+            await releaseContentPreparation(newDirectories);
             // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
             const domain = domainRefusal(value.operation, error);
             reply(
@@ -1071,7 +1166,8 @@ function receive(value: unknown): void {
               preparedReview,
               preparedPending,
               preparedPublication,
-              preparedDirectories: [...newDirectories],
+              preparedDirectories: [...newDirectories.directories],
+              preparedPublications: [...newDirectories.published],
             });
           }
           schedule(owner);

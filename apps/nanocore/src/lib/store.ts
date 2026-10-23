@@ -171,7 +171,10 @@ import {
   ensureWorkspaceLayout,
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
-import { publishImmutableProductJson } from '../storage/immutable-content.js';
+import {
+  prepareImmutableProductJson,
+  publishImmutableProductJson,
+} from '../storage/immutable-content.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { StoredServerEventPayloadV1Schema } from '../storage/retained-server-work-v1.js';
 import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
@@ -191,7 +194,6 @@ import {
   assertTurnEventPayloadLineage,
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
-  ensureCanonicalDirectoryAsync,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
@@ -3288,7 +3290,7 @@ export class FsStore {
           item
         ) as Item)
       : item;
-    const content = await publishImmutableProductJson(
+    const content = await prepareImmutableProductJson(
       scope.contentMount,
       scope.owner,
       join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -3300,7 +3302,7 @@ export class FsStore {
         turnId: item.turnId,
         sequence: history.itemRevisions.length + 1,
         expectedRevision: previousRevision,
-        content,
+        ...content,
       },
     ];
     if (isSealedTurnTerminal(history.turn.status)) {
@@ -3347,7 +3349,6 @@ export class FsStore {
     journalIntents?: readonly ExecutionJournalIntent[],
     pending?: readonly ControlPendingCommandInput[]
   ): Promise<string | undefined> {
-    await ensureCanonicalDirectoryAsync(scope.contentMount.root);
     const client = getControlStoreWorkerClient();
     const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
     await client.open({
@@ -3432,12 +3433,12 @@ export class FsStore {
         turnId: item.turnId,
         sequence: existing.length + offset + 1,
         expectedRevision: 0,
-        content: await publishImmutableProductJson(
+        ...(await prepareImmutableProductJson(
           scope.contentMount,
           scope.owner,
           join(dirname(dirname(scope.path)), 'runtime', 'staging'),
           writeRetainedV1(item)
-        ),
+        )),
       });
       counts.set(item.turnId, offset + 1);
     }
@@ -3564,7 +3565,7 @@ export class FsStore {
         event: 'turn.completed',
         data: { type: 'turn-completed', stopReason: 'completed', turn },
       });
-    let content: ControlProductEntry['content'];
+    let content: Pick<ControlProductEntry, 'content' | 'publication'>;
     if (priorEvent) {
       // Sealed replay retains exact immutable bytes, including retained descriptive field order.
       const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
@@ -3572,12 +3573,12 @@ export class FsStore {
         const entry = reader.entries(turn.id, 'event', event.sequence - 1, 1)[0];
         if (!entry || entry.sequence !== event.sequence)
           throw terminalTurnPublicationConflict(turn.id);
-        content = entry.content;
+        content = { content: entry.content };
       } finally {
         reader.close();
       }
     } else {
-      content = await publishImmutableProductJson(
+      content = await prepareImmutableProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -3589,7 +3590,7 @@ export class FsStore {
       turnId: turn.id,
       sequence: event.sequence,
       expectedRevision: 0,
-      content,
+      ...content,
     });
     const [command] = input.pending;
     if (!command)
@@ -3912,12 +3913,12 @@ export class FsStore {
       turnId: turn.id,
       sequence: 1,
       expectedRevision: 0,
-      content: await publishImmutableProductJson(
+      ...(await prepareImmutableProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
         writeRetainedV1(event)
-      ),
+      )),
     });
     const client = getControlStoreWorkerClient();
     const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
@@ -4241,14 +4242,14 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'server' });
       const previous = { revision: native!.revision, record: native!.metadata };
-      const content = await publishImmutableProductJson(
+      const content = await prepareImmutableProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
         writeRetainedV1(envelope)
       );
       const entries: ControlProductEntry[] = [
-        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, content },
+        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, ...content },
       ];
       if (isSealedTurnTerminal(turn.status))
         await this.writeNativePublication(scope, native!, entries, 'already-decided-publication');
@@ -5060,7 +5061,7 @@ export class FsStore {
         const existing = retainedItems.find((candidate) => candidate.id === item.id);
         if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) continue;
         const previous = revisions.filter((row) => row.id === item.id).at(-1);
-        const content = await publishImmutableProductJson(
+        const content = await prepareImmutableProductJson(
           scope.contentMount,
           owner,
           join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -5071,11 +5072,11 @@ export class FsStore {
           turnId,
           sequence: revisions.length + entries.length + 1,
           expectedRevision: previous?.revision ?? 0,
-          content,
+          ...content,
         });
       }
       for (const terminalEvent of [...precedingEvents, event]) {
-        let content: ControlProductEntry['content'];
+        let content: Pick<ControlProductEntry, 'content' | 'publication'>;
         if (prior) {
           // Replay retains each original immutable descriptor, including preceding projections.
           const reader = openControlStoreProductReadHandle(scope.path, owner);
@@ -5083,12 +5084,12 @@ export class FsStore {
             const entry = reader.entries(turnId, 'event', terminalEvent.sequence - 1, 1)[0];
             if (!entry || entry.sequence !== terminalEvent.sequence)
               throw terminalTurnPublicationConflict(turnId);
-            content = entry.content;
+            content = { content: entry.content };
           } finally {
             reader.close();
           }
         } else {
-          content = await publishImmutableProductJson(
+          content = await prepareImmutableProductJson(
             scope.contentMount,
             owner,
             join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -5100,7 +5101,7 @@ export class FsStore {
           turnId,
           sequence: terminalEvent.sequence,
           expectedRevision: 0,
-          content,
+          ...content,
         });
       }
       if (prior && isSealedTurnTerminal(before.status) && publication.execution) {
@@ -5916,12 +5917,12 @@ export class FsStore {
           turnId: turn.id,
           sequence: items.length + 1,
           expectedRevision: 0,
-          content: await publishImmutableProductJson(
+          ...(await prepareImmutableProductJson(
             scope.contentMount,
             scope.owner,
             stagingRoot,
             writeRetainedV1(reference)
-          ),
+          )),
         },
       ];
       for (const event of events)
@@ -5930,12 +5931,12 @@ export class FsStore {
           turnId: turn.id,
           sequence: event.sequence,
           expectedRevision: 0,
-          content: await publishImmutableProductJson(
+          ...(await prepareImmutableProductJson(
             scope.contentMount,
             scope.owner,
             stagingRoot,
             writeRetainedV1(event)
-          ),
+          )),
         });
       const client = getControlStoreWorkerClient();
       const database = `workspace:${scope.path}`;
@@ -7098,14 +7099,14 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope(turn.owner);
       const previous = { revision: native!.revision, record: native!.metadata };
-      const content = await publishImmutableProductJson(
+      const content = await prepareImmutableProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
         writeRetainedV1(envelope)
       );
       const entries: ControlProductEntry[] = [
-        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, content },
+        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, ...content },
       ];
       if (isSealedTurnTerminal(turn.status))
         await this.writeNativePublication(scope, native!, entries, 'already-decided-publication');

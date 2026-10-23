@@ -21,6 +21,7 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { applyControlAdmission, ControlAdmissionSchema } from './control-store-admission.js';
+import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlTerminal,
@@ -81,7 +82,7 @@ export async function prepareControlPendingCommands(
   mount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
   preparedEntries?: readonly PreparedControlEntry[],
-  newDirectories?: Set<string>
+  newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlPendingCommand> {
   if (db.sqlite.inTransaction)
     throw new PendingRequestCommandError(

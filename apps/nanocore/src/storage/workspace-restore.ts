@@ -41,7 +41,7 @@ import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { inventoryRegularFiles } from './data-root-backup.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
-import { publishImmutableProductJson } from './immutable-content.js';
+import { prepareImmutableProductJson } from './immutable-content.js';
 import {
   RECURRING_PORTABLE_PATHS,
   readRecurringPortableFiles,
@@ -618,6 +618,8 @@ async function interruptImportedHistory(
   } = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId }, root);
   const database = `workspace:${path}`;
   mkdirSync(mount.root, { recursive: true, mode: 0o700 });
+  // Captures omit empty directory entries; offline restore owns this private staging parent.
+  mkdirSync(join(root, 'runtime'), { recursive: true, mode: 0o700 });
   await client.open({
     database,
     path,
@@ -676,7 +678,7 @@ async function interruptImportedHistory(
             turnId: before.id,
             sequence,
             expectedRevision: 0,
-            content: await publishImmutableProductJson(
+            ...(await prepareImmutableProductJson(
               mount,
               owner,
               join(root, 'runtime/staging'),
@@ -691,7 +693,7 @@ async function interruptImportedHistory(
                 event: 'turn.completed',
                 data: { type: 'turn-completed', stopReason: 'aborted', turn },
               })
-            ),
+            )),
           },
         ],
         reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
@@ -795,12 +797,12 @@ async function interruptImportedHistory(
             turnId,
             sequence: entries.length + 1,
             expectedRevision: 0,
-            content: await publishImmutableProductJson(
+            ...(await prepareImmutableProductJson(
               mount,
               owner,
               join(root, 'runtime/staging'),
               writeRetainedV1(item)
-            ),
+            )),
           });
         const sequence = 1;
         entries.push({
@@ -808,7 +810,7 @@ async function interruptImportedHistory(
           turnId,
           sequence,
           expectedRevision: 0,
-          content: await publishImmutableProductJson(
+          ...(await prepareImmutableProductJson(
             mount,
             owner,
             join(root, 'runtime/staging'),
@@ -823,7 +825,7 @@ async function interruptImportedHistory(
               event: 'turn.completed',
               data: { type: 'turn-completed', stopReason: 'completed', turn },
             })
-          ),
+          )),
         });
         await client.terminal(database, {
           owner,

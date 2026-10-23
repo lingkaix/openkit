@@ -31,7 +31,6 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
 import { commandRequestKey, projectTurnEventRequestId } from './lib/store.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
@@ -44,6 +43,7 @@ import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './storage/command-request-records.js';
+import type { ControlContentPreparation } from './storage/control-store-products.js';
 import {
   applyControlProducts,
   assertControlProductWriter,
@@ -58,11 +58,7 @@ import { getControlStoreWorkerClient } from './storage/control-store-worker-clie
 import type { WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
-import {
-  artifactReferenceItemId,
-  ensureCanonicalDirectoryAsync,
-  nativeProductScope,
-} from './storage/workspace-file-records.js';
+import { artifactReferenceItemId, nativeProductScope } from './storage/workspace-file-records.js';
 import {
   assertWorkspaceMaterialRange,
   getWorkspaceMaterial,
@@ -1388,7 +1384,7 @@ export async function prepareControlReviewCommand(
   db: WorkspaceDb,
   value: ControlReviewCommandInput,
   mount: ControlProductContentMount | undefined,
-  newDirectories?: Set<string>
+  newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlReviewCommand> {
   const input = ControlReviewCommandInputSchema.parse(value);
   if (input.mode === 'decide' && input.input.artifactOriginal) {
@@ -1736,7 +1732,6 @@ export async function executeControlReviewCommand<T extends ControlReviewCommand
   input: T
 ): Promise<Extract<ControlReviewCommandResult, { mode: T['mode'] }>> {
   const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId });
-  await ensureCanonicalDirectoryAsync(scope.contentMount.root);
   const client = getControlStoreWorkerClient();
   const database = `workspace:${scope.path}`;
   await client.open({

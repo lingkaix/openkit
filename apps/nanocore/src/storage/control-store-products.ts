@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync, realpathSync } from 'node:fs';
-import { open, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { type FileHandle, link, open, realpath, unlink } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -91,6 +91,16 @@ export const ControlProductEntrySchema = z
     turnId: z.string().min(1),
     sequence: z.number().int().positive(),
     expectedRevision: z.number().int().nonnegative(),
+    publication: z
+      .object({
+        temporary: z
+          .string()
+          .regex(
+            /^\.[0-9a-f]{64}\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/
+          ),
+      })
+      .strict()
+      .optional(),
     content: z
       .object({
         reference: ContentReferenceSchema,
@@ -101,6 +111,19 @@ export const ControlProductEntrySchema = z
   })
   .strict();
 export type ControlProductEntry = z.infer<typeof ControlProductEntrySchema>;
+/** One shared publication stays live until every admitted preparation or queued reference releases it. */
+export interface ControlContentPublication {
+  readonly result: Promise<{ bytes: Buffer; changedDirectory: boolean }>;
+  references: number;
+  directorySynchronized: boolean;
+}
+/** Native-local preparation obligations; shared publications live only until their selected batch or refusal. */
+export interface ControlContentPreparation {
+  readonly db: CoreDb | WorkspaceDb | undefined;
+  readonly directories: Set<string>;
+  readonly publications: Map<string, ControlContentPublication>;
+  readonly published: Set<string>;
+}
 /** Existing non-command lifecycle writes share the native product owner, without inventing a command receipt. */
 export const ControlProductTransitionSchema = z
   .object({
@@ -618,7 +641,7 @@ export async function prepareControlEntries(
   owner: ControlProductOwner,
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
-  newDirectories?: Set<string>
+  newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlEntry[]> {
   return prepareEntries(owner, contentMount, entries, undefined, undefined, newDirectories);
 }
@@ -659,12 +682,159 @@ export async function prepareRetainedControlEntries(
   return prepared;
 }
 
+/** Verifies one actual inode before either first publication or SQL-proved reuse. */
+async function readControlContentFile(
+  file: FileHandle,
+  content: ControlProductEntry['content']
+): Promise<Buffer> {
+  const metadata = await file.stat();
+  if (!metadata.isFile() || metadata.size !== content.byteLength)
+    throw new ControlProductPreconditionError();
+  const bytes = Buffer.alloc(content.byteLength);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const read = await file.read(bytes, offset, bytes.length - offset, offset);
+    if (!read.bytesRead) throw new ControlProductPreconditionError();
+    offset += read.bytesRead;
+  }
+  if (
+    (await file.stat()).size !== content.byteLength ||
+    `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== content.reference.contentDigest
+  )
+    throw new ControlProductPreconditionError();
+  return bytes;
+}
+
+/** An existing canonical name is reusable only when this database proves its completed descriptor. */
+async function hasCommittedControlContent(
+  db: CoreDb | WorkspaceDb | undefined,
+  entry: ControlProductEntry,
+  bytes: Buffer
+): Promise<boolean> {
+  if (!db) return false;
+  const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  const id =
+    entry.kind === 'item'
+      ? readRetainedV1(value, () => StoredItemV1Schema.parse(value)).id
+      : `${entry.turnId}:${entry.sequence}`;
+  // Close each bounded indexed read before yielding; new canonical names never scan history.
+  let before = Number.MAX_SAFE_INTEGER;
+  for (;;) {
+    const rows = db.sqlite
+      .prepare(
+        'SELECT revision,schema_version,content_json FROM control_product_entries WHERE kind=? AND id=? AND revision<=? ORDER BY revision DESC LIMIT ?'
+      )
+      .all(entry.kind, id, before, CONTROL_PRODUCT_LIMITS.pageRows) as {
+      revision: number;
+      schema_version: number;
+      content_json: string;
+    }[];
+    for (const row of rows) {
+      if (row.schema_version !== 1) throw new ControlProductPreconditionError();
+      if (
+        isDeepStrictEqual(
+          ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+          entry.content
+        )
+      )
+        return true;
+    }
+    if (rows.length < CONTROL_PRODUCT_LIMITS.pageRows) return false;
+    before = rows.at(-1)!.revision - 1;
+    await new Promise<void>((done) => setImmediate(done));
+  }
+}
+
+/** Consumes only the digest-bound private basename; no Main flag can declare a completed barrier. */
+async function preparePrivateControlContent(
+  path: string,
+  root: string,
+  content: ControlProductEntry['content'],
+  entry: ControlProductEntry,
+  preparation: ControlContentPreparation
+): Promise<Buffer> {
+  const name = entry.publication!.temporary;
+  if (!name.startsWith(`.${content.reference.contentDigest.slice('sha256:'.length)}.`))
+    throw new ControlProductPreconditionError();
+  const temporary = join(root, name);
+  const retained = preparation.db?.sqlite
+    .prepare(
+      'SELECT schema_version,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=? AND revision=?'
+    )
+    .get(entry.kind, entry.turnId, entry.sequence, entry.expectedRevision + 1) as
+    | { schema_version: number; content_json: string }
+    | undefined;
+  if (
+    retained &&
+    retained.schema_version === 1 &&
+    isDeepStrictEqual(
+      ControlProductEntrySchema.shape.content.parse(JSON.parse(retained.content_json)),
+      content
+    )
+  ) {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const bytes = await readControlContentFile(file, content);
+      await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      return bytes;
+    } finally {
+      await file.close();
+    }
+  }
+  const staged = await open(temporary, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    await readControlContentFile(staged, content);
+    let publication = preparation.publications.get(path);
+    if (!publication) {
+      const result = (async () => {
+        let winner: FileHandle | undefined;
+        try {
+          winner = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        if (winner) {
+          try {
+            const bytes = await readControlContentFile(winner, content);
+            if (await hasCommittedControlContent(preparation.db, entry, bytes))
+              return { bytes, changedDirectory: false };
+            await winner.sync();
+            return { bytes, changedDirectory: true };
+          } finally {
+            await winner.close();
+          }
+        }
+        // This owner alone publishes a new inode. Equal in-flight digests join this promise.
+        await staged.sync();
+        await link(temporary, path);
+        return { bytes: await readControlContentFile(staged, content), changedDirectory: true };
+      })();
+      publication = { result, references: 0, directorySynchronized: false };
+      preparation.publications.set(path, publication);
+    }
+    if (!preparation.published.has(path)) {
+      preparation.published.add(path);
+      publication.references += 1;
+    }
+    const result = await publication.result;
+    if (result.changedDirectory && !publication.directorySynchronized)
+      preparation.directories.add(dirname(path));
+    await unlink(temporary);
+    return result.bytes;
+  } finally {
+    await staged.close();
+  }
+}
+
 /** Verifies scoped bytes; only native SQL-proved dependencies omit sync, and Worker cohorts may defer parent sync until their batch. */
 async function synchronizeControlContent(
   owner: ControlProductOwner,
   contentMount: ControlProductContentMount | undefined,
   content: ControlProductEntry['content'],
-  newDirectories?: Set<string> | null
+  newDirectories?: ControlContentPreparation | null,
+  entry?: ControlProductEntry
 ): Promise<Buffer> {
   if (isMainThread || !contentMount || content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
     throw new ControlProductPreconditionError();
@@ -682,22 +852,25 @@ async function synchronizeControlContent(
   const rel = relative(root, path);
   if (rel.startsWith('..') || isAbsolute(rel) || (await realpath(dirname(path))) !== dirname(path))
     throw new ControlProductPreconditionError();
+  if (entry?.publication && newDirectories !== null) {
+    if (
+      !newDirectories ||
+      reference.locator.path !== `sha256/${reference.contentDigest.slice('sha256:'.length)}`
+    )
+      throw new ControlProductPreconditionError();
+    return preparePrivateControlContent(path, root, content, entry, newDirectories);
+  }
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let bytes: Buffer;
   try {
-    const metadata = await fd.stat();
-    if (!metadata.isFile() || metadata.size !== content.byteLength)
-      throw new ControlProductPreconditionError();
-    bytes = await fd.readFile();
-    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== reference.contentDigest)
-      throw new ControlProductPreconditionError();
+    bytes = await readControlContentFile(fd, content);
     if (newDirectories !== null) await fd.sync();
   } finally {
     await fd.close();
   }
   if (newDirectories === null) return bytes;
   if (newDirectories) {
-    newDirectories.add(dirname(path));
+    newDirectories.directories.add(dirname(path));
     return bytes;
   }
   const directory = await open(
@@ -719,14 +892,27 @@ async function prepareEntries(
   entries: readonly ControlProductEntry[],
   terminal?: Record<string, unknown>,
   sealedTurn?: Record<string, unknown>,
-  newDirectories?: Set<string> | null
+  newDirectories?: ControlContentPreparation | null,
+  retainedDb?: CoreDb | WorkspaceDb
 ): Promise<PreparedControlEntry[]> {
   if (isMainThread) throw new ControlProductPreconditionError();
   const result: PreparedControlEntry[] = [];
-  for (const input of entries) {
+  const prepare = async (input: ControlProductEntry): Promise<PreparedControlEntry> => {
+    if (
+      sealedTurn &&
+      retainedDb &&
+      retainedDb.sqlite
+        .prepare(
+          'SELECT 1 FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=? AND revision=?'
+        )
+        .get(input.kind, input.turnId, input.sequence, input.expectedRevision + 1)
+    )
+      return (
+        await prepareRetainedControlEntries(retainedDb, contentMount, [input], terminal, sealedTurn)
+      )[0]!;
     const value: unknown = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(
-        await synchronizeControlContent(owner, contentMount, input.content, newDirectories)
+        await synchronizeControlContent(owner, contentMount, input.content, newDirectories, input)
       )
     );
     if (input.kind === 'item') {
@@ -746,8 +932,7 @@ async function prepareEntries(
       const prepared = { input, id: item.id, identityJson: JSON.stringify(identity) };
       preparedPayloads.set(prepared, item);
       preparedOriginals.set(prepared, value);
-      result.push(prepared);
-      continue;
+      return prepared;
     }
     const event = readRetainedV1(value, () =>
       owner.kind === 'server'
@@ -825,7 +1010,13 @@ async function prepareEntries(
     };
     preparedPayloads.set(prepared, event);
     preparedOriginals.set(prepared, value);
-    result.push(prepared);
+    return prepared;
+  };
+  for (let offset = 0; offset < entries.length; offset += 4) {
+    const cohort = await Promise.allSettled(entries.slice(offset, offset + 4).map(prepare));
+    const failure = cohort.find((entry) => entry.status === 'rejected');
+    if (failure) throw failure.reason;
+    for (const entry of cohort) if (entry.status === 'fulfilled') result.push(entry.value);
   }
   return result;
 }
@@ -867,7 +1058,7 @@ export async function prepareControlPublication(
   db: CoreDb | WorkspaceDb,
   value: ControlPublicationInput,
   mount: ControlProductContentMount | undefined,
-  newDirectories?: Set<string>
+  newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlPublication> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   const input = ControlPublicationInputSchema.parse(value);
@@ -1383,7 +1574,7 @@ export async function prepareControlTerminal(
   db: CoreDb | WorkspaceDb,
   value: ControlTerminalTransition,
   contentMount: ControlProductContentMount | undefined,
-  newDirectories?: Set<string>
+  newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlTerminal> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   if (!terminalOwners) {
@@ -1416,22 +1607,15 @@ export async function prepareControlTerminal(
     before && !['pending', 'running'].includes(String(before.record.status))
       ? before.record
       : undefined;
-  const entries: PreparedControlEntry[] = [];
-  for (const entry of input.entries) {
-    // Sealed fill can supply the exact original descriptor again; a filename alone never proves prior durability.
-    const retained =
-      sealedTurn &&
-      db.sqlite
-        .prepare(
-          'SELECT 1 FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=? AND revision=?'
-        )
-        .get(entry.kind, entry.turnId, entry.sequence, entry.expectedRevision + 1);
-    entries.push(
-      ...(await (retained
-        ? prepareRetainedControlEntries(db, contentMount, [entry], turn, sealedTurn)
-        : prepareEntries(input.owner, contentMount, [entry], turn, sealedTurn, newDirectories)))
-    );
-  }
+  const entries = await prepareEntries(
+    input.owner,
+    contentMount,
+    input.entries,
+    turn,
+    sealedTurn,
+    newDirectories,
+    db
+  );
   if (entries.some((entry) => entry.input.turnId !== turn.id))
     throw new ControlProductPreconditionError();
   const terminalEvents = entries.filter((entry) => {

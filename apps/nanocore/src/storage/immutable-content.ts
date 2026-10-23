@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
-import { link, open, unlink } from 'node:fs/promises';
+import { type FileHandle, link, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ContentReferenceSchema } from '@openkit/protocol';
@@ -15,6 +15,7 @@ import {
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
+  type ControlProductEntry,
   type ControlProductOwner,
 } from './control-store-products.js';
 import {
@@ -46,85 +47,18 @@ export interface ImmutableContentHandoff {
 export async function publishImmutableContent(
   input: ImmutableContentHandoff
 ): Promise<StorageContent> {
-  const source = ContentReferenceSchema.parse(input.stage.content.reference);
-  const byteLength = input.stage.content.byteLength;
-  if (
-    source.range !== null ||
-    source.availability !== 'available' ||
-    !Number.isSafeInteger(byteLength) ||
-    byteLength < 0 ||
-    byteLength > STORAGE_LIMITS.contentBytes ||
-    source.knowledgeBaseId !== input.access.knowledgeBaseId ||
-    source.locator.mount !== input.access.mount ||
-    !isDeepStrictEqual(source.locator.ownerScope, input.access.ownerScope) ||
-    input.access.mode !== 'staged-write'
-  ) {
-    throw new Error('Immutable handoff requires an admitted whole-content stage.');
-  }
-  if (byteLength === 0) {
-    // Even empty bodies must resolve their real handle under current Storage admission.
-    const empty = await input.storage.readStage({
-      access: input.access,
-      handle: input.stage.handle,
-      offset: 0,
-      length: 1,
-    });
-    if (
-      empty.status !== 'ok' ||
-      empty.value.offset !== 0 ||
-      empty.value.data !== '' ||
-      empty.value.nextOffset !== null
-    ) {
-      throw new Error('Immutable empty stage is unavailable or contradictory.');
-    }
-  }
+  const content = immutableStageContent(input);
+  const source = content.reference;
+  const byteLength = content.byteLength;
   const hex = source.contentDigest.slice('sha256:'.length);
-  const prefix = input.access.pathPrefix ? `${input.access.pathPrefix.replace(/\/$/, '')}/` : '';
-  const reference = ContentReferenceSchema.parse({
-    ...source,
-    locator: { ...source.locator, path: `${prefix}sha256/${hex}` },
-  });
+  const reference = content.reference;
   const destination = join(input.mountRoot, reference.locator.path);
   const directory = dirname(destination);
   await ensureCanonicalDirectoryAsync(directory);
   const temporary = join(directory, `.${hex}.${randomUUID()}.tmp`);
   const file = await open(temporary, 'wx', 0o600);
   try {
-    const hash = createHash('sha256');
-    let offset = 0;
-    while (offset < byteLength) {
-      const result = await input.storage.readStage({
-        access: input.access,
-        handle: input.stage.handle,
-        offset,
-        length: Math.min(STORAGE_LIMITS.chunkBytes, byteLength - offset),
-      });
-      if (result.status !== 'ok' || result.value.offset !== offset) {
-        throw new Error('Immutable stage is unavailable or has contradictory offsets.');
-      }
-      const bytes = Buffer.from(result.value.data, 'base64');
-      if (
-        bytes.length === 0 ||
-        bytes.length > Math.min(STORAGE_LIMITS.chunkBytes, byteLength - offset)
-      ) {
-        throw new Error('Immutable stage has an invalid chunk length.');
-      }
-      const next = offset + bytes.length;
-      if (result.value.nextOffset !== (next === byteLength ? null : next)) {
-        throw new Error('Immutable stage has a contradictory continuation.');
-      }
-      hash.update(bytes);
-      let written = 0;
-      while (written < bytes.length) {
-        const part = await file.write(bytes, written, bytes.length - written, offset + written);
-        if (part.bytesWritten === 0) throw new Error('Immutable content write made no progress.');
-        written += part.bytesWritten;
-      }
-      offset = next;
-    }
-    if (`sha256:${hash.digest('hex')}` !== source.contentDigest) {
-      throw new Error('Immutable stage digest does not match its exact bytes.');
-    }
+    await copyImmutableStage(input, file, content);
     await file.chmod(0o444);
     await file.sync();
     try {
@@ -143,13 +77,102 @@ export async function publishImmutableContent(
   }
 }
 
+/** Validates the existing sealed Storage admission and derives its immutable descriptor. */
+function immutableStageContent(input: ImmutableContentHandoff): StorageContent {
+  const source = ContentReferenceSchema.parse(input.stage.content.reference);
+  const byteLength = input.stage.content.byteLength;
+  if (
+    source.range !== null ||
+    source.availability !== 'available' ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 0 ||
+    byteLength > STORAGE_LIMITS.contentBytes ||
+    source.knowledgeBaseId !== input.access.knowledgeBaseId ||
+    source.locator.mount !== input.access.mount ||
+    !isDeepStrictEqual(source.locator.ownerScope, input.access.ownerScope) ||
+    input.access.mode !== 'staged-write'
+  ) {
+    throw new Error('Immutable handoff requires an admitted whole-content stage.');
+  }
+  const hex = source.contentDigest.slice('sha256:'.length);
+  const prefix = input.access.pathPrefix ? `${input.access.pathPrefix.replace(/\/$/, '')}/` : '';
+  const reference = ContentReferenceSchema.parse({
+    ...source,
+    locator: { ...source.locator, path: `${prefix}sha256/${hex}` },
+  });
+  return { reference, byteLength, mediaType: input.stage.content.mediaType };
+}
+
+/** Copies and verifies a sealed stage without choosing its publishing or synchronization owner. */
+async function copyImmutableStage(
+  input: ImmutableContentHandoff,
+  file: FileHandle,
+  content: StorageContent
+): Promise<void> {
+  const source = content.reference;
+  const byteLength = content.byteLength;
+  if (byteLength === 0) {
+    // Even empty bodies must resolve their real handle under current Storage admission.
+    const empty = await input.storage.readStage({
+      access: input.access,
+      handle: input.stage.handle,
+      offset: 0,
+      length: 1,
+    });
+    if (
+      empty.status !== 'ok' ||
+      empty.value.offset !== 0 ||
+      empty.value.data !== '' ||
+      empty.value.nextOffset !== null
+    ) {
+      throw new Error('Immutable empty stage is unavailable or contradictory.');
+    }
+  }
+  const hash = createHash('sha256');
+  let offset = 0;
+  while (offset < byteLength) {
+    const result = await input.storage.readStage({
+      access: input.access,
+      handle: input.stage.handle,
+      offset,
+      length: Math.min(STORAGE_LIMITS.chunkBytes, byteLength - offset),
+    });
+    if (result.status !== 'ok' || result.value.offset !== offset) {
+      throw new Error('Immutable stage is unavailable or has contradictory offsets.');
+    }
+    const bytes = Buffer.from(result.value.data, 'base64');
+    if (
+      bytes.length === 0 ||
+      bytes.length > Math.min(STORAGE_LIMITS.chunkBytes, byteLength - offset)
+    ) {
+      throw new Error('Immutable stage has an invalid chunk length.');
+    }
+    const next = offset + bytes.length;
+    if (result.value.nextOffset !== (next === byteLength ? null : next)) {
+      throw new Error('Immutable stage has a contradictory continuation.');
+    }
+    hash.update(bytes);
+    let written = 0;
+    while (written < bytes.length) {
+      const part = await file.write(bytes, written, bytes.length - written, offset + written);
+      if (part.bytesWritten === 0) throw new Error('Immutable content write made no progress.');
+      written += part.bytesWritten;
+    }
+    offset = next;
+  }
+  if (`sha256:${hash.digest('hex')}` !== source.contentDigest) {
+    throw new Error('Immutable stage digest does not match its exact bytes.');
+  }
+}
+
 /** Publishes one bounded retained product body through the existing Storage stage owner. */
-export async function publishImmutableProductJson(
+async function withStagedProductJson<T>(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
-  value: unknown
-): Promise<StorageContent> {
+  value: unknown,
+  consume: (input: ImmutableContentHandoff) => Promise<T>
+): Promise<T> {
   if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
     throw new Error(
       'Canonical product publication requires the admitted native work-byte binding.'
@@ -158,8 +181,6 @@ export async function publishImmutableProductJson(
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (bytes.length > CONTROL_PRODUCT_LIMITS.payloadBytes)
     throw new Error('Control product body exceeds its byte limit.');
-  await ensureCanonicalDirectoryAsync(mount.root);
-  await ensureCanonicalDirectoryAsync(stagingRoot);
   const storage = new LocalStorage({
     mounts: [
       {
@@ -202,13 +223,63 @@ export async function publishImmutableProductJson(
         );
       }
       const stage = admitted(await storage.finishStage({ access, handle }));
-      return await publishImmutableContent({ storage, access, stage, mountRoot: mount.root });
+      return await consume({ storage, access, stage, mountRoot: mount.root });
     } finally {
       admitted(await storage.discardStage({ access, handle }));
     }
   } finally {
     await storage.close();
   }
+}
+
+/** Publishes bytes for private bootstrap SQL under its existing phase exclusion. */
+export async function publishImmutableProductJson(
+  mount: ControlProductContentMount,
+  owner: ControlProductOwner,
+  stagingRoot: string,
+  value: unknown
+): Promise<StorageContent> {
+  await ensureCanonicalDirectoryAsync(mount.root);
+  await ensureCanonicalDirectoryAsync(stagingRoot);
+  return withStagedProductJson(mount, owner, stagingRoot, value, publishImmutableContent);
+}
+
+/** Hands verified private bytes to the native publisher; neither a final name nor durability is published on Main. */
+export async function prepareImmutableProductJson(
+  mount: ControlProductContentMount,
+  owner: ControlProductOwner,
+  stagingRoot: string,
+  value: unknown
+): Promise<Pick<ControlProductEntry, 'content' | 'publication'>> {
+  for (const path of [dirname(mount.root), dirname(stagingRoot)])
+    if ((await realpath(path)) !== resolve(path))
+      throw new Error('Native private staging must not traverse a link.');
+  await mkdir(mount.root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EEXIST') throw error;
+  });
+  const metadata = await lstat(mount.root);
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (await realpath(mount.root)) !== resolve(mount.root)
+  )
+    throw new Error('Native publication mount must not traverse a link.');
+  return withStagedProductJson(mount, owner, stagingRoot, value, async (input) => {
+    const content = immutableStageContent(input);
+    const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
+    const path = join(mount.root, temporary);
+    const file = await open(path, 'wx', 0o600);
+    try {
+      await copyImmutableStage(input, file, content);
+      await file.chmod(0o444);
+    } catch (error) {
+      await unlink(path);
+      throw error;
+    } finally {
+      await file.close();
+    }
+    return { content, publication: { temporary } };
+  });
 }
 
 /** Reads exact immutable bytes under the admitted scope binding, never a file-record fallback. */

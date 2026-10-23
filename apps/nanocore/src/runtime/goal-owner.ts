@@ -55,6 +55,7 @@ import {
   recordControlCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import { prepareControlPendingCommands } from '../storage/control-store-pending.js';
+import type { ControlContentPreparation } from '../storage/control-store-products.js';
 import {
   applyControlProducts,
   assertControlProductWriter,
@@ -68,11 +69,8 @@ import {
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
-import { publishImmutableProductJson } from '../storage/immutable-content.js';
-import {
-  ensureCanonicalDirectoryAsync,
-  nativeProductScope,
-} from '../storage/workspace-file-records.js';
+import { prepareImmutableProductJson } from '../storage/immutable-content.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   StoredGoalCardTaskV1Schema,
   StoredGoalCardV1Schema,
@@ -671,7 +669,7 @@ export async function prepareControlGoalCommand(
   db: WorkspaceDb,
   input: ControlGoalCommandInput,
   mount?: ControlProductContentMount,
-  newDirectories?: Set<string>
+  newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlGoalCommand> {
   if (db.sqlite.inTransaction)
     throw new GoalCommandError('invalid_request', 'Goal content preparation must precede SQL.');
@@ -941,7 +939,7 @@ async function publishGoalPendingItem(
         : 'Approve the exact captured commitment.',
     createdAt: receipt.createdAt,
   });
-  const content = await publishImmutableProductJson(
+  const content = await prepareImmutableProductJson(
     mount,
     owner,
     join(db.dataRoot, 'workspaces', db.workspaceId, 'runtime', 'staging'),
@@ -949,7 +947,7 @@ async function publishGoalPendingItem(
   );
   return {
     id: item.id,
-    entry: { kind: 'item', turnId, sequence: 1, expectedRevision: 0, content },
+    entry: { kind: 'item', turnId, sequence: 1, expectedRevision: 0, ...content },
   };
 }
 /** Pins the typed proposal to native Plan lineage before the human sees either effect. */
@@ -1777,7 +1775,6 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   const path = workspaceDbPath(db.dataRoot, input.workspaceId);
   const database = `workspace:${path}`;
   const contentMount = goalContentMount(db);
-  await ensureCanonicalDirectoryAsync(contentMount.root);
   await client.open({
     database,
     path,

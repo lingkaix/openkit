@@ -1222,6 +1222,39 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
   const root = ensureLayoutDirectories(dataRoot).workspaces;
   assertCanonicalDirectory(root);
   rmSync(join(root, '.staging'), { recursive: true, force: true });
+  const scopes = [
+    join(dataRoot, 'server'),
+    ...readdirSync(root, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          WorkspaceIdSchema.safeParse(entry.name).success &&
+          isScopeAdmitted(dataRoot, 'workspace', entry.name)
+      )
+      .map((entry) => join(root, entry.name)),
+  ];
+  for (const scope of scopes) {
+    let directory = scope;
+    // Only exact native roots are cleanup capabilities; links and refused scopes retain their bytes.
+    for (const part of ['evidence', 'backend', 'sha256']) {
+      const metadata = lstatSync(directory, { throwIfNoEntry: false });
+      if (!metadata?.isDirectory() || metadata.isSymbolicLink()) break;
+      directory = join(directory, part);
+      const current = lstatSync(directory, { throwIfNoEntry: false });
+      if (!current?.isDirectory() || current.isSymbolicLink()) break;
+      if (part === 'backend' || part === 'sha256') {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (
+            entry.isFile() &&
+            /^\.[0-9a-f]{64}\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/.test(
+              entry.name
+            )
+          )
+            rmSync(join(directory, entry.name));
+        }
+      }
+    }
+  }
 }
 
 /**
