@@ -159,7 +159,10 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from './test-support/native-environment.js';
-import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
+import {
+  createNativeTaskAdmissionFixture,
+  observeNativeTaskStartup,
+} from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import {
@@ -1889,6 +1892,7 @@ describe('worker MCP routes', () => {
       const caller = StartTaskModeResponseSchema.parse(await started.json()).turn;
       const first = native.executionFor(caller.id);
       await first.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       const firstPackage = native.workerControlGateway.authenticatePackageToken(
         `Bearer ${native.executor.capabilityToken}`,
         { tokenFamily: 'capability' }
@@ -2286,6 +2290,7 @@ describe('worker MCP routes', () => {
       expect(successor.id).not.toBe(caller.id);
       const second = native.executionFor(successor.id);
       await second.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       const target = recordTestNativeRuntimeTarget(coreDb);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
@@ -2681,6 +2686,7 @@ describe('worker MCP routes', () => {
       const firstTurn = StartTaskModeResponseSchema.parse(await started.json()).turn;
       const first = native.executionFor(firstTurn.id);
       await first.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       capabilityToken = native.executor.capabilityToken;
       let environmentPackage = native.workerControlGateway.authenticatePackageToken(
         `Bearer ${capabilityToken}`,
@@ -2760,6 +2766,7 @@ describe('worker MCP routes', () => {
       expect(secondTurn.id).not.toBe(firstTurnId);
       const second = native.executionFor(secondTurn.id);
       await second.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       capabilityToken = native.executor.capabilityToken;
       environmentPackage = native.workerControlGateway.authenticatePackageToken(
         `Bearer ${capabilityToken}`,
@@ -2984,6 +2991,7 @@ describe('worker MCP routes', () => {
       const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
       const first = native.executionFor(turn.id);
       await first.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       const environmentPackage = native.workerControlGateway.authenticatePackageToken(
         `Bearer ${native.executor.capabilityToken}`,
         { tokenFamily: 'capability' }
@@ -3118,6 +3126,7 @@ describe('worker MCP routes', () => {
       expect(secondTurn.id).not.toBe(turn.id);
       const second = native.executionFor(secondTurn.id);
       await second.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       const secondPackage = native.workerControlGateway.authenticatePackageToken(
         `Bearer ${native.executor.capabilityToken}`,
         { tokenFamily: 'capability' }
@@ -3325,6 +3334,7 @@ describe('worker MCP routes', () => {
       expect(started.status, await started.clone().text()).toBe(202);
       const { turn } = StartTaskModeResponseSchema.parse(await started.json());
       await native.executor.launched.promise;
+      await native.waitForStartup(native.executor.nativeLineage!.turnId);
       const environmentPackage = native.workerControlGateway.authenticatePackageToken(
         `Bearer ${native.executor.capabilityToken}`,
         { tokenFamily: 'capability' }
@@ -4020,6 +4030,7 @@ describe('worker MCP routes', () => {
     const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const startup = observeNativeTaskStartup(store);
     const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
       fileAdmission,
       coreDb,
@@ -4153,7 +4164,6 @@ describe('worker MCP routes', () => {
         nativeHandleState: blocked ? 'pending' : 'ready',
         state: 'started',
       });
-      await new Promise<void>((resolve) => setImmediate(resolve));
       const commandBody = started.command.body as Record<string, unknown>;
       const capabilityToken = String(commandBody.capabilityToken);
       const workerControlToken = String(commandBody.workerControlToken);
@@ -4161,6 +4171,7 @@ describe('worker MCP routes', () => {
         `Bearer ${capabilityToken}`,
         { tokenFamily: 'capability' }
       );
+      await startup.waitFor(environmentPackage.scope.turnId);
       expect(environmentPackage.workspace.inputs.every((input) => input.kind === 'generated')).toBe(
         true
       );
@@ -4785,6 +4796,7 @@ describe('worker MCP routes', () => {
       else expect(existsSync(callFile)).toBe(false);
     } finally {
       resultPublication.mockRestore();
+      startup.restore();
       execution.mockRestore();
       await workerMcpGateway.close();
       coreDb.sqlite.close();

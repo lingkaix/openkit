@@ -47,7 +47,10 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -1929,7 +1932,52 @@ it.each([
       startWorker.mock.results.map((result) => result.value)
     );
     if (mode === 'activation')
-      expect(workers.map((result) => result.status)).toEqual(['fulfilled']);
+      expect(
+        workers.map((result) => result.status),
+        // Keep failure evidence without printing messages, arguments or provider material.
+        JSON.stringify(
+          workers.flatMap((result) =>
+            result.status === 'rejected'
+              ? [
+                  {
+                    kind:
+                      result.reason instanceof ControlStoreWorkerError
+                        ? 'native-writer'
+                        : result.reason instanceof Error
+                          ? 'error'
+                          : 'other',
+                    code:
+                      result.reason instanceof ControlStoreWorkerError
+                        ? result.reason.code
+                        : [
+                              'SQLITE_BUSY',
+                              'SQLITE_LOCKED',
+                              'recovery_required',
+                              'operation_storage_unavailable',
+                            ].includes(result.reason?.code)
+                          ? result.reason.code
+                          : null,
+                    commit:
+                      result.reason instanceof ControlStoreWorkerError
+                        ? result.reason.commit
+                        : null,
+                    sourceFrames:
+                      result.reason instanceof Error
+                        ? result.reason.stack
+                            ?.split('\n')
+                            .filter(
+                              (line) =>
+                                line.includes('/apps/nanocore/src/') &&
+                                line.trim().startsWith('at ')
+                            )
+                            .slice(0, 6)
+                        : [],
+                  },
+                ]
+              : []
+          )
+        )
+      ).toEqual(['fulfilled']);
     const ended = store.getTurnById(f.coordinator.id);
     expect(ended.internalExecution).toMatchObject({ profileId: 'coordinator-fixture', limits });
     const view = readGoalView(store, db, scope.goalId);

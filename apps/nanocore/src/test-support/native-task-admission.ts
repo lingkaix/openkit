@@ -67,6 +67,7 @@ export function createNativeTaskAdmissionFixture(
   }
 ) {
   recordTestNativeRuntimeTarget(coreDb);
+  const startup = observeNativeTaskStartup(store);
   const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
   const completion = Promise.withResolvers<void>();
@@ -528,6 +529,7 @@ export function createNativeTaskAdmissionFixture(
     peerFaults,
     workerControlGateway,
     runtime,
+    waitForStartup: startup.waitFor,
     executionFor(turnId: string) {
       const turn = executionFor(turnId);
       return {
@@ -618,7 +620,41 @@ export function createNativeTaskAdmissionFixture(
       startObservation.mockRestore();
       releaseSpy.mockRestore();
       journalObservation.mockRestore();
+      startup.restore();
       return peer;
     },
+  };
+}
+
+/**
+ * Observes the original executor's startup delivery acknowledgement without submitting another write.
+ * @param store Store used by the real executor; install before starting its Turns.
+ * @returns Exact per-Turn acknowledgement joins and the pass-through observer cleanup.
+ */
+export function observeNativeTaskStartup(store: FsStore) {
+  const acknowledgements = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
+  const acknowledgement = (turnId: string) => {
+    let gate = acknowledgements.get(turnId);
+    if (!gate) {
+      gate = Promise.withResolvers<void>();
+      void gate.promise.catch(() => undefined);
+      acknowledgements.set(turnId, gate);
+    }
+    return gate;
+  };
+  const apply = store.applyPendingRequestCommand.bind(store);
+  const observation = vi
+    .spyOn(store, 'applyPendingRequestCommand')
+    .mockImplementation((...args) => {
+      const result = apply(...args);
+      if (args[1].action === 'delivery-prove') {
+        const gate = acknowledgement(args[1].turnId);
+        void result.then(() => gate.resolve(), gate.reject);
+      }
+      return result;
+    });
+  return {
+    waitFor: (turnId: string) => acknowledgement(turnId).promise,
+    restore: () => observation.mockRestore(),
   };
 }

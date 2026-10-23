@@ -895,6 +895,7 @@ it.each([
     admittedTurns.push(turn.id);
     const first = native.executionFor(turn.id);
     await first.launched.promise;
+    await native.waitForStartup(turn.id);
     const pkg = native.workerControlGateway.authenticatePackageToken(
       `Bearer ${native.executor.capabilityToken}`,
       { tokenFamily: 'capability' }
@@ -1064,6 +1065,7 @@ it.each([
     expect(laterTurn.triggerSource?.kind).toBe('approval-resolution');
     admittedTurns.push(laterTurn.id);
     await native.executionFor(laterTurn.id).launched.promise;
+    await native.waitForStartup(laterTurn.id);
     const laterPackage = native.workerControlGateway.authenticatePackageToken(
       `Bearer ${native.executor.capabilityToken}`,
       { tokenFamily: 'capability' }
@@ -1538,6 +1540,7 @@ it.each([
     expect(started.status).toBe(202);
     const { turn } = StartTaskModeResponseSchema.parse(await started.json());
     await native.executionFor(turn.id).launched.promise;
+    await native.waitForStartup(turn.id);
     workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
     const transport = new StreamableHTTPClientTransport(
       new URL('http://nanocore.test/api/worker-capabilities/mcp/reviewed-sink'),
