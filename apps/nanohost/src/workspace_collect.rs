@@ -920,8 +920,15 @@ impl WorkspaceCollector {
             return recovery_required(&command.request_id, "baseline_unstable");
         }
         let result = (|| {
+            // A private baseline is retained source, not a Core cursor. Only identical redelivery may replace it.
+            if self
+                .protection_pairs()?
+                .get("baseline")
+                .is_some_and(|pair| pair != &second.pair)
+            {
+                return Err(ScanFault::Failed);
+            }
             self.promote_loose()?;
-            // A new Core-authorized baseline replaces an unacknowledged observation; the private pair is not a cursor.
             self.publish_selection(&[("baseline", &second.pair)])?;
             self.remove_attempt()?;
             self.prune()?;
@@ -985,6 +992,15 @@ impl WorkspaceCollector {
         second: &Scan,
         unstable: bool,
     ) -> Result<WorkspaceCollectDelivery, ScanFault> {
+        // Naming the pending pair in prepare is the Core acknowledgement; another scan cannot release it.
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.unacknowledged.as_ref())
+            .is_some_and(|pair| pair != &second.pair)
+        {
+            return Err(ScanFault::Failed);
+        }
         let body = self.candidate_body(&command.accepted_base, &second.pair)?;
         if body.len() > COLLECT_CANDIDATE_MAX_BYTES {
             return Err(ScanFault::Failed);
@@ -3909,6 +3925,23 @@ mod tests {
             .collect()
     }
 
+    /// Reads retained source objects because a delivery alone cannot prove prune recovery.
+    fn assert_retained_source(
+        collector: &WorkspaceCollector,
+        pair: &SnapshotPair,
+        bytes: &[u8],
+        manifest: &[u8],
+    ) {
+        collector
+            .verify_pair(pair)
+            .expect("SOURCE-RETENTION must preserve the whole unacknowledged pair");
+        let entries = collector.ls_tree(&pair.tree).unwrap();
+        let source = entries.get(b"a".as_slice()).unwrap();
+        // SOURCE-RETENTION preserves exact source bytes and the whole snapshot pair.
+        assert_eq!(collector.read_blob(&source.oid).unwrap(), bytes);
+        assert_eq!(collector.read_blob(&pair.manifest).unwrap(), manifest);
+    }
+
     fn worker_git(worktree: &Path, args: &[&str]) {
         let status = Command::new("/usr/bin/git")
             .current_dir(worktree)
@@ -4817,34 +4850,74 @@ mod tests {
     }
 
     #[test]
-    fn h1_r2_lost_result_accepts_the_same_previous_head() {
+    fn h1_r2_lost_result_retains_exact_pair_until_core_names_it() {
         let fixture = Fixture::new();
         write_file(&fixture.worktree().join("a"), b"B", 0o644);
         let mut collector = fixture.open();
         let base = collector.retain_worktree_as_base();
-        write_file(&fixture.worktree().join("a"), b"H", 0o644);
-        let first = collector.collect(&command_for(&base, &base));
+        write_file(&fixture.worktree().join("a"), b"H", 0o600);
+        let command = command_for(&base, &base);
+        let first = collector.collect(&command);
         let produced = candidate(&first).head.clone();
-        assert_ne!(produced, base);
+        let original_body = candidate(&first).body.bytes();
+        drop(first);
         drop(collector);
+
+        // A lost Core ACK leaves its supplied cursor at B. Reopen is not an ACK.
         let mut reopened = fixture.open();
-        write_file(&fixture.worktree().join("a"), b"H", 0o644);
-        let retry = reopened.collect(&command_for(&base, &base));
-        match &retry {
-            WorkspaceCollectDelivery::Json { body, .. } => {
-                let text = String::from_utf8_lossy(body);
-                assert!(
-                    !text.contains("effect_failed") && !text.contains("previous_head_mismatch"),
-                    "lost delivery must not block Core's unchanged cursor: {text}"
-                );
-            }
-            WorkspaceCollectDelivery::Candidate(found) => {
-                assert_eq!(found.previous_head, base);
-            }
-        }
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &produced, b"H", b"0600 1 a\n");
+        let retry = reopened.collect(&command);
+        let repeated = candidate(&retry);
+        assert_eq!(repeated.head, produced);
+        assert_eq!(repeated.previous_head, base);
+        assert_eq!(repeated.accepted_base, base);
+        assert_eq!(repeated.body.bytes(), original_body);
+        drop(retry);
+
+        // SOURCE-RETENTION forbids replacing pending H while Core still names B.
+        write_file(&fixture.worktree().join("a"), b"C", 0o640);
+        let mut conflict = command.clone();
+        conflict.request_id = "cd".repeat(32);
+        conflict.collection_id = "collect.2".into();
+        let refused = reopened.collect(&conflict);
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &produced, b"H", b"0600 1 a\n");
+        let refused: serde_json::Value = serde_json::from_slice(&refused.body()).unwrap();
+        assert!(matches!(
+            refused["outcome"].as_str(),
+            Some("effect_failed" | "recovery_required")
+        ));
+        drop(reopened);
+
+        let mut reopened = fixture.open();
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &produced, b"H", b"0600 1 a\n");
         assert_eq!(reopened.state.as_ref().unwrap().head, base);
-        assert!(reopened.object_exists(&base.tree));
-        assert!(reopened.object_exists(&produced.tree));
+        assert_eq!(
+            reopened.state.as_ref().unwrap().unacknowledged.as_ref(),
+            Some(&produced)
+        );
+
+        // Only the Core-named durable cursor acknowledges H and permits C next.
+        let next = reopened.collect(&command_for(&base, &produced));
+        let successor = candidate(&next).head.clone();
+        assert_eq!(candidate(&next).previous_head, produced);
+        assert_ne!(successor, produced);
+        drop(next);
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &produced, b"H", b"0600 1 a\n");
+        assert_retained_source(&reopened, &successor, b"C", b"0640 1 a\n");
+        let acknowledged = reopened.collect(&command_for(&base, &successor));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&acknowledged.body()).unwrap()["outcome"],
+            "no_new_head"
+        );
+        drop(reopened);
+        let reopened = fixture.open();
+        assert_eq!(reopened.state.as_ref().unwrap().head, successor);
+        assert!(reopened.state.as_ref().unwrap().unacknowledged.is_none());
+        assert_retained_source(&reopened, &successor, b"C", b"0640 1 a\n");
     }
 
     #[test]
@@ -6402,7 +6475,7 @@ mod tests {
         assert!(fixture.worktree().join("a").exists());
     }
     #[test]
-    fn h1_r3_lost_baseline_does_not_authorize_a_private_cursor() {
+    fn h1_r3_lost_baseline_retains_source_until_core_names_the_pair() {
         let fixture = Fixture::new();
         write_file(&fixture.worktree().join("a"), b"base", 0o644);
         let absent = SnapshotPair {
@@ -6415,16 +6488,39 @@ mod tests {
         let first: serde_json::Value =
             serde_json::from_slice(&collector.collect(&command).body()).unwrap();
         assert_eq!(first["outcome"], "baseline");
+        let original = required_pair(first.as_object().unwrap(), "head").unwrap();
         drop(collector);
+
+        let mut reopened = fixture.open();
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &original, b"base", b"0644 1 a\n");
+        let retry: serde_json::Value =
+            serde_json::from_slice(&reopened.collect(&command).body()).unwrap();
+        assert_eq!(retry, first);
         write_file(&fixture.worktree().join("a"), b"changed", 0o600);
         command.request_id = "cd".repeat(32);
         command.collection_id = "new-authorized-baseline".into();
-        let mut reopened = fixture.open();
         let next: serde_json::Value =
             serde_json::from_slice(&reopened.collect(&command).body()).unwrap();
-        assert_eq!(next["outcome"], "baseline");
-        assert_ne!(first["head"], next["head"]);
+        // SOURCE-RETENTION: a new baseline command does not acknowledge the old pair.
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &original, b"base", b"0644 1 a\n");
+        assert!(matches!(
+            next["outcome"].as_str(),
+            Some("effect_failed" | "recovery_required")
+        ));
         assert!(reopened.state.is_none());
+        drop(reopened);
+
+        let mut reopened = fixture.open();
+        reopened.prune().unwrap();
+        assert_retained_source(&reopened, &original, b"base", b"0644 1 a\n");
+        // Core's first accepted pair establishes the cursor without losing changed work.
+        let captured = reopened.collect(&command_for(&original, &original));
+        let head = candidate(&captured).head.clone();
+        assert_eq!(candidate(&captured).previous_head, original);
+        assert_retained_source(&reopened, &original, b"base", b"0644 1 a\n");
+        assert_retained_source(&reopened, &head, b"changed", b"0600 1 a\n");
     }
     #[test]
     fn h1_r3_corrupt_existing_promotion_object_is_never_accepted() {
