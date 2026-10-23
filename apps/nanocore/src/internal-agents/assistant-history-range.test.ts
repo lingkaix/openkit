@@ -619,6 +619,7 @@ describe('Assistant exact source-bound history ranges', () => {
   it.each([
     'selected source revision',
     'unread range revision',
+    'source Turn outcome',
     'membership removal',
   ] as const)('denies publication and retained trace reads after %s while preserving trace bytes', async (fault) => {
     const f = await fixture();
@@ -639,6 +640,13 @@ describe('Assistant exact source-bound history ranges', () => {
           "UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
         )
         .run(timestamp, f.workspace.id, LOCAL_USER_ID);
+    } else if (fault === 'source Turn outcome') {
+      // Current canonical source proof includes its accepted outcome, not only Item bytes.
+      await f.store.updateTurn(f.sourceTurn.id, {
+        status: 'failed',
+        completedAt: timestamp,
+        error: { code: 'source_work_failed', message: 'The source work failed after observation.' },
+      });
     } else
       await f.store.updateItem(f.items[fault === 'selected source revision' ? 0 : 1]!.id, {
         text: 'Source revision changed after observation.',

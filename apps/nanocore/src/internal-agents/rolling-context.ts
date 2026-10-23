@@ -134,18 +134,25 @@ export function internalContextRange(
   return { items: rolling, strategy: 'rolling' };
 }
 
-/** Binds canonical source Items; only cross-run rolling history also binds terminal Turn outcomes. */
+/** Binds canonical Items and current rolling outcomes; each synchronous invocation reads each source Turn once. */
 export function internalContextSourceDigest(
   store: Pick<FsStore, 'getTurnById'>,
   items: readonly Item[],
   strategy: Summary['strategy'] = 'rolling'
 ): string {
   if (strategy === 'compaction') return internalContextDigest({ version: 1, sources: items });
+  // Reuse only within this assembly; every later authority check reads current owners again.
+  const outcomes = new Map<string, Pick<Turn, 'status' | 'error'>>();
   return internalContextDigest({
     version: 1,
     sources: items.map((item) => {
-      const turn = store.getTurnById(item.turnId);
-      return { item, turnOutcome: { status: turn.status, error: turn.error } };
+      let turnOutcome = outcomes.get(item.turnId);
+      if (!turnOutcome) {
+        const { status, error } = store.getTurnById(item.turnId);
+        turnOutcome = { status, error };
+        outcomes.set(item.turnId, turnOutcome);
+      }
+      return { item, turnOutcome };
     }),
   });
 }
