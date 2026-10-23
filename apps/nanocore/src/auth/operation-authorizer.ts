@@ -6,6 +6,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 
 import { asApiError } from '../api-errors.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
 import {
@@ -1139,6 +1140,7 @@ export function authorizedWorkspaceSet(
   return candidates.filter(
     (workspaceId) =>
       !admission.isClosed(workspaceId) &&
+      isScopeAdmitted(coreDb.dataRoot, 'workspace', workspaceId) &&
       authorizeWorkspace(coreDb, actor, workspaceId, access) !== null
   );
 }

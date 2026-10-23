@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -17,8 +18,8 @@ import {
 import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import type { TurnStartRuntimeContext } from '../runtime/types.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
-import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { openCoreDb, verifyAndMigrateExistingScopedDatabases } from '../storage/db.js';
+import { readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
@@ -183,6 +184,99 @@ async function readDefaultScope(
 }
 
 describe('server auth flow', () => {
+  it.each([
+    'new sign-in',
+    'existing-session listing',
+  ] as const)('contains a quarantined personal home during %s', async (entry) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-personal-quarantine-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const store = new FsStore({ dataRoot });
+      const app = createApp({
+        auth: createBetterAuth(coreDb, {
+          onActiveUserSession: (userId) => ensureUserQuickChatWorkspace({ coreDb, store, userId }),
+        }),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        store,
+      });
+      const post = (path: string, body: unknown, cookie = '') =>
+        app.request(path, {
+          method: 'POST',
+          headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const credentials = {
+        email: 'quarantined-home@example.invalid',
+        name: 'Quarantined home',
+        password: randomUUID(),
+      };
+      const signup = await post('/api/auth/sign-up/email', credentials);
+      expect(signup.status).toBe(200);
+      let cookie = sessionCookie(signup);
+      const { user } = (await signup.json()) as { user: { id: string } };
+      const homeId = quickChatWorkspaceIdForUser(user.id);
+      const sibling = await readDefaultScope(app, cookie);
+      const homeRoot = join(dataRoot, 'workspaces', homeId);
+      // HTTP success cannot prove that retained authority and home bytes were preserved.
+      const homeBytes = () =>
+        readdirSync(homeRoot, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile() && !entry.name.endsWith('-shm'))
+          .map((entry) => join(entry.parentPath, entry.name))
+          .sort()
+          .map((path) => [path, readFileSync(path)]);
+      const authority = () => [
+        coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all(),
+        coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members ORDER BY workspace_id, user_id')
+          .all(),
+      ];
+      const beforeAuthority = authority();
+      if (entry === 'new sign-in') {
+        expect((await post('/api/auth/sign-out', {}, cookie)).status).toBe(200);
+        await shutdownControlStoreWorkerClient();
+        rmSync(workspaceDbPath(dataRoot, homeId));
+        verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+          FsStore.validateFileAuthority(dataRoot)
+        );
+      } else {
+        refuseScope(dataRoot, { scope: 'workspace', id: homeId, check: 'database' });
+      }
+      expect(isScopeAdmitted(dataRoot, 'workspace', homeId)).toBe(false);
+      const beforeBytes = homeBytes();
+      if (entry === 'new sign-in') {
+        const signin = await post('/api/auth/sign-in/email', credentials);
+        expect(signin.status).toBe(200);
+        cookie = sessionCookie(signin);
+      }
+      const list = await post('/api/app/operations/workspace.list', {}, cookie);
+      expect(list.status).toBe(200);
+      const body = (await list.json()) as { items: Array<{ workspace: { id: string } }> };
+      expect(body.items.map((item) => item.workspace.id)).toEqual([sibling.workspaceId]);
+      const healthy = await post(
+        '/api/app/operations/workspace.read',
+        { workspaceId: sibling.workspaceId },
+        cookie
+      );
+      expect(healthy.status).toBe(200);
+      const refused = await post(
+        '/api/app/operations/workspace.read',
+        { workspaceId: homeId },
+        cookie
+      );
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ code: 'recovery_required' });
+      expect(authority()).toEqual(beforeAuthority);
+      expect(homeBytes()).toEqual(beforeBytes);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('signs up, signs in, scopes workspaces per user, persists sessions, and signs out', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-flow-'));
     const coreDb = openCoreDb(dataRoot);

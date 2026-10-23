@@ -269,3 +269,5 @@ Direct Material revision save validates the exact content against a 16,777,216 U
 Goal proposal inputs expose registered product operations and native Goal, Workspace, Thread, and Turn resource containers; retained and read Policy shapes remain open. NanoCore validates exact current references before it raises approval.
 
 Goal proposal actions use a runtime-neutral enum. NanoCore's `src/policy/goal-domains.test.ts` checks exact parity with the native Policy registry. Changes to this shared schema package require its package-boundary tests, the Web browser-package-boundary test, and regeneration checks for OpenAPI and the bundled administrator CLI.
+
+The closed Workspace sharing failure family includes `personal_workspace_not_deletable` without details. New governed deletion of an active personal home returns HTTP 409 before effects; the [Workspace owner](../../docs/specs/20260715-multi_user_workspace_system.md#governed-deletion) defines eligibility. The existing Core Client parser consumes this same error schema.

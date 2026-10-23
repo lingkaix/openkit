@@ -555,6 +555,7 @@ function selectDeletionRequest(input: {
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
   workspaceId: string;
+  store: FsStore;
 }): WorkspaceDeletionRequestRecord {
   let records: WorkspaceDeletionRequestRecord[];
   try {
@@ -599,6 +600,12 @@ function selectDeletionRequest(input: {
   ) {
     throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
+  if (input.store.getWorkspace(input.workspaceId).kind === 'personal')
+    throw new OperationError(
+      'personal_workspace_not_deletable',
+      'Personal Workspaces cannot be deleted.',
+      409
+    );
   const holdRecordIds = deletionHoldRecordIds(input.repositoryWorkspaceDb, input.workspaceId);
   if (holdRecordIds.length > 0) {
     throw new OperationError(

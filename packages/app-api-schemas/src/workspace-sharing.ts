@@ -432,6 +432,7 @@ const WorkspaceSharingErrorWithoutDetailsSchema = ApiErrorSchema.extend({
     'invitee_unavailable',
     'quick_chat_not_shareable',
     'owner_transfer_required',
+    'personal_workspace_not_deletable',
   ]),
   details: z.never().optional(),
 }).strict();

@@ -1,4 +1,5 @@
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
+import { isScopeAdmitted } from './bootstrap/readiness.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import type { CoreDb } from './storage/db.js';
 
@@ -41,7 +42,7 @@ export interface EnsureUserQuickChatWorkspaceInput {
  * Ensures one active user's built-in personal Workspace before recording its owner relationship.
  *
  * @param input Canonical user, Core relationship store, and shared Workspace store.
- * @returns Resolves after Workspace acknowledgement and owner membership recording.
+ * @returns Resolves after provisioning, or without opening a known unavailable home whose Core ownership remains valid.
  * @throws WorkspaceOwnerMembershipRemovedError when the retained owner membership is removed.
  * @throws Error when the user is inactive or the reserved Workspace identity is contradictory.
  */
@@ -52,10 +53,25 @@ export async function ensureUserQuickChatWorkspace(
     throw new Error('Personal workspace requires an active canonical user.');
   }
   // Retirement reserves the personal identity; authentication must not reprovision its unreadable data.
+  const workspaceId = quickChatWorkspaceIdForUser(input.userId);
   const registry = input.coreDb.sqlite
-    .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
-    .get(quickChatWorkspaceIdForUser(input.userId)) as { status: string } | undefined;
+    .prepare(
+      'SELECT status, owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?'
+    )
+    .get(workspaceId) as { status: string; ownerUserId: string } | undefined;
   if (registry?.status === 'retired') return;
+  if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', workspaceId)) {
+    if (registry?.ownerUserId !== input.userId)
+      throw new Error('Personal Workspace ownership is unavailable or contradictory.');
+    const membership = input.coreDb.sqlite
+      .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(workspaceId, input.userId) as { status: string } | undefined;
+    if (membership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
+    if (registry.status !== 'active' || membership?.status !== 'active')
+      throw new Error('Personal Workspace requires active owner membership.');
+    // Quarantine isolates this home; Core facts do not authorize opening or replacing it.
+    return;
+  }
   const workspace = await input.store.ensureQuickChatWorkspace(input.userId);
   recordWorkspaceOwnerMembership({
     coreDb: input.coreDb,

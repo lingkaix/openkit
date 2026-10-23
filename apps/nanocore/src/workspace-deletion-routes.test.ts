@@ -14,13 +14,17 @@ import { join, relative } from 'node:path';
 import { deriveEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import {
+  ApiCallError,
+  parseWorkspaceSharingError,
+} from '../../../packages/core-client/src/index.js';
+import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { FsStore } from './lib/store.js';
+import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
@@ -64,6 +68,7 @@ import {
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
 import {
+  ensureUserQuickChatWorkspace,
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
   resolveWorkspaceMembershipRelation,
@@ -72,9 +77,106 @@ import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { beginWorkspaceDeletion, completeWorkspaceDeletion } from './workspace-sharing.js';
 
 it.each([
-  'requested',
-  'fenced',
-] as const)('rechecks the current deleting credential after awaited cleanup in %s', async (phase) => {
+  'workspace',
+  'server-admin',
+] as const)('refuses personal home deletion before effects for a %s credential', async (scope) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-personal-deletion-'));
+  const coreDb = openCoreDb(dataRoot);
+  const gateway = createDefaultWorkerMcpGateway(coreDb);
+  const close = vi.spyOn(gateway, 'closeWorkspace');
+  try {
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    await ensureUserQuickChatWorkspace({ coreDb, store, userId });
+    const workspaceId = quickChatWorkspaceIdForUser(userId);
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: userId,
+      scope,
+      workspaceIds: scope === 'workspace' ? [workspaceId] : [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const admission = new WorkspaceMutationAdmission();
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'server',
+      store,
+      workerMcpGateway: gateway,
+      workspaceMutationAdmission: admission,
+    });
+    const headers = {
+      authorization: `Bearer ${token.secret}`,
+      'content-type': 'application/json',
+    };
+    const readable = await app.request(
+      ...operationRequest('workspace.read', { workspaceId }, { headers })
+    );
+    expect(readable.status).toBe(200);
+    // Preserve full retained authority and files, not only the directory's existence.
+    const authority = () => [
+      coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspaceId),
+      coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
+        .all(workspaceId),
+    ];
+    const homeRoot = join(dataRoot, 'workspaces', workspaceId);
+    const homeBytes = () =>
+      readdirSync(homeRoot, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile() && !entry.name.endsWith('-shm'))
+        .map((entry) => join(entry.parentPath, entry.name))
+        .sort()
+        .map((path) => [path, readFileSync(path)]);
+    const beforeAuthority = authority();
+    const beforeBytes = homeBytes();
+    const requestId = randomUUID();
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId },
+        {
+          headers,
+          method: 'POST',
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspaceId}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+        }
+      )
+    );
+    expect(response.status).toBe(409);
+    // Current API Projection owns the personal deletion code and absence of details.
+    const error = await response.json();
+    expect(error.code).toBe('personal_workspace_not_deletable');
+    expect(error).not.toHaveProperty('details');
+    expect(
+      parseWorkspaceSharingError(new ApiCallError(response.status, error.message, error))
+    ).not.toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    expect(admission.isClosed(workspaceId)).toBe(false);
+    expect(authority()).toEqual(beforeAuthority);
+    expect(homeBytes()).toEqual(beforeBytes);
+    expect(
+      existsSync(join(dataRoot, 'server', 'exports', 'workspace-deletions', workspaceId, requestId))
+    ).toBe(false);
+    expect(existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspaceId))).toBe(false);
+  } finally {
+    close.mockRestore();
+    await gateway.close();
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ['requested', false],
+  ['fenced', false],
+  ['requested', true],
+] as const)('rechecks deletion authority in %s (personal=%s)', async (phase, personal) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-current-credential-'));
   const coreDb = openCoreDb(dataRoot);
   let gateway: ReturnType<typeof createDefaultWorkerMcpGateway> | undefined;
@@ -82,14 +184,19 @@ it.each([
   let releaseClose = () => {};
   try {
     applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
+    const userId = ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Current deletion credential');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
-    });
+    if (personal) await ensureUserQuickChatWorkspace({ coreDb, store, userId });
+    const workspace = personal
+      ? store.getWorkspace(quickChatWorkspaceIdForUser(userId))
+      : await store.createWorkspace('Current deletion credential');
+    if (!personal) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: workspace.id,
+      });
+    }
     const token = createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope: phase === 'requested' ? 'workspace' : 'server-admin',

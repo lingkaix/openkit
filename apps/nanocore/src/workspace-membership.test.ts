@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
+import { isScopeAdmitted, refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
@@ -206,7 +207,7 @@ describe('workspace membership foundation', () => {
     }
   });
 
-  it('provisions a first-use Quick Chat home and nominally refuses its retained removed owner membership', async () => {
+  it.each([false, true])('rejects removed home membership (quarantine=%s)', async (quarantined) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-tombstone-'));
     const coreDb = openCoreDb(dataRoot);
     try {
@@ -239,6 +240,8 @@ describe('workspace membership foundation', () => {
         .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
         .all(workspace.id);
       const threads = store.listThreads(workspace.id);
+      if (quarantined)
+        refuseScope(dataRoot, { scope: 'workspace', id: workspace.id, check: 'database' });
       await expect(ensureUserQuickChatWorkspace(input)).rejects.toThrowError(
         WorkspaceOwnerMembershipRemovedError
       );
@@ -252,7 +255,11 @@ describe('workspace membership foundation', () => {
           .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
           .all(workspace.id)
       ).toEqual(registry);
-      expect(store.listThreads(workspace.id)).toEqual(threads);
+      if (quarantined) {
+        expect(isScopeAdmitted(dataRoot, 'workspace', workspace.id)).toBe(false);
+      } else {
+        expect(store.listThreads(workspace.id)).toEqual(threads);
+      }
     } finally {
       coreDb.sqlite.close();
     }

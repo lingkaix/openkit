@@ -46,7 +46,7 @@ kind: concept
 
 ## Summary
 
-Each User receives a default `personal` Workspace. It is an ordinary Workspace whose only special boundary is owner-only membership. It can own Task, Goal, Artifact, Sandbox, repository, and data-source work under their existing authorization and lifecycle rules ([accepted rulings 1 and 12](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
+Each User receives a default `personal` Workspace. It supports ordinary Workspace work with owner-only membership and the deletion exclusion below. It can own Task, Goal, Artifact, Sandbox, repository, and data-source work under their existing authorization and lifecycle rules ([accepted rulings 1 and 12](../decisions/20261015-private_assistant_timeline_and_rolling_context.md)).
 
 ## Goals / Non-goals
 
@@ -62,7 +62,9 @@ User Memory is independently stored in the User scope and retrieved through `202
 
 Use `kind: personal` instead of `quick-chat`. Remove the former non-worker capability guards. Do not require a different Workspace for a Task or Goal handoff. Current authority and effect-specific checks still apply. The private administration entry moves to this personal Workspace without changing its Tool set.
 
-NanoCore ensures one personal Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived personal-Workspace operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before the requested operation is authorized. That provisioning creates only the authenticated actor's own personal Workspace. A currently usable administrator credential may read another user's personal Workspace under the administrator eligibility rule in [Core Permissions](../core/policy.md). That read does not create their home, transfer ownership, or revive a tombstone. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
+Subject to the quarantine and retirement exclusions, NanoCore ensures one personal Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived personal-Workspace operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before the requested operation is authorized. That provisioning creates only the authenticated actor's own personal Workspace. A currently usable administrator credential may read another user's personal Workspace under the administrator eligibility rule in [Core Permissions](../core/policy.md). That read does not create their home, transfer ownership, or revive a tombstone. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
+
+A known quarantined personal home does not block a new authentication session or operations in healthy Workspaces. Provisioning checks the active canonical User and retained Core ownership and membership before skipping the unavailable home; it does not open, recreate, repair or admit that scope. Contradictory ownership and removed membership still fail closed. Public Workspace listing omits quarantined candidates before content reads; an operation addressed to the quarantined home retains its existing refusal. Restore under the existing recovery owner or explicit administrator retirement remains the recovery route.
 
 Fresh initialization creates `personal` Workspaces directly. The engineer ruling of 2026-10-16 removes conversion of pre-v0.1.0 `quick-chat` data: the approved prerelease reset boundary applies, with no predecessor qualification or legacy reader. Current personal Workspace provisioning remains idempotent. The existing pre-stable decision and deployment owner govern any actual reset; this feature grants no reset effect.
 
@@ -100,12 +102,17 @@ Command identity and deterministic owners govern retry. Exact replay returns the
 
 Process restart recovers from the originating Thread, Chat command record, deterministic owner tuple, and current Workspace owners. Provider memory, UI selection, and an earlier Workspace candidate are not recovery authority.
 
+### Governed Deletion
+
+A personal home is ineligible for a new governed Workspace deletion. Refuse with HTTP 409 before deletion-request creation, mutation fencing, exports, registry changes or cleanup, including for its owner and a deployment administrator. Retirement of a quarantined home and restore retain their existing owners; deletion must not become implicit home replacement or account recovery.
+
 ### Observable Acceptance
 
 - A personal Workspace accepts ordinary Task, Goal, Artifact, Sandbox, repository, and data-source admission under their existing owners.
 - A Chat handoff may use a linked execution Thread in that same Workspace with one existing confirmation.
 - Missing execution or disclosure authority leaves an exact durable refusal with no downstream work.
-- Member addition, invitation, transfer, and team conversion fail before mutation.
+- Member addition, invitation, transfer, team conversion, and a new governed deletion fail before mutation.
+- Quarantined-home sign-in and healthy-Workspace listing remain available without admitting or replacing the quarantined home.
 - Migration preserves existing identities, Threads, Knowledge, ownership, and tombstones; restart never creates a duplicate home or resets data.
 
 ### Web Behavior
@@ -130,7 +137,7 @@ The canonical Workspace kind is `personal`. Fresh provisioning writes that kind,
 
 `apps/nanocore/src/lib/store.ts` owns the explicit idempotent Quick Chat Workspace record constructor and the Demo Workspace fixture helper. Local app composition, the server active-session hook, and the actor-derived Quick Chat resolver for a presented usable server-admin bearer invoke the shared provisioning owner in `workspace-membership.ts`; the generic shared-store constructor creates no mode-specific or authority-free Workspace.
 
-Each active local or server user receives one deterministic personal Workspace and canonical owner membership before product use; the shared process store uses owner-independent physical placement. The current identifier API remains the sole identity allocator. The complete membership lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery and portable source-authority reuse for the personal Workspace. Ordinary Task, Goal, repository, Artifact and Worker admission uses the same owners as other Workspaces. A shared execution Thread in a personal Workspace remains readable by its sole member; the private conversation and administration Threads retain their owner audience.
+Ordinary provisioning establishes one deterministic personal Workspace and canonical owner membership for each active local or server user, subject to the quarantine and retirement exclusions above; the shared process store uses owner-independent physical placement. The current identifier API remains the sole identity allocator. The complete membership lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery and portable source-authority reuse for the personal Workspace. Ordinary Task, Goal, repository, Artifact and Worker admission uses the same owners as other Workspaces. A shared execution Thread in a personal Workspace remains readable by its sole member; the private conversation and administration Threads retain their owner audience.
 
 The former stateless Quick Chat entry is superseded by [Retire Stateless Quick Chat](../decisions/20261016-retire_stateless_quick_chat.md). `conversation.submit` owns ordinary Assistant entry on the private Timeline. One-shot CLI and Skill requests use that command and retain its durable lineage. The former direct Provider call and standalone operation are removed, with no compatibility alias.
 

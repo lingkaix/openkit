@@ -53,7 +53,7 @@ Run authentication middleware, server flow, access-token, bootstrap, administrat
 
 The native-environment administration GET and PUT operations use the existing deployment-admin read and mutation classifications. Their per-Thread applied projections additionally check current Workspace eligibility and the exact Thread audience.
 
-The definition-derived product operations use the same exported Workspace authorizer as retained routes. `authorizedWorkspaceSet` admits current registry candidates before any physical read; `isCurrentDeploymentAdministrator` rechecks existing credential authority for bearer and session actors. Migrated private Thread reads pass that current eligibility to the existing audience predicate. Revocation, disabled users and Workspace fences remain fail-closed.
+The definition-derived product operations use the same exported Workspace authorizer as retained routes. `authorizedWorkspaceSet` excludes known quarantined candidates and admits current registry candidates before any physical read; `isCurrentDeploymentAdministrator` rechecks existing credential authority for bearer and session actors. Migrated private Thread reads pass that current eligibility to the existing audience predicate. Revocation, disabled users and Workspace fences remain fail-closed.
 
 Migrated conversation, Task and Pending Request operations use native invocation admission. Their retired route catalog entries and query/body/opaque guard branches are absent; Approval invocation resolves only minimal canonical or Approval-map lineage; answers and withdrawals use body-Workspace and addressed-Thread admission before the domain owner evaluates decisions.
 
