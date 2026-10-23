@@ -108,6 +108,7 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { readWorkObservations } from '../storage/work-observations.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
@@ -198,6 +199,7 @@ import {
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
+  listWorkerControlAcceptedEvents,
   recordWorkerControlAcceptedRecord,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
@@ -547,6 +549,7 @@ async function createWorkerContextExecutorFixture(
   options: {
     /** Publishes the preceding question through its native owner before this receiving Turn exists. */
     readonly prepareThread?: (store: FsStore, threadId: string) => Promise<void>;
+    readonly captureValue?: 'on' | 'off';
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
@@ -563,6 +566,8 @@ async function createWorkerContextExecutorFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = await createDemoStore({ dataRoot });
+  if (options.captureValue)
+    store.setLiveCaptureCoverage({ scope: 'server', value: options.captureValue });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: LOCAL_USER_ID,
@@ -3657,6 +3662,138 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+
+  it('rechecks current artifact authority after collecting an accepted observation source', async () => {
+    const f = await createWorkerContextExecutorFixture('observation-source-authority', {
+      captureValue: 'on',
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    const collect = backend.collectTranscript.bind(backend);
+    let metadata!: WorkerCanonicalEventRecord;
+    let originalEvents!: WorkerCanonicalEventRecord[];
+    vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
+      const transcript = await collect();
+      const pkg = backend.lastPackage!;
+      // No provenance requirement can supply an earlier artifact-authority refusal in this case.
+      expect(pkg.control.transcript?.runtimeProvenance).toBeUndefined();
+      const bytes = Buffer.from('hold');
+      metadata = WorkerCanonicalEventRecordSchema.parse({
+        schemaVersion: 1,
+        kind: 'event',
+        lineage: {
+          workspaceId: pkg.scope.workspaceId,
+          threadId: pkg.scope.threadId,
+          turnId: pkg.scope.turnId,
+          agentSessionId: pkg.scope.agentSessionId,
+          requestId: pkg.scope.requestId,
+          packageSnapshotId: pkg.snapshotId,
+        },
+        sequence: 0,
+        event: {
+          type: 'observation.recorded',
+          data: {
+            observationId: 'authority-source',
+            sourceRef: 'authority-source',
+            sourceSequence: 0,
+            observedAt: pkg.createdAt,
+            fact: {
+              kind: 'assistant',
+              runtimeOriginRef: null,
+              phase: 'updated',
+              messageRef: 'authority-message',
+              representation: 'delta',
+            },
+            content: {
+              state: 'expected',
+              mediaType: 'text/plain',
+              boundary: 'assistant.text',
+              bytes: bytes.length,
+              chunkCount: 1,
+              sha256: turnRuntimeSha256(bytes),
+            },
+          },
+        },
+      });
+      const chunk = WorkerCanonicalEventRecordSchema.parse({
+        schemaVersion: 1,
+        kind: 'event',
+        lineage: metadata.lineage,
+        sequence: 1,
+        event: {
+          type: 'observation.content.chunk',
+          data: {
+            observationId: 'authority-source',
+            chunkIndex: 0,
+            byteOffset: 0,
+            encoding: 'base64',
+            data: bytes.toString('base64'),
+          },
+        },
+      });
+      await recordWorkerControlAcceptedRecord(f.coreDb, {
+        acceptedAt: pkg.createdAt,
+        lineage: metadata.lineage,
+        operation: 'event_append',
+        record: metadata,
+        recordKey: '0',
+        sequence: 0,
+      });
+      originalEvents = listWorkerControlAcceptedEvents(f.coreDb, metadata.lineage);
+      const directory = join(f.coreDb.dataRoot, 'capture', 'runtime', 'observations');
+      mkdirSync(directory, { recursive: true });
+      const sourcePath = join(directory, '0.jsonl');
+      writeFileSync(sourcePath, `${JSON.stringify(metadata)}\n${JSON.stringify(chunk)}\n`, {
+        mode: 0o600,
+      });
+      // Source I/O and recovery still follow this awaited collection boundary.
+      f.coreDb.sqlite.transaction(() => {
+        disableCanonicalUser(f.coreDb, LOCAL_USER_ID, new Date('2026-07-15T00:00:02.000Z'));
+      })();
+      delete transcript.itemsJsonl;
+      return {
+        ...transcript,
+        eventsJsonl: `${JSON.stringify(metadata)}\n`,
+        observationSources: [{ metadata, sourcePath }],
+      };
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: f.coreDb,
+      createAgentSessionId: () => f.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await expect(
+        executor.startTurn(f.store, f.turn.id, f.workerRequest, {
+          attemptId: testEntityId('attempt', `lease_${f.turn.id}`),
+          agentSessionId: f.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: f.requestId,
+          sandboxBindingRef: f.sandboxBindingRef,
+          triggerActor: f.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+      expect(listWorkerControlAcceptedEvents(f.coreDb, metadata.lineage)).toEqual(originalEvents);
+      const db = openTestWorkspaceDb(f.coreDb);
+      try {
+        const rows = readWorkObservations(db, { threadId: f.turn.threadId, turnId: f.turn.id });
+        expect(
+          rows.some(
+            (row) =>
+              row.type === 'runtime.observed' && row.payload.observationId === 'authority-source'
+          )
+        ).toBe(true);
+        expect(rows.filter((row) => row.type === 'content.published')).toEqual([]);
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      f.coreDb.sqlite.close();
     }
   });
 

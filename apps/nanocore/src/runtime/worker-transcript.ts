@@ -39,6 +39,8 @@ export interface WorkerTranscriptPayload {
   eventsJsonl?: string;
   /** Serialized items.jsonl content from the exact admitted Thread/runtime/Turn capture. */
   itemsJsonl?: string;
+  /** Exact restricted emission sources selected from already accepted metadata; never live control authority. */
+  observationSources?: { metadata: WorkerCanonicalEventRecord; sourcePath: string }[];
   /** Backend-local restricted runtime provenance files, when the AEP requested collection. */
   runtimeProvenance?: WorkerRuntimeProvenanceCollection;
 }

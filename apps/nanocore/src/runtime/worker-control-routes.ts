@@ -1,4 +1,5 @@
 import {
+  WORKER_CONTROL_EVENT_APPEND_MAX_BYTES,
   WorkerCanonicalEventRecordReaderSchema,
   WorkerCanonicalTerminalEventDataReaderSchema,
   WorkerCapabilityCallSummaryReaderSchema,
@@ -43,7 +44,6 @@ const WorkerControlEventAppendRequestSchema = z.object({
   record: WorkerCanonicalEventRecordReaderSchema,
 });
 const WORKER_CONTROL_REQUEST_MAX_BYTES = 64 * 1024;
-const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
 
 /**
  * Registers the sandbox-authenticated direct worker-control routes.

@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
+import {
+  type WorkerCanonicalEventRecord,
+  WorkerCanonicalEventRecordSchema,
+  type WorkerLineage,
+  WorkerObservationDataSchema,
+} from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { readWorkObservationBody } from '../evidence-bundles.js';
+import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
+import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -34,6 +40,7 @@ import {
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
   recordWorkerControlAcceptedRecord,
+  recoverWorkerObservationSource,
   resolveWorkerControlFinalStatusTokenBinding,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
@@ -1470,6 +1477,340 @@ it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses conten
     ).accepted
   ).toBe(false);
   expect(historical.rows()).toEqual([]);
+});
+
+/** Builds original wire envelopes; source recovery must not create control acceptance for them. */
+function retainedObservationRecord(
+  f: Awaited<ReturnType<typeof nativeReceiver>>,
+  sequence: number,
+  type: string,
+  data: unknown
+): WorkerCanonicalEventRecord {
+  return WorkerCanonicalEventRecordSchema.parse({
+    schemaVersion: 1,
+    kind: 'event',
+    lineage: { ...f.lineage },
+    sequence,
+    event: { type, data },
+  });
+}
+
+/** Places only the selected restricted source under its existing collector-relative path. */
+function retainedObservationSource(
+  f: Awaited<ReturnType<typeof nativeReceiver>>,
+  records: readonly WorkerCanonicalEventRecord[]
+): string {
+  const directory = join(f.root, 'capture', 'runtime', 'observations');
+  mkdirSync(directory, { recursive: true });
+  const sourcePath = join(directory, `${records[0]!.sequence}.jsonl`);
+  writeFileSync(sourcePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, {
+    mode: 0o600,
+  });
+  return sourcePath;
+}
+
+// SOURCE-RETENTION and RET Incremental Runtime And Model Content: exact evidence, no control replay.
+it('recovers an admitted body after a lost chunk ACK without filling the live control stream', async () => {
+  const f = await nativeReceiver();
+  // The admitted 48-KiB wire boundary splits the UTF-8 snow character between real chunks.
+  const bytes = Buffer.concat([
+    Buffer.alloc(48 * 1024 - 1, 0x61),
+    Buffer.from('\u96ea'),
+    Buffer.from([255, 0, 10]),
+  ]);
+  const data = WorkerObservationDataSchema.parse(
+    nativeMetadata(f, 'retained-source', bytes, {
+      kind: 'native-transcript',
+      chunkCount: 2,
+    })
+  );
+  const sessionDir = join(f.root, 'capture');
+  const sourcePath = join(sessionDir, 'runtime', 'observations', '1.jsonl');
+  const delivered: WorkerCanonicalEventRecord[] = [];
+  const lostAck = new Error('Synthetic lost ACK after Core accepted the first chunk.');
+  {
+    // This is the real producer-to-consumer crossing; neither owner is replaced by a double.
+    const writer = new WorkerTranscriptWriter({
+      sessionDir,
+      lineage: { ...f.lineage },
+      appendEvent: async (record) => {
+        if (record.event.type === 'observation.recorded') {
+          // SOURCE-RETENTION requires all restricted bytes before first live exposure.
+          const source = readFileSync(sourcePath, 'utf8');
+          expect(source.endsWith('\n')).toBe(true);
+          const retained = source
+            .slice(0, -1)
+            .split('\n')
+            .map((line) => WorkerCanonicalEventRecordSchema.parse(JSON.parse(line)));
+          expect(retained[0]).toEqual(record);
+          expect(retained.map((entry) => entry.sequence)).toEqual([1, 2, 3]);
+          const chunks = retained.slice(1).map((entry) => {
+            if (entry.event.type !== 'observation.content.chunk')
+              throw new Error('Expected the real writer restricted chunk envelope.');
+            return entry.event.data;
+          });
+          expect(chunks.map((chunk) => [chunk.chunkIndex, chunk.byteOffset])).toEqual([
+            [0, 0],
+            [1, 48 * 1024],
+          ]);
+          expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.data, 'base64')))).toEqual(
+            bytes
+          );
+        }
+        delivered.push(record);
+        const result = await f.send(record.sequence, record.event.type, record.event.data);
+        expect(result.accepted).toBe(true);
+        if (record.sequence === 2) throw lostAck;
+      },
+    });
+    // The fixture's existing sequence-0 heartbeat receipt must replay identically.
+    await writer.writeAndAppendEvent({ type: 'worker.heartbeat', data: { status: 'running' } });
+    await expect(writer.writeObservation(data, bytes)).rejects.toBe(lostAck);
+  }
+  // No originating writer or callback is used after this point; recovery reads its actual file.
+  expect(delivered.map((record) => record.sequence)).toEqual([0, 1, 2]);
+  const metadata = delivered[1]!;
+  expect(metadata.event.type).toBe('observation.recorded');
+  expect(nativeBodies(f)).toEqual([]);
+  const originalRows = f.rows();
+  const originalReceipts = f.receipts();
+  f.restart();
+  await recoverWorkerObservationSource(f.coreDb, {
+    environmentPackage: f.pkg,
+    metadata,
+    sourcePath,
+    assertPublicationAuthority: () => undefined,
+  });
+  expect(f.receipts()).toEqual(originalReceipts);
+  expect(f.rows().filter((row) => row.type === 'runtime.observed')).toEqual(originalRows);
+  const [published] = nativeBodies(f);
+  expect(published!.bytes).toEqual(bytes);
+  const publishedRows = f.rows();
+  const originalRef = published!.ref;
+
+  // Reopen a separate reader after recovery; in-memory caller state cannot prove durability.
+  const reopened = openWorkspaceDb(f.root, f.lineage.workspaceId);
+  try {
+    expect(readWorkObservations(reopened, f.owner)).toEqual(publishedRows);
+    expect(
+      Buffer.from(
+        readWorkObservationBody(reopened, {
+          ...f.owner,
+          bundleId: originalRef.locator,
+          createdAt: data.observedAt,
+          sha256: originalRef.digest!,
+        })!
+      )
+    ).toEqual(bytes);
+  } finally {
+    reopened.sqlite.close();
+  }
+  await recoverWorkerObservationSource(f.coreDb, {
+    environmentPackage: f.pkg,
+    metadata,
+    sourcePath,
+    assertPublicationAuthority: () => undefined,
+  });
+  expect(f.rows()).toEqual(publishedRows);
+  expect(nativeBodies(f)).toEqual([{ ref: originalRef, bytes }]);
+  expect(f.receipts()).toEqual(originalReceipts);
+  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+  // The missing final chunk's sequence has no receipt or fingerprint from evidence recovery.
+  expect((await f.send(3, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
+});
+
+// The caller owns current Policy; the evidence owner must propagate its submission refusal.
+it('refuses recovered body publication when the current caller authority check fails', async () => {
+  const f = await nativeReceiver();
+  const bytes = Buffer.from('hold');
+  const data = nativeMetadata(f, 'authority-refused', bytes, { chunkCount: 2 });
+  const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);
+  expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);
+  const sourcePath = retainedObservationSource(f, [
+    metadata,
+    retainedObservationRecord(
+      f,
+      2,
+      'observation.content.chunk',
+      nativeChunk(data.observationId, bytes.subarray(0, 2))
+    ),
+    retainedObservationRecord(
+      f,
+      3,
+      'observation.content.chunk',
+      nativeChunk(data.observationId, bytes.subarray(2), 1, 2)
+    ),
+  ]);
+  const rows = f.rows();
+  const receipts = f.receipts();
+  const refusal = new Error('Synthetic current publication authority ended.');
+  let submissions = 0;
+  await expect(
+    recoverWorkerObservationSource(f.coreDb, {
+      environmentPackage: f.pkg,
+      metadata,
+      sourcePath,
+      assertPublicationAuthority: () => {
+        submissions += 1;
+        if (submissions === 2) throw refusal;
+      },
+    })
+  ).rejects.toBe(refusal);
+  expect(submissions).toBe(2);
+  expect(f.rows()).toEqual(rows);
+  expect(nativeBodies(f)).toEqual([]);
+  expect(f.receipts()).toEqual(receipts);
+});
+
+// Each damaged source must fail before any body is published or any live receipt is created.
+it.each([
+  'missing-live-metadata',
+  'missing-live-receipt',
+  'changed-metadata',
+  'wrong-package',
+  'torn-jsonl',
+  'source-is-directory',
+  'noncanonical-base64',
+  'noncontiguous-chunk',
+  'wrong-full-digest',
+  'same-sequence-conflict',
+] as const)('refuses retained observation source %s without publication or control repair', async (fault) => {
+  const f = await nativeReceiver();
+  const bytes = Buffer.from('abcd');
+  const data = nativeMetadata(f, 'invalid-source', bytes, { chunkCount: 2 });
+  const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);
+  const chunks = [
+    retainedObservationRecord(
+      f,
+      2,
+      'observation.content.chunk',
+      nativeChunk(data.observationId, bytes.subarray(0, 2))
+    ),
+    retainedObservationRecord(
+      f,
+      3,
+      'observation.content.chunk',
+      nativeChunk(data.observationId, bytes.subarray(2), 1, 2)
+    ),
+  ];
+  if (fault === 'missing-live-receipt') {
+    // Fault between real native preparation and the separate synchronous Core receipt.
+    await createWorkerControlAcceptedRecordRecorder(f.coreDb).prepareObservation!(metadata);
+    expect(f.rows()).toHaveLength(1);
+  } else if (fault !== 'missing-live-metadata') {
+    expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);
+  }
+  const source = structuredClone([metadata, ...chunks]);
+  if (fault === 'changed-metadata') {
+    const event = source[0]!.event;
+    if (event.type !== 'observation.recorded') throw new Error('metadata fixture');
+    event.data.observedAt = '2026-01-01T00:00:00.000Z';
+  }
+  if (fault === 'wrong-package') source[0]!.lineage.packageSnapshotId += '_other';
+  if (fault === 'noncanonical-base64') {
+    const event = source[1]!.event;
+    if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
+    event.data.data = 'YWI';
+  }
+  if (fault === 'noncontiguous-chunk') {
+    const event = source[2]!.event;
+    if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
+    event.data.byteOffset = 1;
+  }
+  if (fault === 'wrong-full-digest') {
+    const event = source[2]!.event;
+    if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
+    event.data.data = Buffer.from('XY').toString('base64');
+  }
+  if (fault === 'same-sequence-conflict') source[2]!.sequence = source[1]!.sequence;
+  const sourcePath = retainedObservationSource(f, source);
+  if (fault === 'torn-jsonl') writeFileSync(sourcePath, `${JSON.stringify(metadata)}\n{`);
+  if (fault === 'source-is-directory') {
+    rmSync(sourcePath);
+    mkdirSync(sourcePath);
+  }
+  const rows = f.rows();
+  const receipts = f.receipts();
+  f.restart();
+  await expect(
+    recoverWorkerObservationSource(f.coreDb, {
+      environmentPackage: f.pkg,
+      metadata,
+      sourcePath,
+      assertPublicationAuthority: () => undefined,
+    })
+  ).rejects.toThrow();
+  expect(f.rows()).toEqual(rows);
+  expect(nativeBodies(f)).toEqual([]);
+  expect(f.receipts()).toEqual(receipts);
+  // Failed evidence validation must leave unreceived metadata sequence 1 available too.
+  if (fault === 'missing-live-metadata' || fault === 'missing-live-receipt')
+    expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
+});
+
+it('keeps accepted capture-off metadata bodyless during source recovery', async () => {
+  const f = await nativeReceiver('off');
+  const expected = nativeMetadata(f, 'off-source', Buffer.alloc(0));
+  const data = {
+    ...expected,
+    fact: {
+      ...expected.fact,
+      coverage: 'off',
+      native: {
+        ...expected.fact.native,
+        range: null,
+        observedBytes: null,
+      },
+    },
+    content: { state: 'off' },
+  };
+  const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);
+  expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);
+  const sourcePath = retainedObservationSource(f, [metadata]);
+  const rows = f.rows();
+  const receipts = f.receipts();
+  await recoverWorkerObservationSource(f.coreDb, {
+    environmentPackage: f.pkg,
+    metadata,
+    sourcePath,
+    assertPublicationAuthority: () => undefined,
+  }).catch(() => undefined);
+  expect(nativeBodies(f)).toEqual([]);
+  expect(f.rows()).toEqual(rows);
+  expect(f.receipts()).toEqual(receipts);
+});
+
+it('does not restore lawfully expired observation bytes from retained producer source', async () => {
+  const f = await nativeReceiver();
+  const bytes = Buffer.from('aged');
+  const data = nativeMetadata(f, 'expired-source', bytes);
+  const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);
+  const chunk = nativeChunk(data.observationId, bytes);
+  const sourcePath = retainedObservationSource(f, [
+    metadata,
+    retainedObservationRecord(f, 2, 'observation.content.chunk', chunk),
+  ]);
+  expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);
+  expect((await f.send(2, 'observation.content.chunk', chunk)).accepted).toBe(true);
+  expect(nativeBodies(f)[0]!.bytes).toEqual(bytes);
+  compactWorkspaceEvidenceBundles({
+    workspaceDb: f.db,
+    workspaceId: f.lineage.workspaceId,
+    olderThan: '9999-01-01T00:00:00.000Z',
+  });
+  expect(nativeBodies(f)[0]!.bytes).toBeNull();
+  const rows = f.rows();
+  const receipts = f.receipts();
+  // Refusal or an idempotent no-op is valid; neither may resurrect expired content.
+  await recoverWorkerObservationSource(f.coreDb, {
+    environmentPackage: f.pkg,
+    metadata,
+    sourcePath,
+    assertPublicationAuthority: () => undefined,
+  }).catch(() => undefined);
+  expect(nativeBodies(f)[0]!.bytes).toBeNull();
+  expect(f.rows()).toEqual(rows);
+  expect(f.receipts()).toEqual(receipts);
 });
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.

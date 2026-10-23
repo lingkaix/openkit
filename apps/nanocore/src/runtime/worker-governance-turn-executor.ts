@@ -182,6 +182,7 @@ import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
+  recoverWorkerObservationSource,
   turnStatusForCanonicalWorkerStopReason,
 } from './worker-control-records.js';
 import {
@@ -3243,6 +3244,31 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           });
           if (!provenance.complete) {
             throw new Error('Required worker runtime provenance verification failed.');
+          }
+        }
+        if (transcript.observationSources?.length) {
+          const assertPublicationAuthority = () => {
+            if (
+              !this.coreDb ||
+              !currentWorkerLineageWorkspaceAuthority(
+                this.coreDb,
+                workerLineage,
+                'artifact.write',
+                true
+              )
+            )
+              throw new TurnStartValidationError(
+                'workspace_access_denied',
+                'Workspace access denied.',
+                403
+              );
+          };
+          for (const source of transcript.observationSources) {
+            await recoverWorkerObservationSource(this.coreDb!, {
+              environmentPackage,
+              ...source,
+              assertPublicationAuthority,
+            });
           }
         }
         const acceptedLiveEvents = this.coreDb

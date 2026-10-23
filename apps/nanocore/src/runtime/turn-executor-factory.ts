@@ -13,10 +13,12 @@ import {
 import { readRetainedV1, responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
+  WORKER_OBSERVATION_SOURCE_MAX_BYTES,
   WorkerRuntimeRawStreamManifestSchema,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
   WorkspaceGitBaselineSchema,
+  workerObservationSourceRelativePath,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import {
@@ -36,6 +38,7 @@ import {
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type CoreDb, openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { readWorkObservations } from '../storage/work-observations.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
@@ -102,7 +105,9 @@ import {
 import { hashWorkerRouteToken, type WorkerControlGateway } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
+  listWorkerControlAcceptedEvents,
   waitForWorkerControlFinalStatus,
+  workerObservationRecordId,
 } from './worker-control-records.js';
 import {
   requireWorkerCredentialCheckValues,
@@ -4130,6 +4135,54 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
     const eventsBytes = await exportTranscriptFile(transcript.eventsPath);
     const itemsBytes = await exportTranscriptFile(transcript.itemsPath);
+    const observationSources: NonNullable<WorkerTranscriptPayload['observationSources']> = [];
+    const lineage = { ...session.environmentPackage.scope, packageSnapshotId };
+    const observationDb = openWorkspaceDb(this.coreDb.dataRoot, lineage.workspaceId);
+    let publications: Set<string>;
+    try {
+      publications = new Set(
+        readWorkObservations(observationDb, lineage)
+          .filter((row) => row.type === 'content.published')
+          .map((row) => row.id)
+      );
+    } finally {
+      observationDb.sqlite.close();
+    }
+    for (const metadata of listWorkerControlAcceptedEvents(this.coreDb, lineage)) {
+      // Ordinary transcript reconciliation separately verifies these original accepted envelopes.
+      if (
+        metadata.event.type !== 'observation.recorded' ||
+        metadata.event.data.content.state !== 'expected' ||
+        publications.has(
+          `${workerObservationRecordId(packageSnapshotId, metadata.event.data.observationId)}:publication`
+        )
+      )
+        continue;
+      const { relativePath, slot } = resolveNanoHostExportPath(
+        session.environmentPackage,
+        `${transcript.root}/${workerObservationSourceRelativePath(metadata.sequence)}`
+      );
+      if (slot !== 'session')
+        throw new Error('Observation source is outside its admitted Turn capture.');
+      const result = await this.effect(session.identity, session.attemptId, 'file.export', {
+        finalStatusAccepted,
+        maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
+        presence: 'optional',
+        relativePath,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        slot,
+        terminalBarrierProved,
+      });
+      if (result.state === 'absent') continue; // Expected but unpublished remains an explicit content gap.
+      const sourcePath = requireNanoHostResultString(result, 'stagingPath');
+      session.retainedStagingPaths.push(sourcePath);
+      if (
+        requireNanoHostResultByteLength(result, 'byteLength') > WORKER_OBSERVATION_SOURCE_MAX_BYTES
+      )
+        throw new Error('Observation source exceeds its existing transport-derived bound.');
+      await inspectNanoHostStagedExport(result);
+      observationSources.push({ metadata, sourcePath });
+    }
     let runtimeProvenance: WorkerRuntimeProvenanceCollection | null = null;
     if (transcript.runtimeProvenance) {
       const declaration = transcript.runtimeProvenance;
@@ -4193,6 +4246,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : null,
       eventsJsonl: eventsBytes.toString('utf8'),
       itemsJsonl: itemsBytes.toString('utf8'),
+      ...(observationSources.length ? { observationSources } : {}),
       ...(runtimeProvenance ? { runtimeProvenance } : {}),
     };
   }

@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
-import { NativeLogMaxBytesSchema } from '@openkit/config-schema';
+import { type AgentEnvironmentPackage, NativeLogMaxBytesSchema } from '@openkit/config-schema';
 import {
   readRetainedV1,
   type StopReason,
@@ -10,7 +12,10 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import {
+  WORKER_CONTROL_EVENT_APPEND_MAX_BYTES,
+  WORKER_OBSERVATION_SOURCE_MAX_BYTES,
   type WorkerCanonicalEventRecord,
+  WorkerCanonicalEventRecordReaderSchema,
   WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerObservationData,
@@ -165,6 +170,141 @@ export function recordWorkerControlAcceptedRecord(
   writeWorkerControlAcceptedRecord(coreDb, input);
 }
 
+/** Returns the original native observation identity shared by live capture and source recovery. */
+export function workerObservationRecordId(
+  packageSnapshotId: string,
+  observationId: string
+): string {
+  return `obs_runtime_${createHash('sha256')
+    .update(JSON.stringify([packageSnapshotId, observationId]))
+    .digest('hex')}`;
+}
+
+/**
+ * Recovers restricted bytes for already accepted metadata without creating live control acceptance.
+ * @param coreDb Original Core receipt owner.
+ * @param input Historical AEP, original metadata and backend-private verified source file; caller checks current publication authority.
+ * @throws When source, lineage or original acceptance is missing or conflicting.
+ */
+export async function recoverWorkerObservationSource(
+  coreDb: CoreDb,
+  input: {
+    environmentPackage: AgentEnvironmentPackage;
+    metadata: WorkerCanonicalEventRecord;
+    sourcePath: string;
+    assertPublicationAuthority: () => void;
+  }
+): Promise<void> {
+  if (coreDb.sqlite.inTransaction)
+    throw new Error('Observation recovery must precede the Core transaction');
+  const metadata = WorkerCanonicalEventRecordReaderSchema.parse(input.metadata);
+  const pkg = input.environmentPackage;
+  if (
+    metadata.event.type !== 'observation.recorded' ||
+    !sameWorkerControlLineage(metadata.lineage, {
+      ...pkg.scope,
+      packageSnapshotId: pkg.snapshotId,
+    })
+  )
+    throw new Error('recovery_required: observation source lineage mismatch');
+  const content = metadata.event.data.content;
+  if (content.state !== 'expected') throw new Error('Observation source has no admitted body');
+  const checkReceipt = (record: WorkerCanonicalEventRecord, required = false): void => {
+    const fingerprint = coreDb.sqlite
+      .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND sequence=?`)
+      .get(record.lineage.agentSessionId, record.lineage.packageSnapshotId, record.sequence) as
+      | { fingerprint: string }
+      | undefined;
+    if (
+      fingerprint &&
+      !isDeepStrictEqual(JSON.parse(fingerprint.fingerprint), workerControlEventReceipt(record))
+    )
+      throw new Error('recovery_required: observation source sequence conflict');
+    const row = coreDb.sqlite
+      .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
+      FROM worker_control_records WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND record_key=?`)
+      .get(
+        record.lineage.agentSessionId,
+        record.lineage.packageSnapshotId,
+        String(record.sequence)
+      ) as { schemaVersion: unknown; recordJson: string } | undefined;
+    if (
+      (!row && required) ||
+      (row &&
+        !readRetainedV1(row, () =>
+          isDeepStrictEqual(JSON.parse(row.recordJson), workerControlEventReceipt(record))
+        ))
+    )
+      throw new Error('recovery_required: original observation acceptance missing or conflicting');
+  };
+  checkReceipt(metadata, true);
+  const source = await open(
+    input.sourcePath,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  const chunks: WorkerCanonicalEventRecord[] = [];
+  try {
+    const stat = await source.stat();
+    if (!stat.isFile() || stat.size < 1 || stat.size > WORKER_OBSERVATION_SOURCE_MAX_BYTES)
+      throw new Error('Observation source file exceeds its bounded representation');
+    const hash = createHash('sha256');
+    let count = 0;
+    let bytes = 0;
+    const buffer = Buffer.alloc(WORKER_CONTROL_EVENT_APPEND_MAX_BYTES);
+    let position = 0;
+    while (position < stat.size) {
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, position);
+      const end = buffer.subarray(0, bytesRead).lastIndexOf(10);
+      if (end < 0)
+        throw new Error('Observation source line is torn or exceeds its transport bound');
+      position += end + 1;
+      for (const line of buffer.subarray(0, end).toString('utf8').split('\n')) {
+        const record = WorkerCanonicalEventRecordReaderSchema.parse(JSON.parse(line));
+        if (count++ === 0) {
+          if (!isDeepStrictEqual(record, metadata))
+            throw new Error('Observation source metadata conflict');
+          continue;
+        }
+        if (
+          record.event.type !== 'observation.content.chunk' ||
+          !sameWorkerControlLineage(record.lineage, metadata.lineage) ||
+          record.sequence !== metadata.sequence + count - 1 ||
+          chunks.length >= content.chunkCount
+        )
+          throw new Error('Observation source chunk identity conflict');
+        const chunk = record.event.data;
+        const decoded = Buffer.from(chunk.data, 'base64');
+        if (
+          chunk.observationId !== metadata.event.data.observationId ||
+          chunk.chunkIndex !== chunks.length ||
+          chunk.byteOffset !== bytes ||
+          decoded.toString('base64') !== chunk.data ||
+          bytes + decoded.length > content.bytes
+        )
+          throw new Error('Observation source chunk coordinates conflict');
+        checkReceipt(record);
+        hash.update(decoded);
+        bytes += decoded.length;
+        chunks.push(record);
+      }
+    }
+    if (
+      chunks.length !== content.chunkCount ||
+      bytes !== content.bytes ||
+      `sha256:${hash.digest('hex')}` !== content.sha256
+    )
+      throw new Error('Observation source digest or length conflict');
+  } finally {
+    await source.close();
+  }
+  // Source collection restores evidence only. It never fills stale live sequences or receipts.
+  for (const chunk of chunks) {
+    input.assertPublicationAuthority();
+    await recordWorkerObservation(coreDb, chunk, false);
+  }
+}
+
 /** Writes only the original Core receipt; native observation work finishes before this synchronous step. */
 function writeWorkerControlAcceptedRecord(
   coreDb: CoreDb,
@@ -262,11 +402,7 @@ async function recordWorkerObservation(
   const { lineage } = event;
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
   const owner = { threadId: lineage.threadId, turnId: lineage.turnId };
-  const recordId = (observationId: string) =>
-    `obs_runtime_${createHash('sha256')
-      .update(JSON.stringify([lineage.packageSnapshotId, observationId]))
-      .digest('hex')}`;
-  const id = recordId(event.event.data.observationId);
+  const id = workerObservationRecordId(lineage.packageSnapshotId, event.event.data.observationId);
   /** Validate native source evidence and reserve expected unit bytes through existing records. */
   const admitNative = (data: WorkerObservationData): void => {
     if (data.fact.kind !== 'native-transcript' && data.fact.kind !== 'runtime-log') return;
@@ -400,7 +536,10 @@ async function recordWorkerObservation(
         throw new Error('Observation content is not admitted by this Turn');
       let parent: string | undefined;
       if (data.content.state === 'unavailable' && data.content.expectedObservationId) {
-        parent = recordId(data.content.expectedObservationId);
+        parent = workerObservationRecordId(
+          lineage.packageSnapshotId,
+          data.content.expectedObservationId
+        );
         const rows = readWorkObservations(workspaceDb, owner);
         const expected = rows.find((row) => row.id === parent);
         const current = rows.find((row) => row.id === id);

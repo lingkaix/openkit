@@ -2,17 +2,19 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
+  createReadStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -24,7 +26,11 @@ import {
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import { ENTITY_KINDS, entityIdPattern, isEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import {
+  WORKER_OBSERVATION_SOURCE_MAX_BYTES,
+  WorkerCanonicalEventRecordSchema,
+  workerSessionInputPaths,
+} from '@openkit/worker-protocol';
 import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -60,6 +66,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { readWorkObservations } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
@@ -2301,6 +2308,11 @@ describe('createConfiguredTurnExecutor', () => {
       ) => void | Promise<void>;
       onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       onExport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
+      /** Admits original observation output while this fixture's submitted Turn is still live. */
+      beforeFinalStatus?: (input: {
+        coreDb: ReturnType<typeof createFactoryCoreDb>;
+        environmentPackage: AgentEnvironmentPackage;
+      }) => Promise<void>;
       beforeFirstTurn?: (input: {
         coreDb: ReturnType<typeof createFactoryCoreDb>;
         environmentPackage: AgentEnvironmentPackage;
@@ -2545,6 +2557,7 @@ describe('createConfiguredTurnExecutor', () => {
       launch,
     ]);
     await launch;
+    await options.beforeFinalStatus?.({ coreDb, environmentPackage });
     recordWorkerControlAcceptedRecord(coreDb, {
       acceptedAt: '2026-09-06T00:00:01.000Z',
       lineage: {
@@ -3870,6 +3883,190 @@ describe('createConfiguredTurnExecutor', () => {
       fixture.coreDb.sqlite.close();
     }
   }, 60_000);
+
+  it.each([
+    'retained',
+    'missing',
+    'committed',
+    'oversized-cleanup',
+  ] as const)('hands off only uncommitted accepted observation source (%s)', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-observation-bridge-'));
+    const bytes = Buffer.from('exact source');
+    let metadata!: ReturnType<typeof WorkerCanonicalEventRecordSchema.parse>;
+    let source = Buffer.alloc(0);
+    let sourcePath = '';
+    let serial = 0;
+    const f = await admitIdleSupplyResident(`observation_bridge_${mode}`, {
+      configurePackage: async (pkg, coreDb) => {
+        pkg.observability.captureCoverage = { scope: 'server', value: 'on' };
+        await new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
+          pkg.scope.workspaceId,
+          pkg.scope.threadId,
+          'Capture exact observation',
+          pkg.scope.triggerActor,
+          null,
+          {
+            turnId: pkg.scope.turnId,
+            agentId: pkg.agent.agentId,
+            executorKind: 'worker',
+            captureCoverage: { scope: 'server', value: 'on' },
+          }
+        );
+      },
+      beforeFinalStatus: async ({ coreDb, environmentPackage: pkg }) => {
+        const { workspaceId, threadId, turnId, agentSessionId, requestId } = pkg.scope;
+        const lineage = {
+          workspaceId,
+          threadId,
+          turnId,
+          agentSessionId,
+          requestId,
+          packageSnapshotId: pkg.snapshotId,
+        };
+        metadata = WorkerCanonicalEventRecordSchema.parse({
+          schemaVersion: 1,
+          kind: 'event',
+          lineage,
+          sequence: 0,
+          event: {
+            type: 'observation.recorded',
+            data: {
+              observationId: 'bridge-source',
+              sourceRef: 'bridge-source',
+              sourceSequence: 0,
+              observedAt: pkg.createdAt,
+              fact: {
+                kind: 'assistant',
+                runtimeOriginRef: null,
+                phase: 'updated',
+                messageRef: 'bridge-message',
+                representation: 'delta',
+              },
+              content: {
+                state: 'expected',
+                mediaType: 'text/plain',
+                boundary: 'assistant.text',
+                bytes: bytes.length,
+                chunkCount: 1,
+                sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+              },
+            },
+          },
+        });
+        const chunk = WorkerCanonicalEventRecordSchema.parse({
+          schemaVersion: 1,
+          kind: 'event',
+          lineage,
+          sequence: 1,
+          event: {
+            type: 'observation.content.chunk',
+            data: {
+              observationId: 'bridge-source',
+              chunkIndex: 0,
+              byteOffset: 0,
+              encoding: 'base64',
+              data: bytes.toString('base64'),
+            },
+          },
+        });
+        for (const record of mode === 'committed' ? [metadata, chunk] : [metadata])
+          await recordWorkerControlAcceptedRecord(coreDb, {
+            acceptedAt: pkg.createdAt,
+            lineage,
+            operation: 'event_append',
+            record,
+            recordKey: String(record.sequence),
+            sequence: record.sequence,
+          });
+        source = Buffer.from(`${JSON.stringify(metadata)}\n${JSON.stringify(chunk)}\n`);
+      },
+      onExport: async (request) => {
+        if (request.input.presence === 'optional' && mode === 'missing') return { state: 'absent' };
+        const payload = request.input.presence === 'optional' ? source : Buffer.from('\n');
+        const directory = join(root, String(serial++));
+        mkdirSync(directory);
+        const stagingPath = join(directory, 'complete');
+        if (request.input.presence === 'optional' && mode === 'oversized-cleanup') {
+          // The real file has an honest oversized length and digest, without a large heap buffer.
+          const byteLength = WORKER_OBSERVATION_SOURCE_MAX_BYTES + 1;
+          writeFileSync(stagingPath, '');
+          truncateSync(stagingPath, byteLength);
+          const digest = createHash('sha256');
+          for await (const chunk of createReadStream(stagingPath)) digest.update(chunk);
+          sourcePath = stagingPath;
+          return { stagingPath, byteLength, sha256: `sha256:${digest.digest('hex')}` };
+        }
+        writeFileSync(stagingPath, payload);
+        if (request.input.presence === 'optional') sourcePath = stagingPath;
+        return {
+          stagingPath,
+          byteLength: payload.length,
+          sha256: `sha256:${createHash('sha256').update(payload).digest('hex')}`,
+        };
+      },
+    });
+    f.backend.sessions.set(f.environmentPackage.snapshotId, f.session);
+    try {
+      if (mode === 'oversized-cleanup') {
+        await expect(
+          f.backend.collectTranscript!(f.environmentPackage.snapshotId, true)
+        ).rejects.toThrow();
+        expect(
+          f.effects.filter(
+            (effect) => effect.kind === 'file.export' && effect.input.presence === 'optional'
+          )
+        ).toHaveLength(1);
+        expect(existsSync(sourcePath)).toBe(true);
+        const stagingDirectory = dirname(sourcePath);
+        // This proved reusable resident needs only the existing local session/staging cleanup.
+        await f.backend.cleanupSession(f.backend.planSession(f.environmentPackage));
+        // Cleanup must own the Host-returned path even when admission refused before inspection.
+        expect(existsSync(stagingDirectory)).toBe(false);
+        return;
+      }
+      const transcript = await f.backend.collectTranscript!(f.environmentPackage.snapshotId, true);
+      const exports = f.effects.filter(
+        (effect) => effect.kind === 'file.export' && effect.input.presence === 'optional'
+      );
+      if (mode === 'committed') {
+        expect(exports).toEqual([]);
+        expect(transcript.observationSources ?? []).toEqual([]);
+      } else {
+        expect(exports).toHaveLength(1);
+        expect(exports[0]!.input).toMatchObject({
+          slot: 'session',
+          presence: 'optional',
+          finalStatusAccepted: true,
+          terminalBarrierProved: true,
+          relativePath: `${f.environmentPackage.scope.threadId}/${f.environmentPackage.control.adapter.targetRuntime}/capture/${f.environmentPackage.scope.turnId}/runtime/observations/0.jsonl`,
+        });
+        expect(transcript.observationSources ?? []).toEqual(
+          mode === 'retained' ? [{ metadata, sourcePath }] : []
+        );
+        if (mode === 'retained') expect(readFileSync(sourcePath)).toEqual(source);
+      }
+      const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+      try {
+        const rows = readWorkObservations(db, f.environmentPackage.scope);
+        expect(
+          rows.some(
+            (row) =>
+              row.type === 'runtime.observed' && row.payload.observationId === 'bridge-source'
+          )
+        ).toBe(true);
+        expect(rows.filter((row) => row.type === 'content.published')).toHaveLength(
+          mode === 'committed' ? 1 : 0
+        );
+      } finally {
+        db.sqlite.close();
+      }
+      expect(transcript.eventsJsonl).toBe('\n');
+      expect(transcript.itemsJsonl).toBe('\n');
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('exports accepted final status while retaining a running Harness without process absence claims', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-resident-export-'));
