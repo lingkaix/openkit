@@ -1,17 +1,32 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
+import type { JsonOperationId } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
+import { createOperationInvocation } from '../operation-composition.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
-import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { initializeTestCore } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   CONTROL_WORKER_LIMITS,
@@ -22,10 +37,12 @@ import {
 } from './control-store-worker-protocol.js';
 import { createDataRootAdminOperationImplementations } from './data-root-admin-operations.js';
 import * as dataRootBackup from './data-root-backup.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
   coreDbPath,
   ensureLayout,
   ensureUserLayout,
+  ensureWorkspaceLayout,
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
@@ -34,7 +51,7 @@ import { nativeProductScope } from './workspace-file-records.js';
 const interception = vi.hoisted(() => ({
   workers: [] as NativeWorker[],
   gate: undefined as SharedArrayBuffer | undefined,
-  point: 'before' as 'before' | 'after',
+  point: 'before' as 'before' | 'after' | 'open-ack',
 }));
 
 // This fixture wraps the actual entry, not a fake SQL service or a production fault option.
@@ -46,12 +63,22 @@ vi.mock('node:worker_threads', async (load) => {
       constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
         if (interception.gate !== undefined) {
           const prelude = `
-            const {workerData} = require('node:worker_threads');
+            const {parentPort, workerData} = require('node:worker_threads');
             const Database = require(workerData.databaseModule);
             const original = Database.prototype.exec;
             function hold() {
-              if (Atomics.compareExchange(workerData.gate, 0, 0, 1) === 0) Atomics.wait(workerData.gate, 1, 0);
+              if (workerData.gate.length > 2 && Atomics.load(workerData.gate, 2) === 1) {
+                Atomics.add(workerData.gate, 0, 1);
+                Atomics.wait(workerData.gate, 1, 0);
+              } else if (Atomics.compareExchange(workerData.gate, 0, 0, 1) === 0) {
+                Atomics.wait(workerData.gate, 1, 0);
+              }
             }
+            const post = parentPort.postMessage.bind(parentPort);
+            parentPort.postMessage = function(message, ...args) {
+              if (workerData.point === 'open-ack' && message.status === 'ok' && message.operation === 'open') hold();
+              return post(message, ...args);
+            };
             Database.prototype.exec = function(sql) {
               const commit = /^COMMIT$/i.test(sql);
               if (commit && workerData.point === 'before') hold();
@@ -84,6 +111,7 @@ vi.mock('node:worker_threads', async (load) => {
 
 const roots: string[] = [];
 let client: ReturnType<typeof getControlStoreWorkerClient> | undefined;
+const nativeHandles: (ReturnType<typeof openCoreDb> | ReturnType<typeof openWorkspaceDb>)[] = [];
 
 /** Uses the real worker and current User journal in a private database, never a product fixture default. */
 async function fixture(point?: 'before' | 'after', layout: 'private' | 'data-root' = 'private') {
@@ -107,6 +135,130 @@ async function fixture(point?: 'before' | 'after', layout: 'private' | 'data-roo
     root,
     gate: interception.gate === undefined ? undefined : new Int32Array(interception.gate),
   };
+}
+
+/** Opens actual scope journals through the public client; the accepted DX reference fixes four Workspace hosts. */
+async function poolFixture(size = 4, point?: 'before' | 'after' | 'open-ack') {
+  const root = mkdtempSync(join(tmpdir(), 'control-pool-'));
+  roots.push(root);
+  ensureLayout(root);
+  if (point !== undefined) {
+    interception.gate = new SharedArrayBuffer(12);
+    interception.point = point;
+    Atomics.store(new Int32Array(interception.gate), 0, 1); // Leave initialization outside the fault.
+  }
+  const writer = getControlStoreWorkerClient();
+  client = writer;
+  const scopes = new Map<
+    number,
+    {
+      database: string;
+      path: string;
+      create: boolean;
+      initialize: 'workspace';
+      productOwner: { kind: 'workspace'; workspaceId: string };
+      dataRoot: string;
+    }
+  >();
+  const scope = (index: number) => {
+    let value = scopes.get(index);
+    if (value === undefined) {
+      const workspaceId = allocateEntityId('ws');
+      ensureWorkspaceLayout(root, workspaceId);
+      const path = workspaceDbPath(root, workspaceId);
+      value = {
+        database: `workspace:${path}`,
+        path,
+        create: true,
+        initialize: 'workspace',
+        productOwner: { kind: 'workspace', workspaceId },
+        dataRoot: root,
+      };
+      scopes.set(index, value);
+    }
+    return value;
+  };
+  for (let index = 0; index < size; index += 1) await writer.open(scope(index));
+  return {
+    client: writer,
+    root,
+    scope,
+    gate: interception.gate === undefined ? undefined : new Int32Array(interception.gate),
+  };
+}
+
+/** Publishes real Workspace and Material commands; no completed receipt or Material row is assembled by the test. */
+async function productPoolFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'control-product-pool-'));
+  roots.push(root);
+  initializeTestCore(root);
+  const coreDb = openCoreDb(root);
+  nativeHandles.push(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  initializeDefaultKnowledgeBaseId({
+    dataRoot: root,
+    scope: { kind: 'server' },
+    knowledgeBaseId: allocateEntityId('kb'),
+  });
+  const store = new FsStore({ dataRoot: root });
+  const workspaces = [];
+  client = getControlStoreWorkerClient();
+  for (let index = 0; index < 4; index += 1) {
+    const workspace = await store.createWorkspace(`Pool ${index}`);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+    const scope = nativeProductScope(root, { kind: 'workspace', workspaceId: workspace.id });
+    await client.open({
+      database: `workspace:${scope.path}`,
+      path: scope.path,
+      dataRoot: root,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    workspaces.push(workspace);
+  }
+  const invoke = createOperationInvocation({
+    coreDb,
+    store,
+    dataRoot: root,
+    inflightCommands: new WeakMap(),
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    repositoryWorkspaceDb: (id) => {
+      if (!workspaces.some((workspace) => workspace.id === id))
+        throw new Error('Fixture Workspace is not admitted.');
+      return openWorkspaceDb(root, id);
+    },
+  });
+  const call = <K extends JsonOperationId>(workspaceId: string, id: K, input: object) =>
+    invoke(id, { workspaceId, ...input }, { kind: 'public', actor: { kind: 'session', userId } });
+  return { client, root, workspaces, call };
+}
+
+/** Reuses the existing native journal receipt table to observe this transport's real COMMIT boundary. */
+function nativeRequest(id: string): ControlSqlStatement[] {
+  return [
+    {
+      mode: 'run',
+      sql: "INSERT INTO idempotency_requests (request_key, command_name, request_id, scope_json, input_hash, response_kind, response_id, created_at, expires_at) VALUES (?, 'fixture', ?, '{}', 'fixture', 'thread', 'fixture', 'fixture', 'fixture')",
+      parameters: [id, id],
+      expectChanges: 1,
+    },
+  ];
+}
+
+/** Reads the native request identity without another writer or an outcome guess. */
+function nativeRequests(path: string): string[] {
+  const reader = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    reader.pragma('query_only = ON');
+    return reader
+      .prepare('SELECT request_id FROM idempotency_requests ORDER BY request_id')
+      .pluck()
+      .all() as string[];
+  } finally {
+    reader.close();
+  }
 }
 
 /** A scalar metadata insert in an already owned native table, not a new product contract. */
@@ -148,6 +300,7 @@ afterEach(async () => {
   if (interception.gate !== undefined) release(new Int32Array(interception.gate));
   await client?.shutdown();
   client = undefined;
+  for (const db of nativeHandles.splice(0)) if (db.sqlite.open) db.sqlite.close();
   interception.gate = undefined;
   interception.workers.length = 0;
   vi.restoreAllMocks();
@@ -208,6 +361,357 @@ describe('control writer parent admission', () => {
     await f.client.close('user');
     await f.client.open({ database: 'user', path: f.path, create: false, initialize: 'user' });
     expect(count(f.path)).toBe(1);
+  });
+
+  it('pins open Workspace databases to four bounded hosts and keeps the server separate', async () => {
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const f = await poolFixture();
+    const server = {
+      database: `server:${coreDbPath(f.root)}`,
+      path: coreDbPath(f.root),
+      create: true,
+      initialize: 'core' as const,
+      productOwner: { kind: 'server' as const },
+      dataRoot: f.root,
+    };
+    await f.client.open(server);
+    // DX Write And Space Budget fixes four Workspace workers and one separate server worker.
+    expect(interception.workers).toHaveLength(5);
+    const originalHosts = Array.from({ length: 4 }, (_, index) => {
+      const call = posted.mock.calls.findIndex(
+        ([request]) => request.database === f.scope(index).database
+      );
+      expect(call).toBeGreaterThanOrEqual(0);
+      return posted.mock.contexts[call];
+    });
+    expect(new Set(originalHosts).size).toBe(4);
+    const serverCall = posted.mock.calls.findIndex(
+      ([request]) => request.database === server.database
+    );
+    expect(originalHosts).not.toContain(posted.mock.contexts[serverCall]);
+    for (let index = 4; index < 9; index += 1) await f.client.open(f.scope(index));
+    for (let index = 0; index < 9; index += 1) {
+      const { database } = f.scope(index);
+      await f.client.write(database, nativeRequest(`scope-${index}`));
+      await f.client.checkpoint(database);
+      await f.client.reclaim(database);
+      await f.client.close(database);
+      const hosts = posted.mock.calls.flatMap(([request], call) =>
+        request.database === database ? [posted.mock.contexts[call]] : []
+      );
+      expect(new Set(hosts).size).toBe(1);
+      expect(originalHosts).toContain(hosts[0]);
+    }
+    expect(interception.workers).toHaveLength(5);
+  });
+
+  it.each([
+    'before',
+    'after',
+  ] as const)('keeps healthy Workspace ACKs independent of a sibling held %s COMMIT and its lost host', async (point) => {
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const f = await poolFixture(2, point);
+    const original = f.scope(0);
+    const healthy = f.scope(1);
+    Atomics.store(f.gate!, 0, 0);
+    const write = f.client
+      .write(original.database, nativeRequest('original'))
+      .catch((error: unknown) => error);
+    try {
+      await waitForHold(f.gate!);
+      expect(nativeRequests(original.path)).toEqual(point === 'after' ? ['original'] : []);
+      // This must finish while the other native thread is still blocked, without a shorter test deadline.
+      await expect(
+        f.client.write(healthy.database, nativeRequest('healthy'))
+      ).resolves.toHaveLength(1);
+      expect(nativeRequests(healthy.path)).toEqual(['healthy']);
+      expect(Atomics.load(f.gate!, 1)).toBe(0);
+      const call = posted.mock.calls.findIndex(
+        ([request]) => request.database === original.database && request.operation === 'write'
+      );
+      const failedHost = posted.mock.contexts[call] as NativeWorker;
+      await failedHost.terminate();
+      expect(await write).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+      await expect(
+        f.client.write(original.database, nativeRequest('no-retry'))
+      ).rejects.toMatchObject({
+        code: 'unavailable',
+        commit: 'not-committed',
+      });
+      await expect(f.client.write(healthy.database, nativeRequest('later'))).resolves.toHaveLength(
+        1
+      );
+      expect(nativeRequests(original.path)).toEqual(point === 'after' ? ['original'] : []);
+      expect(nativeRequests(healthy.path)).toEqual(['healthy', 'later']);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.database === original.database && request.operation === 'write'
+        )
+      ).toHaveLength(1);
+    } finally {
+      release(f.gate);
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('excludes canonical and hardlink aliases process-wide with held fresh ACK = %s', async (held) => {
+    const f = await poolFixture(4, held ? 'open-ack' : undefined);
+    const original = f.scope(held ? 4 : 0);
+    let opening: Promise<unknown> | undefined;
+    if (held) {
+      Atomics.store(f.gate!, 0, 0);
+      opening = f.client.open(original);
+      await waitForHold(f.gate!);
+    }
+    try {
+      // In the held case these real initialized bytes exist before the successful open reply is delivered.
+      expect(nativeRequests(original.path)).toEqual([]);
+      const canonicalAlias = join(f.root, 'canonical-alias.sqlite');
+      const hardlink = join(f.root, 'hardlink-alias.sqlite');
+      symlinkSync(original.path, canonicalAlias);
+      linkSync(original.path, hardlink);
+      for (const [index, path] of [original.path, canonicalAlias, hardlink].entries()) {
+        await expect(
+          f.client.open({
+            database: `alias-${index}`,
+            path,
+            create: false,
+            initialize: 'workspace',
+          })
+        ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+      }
+    } finally {
+      release(f.gate);
+      await opening;
+    }
+  });
+
+  it('admits only one writer when a fresh target races its pre-existing dangling leaf symlink', async () => {
+    const f = await poolFixture(4, 'open-ack');
+    const target = f.scope(4);
+    const alias = join(f.root, 'dangling.sqlite');
+    symlinkSync(target.path, alias);
+    expect(existsSync(target.path)).toBe(false);
+    Atomics.store(f.gate!, 0, 0);
+    const observe = (open: Promise<unknown>) =>
+      open.then(
+        () => ({ status: 'ok' as const }),
+        (error: unknown) => ({ status: 'error' as const, error })
+      );
+    const resume = await f.client.pauseForDataRootBackup();
+    const opens: ReturnType<typeof observe>[] = [];
+    try {
+      try {
+        // Hold posting so both parent admissions see the target absent, regardless of Worker scheduling.
+        opens.push(
+          observe(
+            f.client.open({
+              database: 'dangling-alias',
+              path: alias,
+              create: true,
+              initialize: 'workspace',
+            })
+          ),
+          observe(
+            f.client.open({
+              database: target.database,
+              path: target.path,
+              create: true,
+              initialize: 'workspace',
+            })
+          )
+        );
+        expect(existsSync(target.path)).toBe(false);
+      } finally {
+        resume();
+      }
+      await waitForHold(f.gate!);
+      expect(nativeRequests(target.path)).toEqual([]);
+      // The real initialized winner's successful ACK is held; only a truthful loser can settle now.
+      expect(await Promise.race(opens)).toMatchObject({
+        status: 'error',
+        error: { code: 'invalid-request', commit: 'not-committed' },
+      });
+    } finally {
+      release(f.gate);
+    }
+    const results = await Promise.all(opens);
+    expect(results.filter((result) => result.status === 'ok')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'error')).toHaveLength(1);
+  });
+
+  it('settles an accepted producer and shutdown when its idle host exits before the causal write', async () => {
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const f = await poolFixture(2);
+    const original = f.scope(0);
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let resume!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const observe = <T>(value: Promise<T>) =>
+      value.then(
+        (result) => ({ status: 'ok' as const, result }),
+        (error: unknown) => ({ status: 'error' as const, error })
+      );
+    const producer = observe(
+      f.client.runOperation(async () => {
+        enter();
+        await barrier;
+        return f.client.write(original.database, nativeRequest('causal-after-loss'));
+      })
+    );
+    await entered;
+    const shutdown = observe(f.client.shutdown());
+    try {
+      const call = posted.mock.calls.findIndex(
+        ([request]) => request.database === original.database && request.operation === 'open'
+      );
+      await (posted.mock.contexts[call] as NativeWorker).terminate();
+    } finally {
+      resume();
+    }
+    const produced = await producer;
+    const stopped = await shutdown;
+    // This shutdown has settled; do not await the same expected rejection again in afterEach.
+    if (f.client.isClosed) client = undefined;
+    expect(f.client.isClosed).toBe(true);
+    expect(produced).toMatchObject({
+      status: 'error',
+      error: { code: 'unavailable', commit: 'not-committed' },
+    });
+    expect(stopped).toMatchObject({ status: 'error', error: expect.any(AggregateError) });
+    if (
+      produced.status !== 'error' ||
+      stopped.status !== 'error' ||
+      !(stopped.error instanceof AggregateError)
+    )
+      throw new Error('Shutdown must report the rejected accepted producer.');
+    expect(stopped.error.errors).toHaveLength(1);
+    expect(stopped.error.errors[0]).toBe(produced.error);
+    expect(nativeRequests(original.path)).toEqual([]);
+    expect(
+      posted.mock.calls.filter(
+        ([request]) => request.database === original.database && request.operation === 'write'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('pauses every routed Workspace and server host during a global backup capture', async () => {
+    const f = await productPoolFixture();
+    roots.push(`${f.root}.backups`);
+    const scopes = f.workspaces.map((workspace) => ({
+      database: `workspace:${workspaceDbPath(f.root, workspace.id)}`,
+      path: workspaceDbPath(f.root, workspace.id),
+    }));
+    const server = {
+      database: `server:${coreDbPath(f.root)}`,
+      path: coreDbPath(f.root),
+      create: false,
+      initialize: 'core' as const,
+      productOwner: { kind: 'server' as const },
+      dataRoot: f.root,
+    };
+    await f.client.open(server);
+    scopes.push(server);
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const capture = dataRootBackup.writeHotDataRootBackup;
+    const waiting: Promise<unknown>[] = [];
+    let during = -1;
+    vi.spyOn(dataRootBackup, 'writeHotDataRootBackup').mockImplementationOnce((input) => {
+      for (const scope of scopes)
+        waiting.push(
+          f.client.write(scope.database, [
+            {
+              mode: 'get',
+              sql: 'SELECT 1 AS value',
+              parameters: [],
+            },
+          ])
+        );
+      during = posted.mock.calls.filter(([request]) => request.operation === 'write').length;
+      return capture(input);
+    });
+    await createDataRootAdminOperationImplementations(f.root)['backup.create']();
+    await expect(Promise.all(waiting)).resolves.toHaveLength(5);
+    expect(during).toBe(0);
+    const hosts = posted.mock.calls.flatMap(([request], index) =>
+      request.operation === 'write' ? [posted.mock.contexts[index]] : []
+    );
+    expect(hosts).toHaveLength(5);
+    expect(new Set(hosts).size).toBe(5);
+  });
+
+  it('shares Material binary admission across four real Workspace workers before posting', async () => {
+    interception.gate = new SharedArrayBuffer(12);
+    interception.point = 'before';
+    const gate = new Int32Array(interception.gate);
+    Atomics.store(gate, 0, 1); // Setup remains outside the real COMMIT holds.
+    const f = await productPoolFixture();
+    const materials = [];
+    for (let index = 0; index < 5; index += 1) {
+      const workspaceId = f.workspaces[Math.min(index, 3)]!.id;
+      const { materialId } = await f.call(workspaceId, 'material.create', {
+        requestId: `create-${index}`,
+        title: `Material ${index}`,
+        kind: 'text',
+        sensitivity: 'internal',
+      });
+      materials.push({ workspaceId, materialId });
+    }
+    const save = (index: number, content: string) => {
+      const { workspaceId, materialId } = materials[index]!;
+      return f.call(workspaceId, 'material.revision-save', {
+        requestId: `save-${index}`,
+        materialId,
+        expectedRevisionId: null,
+        content,
+        contentDigest: `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`,
+      });
+    };
+    const post = Worker.prototype.postMessage;
+    let admit!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let materialPosts = 0;
+    const posted = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: NativeWorker,
+      ...args: Parameters<NativeWorker['postMessage']>
+    ) {
+      post.apply(this, args);
+      if (args[0]?.operation === 'material' && ++materialPosts === 4) admit();
+    });
+    // Existing process-wide admission is 64 MiB; four maximum-size valid saves fill it exactly.
+    expect(CONTROL_WORKER_LIMITS.materialPendingBytes).toBe(67_108_864);
+    Atomics.store(gate, 0, 0);
+    Atomics.store(gate, 2, 1); // Hold each real host, so no settled reply frees its binary reservation.
+    const accepted = Array.from({ length: 4 }, (_, index) => save(index, 'a'.repeat(16_777_216)));
+    const settled = Promise.allSettled(accepted);
+    try {
+      await admitted;
+      const materialRequests = posted.mock.calls.flatMap(([request], index) =>
+        request.operation === 'material' ? [{ request, host: posted.mock.contexts[index] }] : []
+      );
+      expect(materialRequests).toHaveLength(4);
+      expect(new Set(materialRequests.map(({ host }) => host)).size).toBe(4);
+      while (Atomics.load(gate, 0) < 4) await nextTurn();
+      await expect(save(4, 'x')).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+      expect(
+        posted.mock.calls.filter(([request]) => request.operation === 'material')
+      ).toHaveLength(4);
+    } finally {
+      release(gate);
+      await settled;
+    }
+    await expect(Promise.all(accepted)).resolves.toHaveLength(4);
+    // The fifth request becomes admissible only after the original reservations settle.
+    await expect(save(4, 'x')).resolves.toHaveProperty('revisionId');
   });
 
   it('refuses excess work before postMessage and keeps sibling admission separate', async () => {
@@ -356,7 +860,7 @@ describe('control writer parent admission', () => {
       { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
     );
     const capture = vi.spyOn(dataRootBackup, 'writeHotDataRootBackup');
-    const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
     Atomics.store(gate, 0, 0);
     let acknowledged = false;
     const publication = store

@@ -1,7 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
@@ -89,8 +90,27 @@ export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
 type Success = Extract<ControlWorkerReply, { status: 'ok' }>;
 type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
 
+/** One bounded native host; a failed host never restarts in this coordinator lifetime. */
+interface WriterHost {
+  worker: Worker | undefined;
+  failed: boolean;
+  /** Includes posted binary bytes whose channel failed until actual worker exit. */
+  materialBytes: number;
+  pending: number;
+}
+
+/** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
+interface Opening {
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly host: WriterHost;
+  readonly path: string;
+  identity: string | undefined;
+  readonly promise: Promise<void>;
+}
+
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
+  readonly host: WriterHost;
   readonly command: ControlWorkerCommand;
   readonly request: ControlWorkerRequest;
   /** Unposted capture waiters share this same finite admission map and byte budget. */
@@ -111,11 +131,11 @@ interface ControlPublicationIdentity {
 let singleton: ControlStoreWorkerClient | undefined;
 
 /**
- * Returns the one process-local writer host, without opening a database.
+ * Returns the process-local writer coordinator, without opening a database.
  *
- * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. A released product scope must transfer its complete producer and shared receipt closure before using this host. A legacy main writable handle is not a table-level access-control boundary.
+ * A failed native host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. A released product scope must transfer its complete producer and shared receipt closure before using this host. A legacy main writable handle is not a table-level access-control boundary.
  *
- * @returns Shared host for admitted database scopes, never a synchronous SQL facade.
+ * @returns Shared coordinator for admitted database scopes, never a synchronous SQL facade.
  */
 export function getControlStoreWorkerClient(): ControlStoreWorkerClient {
   if (!isMainThread) throw new ControlStoreWorkerError('unavailable', 'not-committed');
@@ -130,7 +150,10 @@ export async function shutdownControlStoreWorkerClient(): Promise<void> {
 
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
 class ControlStoreWorkerClient {
-  private worker: Worker | undefined;
+  private readonly hosts: WriterHost[] = Array.from(
+    { length: CONTROL_WORKER_LIMITS.workspaceWorkers + 1 },
+    () => ({ worker: undefined, failed: false, materialBytes: 0, pending: 0 })
+  );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
   private readonly operationContext = new AsyncLocalStorage<{
     active: boolean;
@@ -138,13 +161,9 @@ class ControlStoreWorkerClient {
   }>();
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
-  private readonly openings = new Map<
-    string,
-    { readonly command: Omit<OpenCommand, 'operation'>; readonly promise: Promise<void> }
-  >();
+  private readonly openings = new Map<string, Opening>();
   private nextId = 0;
   private materialBytes = 0;
-  private failed = false;
   private stopping = false;
   private closed = false;
   private shutdownPromise: Promise<void> | undefined;
@@ -152,11 +171,11 @@ class ControlStoreWorkerClient {
   private backupDrain: (() => void) | undefined;
 
   /** Starts the native host on first command; retaining a shutdown owner alone needs no thread. */
-  private startWorker(): Worker {
-    if (this.worker) return this.worker;
+  private startWorker(host: WriterHost): Worker {
+    if (host.worker) return host.worker;
     if (import.meta.url.endsWith('.ts') && process.env.VITEST === 'true') {
       // Vitest global setup compiles this same entry once in its owned private directory; missing setup fails closed.
-      this.worker = new Worker(
+      host.worker = new Worker(
         pathToFileURL(
           join(tmpdir(), 'nanocore-worker', 'dist', 'storage', 'control-store-worker.mjs')
         )
@@ -165,24 +184,26 @@ class ControlStoreWorkerClient {
       const require = createRequire(import.meta.url);
       const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
       const entry = new URL('./control-store-worker.ts', import.meta.url).href;
-      this.worker = new Worker(
+      host.worker = new Worker(
         // This thread is already isolated. A second tsImport namespace adds synchronous CommonJS loader round trips for the complete owner graph.
         `import(${JSON.stringify(loader)}).then(({register}) => { register(); return import(${JSON.stringify(entry)}); });`,
         { eval: true }
       );
     } else {
-      this.worker = new Worker(new URL('./control-store-worker.js', import.meta.url));
+      host.worker = new Worker(new URL('./control-store-worker.js', import.meta.url));
     }
-    this.worker.on('message', (value: unknown) => this.receive(value));
-    this.worker.on('messageerror', () => this.fail());
-    this.worker.on('error', () => this.fail());
-    this.worker.on('exit', () => {
-      if (!this.stopping || this.pending.size > 0) this.fail();
+    host.worker.on('message', (value: unknown) => this.receive(value, host));
+    host.worker.on('messageerror', () => this.fail(host));
+    host.worker.on('error', () => this.fail(host));
+    host.worker.on('exit', () => {
+      // Even during producer drain, exit cannot leave a host eligible for later causal work.
+      this.fail(host);
       // A failed channel alone cannot prove the worker released its queued bytes. Exit can.
-      this.materialBytes = 0;
+      this.materialBytes -= host.materialBytes;
+      host.materialBytes = 0;
     });
-    this.worker.unref();
-    return this.worker;
+    host.worker.unref();
+    return host.worker;
   }
 
   /** True only after explicit shutdown has terminated the owned worker. */
@@ -230,7 +251,54 @@ class ControlStoreWorkerClient {
   private assertAccepting(): void {
     if (this.closed || (this.stopping && !this.operationContext.getStore()?.active))
       throw new ControlStoreWorkerShutdownError();
-    if (this.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
+  }
+
+  /** Reserves physical identity before posting; unrelated openings never wait for another native ACK. */
+  private reserveOpening(command: Omit<OpenCommand, 'operation'>): {
+    path: string;
+    identity: string | undefined;
+    host: WriterHost;
+  } {
+    let path: string;
+    let identity: string | undefined;
+    try {
+      const incoming = statSync(command.path, { throwIfNoEntry: false });
+      const leaf = lstatSync(command.path, { throwIfNoEntry: false });
+      if (!incoming && leaf?.isSymbolicLink())
+        throw new Error('A dangling link cannot reserve a new database.');
+      path = incoming
+        ? realpathSync(command.path)
+        : join(realpathSync(dirname(command.path)), basename(command.path));
+      identity = incoming ? `${incoming.dev}:${incoming.ino}` : undefined;
+      // Incoming identity is read first: an alias of a newly initialized file implies
+      // that its earlier reserved path can now supply that inode, even before ACK.
+      for (const opening of this.openings.values()) {
+        if (opening.identity === undefined) {
+          const current = statSync(opening.path, { throwIfNoEntry: false });
+          if (current) opening.identity = `${current.dev}:${current.ino}`;
+        }
+        if (opening.path === path || (identity !== undefined && opening.identity === identity))
+          throw new Error('Duplicate physical database.');
+      }
+    } catch {
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    }
+    const candidates =
+      command.productOwner?.kind === 'server' || command.initialize === 'core'
+        ? this.hosts.slice(0, 1)
+        : this.hosts.slice(1);
+    const counts = new Map(candidates.map((host) => [host, 0]));
+    for (const opening of this.openings.values())
+      if (counts.has(opening.host)) counts.set(opening.host, counts.get(opening.host)! + 1);
+    const host = candidates
+      .filter((candidate) => !candidate.failed)
+      .reduce<WriterHost | undefined>(
+        (least, candidate) =>
+          least === undefined || counts.get(candidate)! < counts.get(least)! ? candidate : least,
+        undefined
+      );
+    if (!host) throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    return { path, identity, host };
   }
 
   /**
@@ -254,19 +322,39 @@ class ControlStoreWorkerClient {
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     const existing = this.openings.get(command.database);
     if (existing) {
+      if (existing.host.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
       if (!isDeepStrictEqual(existing.command, command))
         throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       await existing.promise;
       return;
     }
     const binding = structuredClone(command);
-    const promise = this.request({ ...binding, operation: 'open' }).then(() => {});
-    const opening = { command: binding, promise };
+    const physical = this.reserveOpening(binding);
+    const opening: Opening = {
+      command: binding,
+      ...physical,
+      promise: this.request({ ...binding, operation: 'open' }, undefined, physical.host).then(
+        () => {
+          try {
+            const current = statSync(physical.path);
+            const identity = `${current.dev}:${current.ino}`;
+            if (opening.identity !== undefined && opening.identity !== identity)
+              throw new Error('Physical database changed.');
+            opening.identity = identity;
+          } catch {
+            this.fail(physical.host);
+            throw new ControlStoreWorkerError('unavailable', 'unknown');
+          }
+        }
+      ),
+    };
     this.openings.set(command.database, opening);
     try {
-      await promise;
+      await opening.promise;
     } catch (error) {
-      if (this.openings.get(command.database) === opening) this.openings.delete(command.database);
+      // Unknown channel results retain their physical reservation until explicit shutdown.
+      if (!physical.host.failed && this.openings.get(command.database) === opening)
+        this.openings.delete(command.database);
       throw error;
     }
   }
@@ -471,6 +559,8 @@ class ControlStoreWorkerClient {
    */
   async pauseForDataRootBackup(): Promise<() => void> {
     this.assertAccepting();
+    if (this.hosts.some((host) => host.failed))
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
     if (this.backupPaused) throw new ControlStoreWorkerError('busy', 'not-committed');
     this.backupPaused = true;
     const resume = () => {
@@ -485,6 +575,8 @@ class ControlStoreWorkerClient {
     });
     try {
       this.assertAccepting();
+      if (this.hosts.some((host) => host.failed))
+        throw new ControlStoreWorkerError('unavailable', 'not-committed');
     } catch (error) {
       resume();
       throw error;
@@ -515,16 +607,22 @@ class ControlStoreWorkerClient {
           for (const outcome of outcomes)
             if (outcome.status === 'rejected') failures.push(outcome.reason);
         }
-        if (!this.failed && this.worker) await this.request({ operation: 'shutdown' });
+        const shutdowns = await Promise.allSettled(
+          this.hosts
+            .filter((host) => host.worker && !host.failed)
+            .map((host) => this.request({ operation: 'shutdown' }, undefined, host))
+        );
+        for (const outcome of shutdowns)
+          if (outcome.status === 'rejected') failures.push(outcome.reason);
         if (failures.length)
           throw new AggregateError(
             failures,
             'Accepted control-store operations failed during shutdown.'
           );
       } finally {
-        await this.worker?.terminate();
+        await Promise.all(this.hosts.map((host) => host.worker?.terminate()));
+        for (const host of this.hosts) this.fail(host);
         this.materialBytes = 0;
-        this.fail();
         this.closed = true;
       }
     })();
@@ -534,7 +632,8 @@ class ControlStoreWorkerClient {
   /** Bounds all scoped messages BEFORE cloning/posting, including native-thread stalls. */
   private request(
     command: ControlWorkerCommand,
-    materialParts?: readonly string[]
+    materialParts?: readonly string[],
+    target?: WriterHost
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -544,6 +643,11 @@ class ControlStoreWorkerClient {
       }
     }
     const database = 'database' in command ? command.database : undefined;
+    const host = target ?? (database === undefined ? undefined : this.openings.get(database)?.host);
+    if (!host || host.failed)
+      return Promise.reject(
+        new ControlStoreWorkerError(host ? 'unavailable' : 'not-open', 'not-committed')
+      );
     if (
       database !== undefined &&
       (this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions
@@ -603,15 +707,18 @@ class ControlStoreWorkerClient {
     }
     let worker: Worker;
     try {
-      worker = this.startWorker();
+      worker = this.startWorker(host);
     } catch {
-      this.fail();
+      this.fail(host);
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
     const id = this.nextId++;
     return new Promise<Success>((resolve, reject) => {
       this.materialBytes += materialBytes;
+      host.materialBytes += materialBytes;
+      host.pending += 1;
       const entry: Pending = {
+        host,
         command: admittedRequest,
         request: admittedRequest,
         posted: false,
@@ -634,7 +741,7 @@ class ControlStoreWorkerClient {
       const request = entry.request;
       const transferList =
         request.operation === 'material' && request.content !== undefined ? [request.content] : [];
-      this.worker!.postMessage(request, transferList);
+      entry.host.worker!.postMessage(request, transferList);
     } catch {
       // Structured cloning fails before a message is enqueued; nothing was submitted.
       this.complete(id, undefined, new ControlStoreWorkerError('invalid-request', 'not-committed'));
@@ -659,7 +766,11 @@ class ControlStoreWorkerClient {
     const entry = this.pending.get(id);
     if (entry === undefined) return;
     this.pending.delete(id);
-    if (releaseMaterialBytes) this.materialBytes -= entry.materialBytes;
+    if (releaseMaterialBytes) {
+      this.materialBytes -= entry.materialBytes;
+      entry.host.materialBytes -= entry.materialBytes;
+    }
+    entry.host.pending -= 1;
     if ('database' in entry.command) {
       const database = entry.command.database;
       const remaining = (this.outstanding.get(database) ?? 1) - 1;
@@ -668,26 +779,27 @@ class ControlStoreWorkerClient {
     }
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
-    if (this.pending.size === 0) this.worker?.unref();
+    if (entry.host.pending === 0) entry.host.worker?.unref();
     this.completeBackupDrain();
   }
 
   /** Rejects unknown/miscorrelated wire meanings without falsely reporting rollback. */
-  private receive(value: unknown): void {
+  private receive(value: unknown, host: WriterHost): void {
     if (!isControlWorkerReply(value)) {
-      this.fail();
+      this.fail(host);
       return;
     }
     const entry = this.pending.get(value.id);
     if (
       entry === undefined ||
+      entry.host !== host ||
       !entry.posted ||
       (value.status === 'ok' && value.operation !== entry.command.operation) ||
       (value.status === 'error' &&
         value.domain !== undefined &&
         value.domain.operation !== entry.command.operation)
     ) {
-      this.fail();
+      this.fail(host);
       return;
     }
     if (value.status === 'error')
@@ -709,11 +821,12 @@ class ControlStoreWorkerClient {
   }
 
   /** No reply, worker loss or protocol failure proves that a posted write did not commit. */
-  private fail(): void {
-    if (this.failed) return;
-    this.failed = true;
-    for (const id of this.pending.keys()) {
-      const posted = this.pending.get(id)!.posted;
+  private fail(host: WriterHost): void {
+    if (host.failed) return;
+    host.failed = true;
+    for (const [id, entry] of this.pending) {
+      if (entry.host !== host) continue;
+      const posted = entry.posted;
       this.complete(
         id,
         undefined,
@@ -722,6 +835,6 @@ class ControlStoreWorkerClient {
       );
     }
     // A failed channel must not retain a writable connection or continue queued work.
-    void this.worker?.terminate();
+    void host.worker?.terminate();
   }
 }

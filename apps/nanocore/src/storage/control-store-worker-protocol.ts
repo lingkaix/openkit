@@ -71,8 +71,10 @@ import {
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
 export const CONTROL_WORKER_VERSION = 8;
 
-/** Fixed, qualified batching and per-database pending admission bounds. */
+/** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
+  /** Additional Workspace databases share these hosts; the server has its own host. */
+  workspaceWorkers: 4,
   batchTransitions: 32,
   batchWaitMs: 5,
   pendingTransitions: 1024,
