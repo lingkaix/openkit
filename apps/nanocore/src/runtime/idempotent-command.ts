@@ -71,7 +71,7 @@ export function findExactConversationWorkerOwnerReceipt(
   store: FsStore,
   lineage: ConversationWorkerReceiptLineage
 ): CommandRequestRecord | null {
-  const matches = store.listCommandRequests().filter((receipt) => {
+  const matches = store.listCommandRequests(lineage.workspaceId).filter((receipt) => {
     const metadata = receipt.response.conversationMetadata;
     return (
       receipt.command === 'conversation.submit' &&

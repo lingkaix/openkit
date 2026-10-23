@@ -604,7 +604,6 @@ export async function prepareWorkerTurnContextPackage(
     }
   };
   const assertCurrentSources = () => {
-    assertCurrentKnowledgeOverview();
     if (!originalInputs.length && !materialSelections.length && !selectedArtifacts.size) return;
     if (!coreDb)
       throw new TurnStartValidationError(
@@ -837,7 +836,11 @@ export async function prepareWorkerTurnContextPackage(
     'context-package'
   );
   assertCurrentSources();
-  await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, { admission });
+  await writeWorkerContextPackageFiles(workspaceRoot, packageFiles, {
+    admission,
+    assertCurrent: assertCurrentKnowledgeOverview,
+  });
+  assertCurrentKnowledgeOverview();
   assertCurrentKnowledge();
   assertCurrentSources();
   for (const artifact of selectedArtifacts.values()) assertCurrentArtifact(artifact);

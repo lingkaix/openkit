@@ -22,6 +22,7 @@ import {
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
+import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
   CommandRequestName,
@@ -43,6 +44,7 @@ import {
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
 import {
+  bindWorkspaceSqlite,
   type CoreDb,
   openCoreDb,
   openUserDb,
@@ -583,17 +585,23 @@ function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
  *
  * @param dataRoot Data root that owns the databases.
  * @param referenceTime Current ISO timestamp used for expiry.
+ * @param workspaceId Optional exact Workspace owner, excluding all other database opens.
  * @returns Active command request records.
  */
 export function listCommandRequestRecords(
   dataRoot: string,
-  referenceTime: string
+  referenceTime: string,
+  workspaceId?: string
 ): CommandRequestRecord[] {
-  const owners: CommandRequestOwner[] = [];
+  if (workspaceId !== undefined) assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
+  const owners: CommandRequestOwner[] =
+    workspaceId === undefined
+      ? []
+      : [{ scope: 'workspace', workspaceId: WorkspaceIdSchema.parse(workspaceId) }];
   const usersRoot = resolveDataRootPath(dataRoot, 'users');
   const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
 
-  if (existsSync(usersRoot)) {
+  if (workspaceId === undefined && existsSync(usersRoot)) {
     for (const entry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
       left.name.localeCompare(right.name)
     )) {
@@ -603,7 +611,7 @@ export function listCommandRequestRecords(
     }
   }
 
-  if (existsSync(workspacesRoot)) {
+  if (workspaceId === undefined && existsSync(workspacesRoot)) {
     for (const entry of readdirSync(workspacesRoot, { withFileTypes: true }).sort((left, right) =>
       left.name.localeCompare(right.name)
     )) {
@@ -618,7 +626,17 @@ export function listCommandRequestRecords(
   }
 
   const records = owners.flatMap((owner) => {
-    const db = openCommandRequestDb(dataRoot, owner);
+    const db =
+      workspaceId === undefined
+        ? openCommandRequestDb(dataRoot, owner)
+        : bindWorkspaceSqlite(
+            openControlStoreProductReadHandle(workspaceDbPath(dataRoot, workspaceId), {
+              kind: 'workspace',
+              workspaceId,
+            }).sqlite,
+            dataRoot,
+            workspaceId
+          );
 
     try {
       return (

@@ -364,7 +364,7 @@ export function hasWorkerCheckpointNeverSubmittedProof(
       ].includes(item.type)
     ) ||
     store
-      .listCommandRequests()
+      .listCommandRequests(workspaceIdForOwner(turn.owner))
       .some(
         (receipt) =>
           receipt.scope.workspaceId === workspaceIdForOwner(turn.owner) &&

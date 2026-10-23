@@ -71,6 +71,7 @@ import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-l
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
+import * as materialSourceReader from '../context/material-source-files.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -8965,6 +8966,113 @@ describe('WorkerGovernanceTurnExecutor', () => {
     launchGate.mockRestore();
     coreDb.sqlite.close();
   }, 60_000);
+
+  it('refuses an overview revoked during awaited source verification before package publication', async () => {
+    const fixture = await createWorkerContextExecutorFixture('overview-revoked-publication');
+    const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        workspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const baseRevision = notebook.publishedRevision();
+    const admitted = knowledgeOverviewReader.prepareKnowledgeOverview({
+      coreDb: fixture.coreDb,
+      store: fixture.store,
+      workspaceId,
+      threadId: fixture.turn.threadId,
+      turnId: fixture.turn.id,
+      actor: fixture.turn.triggerActor,
+    });
+    const projection = JSON.parse(
+      admitted.text.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+    );
+    expect(projection.overviews).toContainEqual(
+      expect.objectContaining({
+        scope: `workspace:${workspaceId}`,
+        notebookRevision: baseRevision,
+        content: notebook.readRevision(baseRevision).files['index.md'],
+      })
+    );
+    expect(() => admitted.assertCurrent()).not.toThrow();
+    const candidateRevision = notebook.prepare({
+      baseRevision,
+      changes: {
+        'index.md':
+          '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted overview\n',
+      },
+      metadata: {
+        summary: 'Restrict the overview during source verification',
+        producer: fixture.turn.triggerActor,
+        authority: { kind: 'direct', instructionReference: 'test:overview-publication-revocation' },
+        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'a'.repeat(64)}` },
+        sourceReferences: [],
+      },
+    });
+    const manifestPath = join(fixture.packageRoot, 'package.json');
+    let revoked = false;
+    const prepareMaterial = materialSourceReader.prepareMaterialSourceInput;
+    // Keep the real source bytes and checks; change current authority only after its awaited stream read.
+    const verification = vi
+      .spyOn(materialSourceReader, 'prepareMaterialSourceInput')
+      .mockImplementation(async (...args) => {
+        const prepared = await prepareMaterial(...args);
+        return {
+          ...prepared,
+          source: {
+            ...prepared.source,
+            open: async function* (signal) {
+              for await (const chunk of prepared.source.open(signal)) {
+                if (!revoked) {
+                  expect(existsSync(fixture.packageRoot)).toBe(true);
+                  expect(existsSync(manifestPath)).toBe(false);
+                  notebook.publish({ baseRevision, candidateRevision });
+                  revoked = true;
+                }
+                yield chunk;
+              }
+            },
+          },
+        };
+      });
+    const backend = new FakeWorkerGovernanceBackend();
+    const submit = vi.spyOn(backend, 'submit');
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await expect(
+        executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'source_unavailable', status: 503 });
+      expect(revoked).toBe(true);
+      // S39 Knowledge Handling requires current overview authority before package publication.
+      expect(existsSync(manifestPath)).toBe(false);
+      expect(existsSync(fixture.tracePath)).toBe(false);
+      expect(backend.calls).not.toContain('materialize');
+      expect(submit).not.toHaveBeenCalled();
+    } finally {
+      verification.mockRestore();
+      submit.mockRestore();
+      fixture.coreDb.sqlite.close();
+    }
+  });
 
   it.each([
     'validation',

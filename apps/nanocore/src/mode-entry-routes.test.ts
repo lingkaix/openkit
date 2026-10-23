@@ -113,6 +113,16 @@ import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-en
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { getWorkspaceMember, removeWorkspaceMember } from './workspace-sharing.js';
 
+/** Installs one deliberate checkpoint fault only after native writes drain, then resumes before replay. */
+async function mutateQuiescentCheckpoint(mutate: () => { changes: number }): Promise<void> {
+  const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
+  try {
+    if (mutate().changes !== 1) throw new Error('Checkpoint fault must mutate exactly one row.');
+  } finally {
+    resume();
+  }
+}
+
 const STORAGE_REF = 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
 const SELECTED_CHOICE = {
   expectedRevision: 7,
@@ -1346,20 +1356,24 @@ describe('conversation.submit worker acceptance wait', () => {
       )!;
       try {
         // Deliberately contradict the already admitted request; setup used only real owners.
-        workspaceDb.sqlite
-          .prepare(
-            'UPDATE worker_turn_checkpoints SET request_input_hash = ? WHERE checkpoint_id = ?'
-          )
-          .run('0'.repeat(64), checkpoint.checkpointId);
+        await mutateQuiescentCheckpoint(() =>
+          workspaceDb.sqlite
+            .prepare(
+              'UPDATE worker_turn_checkpoints SET request_input_hash = ? WHERE checkpoint_id = ?'
+            )
+            .run('0'.repeat(64), checkpoint.checkpointId)
+        );
         const replay = await replayAcceptedRequest();
         expect(replay.status).toBe(409);
         await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
       } finally {
-        workspaceDb.sqlite
-          .prepare(
-            'UPDATE worker_turn_checkpoints SET request_input_hash = ? WHERE checkpoint_id = ?'
-          )
-          .run(checkpoint.requestInputHash, checkpoint.checkpointId);
+        await mutateQuiescentCheckpoint(() =>
+          workspaceDb.sqlite
+            .prepare(
+              'UPDATE worker_turn_checkpoints SET request_input_hash = ? WHERE checkpoint_id = ?'
+            )
+            .run(checkpoint.requestInputHash, checkpoint.checkpointId)
+        );
         workspaceDb.sqlite.close();
       }
       expect((await replayAcceptedRequest()).status).toBe(202);
@@ -2729,15 +2743,24 @@ describe('Task durable admission response', () => {
             ['request_input_hash', checkpoint.requestInputHash],
             ['context_digest', checkpoint.contextDigest],
           ] as const) {
-            workspaceDb.sqlite
-              .prepare(`UPDATE worker_turn_checkpoints SET ${column} = ? WHERE checkpoint_id = ?`)
-              .run('sha256:contradiction', checkpoint.checkpointId);
-            const refused = await submit();
-            expect(refused.status).toBe(409);
-            await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
-            workspaceDb.sqlite
-              .prepare(`UPDATE worker_turn_checkpoints SET ${column} = ? WHERE checkpoint_id = ?`)
-              .run(original, checkpoint.checkpointId);
+            await mutateQuiescentCheckpoint(() =>
+              workspaceDb.sqlite
+                .prepare(`UPDATE worker_turn_checkpoints SET ${column} = ? WHERE checkpoint_id = ?`)
+                .run('sha256:contradiction', checkpoint.checkpointId)
+            );
+            try {
+              const refused = await submit();
+              expect(refused.status).toBe(409);
+              await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
+            } finally {
+              await mutateQuiescentCheckpoint(() =>
+                workspaceDb.sqlite
+                  .prepare(
+                    `UPDATE worker_turn_checkpoints SET ${column} = ? WHERE checkpoint_id = ?`
+                  )
+                  .run(original, checkpoint.checkpointId)
+              );
+            }
           }
         } finally {
           workspaceDb.sqlite.close();

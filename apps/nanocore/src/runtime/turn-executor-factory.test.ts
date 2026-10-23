@@ -14194,7 +14194,8 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   // Real resident setup shares gate CPU; the assertions still check fencing and no replay.
-  it.each([
+  // biome-ignore format: Preserve the unchanged lifecycle matrix body while exposing its case signal.
+  it.for([
     { label: 'previous-Epoch A2', origin: 'f'.repeat(64), dirty: false, operation: 'dispatched' },
     { label: 'same-Epoch A2', origin: 'a'.repeat(64), dirty: false, operation: 'dispatched' },
     {
@@ -14205,12 +14206,12 @@ describe('createConfiguredTurnExecutor', () => {
     },
     { label: 'previous-Epoch queued', origin: 'f'.repeat(64), dirty: false, operation: 'queued' },
     { label: 'previous-Epoch dirty', origin: 'f'.repeat(64), dirty: true, operation: 'dispatched' },
-  ] as const)('handles $label resident admission without replaying old Harness work', async ({
+  ] as const)('handles $label resident admission without replaying old Harness work', { timeout: 60_000 }, async ({
     label,
     origin,
     dirty,
     operation,
-  }) => {
+  }, { signal }) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     try {
@@ -14658,6 +14659,7 @@ describe('createConfiguredTurnExecutor', () => {
         const nativeCommands: NonNullable<ReturnType<typeof dispatchNanoHostHarnessOperation>>[] =
           [];
         let finished = false;
+        signal.throwIfAborted();
         const running = dispatch()
           .then(async (result) => {
             await Promise.all(result.startedTurns.map(({ handle }) => handle.completion));
@@ -14668,7 +14670,8 @@ describe('createConfiguredTurnExecutor', () => {
           });
         void running.catch(() => undefined);
         // Only the external Harness worker is doubled. Core creates B's package, session and attempt.
-        for (let tick = 0; tick < 1000 && !finished; tick += 1) {
+        // Serve the outside worker until the original dispatch and full closeout settle.
+        while (!finished && !signal.aborted) {
           const integrations = coreDb.sqlite
             .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
             .all() as { ref: string }[];
@@ -14787,6 +14790,7 @@ describe('createConfiguredTurnExecutor', () => {
           }
           if (!finished) await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
+        signal.throwIfAborted();
         expect(finished, 'Core must consume the original queued Pi admission after proof.').toBe(
           true
         );
@@ -14950,7 +14954,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  }, 60_000);
+  });
 
   it.each([
     ['pre-witness', true, false, 'idle'],
@@ -17152,4 +17156,338 @@ function factoryPackageBinding(
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+});
+
+// FAILURE-SCOPE #444: retired content cannot authorize execution or poison healthy target admission.
+describe('retired Workspace resident isolation', () => {
+  it.each([
+    'accepted',
+    'delete-failed',
+    'missing-package',
+    'conflicting-package',
+    'conflicting-recorded-work-slot',
+  ] as const)('preserves native proof and retained storage during same-epoch retirement: %s', async (proof) => {
+    const { refuseScope, isScopeAdmitted } = await import('../bootstrap/readiness.js');
+    const { openControlStoreProductReadHandle } = await import(
+      '../storage/control-store-products.js'
+    );
+    const { getWorkspaceRegistryLifecycleFact, retireQuarantinedWorkspaceRegistry } = await import(
+      '../workspace-sharing.js'
+    );
+    const coreDb = createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const retiredWorkspaceId = DEMO_WORKSPACE_ID;
+    const healthy = await store.createWorkspace('Healthy retirement sibling');
+    for (const workspaceId of [retiredWorkspaceId, healthy.id])
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+    const healthyThread = await store.createThread(healthy.id, 'Healthy worker');
+    const manifest = createTestAgentSetup({
+      adapter: 'codex',
+      agentId: 'agent_retired_scope',
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    admitTestNativeEnvironment(coreDb, manifest);
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Retirement fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => snapshot,
+    });
+    const joins: Array<() => Promise<void>> = [];
+    /** Publishes an actual pending Turn and its receipt through the existing command test builder. */
+    const admission = async (index: number, workspaceId: string, threadId: string) => {
+      const attemptId = testEntityId('attempt', `failure_scope_${proof}_${index}`);
+      const agentSessionId = testEntityId('as', `failure_scope_${proof}_${index}`);
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${attemptId}`,
+        requestId: testEntityId('tu', `failure_scope_request_${proof}_${index}`).slice(3),
+        requestedAgentId: manifest.id,
+        workspaceId,
+        threadId,
+        turnId: testEntityId('tu', `failure_scope_${proof}_${index}`),
+        turnInput: 'Inspect exact retirement isolation.',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      return { entry, attemptId, agentSessionId, candidateAgentSessionId: agentSessionId };
+    };
+    try {
+      const first = await admission(1, retiredWorkspaceId, DEMO_THREAD_ID);
+      const resident = await native.admitTurn(first.entry, first);
+      joins.push(resident.cleanup);
+      await resident.complete();
+      const original = store.getAgentSession(first.agentSessionId);
+      expect(original).toMatchObject({
+        status: 'idle',
+        nativeHandleDigest: 'a'.repeat(64),
+        retainedStorage: expect.any(Object),
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, first.attemptId).phase).toBe(
+        'closed'
+      );
+      let alternateWorkSlotRef: string | undefined;
+      let alternateContributorRef: string | undefined;
+      if (proof === 'conflicting-recorded-work-slot') {
+        const contributorThread = await store.createThread(
+          retiredWorkspaceId,
+          'Eligible alternative storage contributor'
+        );
+        const attached = getWorkerStorageBinding(coreDb, original.retainedStorage!)!;
+        const shared = storageOwners.admitWorkerStorageContributor(coreDb, {
+          authorizeContributor: (contributor) =>
+            contributor.workspaceId === retiredWorkspaceId &&
+            contributor.responsibleUserId === ownerUserId,
+          expectedRevision: attached.revision,
+          layout: attached.layout,
+          purpose: 'work',
+          responsibleUserId: ownerUserId,
+          storageRef: attached.storageRef,
+          threadId: contributorThread.id,
+          workspaceId: retiredWorkspaceId,
+        });
+        const alternate = shared.contributors.find(
+          (contributor) => contributor.threadId === contributorThread.id
+        )!;
+        alternateContributorRef = alternate.contributorRef;
+        alternateWorkSlotRef = alternate.workSlotRef;
+        expect(alternateWorkSlotRef).not.toBe(original.retainedStorage!.workSlotRef);
+      }
+      let storageBefore = getWorkerStorageBinding(coreDb, original.retainedStorage!)!;
+      const anchorBefore = getWorkerBackendSession(coreDb, first.attemptId)!;
+      const targetBefore = recordTestNativeRuntimeTarget(coreDb);
+      expect(anchorBefore.originPhysicalEpoch).toBe(targetBefore.physicalEpoch);
+      const snapshotPath = join(
+        dataRoot,
+        'workspaces',
+        retiredWorkspaceId,
+        'runtime/agent-sessions',
+        original.id,
+        'aep-snapshots',
+        `${resident.pkg.snapshotId}.json`
+      );
+      const acceptedBytes = readFileSync(snapshotPath);
+      const second = await admission(2, healthy.id, healthyThread.id);
+      // Fault injection follows a complete native Turn and acknowledged proof; it cannot create a fixture record.
+      if (proof === 'missing-package') rmSync(snapshotPath);
+      if (proof === 'conflicting-package') {
+        const retained = JSON.parse(acceptedBytes.toString('utf8'));
+        retained.snapshot.scope.threadId = healthyThread.id;
+        retained.contentDigest = createHash('sha256')
+          .update(JSON.stringify(retained.snapshot))
+          .digest('hex');
+        writeFileSync(snapshotPath, JSON.stringify(retained));
+      }
+      if (proof === 'conflicting-recorded-work-slot') {
+        // Continuity Decision: contributor eligibility cannot replace the exact accepted attachment.
+        // Named corruption fault: align an existing contributor with the altered historical slot.
+        // All recorded Thread/storage joins then agree; only the accepted AEP proves the mismatch.
+        const accepted = JSON.parse(acceptedBytes.toString('utf8'));
+        expect(accepted.contentDigest).toBe(
+          createHash('sha256').update(JSON.stringify(accepted.snapshot)).digest('hex')
+        );
+        expect(accepted.snapshot.extensions.openkit.workerStorage.workSlotRef).toBe(
+          original.retainedStorage!.workSlotRef
+        );
+        await shutdownControlStoreWorkerClient();
+        const contributorChanged = coreDb.sqlite
+          .prepare(
+            'UPDATE worker_storage_contributors SET thread_id = ? WHERE contributor_ref = ? AND storage_ref = ? AND attachment_generation = ?'
+          )
+          .run(
+            original.threadId,
+            alternateContributorRef!,
+            original.retainedStorage!.storageRef,
+            original.retainedStorage!.attachmentGeneration
+          );
+        expect(contributorChanged.changes).toBe(1);
+        const damaged = openWorkspaceDb(dataRoot, retiredWorkspaceId);
+        try {
+          const changed = damaged.sqlite
+            .prepare(
+              "UPDATE control_agent_sessions SET record_json = json_set(record_json, '$.retainedStorage.workSlotRef', ?) WHERE id = ?"
+            )
+            .run(alternateWorkSlotRef!, original.id);
+          expect(changed.changes).toBe(1);
+        } finally {
+          damaged.sqlite.close();
+        }
+        const corruptedSession = store.getAgentSession(original.id);
+        expect(corruptedSession.retainedStorage).toEqual({
+          ...original.retainedStorage,
+          workSlotRef: alternateWorkSlotRef,
+        });
+        storageBefore = getWorkerStorageBinding(coreDb, original.retainedStorage!)!;
+        expect(storageBefore.contributors).toContainEqual(
+          expect.objectContaining({
+            attachmentGeneration: corruptedSession.retainedStorage!.attachmentGeneration,
+            contributorRef: alternateContributorRef,
+            responsibleUserId: ownerUserId,
+            storageRef: corruptedSession.retainedStorage!.storageRef,
+            threadId: corruptedSession.threadId,
+            workspaceId: corruptedSession.workspaceId,
+            workSlotRef: corruptedSession.retainedStorage!.workSlotRef,
+          })
+        );
+        expect(readFileSync(snapshotPath)).toEqual(acceptedBytes);
+      }
+      const recordedBeforeRetirement = store.getAgentSession(original.id);
+      const retainedBytes = existsSync(snapshotPath) ? readFileSync(snapshotPath) : null;
+      refuseScope(dataRoot, { scope: 'workspace', id: retiredWorkspaceId, check: 'recovery' });
+      const registry = getWorkspaceRegistryLifecycleFact(coreDb, retiredWorkspaceId)!;
+      coreDb.sqlite.transaction(() =>
+        retireQuarantinedWorkspaceRegistry({
+          coreDb,
+          workspaceId: retiredWorkspaceId,
+          expectedRegistryRevision: registry.registryRevision,
+        })
+      )();
+      refuseScope(dataRoot, { scope: 'workspace', id: retiredWorkspaceId, check: 'retired' });
+      const effectsBefore = [...native.effects];
+      const sandboxId = effectsBefore.find((effect) => effect.kind === 'sandbox.create')!.input
+        .sandboxId;
+      let deleteObserved = false;
+      const push = native.outside.effects.push.bind(native.outside.effects);
+      const physicalPeer = vi
+        .spyOn(native.outside.effects, 'push')
+        .mockImplementation((...requests) => {
+          const count = push(...requests);
+          for (const request of requests)
+            if (request.kind === 'sandbox.delete') {
+              deleteObserved = true;
+              // No Host result exists yet: the old writer must still own its attachment and capacity.
+              expect(
+                getWorkerStorageBinding(coreDb, original.retainedStorage!)!.currentSandboxBindingRef
+              ).not.toBeNull();
+              expect(request.input).toMatchObject({
+                sandboxId,
+                leaseId: first.attemptId,
+                packageSnapshotId: resident.pkg.snapshotId,
+                backendSessionId: anchorBefore.backendSessionId,
+              });
+              if (proof === 'delete-failed')
+                throw new Error('Outside peer cannot prove physical deletion.');
+            }
+          return count;
+        });
+      const newCommands: harnessRecords.NanoHostHarnessCommand[] = [];
+      const accept = native.runtime.acceptNanoHostHarnessCommand;
+      const observe = vi
+        .spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
+        .mockImplementation((request) => {
+          const command = accept(request);
+          newCommands.push(command);
+          return command;
+        });
+      try {
+        if (proof === 'accepted') {
+          // Scheduling Scale Completion/Release: same Epoch is residency, never an absence proof.
+          const admitted = await native.admitTurn(second.entry, second);
+          joins.push(admitted.cleanup);
+          await admitted.complete();
+          const cleanup = native.effects
+            .slice(effectsBefore.length)
+            .find((effect) => effect.kind === 'sandbox.delete');
+          expect(cleanup).toBeDefined();
+          expect(deleteObserved).toBe(true);
+          expect(cleanup!.input).toMatchObject({
+            sandboxId,
+            leaseId: first.attemptId,
+            packageSnapshotId: resident.pkg.snapshotId,
+            backendSessionId: anchorBefore.backendSessionId,
+          });
+          expect(recordTestNativeRuntimeTarget(coreDb).physicalEpoch).toBe(
+            targetBefore.physicalEpoch
+          );
+          expect(store.getTurnById(second.entry.turnId).status).toBe('completed');
+          const preserved = getWorkerStorageBinding(coreDb, original.retainedStorage!)!;
+          expect(preserved).toMatchObject({
+            storageRef: storageBefore.storageRef,
+            state: 'idle',
+            currentSandboxBindingRef: null,
+          });
+          expect(preserved.targets).toEqual(storageBefore.targets);
+        } else {
+          // Missing/contradictory accepted authority cannot grant capacity or a replacement execution.
+          await expect(native.admitTurn(second.entry, second)).rejects.toThrow();
+          if (proof === 'delete-failed') {
+            expect(deleteObserved).toBe(true);
+            expect(
+              native.effects
+                .slice(effectsBefore.length)
+                .some((effect) => effect.kind === 'sandbox.create')
+            ).toBe(false);
+            expect(
+              getWorkerStorageBinding(coreDb, original.retainedStorage!)!.currentSandboxBindingRef
+            ).not.toBeNull();
+          } else {
+            expect(deleteObserved).toBe(false);
+            expect(native.effects).toEqual(effectsBefore);
+            expect(getWorkerBackendSession(coreDb, first.attemptId)).toEqual(anchorBefore);
+            expect(getWorkerStorageBinding(coreDb, original.retainedStorage!)).toEqual(
+              storageBefore
+            );
+          }
+          expect(newCommands.some((command) => command.operation === 'turn.start')).toBe(false);
+        }
+        expect(
+          newCommands.some(
+            (command) =>
+              ['session.open', 'turn.start'].includes(command.operation) &&
+              command.body.agentSessionId === original.id
+          )
+        ).toBe(false);
+        // Read-only owner observation proves retained native provenance; it grants no executable admission.
+        const retainedReader = openControlStoreProductReadHandle(
+          join(dataRoot, 'workspaces', retiredWorkspaceId, 'db', 'workspace.sqlite'),
+          { kind: 'workspace', workspaceId: retiredWorkspaceId }
+        );
+        try {
+          if (proof === 'conflicting-recorded-work-slot') {
+            expect(retainedReader.get('agent-session', original.id)!.record).toMatchObject({
+              nativeHandleDigest: original.nativeHandleDigest,
+              retainedStorage: recordedBeforeRetirement.retainedStorage,
+              environmentPackageSnapshotId: original.environmentPackageSnapshotId,
+            });
+          } else {
+            expect(retainedReader.get('agent-session', original.id)!.record).toMatchObject({
+              nativeHandleDigest: original.nativeHandleDigest,
+              retainedStorage: original.retainedStorage,
+              environmentPackageSnapshotId: original.environmentPackageSnapshotId,
+            });
+          }
+        } finally {
+          retainedReader.close();
+        }
+        expect(isScopeAdmitted(dataRoot, 'workspace', retiredWorkspaceId)).toBe(false);
+        expect(() => store.getWorkspace(retiredWorkspaceId)).toThrow(
+          expect.objectContaining({ code: 'recovery_required' })
+        );
+        await expect(
+          store.createThread(retiredWorkspaceId, 'Must remain retired')
+        ).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(existsSync(snapshotPath) ? readFileSync(snapshotPath) : null).toEqual(retainedBytes);
+      } finally {
+        observe.mockRestore();
+        physicalPeer.mockRestore();
+      }
+    } finally {
+      for (const join of joins) await join();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+    }
+  }, 60_000);
 });

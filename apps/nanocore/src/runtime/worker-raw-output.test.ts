@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   finishCapabilityCall,
@@ -123,54 +123,107 @@ describe('durable atomic Worker raw output accounting', () => {
         .rawOutputBytes
     ).toBe(33);
   });
-  it('shares one allowance across actual simultaneous SQLite writers', async () => {
+  it('shares one allowance across concurrent producers through one accounting owner', async () => {
     const state = fixture();
     const second = state.newCall();
-    const rawModule = fileURLToPath(new URL('./worker-raw-output.ts', import.meta.url));
-    const dbModule = fileURLToPath(new URL('../storage/db.ts', import.meta.url));
     const run = (callId: string, bytePosition: number) => {
-      const script = `import {openWorkspaceDb} from ${JSON.stringify(dbModule)};
-        import {observeWorkerRawOutput} from ${JSON.stringify(rawModule)};
-        const db=openWorkspaceDb(${JSON.stringify(state.root)},${JSON.stringify(state.scope.workspaceId)});
-        process.on('message',()=>{try { const result=observeWorkerRawOutput(db,${JSON.stringify({ ...state.identity, callId, bytePosition })});
-          db.sqlite.close();process.send(result,()=>process.exit(0)); } catch {process.exit(1);} });process.send('ready');`;
-      const child = spawn(
-        process.execPath,
-        ['--import', 'tsx', '--input-type=module', '--eval', script],
-        { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] }
-      );
+      const input = { ...state.identity, callId, bytePosition };
+      const script = `process.on('message', (message) => {
+        if (message === 'go') process.send(${JSON.stringify(input)});
+        if (message === 'ack') process.exit(0);
+      }); process.send('ready');`;
+      const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+      });
       children.push(child);
       const ready = new Promise<void>((resolve, reject) => {
-        child.once('message', () => resolve());
+        child.once('message', (message) => {
+          if (message === 'ready') resolve();
+          else reject(new Error('Raw output producer setup failed.'));
+        });
         child.once('error', reject);
         child.once('exit', (code) => {
-          if (code !== 0) reject(new Error('Raw SQLite child setup failed.'));
+          if (code !== 0) reject(new Error('Raw output producer setup failed.'));
         });
       });
       const result = ready.then(
         () =>
-          new Promise<{ exhausted: boolean }>((resolve, reject) => {
-            child.once('message', resolve);
+          new Promise<ReturnType<typeof observeWorkerRawOutput>>((resolve, reject) => {
+            child.once('message', (message) => {
+              try {
+                expect(message).toEqual(input);
+                // DX Write And Space Budget retains one logical writer per family.
+                const observed = observeWorkerRawOutput(state.db, input);
+                child.send('ack', (error) => {
+                  if (error) reject(error);
+                  else resolve(observed);
+                });
+              } catch (error) {
+                reject(error);
+              }
+            });
             child.once('exit', (code) => {
-              if (code !== 0) reject(new Error('Raw SQLite child failed.'));
+              if (code !== 0) reject(new Error('Raw output producer failed.'));
             });
           })
       );
-      return { child, ready, result };
+      return { child, ready, result, input };
     };
     const a = run(state.call.id, 8_388_608),
       b = run(second.id, 8_388_609);
     await Promise.all([a.ready, b.ready]);
     a.child.send('go');
     b.child.send('go');
-    expect((await Promise.all([a.result, b.result])).map((r) => r.exhausted).sort()).toEqual([
-      false,
-      true,
-    ]);
+    const results = await Promise.all([a.result, b.result]);
+    // Worker Raw-Output Accounting: all concurrent children share one Turn allowance.
+    expect(results.map((result) => result.exhausted).sort()).toEqual([false, true]);
+    expect(results.map((result) => result.chargedBytes)).toEqual([8_388_608, 8_388_609]);
     expect(readWorkerRawOutput(state.db, state.scope)).toEqual({
       rawOutputBytes: 16_777_217,
       exhausted: true,
     });
+    // Trusted position replay cannot charge either concurrent producer twice.
+    expect(observeWorkerRawOutput(state.db, a.input).chargedBytes).toBe(0);
+    expect(observeWorkerRawOutput(state.db, b.input).chargedBytes).toBe(0);
+    expect(readWorkerRawOutput(state.db, state.scope)).toEqual({
+      rawOutputBytes: 16_777_217,
+      exhausted: true,
+    });
+  }, 30_000);
+  it('refuses a busy accounting transaction without partial or acknowledged progress', () => {
+    const state = fixture();
+    observeWorkerRawOutput(state.db, { ...state.identity, bytePosition: 41 });
+    const before = listWorkspaceCapabilityCalls(state.db, state.scope.workspaceId);
+    const injector = openWorkspaceDb(state.root, state.scope.workspaceId);
+    databases.push(injector);
+    // Fault injection holds a lock but never mutates an owned row family.
+    injector.sqlite.exec('BEGIN IMMEDIATE');
+    let observed: ReturnType<typeof observeWorkerRawOutput> | undefined;
+    let failure: unknown;
+    try {
+      observed = observeWorkerRawOutput(state.db, {
+        ...state.identity,
+        fromBytePosition: 41,
+        bytePosition: 42,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      injector.sqlite.exec('ROLLBACK');
+    }
+    // DX keeps the 5-ms Main busy policy with no retry; require a real SQLite refusal.
+    expect(failure).toBeInstanceOf(Database.SqliteError);
+    expect(failure).toMatchObject({ code: 'SQLITE_BUSY' });
+    expect(observed).toBeUndefined();
+    // Raw Output proof commits before ACK: refusal retains the exact prior watermark.
+    expect(listWorkspaceCapabilityCalls(state.db, state.scope.workspaceId)).toEqual(before);
+    expect(readWorkerRawOutput(state.db, state.scope)).toEqual({
+      rawOutputBytes: 41,
+      exhausted: false,
+    });
+    expect(() => assertWorkerRawOutputFinalStatus(state.db, state.scope, true)).toThrow(
+      'still settling'
+    );
   }, 30_000);
   it('retains proof through reopen, archive ledger codec and outcome Turns without checkpoints', () => {
     const { root, db, scope, identity, call } = fixture();

@@ -906,7 +906,12 @@ export function createWorkerContextPackageFiles(
 export async function writeWorkerContextPackageFiles(
   workspaceRoot: string,
   packageFiles: WorkerContextPackageFiles,
-  options: { readonly admission: FileStorageAdmission; readonly signal?: AbortSignal }
+  options: {
+    readonly admission: FileStorageAdmission;
+    readonly signal?: AbortSignal;
+    /** Rechecks caller authority after asynchronous preparation and before each file publication. */
+    readonly assertCurrent?: () => void;
+  }
 ): Promise<void> {
   options.signal?.throwIfAborted();
   assertCanonicalDirectory(workspaceRoot);
@@ -1015,6 +1020,7 @@ export async function writeWorkerContextPackageFiles(
       const startedAt = performance.now();
       try {
         options.signal?.throwIfAborted();
+        options.assertCurrent?.();
         const path = pathFor(file.path);
         if (existsSync(path)) {
           assertFileProof(path, inventoryEntry(file));

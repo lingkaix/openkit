@@ -26,8 +26,9 @@ import {
   currentWorkerLineageWorkspaceAuthority,
 } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
+import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { readCurrentWorkspacePolicy } from '../policy/workspace-resource-access.js';
@@ -36,14 +37,28 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { type CoreDb, openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import {
+  bindWorkspaceSqlite,
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openWorkspaceDb,
+} from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
+import {
+  AgentSessionRecordSchema,
+  nativeProductMetadataScope,
+  readNativeProduct,
+} from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  type AgentEnvironmentPackageSnapshotReadRecord,
+  requireAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -2120,10 +2135,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const disposed = new Set<string>();
     if (!sandboxBindingRef) return disposed;
     for (const anchor of this.workspaceCaptureAnchors(sandboxBindingRef)) {
-      const db = openWorkspaceDb(this.coreDb.dataRoot, anchor.workspaceId);
+      const admitted = isScopeAdmitted(this.coreDb.dataRoot, 'workspace', anchor.workspaceId);
+      const db = admitted
+        ? openWorkspaceDb(this.coreDb.dataRoot, anchor.workspaceId)
+        : this.openRetiringWorkspaceDb(anchor.workspaceId);
       try {
-        applyScopedMigrations(db);
-        if (await hasPendingWorkspaceCapture(this.coreDb, db, anchor, undefined, this.sharedStore))
+        if (admitted) applyScopedMigrations(db);
+        if (
+          await hasPendingWorkspaceCapture(
+            this.coreDb,
+            db,
+            anchor,
+            undefined,
+            admitted ? this.sharedStore : undefined
+          )
+        )
           throw new WorkspaceCaptureRecoveryRequired(
             'Original Workspace capture requires durable recovery disposition.'
           );
@@ -2764,7 +2790,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (eviction.physicalAbsent) {
         await this.invalidatePhysicallyAbsentSandbox(eviction);
       }
-      if (eviction.closeAgentSessions) {
+      // An excluded package cannot be restored for local close; the exact wider delete below owns cleanup.
+      if (
+        eviction.closeAgentSessions &&
+        eviction.retirementOwner &&
+        isScopeAdmitted(this.coreDb.dataRoot, 'workspace', eviction.retirementOwner.workspaceId)
+      ) {
         for (const binding of eviction.bindings) {
           if (binding.lifecycleState === 'closed') continue;
           try {
@@ -5127,22 +5158,27 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Validates original admitted keys against verified retained JSON and exact package, lease and binding provenance. */
   private requireDurableAgentSessionProvenance(
     environmentPackage: AgentEnvironmentPackage,
-    attemptId: string
+    attemptId: string,
+    historical?: AgentEnvironmentPackageSnapshotReadRecord
   ) {
     const anchor = getWorkerBackendSession(this.coreDb, attemptId);
-    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+    const workspaceDb = historical
+      ? null
+      : openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
     let retainedSnapshot: AgentEnvironmentPackage;
     let normalizedSnapshot: AgentEnvironmentPackage;
     try {
-      const record = requireAgentEnvironmentPackageSnapshot(
-        workspaceDb,
-        environmentPackage.scope.workspaceId,
-        environmentPackage.snapshotId
-      );
+      const record =
+        historical ??
+        requireAgentEnvironmentPackageSnapshot(
+          workspaceDb!,
+          environmentPackage.scope.workspaceId,
+          environmentPackage.snapshotId
+        );
       retainedSnapshot = record.retainedSnapshot;
       normalizedSnapshot = record.snapshot;
     } finally {
-      workspaceDb.sqlite.close();
+      workspaceDb?.sqlite.close();
     }
     const attachment = this.coreDb.sqlite
       .prepare(
@@ -5283,10 +5319,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return { ...attachment, anchor };
   }
 
-  /** Reads the immutable prior package and lease shared by proof handoff and local close. */
-  private readDurableAgentSession(inspection: NanoHostAgentSessionContinuityInspection): {
+  /** Opens exact retained authority read-only for cleanup, without migration or executable scope admission. */
+  private openRetiringWorkspaceDb(workspaceId: string) {
+    const scope = nativeProductMetadataScope(this.coreDb.dataRoot, {
+      kind: 'workspace',
+      workspaceId,
+    });
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    return bindWorkspaceSqlite(reader.sqlite, this.coreDb.dataRoot, workspaceId);
+  }
+
+  /** Reads the immutable prior package and lease; retirement selects only a read-only historical owner. */
+  private readDurableAgentSession(
+    inspection: NanoHostAgentSessionContinuityInspection,
+    retirement?: NanoHostIdleSandboxEviction
+  ): {
     environmentPackage: AgentEnvironmentPackage;
     attemptId: string;
+    historical: AgentEnvironmentPackageSnapshotReadRecord;
   } {
     const latest = this.coreDb.sqlite
       .prepare(
@@ -5310,18 +5360,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new WorkerNativeProofValidationError('package-binding-lineage/workspace-deleted');
     }
     // Inspection must preserve a missing Workspace rather than recreate canonical storage.
-    const workspaceDb = openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
-    let environmentPackage: AgentEnvironmentPackage;
+    const workspaceDb = retirement
+      ? this.openRetiringWorkspaceDb(latest.workspaceId)
+      : openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
+    let historical: AgentEnvironmentPackageSnapshotReadRecord;
     try {
-      environmentPackage = requireAgentEnvironmentPackageSnapshot(
+      historical = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
         latest.workspaceId,
         latest.packageSnapshotId
-      ).snapshot;
+      );
     } finally {
       workspaceDb.sqlite.close();
     }
-    return { environmentPackage, attemptId: latest.attemptId };
+    return { environmentPackage: historical.snapshot, attemptId: latest.attemptId, historical };
   }
 
   /** Restores a temporary Turn handle only for collection and local close. */
@@ -5336,18 +5388,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Recognizes completed handoff from existing authorities without admitting the historical package. */
   private hasRecordedRetiringProof(
     inspection: NanoHostAgentSessionContinuityInspection,
-    retirement: NanoHostIdleSandboxEviction
+    retirement: NanoHostIdleSandboxEviction,
+    workSlotRef?: string
   ): boolean {
-    if (!this.sharedStore || !inspection.nativeHandleDigest) return false;
-    let session: ReturnType<FsStore['getAgentSession']>;
-    try {
-      session = this.sharedStore.getAgentSession(inspection.agentSessionId);
-    } catch (error) {
-      if (error instanceof StoreRecordNotFoundError) return false;
-      throw error;
-    }
-    if (session.nativeHandleDigest !== inspection.nativeHandleDigest || !session.retainedStorage)
-      return false;
+    if (!inspection.nativeHandleDigest) return false;
     const latest = this.coreDb.sqlite
       .prepare(`
       SELECT workspace_id AS workspaceId, thread_id AS threadId,
@@ -5366,8 +5410,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           originPhysicalEpoch: string;
         }
       | undefined;
+    if (!latest) return false;
+    // The cleanup owner already knows the exact Workspace; opaque executable discovery excludes it.
+    const scope = nativeProductMetadataScope(this.coreDb.dataRoot, {
+      kind: 'workspace',
+      workspaceId: latest.workspaceId,
+    });
+    const row = readNativeProduct(scope, 'agent-session', inspection.agentSessionId);
+    if (!row) return false;
+    const session = AgentSessionRecordSchema.parse(row.record);
     if (
-      !latest ||
+      session.nativeHandleDigest !== inspection.nativeHandleDigest ||
+      !session.retainedStorage ||
+      (workSlotRef !== undefined && session.retainedStorage.workSlotRef !== workSlotRef)
+    )
+      return false;
+    if (
       session.environmentPackageSnapshotId !== latest.packageSnapshotId ||
       session.workspaceId !== latest.workspaceId ||
       session.threadId !== latest.threadId ||
@@ -5413,8 +5471,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
     );
     if (liveSession) liveSession.acceptedProofUnrecorded = true;
-    const { environmentPackage, attemptId } = this.readDurableAgentSession(inspection);
-    const attachment = this.requireDurableAgentSessionProvenance(environmentPackage, attemptId);
+    const { environmentPackage, attemptId, historical } = this.readDurableAgentSession(
+      inspection,
+      retirement
+    );
+    const attachment = this.requireDurableAgentSessionProvenance(
+      environmentPackage,
+      attemptId,
+      retirement ? historical : undefined
+    );
     const diagnostic = {
       proofAgentSessionId: environmentPackage.scope.agentSessionId,
       packageSnapshotId: environmentPackage.snapshotId,
@@ -5445,6 +5510,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       workSlotRef: packageWorkerStorageWorkSlotRef(environmentPackage),
       attachmentGeneration: storage.attachmentGeneration,
     };
+    const recorded =
+      retirement &&
+      this.hasRecordedRetiringProof(inspection, retirement, retainedStorage.workSlotRef);
     const recorder =
       record ??
       liveSession?.recordNativeHandleDigest ??
@@ -5463,6 +5531,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       ) {
         throw new WorkerNativeProofValidationError('live-storage-association', diagnostic);
       }
+      if (recorded) {
+        liveSession.acceptedProofUnrecorded = false;
+        return;
+      }
       liveSession.recordNativeHandleDigest = recorder;
       // The durable result may precede the volatile cache handoff; record exactly the inspected proof.
       await this.recordAcceptedNativeHandleDigest(liveSession, digest);
@@ -5470,7 +5542,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (cachedBinding?.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId) {
         cachedBinding.nativeHandleDigest = digest;
       }
-    } else {
+    } else if (!recorded) {
       await recorder(digest, retainedStorage);
     }
   }

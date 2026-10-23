@@ -1562,16 +1562,19 @@ export class FsStore {
   /**
    * Returns active idempotency records for tests and diagnostics.
    *
-   * @returns Non-expired idempotency records.
+   * @param workspaceId Optional exact Workspace owner; unrelated scopes are not opened.
+   * @returns Non-expired idempotency records in the selected scope.
    */
-  public listCommandRequests(): CommandRequestRecord[] {
+  public listCommandRequests(workspaceId?: string): CommandRequestRecord[] {
     if (this.dataRoot) {
-      return listCommandRequestRecords(this.dataRoot, now());
+      return listCommandRequestRecords(this.dataRoot, now(), workspaceId);
     }
 
     this.pruneExpiredCommandRequests();
 
-    return [...this.commandRequests.values()];
+    return [...this.commandRequests.values()].filter(
+      (record) => workspaceId === undefined || record.scope.workspaceId === workspaceId
+    );
   }
 
   /**
@@ -3114,10 +3117,15 @@ export class FsStore {
   public refreshWorkspaceConfigNames(
     workspaceNames: readonly { readonly workspaceId: string; readonly name: string }[]
   ): void {
-    for (const { workspaceId } of workspaceNames) {
+    // Reload projects only admitted owners; an excluded sibling keeps its retained configuration.
+    const admittedNames = workspaceNames.filter(
+      ({ workspaceId }) =>
+        !this.dataRoot || isScopeAdmitted(this.dataRoot, 'workspace', workspaceId)
+    );
+    for (const { workspaceId } of admittedNames) {
       this.assertWorkspacePublicationAcknowledged(workspaceId);
     }
-    for (const { workspaceId, name } of workspaceNames) {
+    for (const { workspaceId, name } of admittedNames) {
       const workspace = this.workspaces.get(workspaceId);
       if (workspace && workspace.name !== name) {
         this.workspaces.set(workspaceId, { ...workspace, name });
