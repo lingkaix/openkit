@@ -14,7 +14,10 @@ import { applyMigrations } from './storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
-it('searches healthy authorized siblings without reading quarantined or unauthorized Workspaces', async () => {
+it.each([
+  'before-admission',
+  'after-admission',
+] as const)('searches healthy authorized siblings without reading quarantined or unauthorized Workspaces (%s)', async (quarantineTiming) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'search-scope-'));
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -42,7 +45,8 @@ it('searches healthy authorized siblings without reading quarantined or unauthor
         ownerUserId: workspace.id === hidden.id ? outsideOwner : userId,
       });
     }
-    refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
+    if (quarantineTiming === 'before-admission')
+      refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
     const input = { query: 'scope match' };
     const admitted = await admitOperation(
       OPERATION_DEFINITIONS['app.search'],
@@ -53,7 +57,12 @@ it('searches healthy authorized siblings without reading quarantined or unauthor
     expect(admitted.context.scope).toMatchObject({ kind: 'authorized-workspace-set' });
     if (admitted.context.scope.kind !== 'authorized-workspace-set')
       throw new Error('Unexpected scope.');
-    expect(admitted.context.scope.workspaceIds).toEqual(expect.arrayContaining([bad.id, good.id]));
+    expect(admitted.context.scope.workspaceIds).toContain(good.id);
+    if (quarantineTiming === 'after-admission') {
+      // Both authorized Workspaces are healthy at admission; quarantine changes before content access.
+      expect(admitted.context.scope.workspaceIds).toContain(bad.id);
+      refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
+    }
     expect(admitted.context.scope.workspaceIds).not.toContain(hidden.id);
     await shutdownControlStoreWorkerClient();
     const badRecord = workspaceDbPath(dataRoot, bad.id);
