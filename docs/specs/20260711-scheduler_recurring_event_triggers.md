@@ -112,6 +112,8 @@ The same recurring scan also triggers one closed internal operation: a bounded K
 
 The [Knowledge Manager owner](20260704-knowledge_manager_internal_agent_runtime.md#query-and-maintenance-execution) owns fresh input assembly, single-writer admission, instructions and fixed-base publication. Existing scope configuration and maintenance Thread, Turn and Item records retain enablement, due-run lineage and visible outcomes; no Worker identity or Workspace membership is fabricated for User or Server scopes. The trigger checks current scope authority and delegation. Failed or skipped scheduled work records a visible outcome and reason through the existing work owners. It never authorizes publication, automatically retries a model run or silently claims that a source range was processed.
 
+The Server Knowledge daily scan selects the current Server notebook and general Server-owned maintenance Thread without a Workspace anchor. It reuses the same daily admission function and retained Turn accounting. A current local administrator in local mode, or a current usable Server administration Token owner in multi-user mode, supplies the scheduled system actor's responsible User; the setting grants no access after that authority is revoked. Missing authority and an active writer retain visible failed or skipped outcomes without a Provider call. A failed or interrupted run does not mark its inputs processed, and boot never replays its model or publication effects.
+
 ### Durable definition
 
 One `RecurringSchedule` record is the unique definition authority. Its minimum areas are:
@@ -249,5 +251,3 @@ Cron and other calendar schedules, non-UTC zones, days 29 through 31 and last-da
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260529-test_strategy.md`
-
-The Server Knowledge daily scan selects the current Server notebook and general Server-owned maintenance Thread without a Workspace anchor. It reuses the same daily admission function and retained Turn accounting. A current local administrator in local mode, or a current usable Server administration Token owner in multi-user mode, supplies the scheduled system actor's responsible User; the setting grants no access after that authority is revoked. Missing authority and an active writer retain visible failed or skipped outcomes without a Provider call. A failed or interrupted run does not mark its inputs processed, and boot never replays its model or publication effects.
