@@ -1917,6 +1917,7 @@ describe('mode command failure diagnostics', () => {
       );
     } finally {
       diagnostics.mockRestore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -4520,6 +4521,7 @@ describe('route B queued Task receipts', () => {
       if (executor.launches) await executor.finished.promise;
       await setImmediate();
       prepare.mockRestore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
