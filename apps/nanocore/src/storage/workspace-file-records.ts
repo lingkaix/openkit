@@ -37,6 +37,7 @@ import {
   deriveEntityId,
   entityIdPattern,
   type ItemSchema,
+  isSealedTurnTerminal,
   KnowledgeNotebookPageSchema,
   readRetainedV1,
   responsibleUserIdForActor,
@@ -85,6 +86,7 @@ import {
   type ControlProductKind,
   type ControlProductOwner,
   type ControlProductSnapshot,
+  type ControlStoreProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
 import {
@@ -849,9 +851,10 @@ export function nativeProductScope(
 export function readNativeProduct(
   scope: Pick<NativeProductScope, 'path' | 'owner'>,
   kind: ControlProductKind,
-  id: string
+  id: string,
+  existingReader?: ControlStoreProductReadHandle
 ): ControlProductSnapshot | undefined {
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const reader = existingReader ?? openControlStoreProductReadHandle(scope.path, scope.owner);
   try {
     return reader.sqlite.transaction(() => {
       const known = reader.get(kind, id);
@@ -875,7 +878,7 @@ export function readNativeProduct(
       };
     })();
   } finally {
-    reader.close();
+    if (!existingReader) reader.close();
   }
 }
 
@@ -983,6 +986,99 @@ export function readNativeProductEntries(
   } finally {
     reader.close();
   }
+}
+
+/** Reads the addressed append heads without replaying unrelated immutable history. */
+export function readNativeTurnWriteHead(
+  scope: NativeProductScope,
+  turnId: string,
+  itemId?: string
+) {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  let snapshot: ControlProductSnapshot | undefined;
+  let sequence = 0;
+  let eventSequence = 0;
+  let entry: ReturnType<ControlStoreProductReadHandle['entries']>[number] | undefined;
+  try {
+    reader.sqlite.transaction(() => {
+      snapshot = readNativeProduct(scope, 'turn', turnId, reader);
+      if (!snapshot) return;
+      const tail = reader.sqlite.prepare(
+        'SELECT max(sequence) AS sequence FROM control_product_entries WHERE kind=? AND turn_id=?'
+      );
+      sequence = (tail.get('item', turnId) as { sequence: number | null }).sequence ?? 0;
+      eventSequence = (tail.get('event', turnId) as { sequence: number | null }).sequence ?? 0;
+      if (itemId) {
+        const row = reader.sqlite
+          .prepare(
+            "SELECT turn_id,sequence FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+          )
+          .get(itemId) as { turn_id: string; sequence: number } | undefined;
+        if (row) {
+          if (row.turn_id !== turnId) throw new Error(`Item already exists: ${itemId}`);
+          entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0];
+          if (!entry || entry.id !== itemId || entry.sequence !== row.sequence)
+            throw new Error('Native Item head is recovery_required.');
+        }
+      }
+    })();
+  } finally {
+    reader.close();
+  }
+  if (!snapshot) return undefined;
+  const metadata = StoredTurnV1Schema.parse(snapshot.record);
+  // Exact sealed replay compares the complete retained outcome, rather than an append head.
+  if (isSealedTurnTerminal(metadata.status)) {
+    const history = readNativeTurnHistory(scope, turnId);
+    return history
+      ? {
+          ...history,
+          itemRevision: history.itemRevisions.filter((item) => item.id === itemId).length,
+          itemSequence: history.itemRevisions.length,
+          eventSequence,
+        }
+      : undefined;
+  }
+  // All SQL snapshots end before immutable bytes are read or preparation can await.
+  const items: Item[] = [];
+  if (entry) {
+    const value = readImmutableProductJson(scope.contentMount, scope.owner, entry.content);
+    if (
+      value &&
+      typeof value === 'object' &&
+      'requiredFeatures' in value &&
+      (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length > 0)
+    )
+      throw new Error('Native product required semantics are unsupported.');
+    const parsed = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+    const { schemaVersion: _header, ...payload } = value as Record<string, unknown>;
+    const item = preserveDescriptiveRecord(payload, parsed, parsed) as Item;
+    if (
+      !isDeepStrictEqual(item.owner, scope.owner) ||
+      item.id !== itemId ||
+      item.turnId !== turnId ||
+      item.threadId !== metadata.threadId
+    )
+      throw new Error('Native Item head lineage is recovery_required.');
+    items.push(item);
+  }
+  const {
+    schemaVersion: _header,
+    captureCoverage: _coverage,
+    requiredFeatures: _features,
+    ...payload
+  } = snapshot.record;
+  const turn = { ...payload, items } as Turn;
+  TurnReaderSchema.parse(turn);
+  return {
+    revision: snapshot.revision,
+    metadata: snapshot.record,
+    turn,
+    itemRevisions: items,
+    itemRevision: entry?.revision ?? 0,
+    itemSequence: sequence,
+    eventSequence,
+  };
 }
 
 /** Reconstructs current Items in original first-seen order and retains every native revision. */

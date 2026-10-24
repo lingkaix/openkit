@@ -215,6 +215,7 @@ import {
   readNativeProductEntries,
   readNativeTurnEvents,
   readNativeTurnHistory,
+  readNativeTurnWriteHead,
   readWorkspaceKnowledgePage,
   readWorkspaceKnowledgePages,
   readWorkspaceTurnEvents,
@@ -3328,12 +3329,14 @@ export class FsStore {
   /** Appends an immutable revision and conditions it on the same native Turn and Item revision. */
   private async persistNativeItem(
     item: Item,
-    history: NonNullable<ReturnType<typeof readNativeTurnHistory>>,
+    history: NonNullable<
+      ReturnType<typeof readNativeTurnHistory> | ReturnType<typeof readNativeTurnWriteHead>
+    >,
     admission?: TerminalTurnWriteAdmission
   ): Promise<Item> {
     const scope = this.nativeScope(item.owner);
     const prior = history.itemRevisions.filter((row) => row.id === item.id);
-    const previousRevision = prior.length;
+    const previousRevision = 'itemRevision' in history ? history.itemRevision : prior.length;
     const previous = prior.at(-1);
     const retained = previous
       ? (preserveDescriptiveRecord(
@@ -3352,7 +3355,8 @@ export class FsStore {
       {
         kind: 'item',
         turnId: item.turnId,
-        sequence: history.itemRevisions.length + 1,
+        sequence:
+          ('itemSequence' in history ? history.itemSequence : history.itemRevisions.length) + 1,
         expectedRevision: previousRevision,
         ...content,
       },
@@ -3367,11 +3371,8 @@ export class FsStore {
         entries
       );
     }
-    const committed = readNativeTurnHistory(scope, item.turnId)!.turn.items.find(
-      (value) => value.id === item.id
-    );
-    if (!committed) throw new StoreRecordNotFoundError(`Item not found: ${item.id}`);
-    return committed;
+    // The worker verifies and commits these exact immutable bytes; only its FULL ACK releases them.
+    return retained;
   }
 
   /** Reads one opaque Workspace Item only after resolving its native owner selectors. */
@@ -3435,7 +3436,7 @@ export class FsStore {
   /** Completes only the declared post-terminal Item/event publication under its unchanged native Turn. */
   private async writeNativePublication(
     scope: NativeProductScope,
-    history: NonNullable<ReturnType<typeof readNativeTurnHistory>>,
+    history: { turn: Pick<Turn, 'id'>; revision: number },
     entries: ControlProductEntry[],
     category: TerminalTurnWriteAdmission['category']
   ): Promise<void> {
@@ -4226,17 +4227,14 @@ export class FsStore {
     const item = ItemSchema.parse(input);
     if (item.owner.kind !== 'server') throw new Error('Server Item requires Server ownership.');
     const native = this.dataRoot
-      ? readNativeTurnHistory(this.nativeScope(item.owner), item.turnId)
+      ? item.type === 'user-input-response'
+        ? readNativeTurnHistory(this.nativeScope(item.owner), item.turnId)
+        : readNativeTurnWriteHead(this.nativeScope(item.owner), item.turnId, item.id)
       : undefined;
     const turn = native?.turn ?? this.getServerTurn(item.threadId, item.turnId);
     if (turn.threadId !== item.threadId) throw new Error('Server Item Turn lineage mismatch.');
     const existing = turn.items.find((value) => value.id === item.id);
-    const lineage = this.dataRoot ? this.findNativeOwner('item', item.id) : undefined;
-    if (
-      (lineage && (lineage.owner.kind !== 'server' || lineage.turnId !== item.turnId)) ||
-      this.items.has(item.id)
-    )
-      throw new Error(`Item already exists: ${item.id}`);
+    if (this.items.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
     if (existing) assertServerItemRevision(existing, item);
     if (isSealedTurnTerminal(turn.status)) {
       if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) return existing;
@@ -4316,12 +4314,19 @@ export class FsStore {
     event: ServerTurnEventInput,
     admission?: AlreadyDecidedPublicationAdmission
   ): Promise<ServerTurnEventEnvelope> {
+    const itemId =
+      'item' in event.data
+        ? event.data.item.id
+        : 'itemId' in event.data
+          ? event.data.itemId
+          : undefined;
     const native = this.dataRoot
-      ? readNativeTurnHistory(this.nativeScope({ kind: 'server' }), turnId)
+      ? readNativeTurnWriteHead(this.nativeScope({ kind: 'server' }), turnId, itemId)
       : undefined;
     const turn = native?.turn ?? this.getServerTurnById(turnId);
-    const events = this.getServerTurnTranscript(turnId);
-    const stream = { sequence: events.at(-1)?.sequence ?? 0, events };
+    const events =
+      native && !isSealedTurnTerminal(turn.status) ? [] : this.getServerTurnTranscript(turnId);
+    const stream = { sequence: native?.eventSequence ?? events.at(-1)?.sequence ?? 0, events };
     const envelope = ServerTurnEventEnvelopeSchema.parse({
       ...event,
       owner: { kind: 'server' },
@@ -4868,6 +4873,29 @@ export class FsStore {
     return TurnSchema.parse(TurnReaderSchema.parse(turn));
   }
 
+  /** Reads current Turn metadata using expected selectors; callers still check actual owner and Thread. */
+  public getTurnMetadata(
+    workspaceId: string,
+    threadId: string,
+    turnId: string
+  ): Omit<Turn, 'items'> {
+    const record = this.dataRoot
+      ? readNativeProduct(this.nativeScope({ kind: 'workspace', workspaceId }), 'turn', turnId)
+          ?.record
+      : this.turns.get(turnId);
+    if (
+      !record ||
+      workspaceIdForOwner(record.owner as Turn['owner']) !== workspaceId ||
+      record.threadId !== threadId
+    ) {
+      // A selector miss keeps the original opaque lookup and refusal classification.
+      const { items: _items, ...metadata } = this.getTurnById(turnId);
+      return metadata;
+    }
+    const { items: _items, ...metadata } = TurnReaderSchema.parse({ ...record, items: [] });
+    return metadata;
+  }
+
   /** Returns only the opaque Turn's canonical Workspace and Thread selectors before content admission. */
   public getTurnLineage(turnId: string): { workspaceId: string; threadId: string } | null {
     if (this.dataRoot) {
@@ -5399,7 +5427,7 @@ export class FsStore {
   /**
    * Creates or returns one Item, admitting post-terminal completion or display-projection create when declared.
    *
-   * @param args Full Item identity and payload, plus optional admitted post-terminal category.
+   * @param args Core-minted Item identity and payload, plus optional admitted post-terminal category; retained caller-chosen IDs enter through import admission.
    * @returns Stored Item.
    * @throws Error when lineage is invalid or a post-terminal write is not admitted.
    */
@@ -5418,16 +5446,12 @@ export class FsStore {
     if (item.owner.kind !== 'workspace')
       throw new Error('Workspace Item requires Workspace ownership.');
     const native = this.dataRoot
-      ? readNativeTurnHistory(this.nativeScope(item.owner), item.turnId)
+      ? item.type === 'user-input-response'
+        ? readNativeTurnHistory(this.nativeScope(item.owner), item.turnId)
+        : readNativeTurnWriteHead(this.nativeScope(item.owner), item.turnId, item.id)
       : undefined;
     const turn = native?.turn ?? this.getTurn(item.owner.workspaceId, item.threadId, item.turnId);
-    const lineage = this.dataRoot ? this.findNativeOwner('item', item.id) : undefined;
-    if (
-      (lineage &&
-        (!isDeepStrictEqual(lineage.owner, item.owner) || lineage.turnId !== item.turnId)) ||
-      this.serverItems.has(item.id)
-    )
-      throw new Error(`Item already exists: ${item.id}`);
+    if (this.serverItems.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
     const existing = turn.items.find((value) => value.id === item.id);
     if (
       workspaceIdForOwner(turn.owner) !== workspaceIdForOwner(item.owner) ||
@@ -7208,7 +7232,10 @@ export class FsStore {
   public async persistTurnEvent(
     ...args: Parameters<FsStore['persistTurnEventPublication']>
   ): Promise<SseEventEnvelope> {
-    return this.publishTurn(this.getTurnById(args[0]).owner, [args[0]], args, (owned) =>
+    const owner = this.dataRoot
+      ? { kind: 'workspace' as const, workspaceId: args[1].workspaceId }
+      : this.getTurnById(args[0]).owner;
+    return this.publishTurn(owner, [args[0]], args, (owned) =>
       this.persistTurnEventPublication(...owned)
     );
   }
@@ -7219,16 +7246,23 @@ export class FsStore {
     event: TurnEventInput,
     admission?: TerminalTurnWriteAdmission
   ): Promise<SseEventEnvelope> {
-    const lineage = this.dataRoot ? this.getTurnLineage(turnId) : null;
-    const native = lineage
-      ? readNativeTurnHistory(
-          this.nativeScope({ kind: 'workspace', workspaceId: lineage.workspaceId }),
-          turnId
+    const itemId =
+      'item' in event.data
+        ? event.data.item.id
+        : 'itemId' in event.data
+          ? event.data.itemId
+          : undefined;
+    const native = this.dataRoot
+      ? readNativeTurnWriteHead(
+          this.nativeScope({ kind: 'workspace', workspaceId: event.workspaceId }),
+          turnId,
+          itemId
         )
       : undefined;
     const turn = native?.turn ?? this.getTurnById(turnId);
-    const events = this.getTurnEventsForExport(turnId);
-    const stream = { sequence: events.at(-1)?.sequence ?? 0, events };
+    const events =
+      native && !isSealedTurnTerminal(turn.status) ? [] : this.getTurnEventsForExport(turnId);
+    const stream = { sequence: native?.eventSequence ?? events.at(-1)?.sequence ?? 0, events };
     const projectedRequestId = projectTurnEventRequestId(
       event.requestId,
       event.workspaceId,

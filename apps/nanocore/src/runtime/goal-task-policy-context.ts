@@ -64,7 +64,11 @@ export function readGoalTaskPolicyContext(input: {
   const unavailable = () =>
     new Error('Goal Task Policy context requires current exact owner facts.');
   if (db.workspaceId !== lineage.workspaceId) throw unavailable();
-  const addressedTurn = store.getTurnById(lineage.turnId);
+  const addressedTurn = store.getTurnMetadata(
+    lineage.workspaceId,
+    lineage.threadId,
+    lineage.turnId
+  );
   if (
     workspaceIdForOwner(addressedTurn.owner) !== lineage.workspaceId ||
     addressedTurn.threadId !== lineage.threadId

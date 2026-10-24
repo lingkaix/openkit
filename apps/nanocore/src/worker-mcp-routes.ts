@@ -2256,7 +2256,11 @@ function mcpInterceptionInput(
   const anchorCurrent: InterceptionInput['anchorCurrent'] = (anchor) => {
     if (anchor.kind === 'workspace') return anchor.id === scope.workspaceId;
     if (anchor.kind !== 'turn') return false;
-    return !isSealedTurnTerminal(input.input.store.getTurnById(anchor.id).status);
+    const turn =
+      anchor.id === scope.turnId
+        ? input.input.store.getTurnMetadata(scope.workspaceId, scope.threadId, anchor.id)
+        : input.input.store.getTurnById(anchor.id);
+    return !isSealedTurnTerminal(turn.status);
   };
   const currentCatalogRevision = () => {
     const local = input.input
@@ -3253,7 +3257,11 @@ function hasMcpCapabilityTurnAdmission(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage
 ): boolean {
-  const turn = store.getTurnById(environmentPackage.scope.turnId);
+  const turn = store.getTurnMetadata(
+    environmentPackage.scope.workspaceId,
+    environmentPackage.scope.threadId,
+    environmentPackage.scope.turnId
+  );
   return (
     workspaceIdForOwner(turn.owner) === environmentPackage.scope.workspaceId &&
     turn.threadId === environmentPackage.scope.threadId &&
