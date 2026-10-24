@@ -37,7 +37,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/contract-evolution.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/core/architecture.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/core/protocol.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
-| `docs/core/communication.md` | communication | open, pending | — |
+| `docs/core/communication.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
 | `docs/core/identity.md` | identity | open, pending | — |
 | `docs/core/policy.md` | policy | open, pending | — |
 | `docs/core/vault.md` | vault | open, pending | — |
@@ -77,9 +77,9 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20261020-compute_neutrality_target.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/specs/20261021-protocol_identifiers_and_enums.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
 | `docs/specs/20260704-app_api_openapi_projection.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
-| `docs/specs/20260703-worker_control_protocol.md` | communication | open, pending | — |
-| `docs/specs/20261002-remote_mcp_interface.md` | communication | open, pending | — |
-| `docs/specs/20260528-core_client_boundary.md` | communication | open, pending | — |
+| `docs/specs/20260703-worker_control_protocol.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
+| `docs/specs/20261002-remote_mcp_interface.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
+| `docs/specs/20260528-core_client_boundary.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
 | `docs/specs/20260628-nanocore_config_identity_contract.md` | identity | open, pending | — |
 | `docs/specs/20260704-remote_auth_credential_bootstrap.md` | identity | open, pending | — |
 | `docs/specs/20260715-multi_user_workspace_system.md` | identity | open, pending | — |
@@ -268,6 +268,9 @@ Filled at close-out.
 | #460 `[bootstrap] Signal handlers register after boot, and readiness does not derive vault, LLM gateway or knowledge index state` | architecture | AR-WFB-06, 07, 08 | blocking candidate (recovery) for the signal handlers |
 | #461 `[app-update] Status for a missing update ID returns app_update_unavailable instead of recovery_required` | architecture | AR-DEP-01 | blocking candidate (recovery) |
 | #462 `[internal-agent] A Tool result sanitizer exception becomes a correctable Tool error instead of a failed exit` | architecture | AR-IAR-02 | ordinary |
+| #463 `[nanohost] Harness-control routes forward client binding headers when the path has a query string` | communication | CM-WCP-03 | blocking candidate (authorization) |
+| #464 `[worker-control] Artifact notice, heartbeat persistence and final status differ from the specification` | communication | CM-WCP-01, 02, 10 | ordinary |
+| #465 `[core-client] Remove unused hand-maintained transport helpers after the definition-table cutover` | communication | CM-CCB-05 | low |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -332,3 +335,12 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-35 | protocol | Actor allowed to read `/api/openapi.json` | State "authenticated" |
 | Q-36 | protocol | NanoCore reads the generated document for route identity | Derive from the catalog and definitions |
 | Q-37 | protocol | Property protected by the seven-day receipt expiry | Engineer states it; mark as current default |
+| Q-38 | communication | Structured credential reference in the remote MCP audit | Set `authentication` from the Token actor |
+| Q-39 | communication | Queued valid events when a stream envelope fails validation | Deliver them before the error |
+| Q-40 | communication | Inputs of the Harness `operationId` | Amend the wording to the Harness binding ref |
+| Q-41 | communication | Active Turns per Harness | State the per-AgentSession rule and `maxActiveTurns`, with the scheduling release |
+| Q-42 | communication | Which verification failures store quarantined evidence | Only authenticated, lineage-bearing rejections |
+| Q-43 | communication | The 1000 ms poll maximum under the serial loop | Add a priority path for `turn.interrupt` |
+| Q-44 | communication | Marking of worker-control timing numbers | As Q-23 |
+| Q-45 | communication | Worker-control labels S61, A1, #179 ruling | As Q-28 |
+| Q-46 | communication | Remote MCP exclusion list | State the non-JSON binding rule |
