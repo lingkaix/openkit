@@ -1,3 +1,5 @@
+import Database from 'better-sqlite3';
+import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
@@ -6487,4 +6489,974 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+});
+
+/** Observes actual successful SQLite commit boundaries, including native transaction statements. */
+function observeMcpPhysicalCommits(workspacePath: string) {
+  type Statement = ReturnType<Database.Database['prepare']>;
+  const sample = new Database(':memory:');
+  const statementPrototype = Object.getPrototypeOf(sample.prepare('SELECT 1'));
+  sample.close();
+  const pending = new Map<Database.Database, string[]>();
+  const savepoints = new Map<Database.Database, number[]>();
+  const commits: string[][] = [];
+  let active = true;
+  let stopped = false;
+  let beforeCommit: (() => void) | undefined;
+  let afterCommit: ((writes: string[]) => void) | undefined;
+  const spies = (['run', 'get', 'all'] as const).map((method) => {
+    const original = statementPrototype[method];
+    return vi.spyOn(statementPrototype, method).mockImplementation(function (
+      this: Statement,
+      ...args: unknown[]
+    ) {
+      const db = this.database;
+      if (!active || db.name !== workspacePath) return original.apply(this, args);
+      const sql = this.source.trim();
+      const commit = /^COMMIT\b/i.test(sql);
+      const rollback = /^ROLLBACK\b/i.test(sql);
+      const control = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(sql);
+      const write = !this.readonly && !control && /^(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
+      if (stopped && !rollback && (write || commit || /^BEGIN\b/i.test(sql))) {
+        throw new Error('Injected process cut: no later write is admitted.');
+      }
+      if (commit) beforeCommit?.();
+      const inTransaction = db.inTransaction;
+      const result = original.apply(this, args);
+      // Native nested transactions share one savepoint name; their stack keeps only surviving writes.
+      if (/^SAVEPOINT\b/i.test(sql)) {
+        const lengths = savepoints.get(db) ?? [];
+        lengths.push(pending.get(db)?.length ?? 0);
+        savepoints.set(db, lengths);
+      }
+      if (/^ROLLBACK\s+TO\b/i.test(sql)) {
+        const length = savepoints.get(db)?.at(-1);
+        if (length !== undefined) pending.get(db)?.splice(length);
+      }
+      if (/^RELEASE\b/i.test(sql)) savepoints.get(db)?.pop();
+      if (rollback && !db.inTransaction) {
+        pending.delete(db);
+        savepoints.delete(db);
+      }
+      if (write) {
+        const changes = (result as { changes?: number } | undefined)?.changes;
+        if (changes === undefined || changes > 0) {
+          const writes = pending.get(db) ?? [];
+          writes.push(sql.replace(/\s+/g, ' '));
+          pending.set(db, writes);
+          if (!inTransaction && !db.inTransaction) {
+            commits.push(writes);
+            pending.delete(db);
+            afterCommit?.(writes);
+          }
+        }
+      }
+      if (commit) {
+        savepoints.delete(db);
+        const writes = pending.get(db);
+        if (writes?.length) {
+          commits.push(writes);
+          pending.delete(db);
+          afterCommit?.(writes);
+        }
+      }
+      return result;
+    });
+  });
+  return {
+    commits,
+    inTransaction() {
+      return [...pending.keys()].some((db) => db.inTransaction);
+    },
+    stop() {
+      stopped = true;
+    },
+    beforeCommit(callback: () => void) {
+      beforeCommit = callback;
+    },
+    afterCommit(callback: (writes: string[]) => void) {
+      afterCommit = callback;
+    },
+    reset() {
+      commits.length = 0;
+      pending.clear();
+      savepoints.clear();
+    },
+    restore() {
+      active = false;
+      spies.forEach((spy) => {
+        spy.mockRestore();
+      });
+    },
+  };
+}
+
+/** Composes the public Worker MCP route with its actual Workspace ledger and Policy owners. */
+async function createMcpCommitFixture(interception = new PolicyInterception()) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-commit-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
+  const store = await createDemoStore({ dataRoot });
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
+  const turn = await store.createTurn(workspaceId, threadId, 'Count MCP commits', actor);
+  const catalog = {
+    schemaVersion: 1 as const,
+    servers: [
+      {
+        id: 'echo',
+        enabled: true,
+        allowedTools: ['echo'],
+        credentialBindings: [],
+        pinnedSchemaSnapshotId: null,
+        schemaPolicy: 'tracking' as const,
+        timeoutMs: 2000,
+        transport: { kind: 'stdio' as const, command: process.execPath, args: [], environment: {} },
+      },
+    ],
+  };
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: 'off' },
+    agentSessionId: testEntityId('as', 'mcp-commit'),
+    agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
+    backend: { kind: 'openshell' },
+    createdAt: '2026-10-24T00:00:00.000Z',
+    requestId: 'req_mcp_commit',
+    triggerActor: actor,
+    turn,
+    workspaceCwd: '/workspace',
+    workspaceMcpServerCatalog: catalog,
+    workspaceRoots: [],
+  });
+  recordMcpWorkerLineage(coreDb, environmentPackage);
+  const db = openWorkspaceDb(dataRoot, workspaceId);
+  applyScopedMigrations(db);
+  recordAgentEnvironmentPackageSnapshot(db, {
+    environmentPackage,
+    createdAt: '2026-10-24T00:00:00.000Z',
+  });
+  let tools = [mcpEchoTool()];
+  let serverVersion = '1';
+  const observations: Array<{
+    stage: string;
+    calls: ReturnType<typeof listWorkspaceCapabilityCalls>;
+    audits: ReturnType<typeof listWorkspaceAuditEvents>;
+    decisions: ReturnType<typeof listExportableWorkspacePermissionDecisions>;
+    commits: number;
+    inTransaction: boolean;
+  }> = [];
+  let onDiscovery: (() => Promise<void> | void) | undefined;
+  let onTool: (() => Promise<void> | void) | undefined;
+  let toolContacts = 0;
+  const observe = (stage: string) => {
+    const reader = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      observations.push({
+        stage,
+        calls: listWorkspaceCapabilityCalls(reader, workspaceId),
+        audits: listWorkspaceAuditEvents(reader, workspaceId),
+        decisions: listExportableWorkspacePermissionDecisions(reader, workspaceId),
+        commits: trace.commits.length,
+        inTransaction: trace.inTransaction(),
+      });
+    } finally {
+      reader.sqlite.close();
+    }
+  };
+  const gateway = {
+    listTools: vi.fn(async () => {
+      observe('discovery');
+      await onDiscovery?.();
+      return { tools, serverVersion };
+    }),
+    callTool: vi.fn(async () => {
+      observe('tool');
+      await onTool?.();
+      toolContacts += 1;
+      return { content: [{ type: 'text' as const, text: 'called' }] };
+    }),
+    close: vi.fn(async () => undefined),
+    closeServer: vi.fn(async () => undefined),
+    closeServerIfIdle: vi.fn(async () => undefined),
+    closeWorkspace: vi.fn(async () => undefined),
+    getServerHealth: vi.fn(() => 'inactive' as const),
+  } satisfies WorkerMcpGateway;
+  const runtimeConfig = createInMemoryRuntimeConfigSnapshot({
+    dataRoot,
+    workspaceMcpServerCatalogs: [{ catalog, path: join(dataRoot, 'catalog.json'), workspaceId }],
+  });
+  const register = () => {
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      runtimeConfig: () => runtimeConfig,
+      store,
+      interception,
+      workerMcpGateway: gateway,
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    return app;
+  };
+  let app = register();
+  let requestId = 0;
+  const trace = observeMcpPhysicalCommits(db.sqlite.name);
+  return {
+    dataRoot,
+    coreDb,
+    store,
+    workspaceId,
+    environmentPackage,
+    db,
+    trace,
+    gateway,
+    observations,
+    runtimeConfig,
+    contacts() {
+      return toolContacts;
+    },
+    discovery(callback: () => Promise<void> | void) {
+      onDiscovery = callback;
+    },
+    tool(callback: () => Promise<void> | void) {
+      onTool = callback;
+    },
+    version(value: string) {
+      serverVersion = value;
+    },
+    tools(value: typeof tools) {
+      tools = value;
+    },
+    async call(id = ++requestId) {
+      const response = await app.request('/api/worker-capabilities/mcp/echo', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          authorization: 'Bearer fixture-package',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: {
+            name: 'echo',
+            arguments: { message: 'commit observation' },
+          },
+        }),
+      });
+      return response.json();
+    },
+    reopen() {
+      app = register();
+      return openWorkspaceDb(dataRoot, workspaceId);
+    },
+    async close() {
+      trace.restore();
+      db.sqlite.close();
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+/** Checks the three durable tuples whose physical commit grouping is the accepted warm/cold target. */
+function expectMcpCommittedTuples(fixture: Awaited<ReturnType<typeof createMcpCommitFixture>>) {
+  const calls = listWorkspaceCapabilityCalls(fixture.db, fixture.workspaceId);
+  const call = calls.at(-1)!;
+  expect(call.status).toBe('succeeded');
+  const usage = listWorkspaceUsageRecords(fixture.db, fixture.workspaceId).filter(
+    (row) => row.capabilityCallId === call.id
+  );
+  expect(usage).toHaveLength(1);
+  expect(usage[0]).toMatchObject({
+    quantity: 1,
+    unit: 'tool_calls',
+    responsibleUserId: fixture.environmentPackage.scope.triggerActor.id,
+  });
+  const audit = listWorkspaceAuditEvents(fixture.db, fixture.workspaceId);
+  for (const action of ['capability.admit', 'capability.finish']) {
+    expect(
+      audit.filter((row) => row.capabilityCallId === call.id && row.action === action)
+    ).toHaveLength(1);
+  }
+  expect(
+    readRetainedMcpToolSchemaSnapshot({
+      workspaceDb: fixture.db,
+      workspaceId: fixture.workspaceId,
+      catalogEntryId: 'echo',
+      schemaSnapshotId: call.schemaSnapshotId!,
+    })?.tools
+  ).toEqual([mcpEchoTool()]);
+  expect(fixture.store.listAllItems().filter((item) => item.id === call.itemId)).toHaveLength(1);
+}
+
+describe('MCP physical commit contract', () => {
+  it.each([
+    { warm: false, count: 3 },
+    { warm: true, count: 2 },
+  ])('uses exactly $count physical ledger commits for warm=$warm without hiding discovery', async ({
+    warm,
+    count,
+  }) => {
+    const f = await createMcpCommitFixture();
+    try {
+      if (warm) expect(await f.call()).toMatchObject({ result: { content: [{ text: 'called' }] } });
+      const snapshots = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId);
+      const contacts = f.gateway.callTool.mock.calls.length;
+      const discovery = f.gateway.listTools.mock.calls.length;
+      f.trace.reset();
+      f.observations.length = 0;
+      expect(await f.call()).toMatchObject({ result: { content: [{ text: 'called' }] } });
+      expect(f.gateway.callTool).toHaveBeenCalledTimes(contacts + 1);
+      expect(f.gateway.listTools).toHaveBeenCalledTimes(discovery + 1);
+      expectMcpCommittedTuples(f);
+      if (warm)
+        expect.soft(listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId)).toEqual(snapshots);
+      // Engineer COORD05:4x accepts r1825 W1/W2 and C1/C2/C3; count native COMMIT and autocommit, not JS calls.
+      expect.soft(f.trace.commits, JSON.stringify(f.trace.commits)).toHaveLength(count);
+      const groups = f.trace.commits;
+      expect
+        .soft(
+          groups.findIndex((writes) => writes.some((sql) => /INSERT.*capability_calls/i.test(sql)))
+        )
+        .toBe(
+          groups.findIndex((writes) =>
+            writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))
+          )
+        );
+      expect
+        .soft(
+          groups.findIndex((writes) => writes.some((sql) => /INSERT.*usage_records/i.test(sql)))
+        )
+        .toBe(
+          groups.findIndex((writes) =>
+            writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql))
+          )
+        );
+      if (!warm) {
+        expect
+          .soft(
+            groups.findIndex((writes) =>
+              writes.some((sql) => /INSERT.*mcp_tool_schema_snapshots/i.test(sql))
+            )
+          )
+          .toBe(
+            groups.findIndex((writes) =>
+              writes.some((sql) => /UPDATE capability_calls SET schema_snapshot_id/i.test(sql))
+            )
+          );
+      }
+      expect.soft(f.observations.map((row) => [row.stage, row.commits])).toEqual([
+        ['discovery', 1],
+        ['tool', warm ? 1 : 2],
+      ]);
+      expect(f.observations.map((row) => [row.stage, row.inTransaction])).toEqual([
+        ['discovery', false],
+        ['tool', false],
+      ]);
+    } finally {
+      await f.close();
+    }
+  });
+});
+
+describe('MCP commit crash boundaries', () => {
+  it.each([
+    'before-intent-commit',
+    'after-intent-before-discovery',
+    'after-discovery-before-schema',
+    'after-schema-before-tool',
+    'after-tool-before-outcome',
+    'after-outcome-commit-before-ack',
+  ] as const)('keeps original durable evidence at %s', async (cut) => {
+    const f = await createMcpCommitFixture();
+    let reached = false;
+    const stop = () => {
+      reached = true;
+      f.trace.stop();
+      throw new Error(`Injected ${cut}`);
+    };
+    try {
+      if (cut === 'before-intent-commit') f.trace.beforeCommit(stop);
+      if (cut === 'after-intent-before-discovery') f.discovery(stop);
+      if (cut === 'after-discovery-before-schema')
+        f.discovery(() => {
+          reached = true;
+          f.trace.stop();
+        });
+      if (cut === 'after-schema-before-tool') f.tool(stop);
+      if (cut === 'after-tool-before-outcome')
+        f.tool(() => {
+          reached = true;
+          f.trace.stop();
+        });
+      if (cut === 'after-outcome-commit-before-ack') {
+        f.trace.afterCommit((writes) => {
+          if (writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql))) stop();
+        });
+      }
+      const response = await f.call(9001);
+      expect(reached).toBe(true);
+      expect(response).toHaveProperty('error');
+      const physicalCommits = f.trace.commits.length;
+      f.trace.restore();
+      const reopened = f.reopen();
+      try {
+        const calls = listWorkspaceCapabilityCalls(reopened, f.workspaceId);
+        const expectedPresent = cut !== 'before-intent-commit';
+        expect(calls).toHaveLength(expectedPresent ? 1 : 0);
+        const original = calls[0];
+        if (original) {
+          expect(original).toMatchObject({
+            packageSnapshotId: f.environmentPackage.snapshotId,
+            agentSessionId: f.environmentPackage.scope.agentSessionId,
+            turnId: f.environmentPackage.scope.turnId,
+            id: deriveEntityId('cap', [
+              'mcp',
+              f.environmentPackage.snapshotId,
+              'echo',
+              'mcp.call-tool',
+              9001,
+            ]),
+          });
+          const audit = listWorkspaceAuditEvents(reopened, f.workspaceId);
+          expect(
+            audit.filter(
+              (event) =>
+                event.action === 'capability.admit' && event.capabilityCallId === original.id
+            )
+          ).toHaveLength(1);
+          expect(
+            listExportableWorkspacePermissionDecisions(reopened, f.workspaceId)
+          ).toContainEqual(expect.objectContaining({ result: 'allow' }));
+          const dispatched = [
+            'after-tool-before-outcome',
+            'after-outcome-commit-before-ack',
+          ].includes(cut);
+          if (dispatched || cut === 'after-schema-before-tool') {
+            expect(
+              readRetainedMcpToolSchemaSnapshot({
+                workspaceDb: reopened,
+                workspaceId: f.workspaceId,
+                catalogEntryId: 'echo',
+                schemaSnapshotId: original.schemaSnapshotId!,
+              })?.tools
+            ).toEqual([mcpEchoTool()]);
+          }
+          if (cut === 'after-outcome-commit-before-ack') {
+            expect(original.status).toBe('succeeded');
+            expect(
+              listWorkspaceUsageRecords(reopened, f.workspaceId).filter(
+                (row) => row.capabilityCallId === original.id
+              )
+            ).toEqual([expect.objectContaining({ quantity: 1, unit: 'tool_calls' })]);
+            expect(
+              audit.filter(
+                (event) =>
+                  event.action === 'capability.finish' && event.capabilityCallId === original.id
+              )
+            ).toHaveLength(1);
+          } else {
+            expect(original.status).toBe('running');
+            capabilityLedger.recoverRunningCapabilityCalls({ workspaceDb: reopened });
+            expect(listWorkspaceCapabilityCalls(reopened, f.workspaceId)).toEqual([
+              expect.objectContaining({
+                id: original.id,
+                status: 'unknown',
+                errorCode: 'capability_call_recovered_after_restart',
+              }),
+            ]);
+          }
+          const beforeReplay = {
+            calls: listWorkspaceCapabilityCalls(reopened, f.workspaceId),
+            usage: listWorkspaceUsageRecords(reopened, f.workspaceId),
+            audit: listWorkspaceAuditEvents(reopened, f.workspaceId),
+          };
+          expect(await f.call(9001)).toHaveProperty('error');
+          expect({
+            calls: listWorkspaceCapabilityCalls(reopened, f.workspaceId),
+            usage: listWorkspaceUsageRecords(reopened, f.workspaceId),
+            audit: listWorkspaceAuditEvents(reopened, f.workspaceId),
+          }).toEqual(beforeReplay);
+          expect(f.contacts()).toBe(dispatched ? 1 : 0);
+        }
+        // Accepted r1825 causal barriers: C1 before discovery, C2 before Tool, C3 after result.
+        expect(physicalCommits).toBe(
+          cut === 'before-intent-commit'
+            ? 0
+            : ['after-intent-before-discovery', 'after-discovery-before-schema'].includes(cut)
+              ? 1
+              : cut === 'after-outcome-commit-before-ack'
+                ? 3
+                : 2
+        );
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([
+    'capability.admit',
+    'permission',
+    'mcp.schema.capture',
+  ] as const)('refuses contact beyond unavailable required %s Audit', async (action) => {
+    const f = await createMcpCommitFixture();
+    try {
+      // Fault injection follows valid owner-created state; this trigger never manufactures an accepted record.
+      f.db.sqlite.exec(`CREATE TRIGGER reject_required_mcp_audit BEFORE INSERT ON audit_events
+          WHEN ${action === 'permission' ? 'NEW.permission_decision_id IS NOT NULL' : `NEW.action = '${action}'`}
+          BEGIN SELECT RAISE(ABORT, 'injected required MCP Audit failure'); END;`);
+      expect(await f.call()).toHaveProperty('error');
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(f.gateway.listTools).toHaveBeenCalledTimes(action === 'mcp.schema.capture' ? 1 : 0);
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+      const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+      if (action === 'capability.admit') expect(calls).toEqual([]);
+      else {
+        // L: failed Policy/schema evidence must retain the original diagnostic call when its own writes remain available.
+        expect(calls).toEqual([expect.objectContaining({ status: 'failed' })]);
+        const audit = listWorkspaceAuditEvents(f.db, f.workspaceId);
+        for (const required of ['capability.admit', 'capability.finish']) {
+          expect(
+            audit.filter(
+              (event) => event.action === required && event.capabilityCallId === calls[0]!.id
+            )
+          ).toHaveLength(1);
+        }
+      }
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('selects one durable Turn schema when different first discoveries overlap', async () => {
+    const f = await createMcpCommitFixture();
+    let release!: () => void;
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const changed = [
+      {
+        ...mcpEchoTool(),
+        inputSchema: {
+          ...mcpEchoTool().inputSchema,
+          properties: { message: { type: 'string', minLength: 1 } },
+        },
+      },
+    ];
+    try {
+      f.gateway.listTools.mockImplementationOnce(async () => {
+        enter();
+        await held;
+        return { tools: changed, serverVersion: '2' };
+      });
+      const first = f.call(101);
+      await entered;
+      expect(await f.call(102)).toMatchObject({ result: { content: [{ text: 'called' }] } });
+      release();
+      expect(await first).toMatchObject({ result: { content: [{ text: 'called' }] } });
+      const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+      expect(calls).toHaveLength(2);
+      expect(new Set(calls.map((row) => row.schemaSnapshotId)).size).toBe(1);
+      for (const call of calls) {
+        expect(
+          readRetainedMcpToolSchemaSnapshot({
+            workspaceDb: f.db,
+            workspaceId: f.workspaceId,
+            catalogEntryId: 'echo',
+            schemaSnapshotId: call.schemaSnapshotId!,
+          })?.tools
+        ).toEqual([mcpEchoTool()]);
+      }
+      expect(
+        readCurrentMcpToolSchemaSnapshot({
+          workspaceDb: f.db,
+          workspaceId: f.workspaceId,
+          catalogEntryId: 'echo',
+          pinnedSchemaSnapshotId: null,
+        })?.tools
+      ).toEqual(changed);
+    } finally {
+      release?.();
+      await f.close();
+    }
+  });
+
+  it('retains a server version change even when tool schemas are identical', async () => {
+    const f = await createMcpCommitFixture();
+    try {
+      expect(await f.call()).toHaveProperty('result');
+      const first = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId);
+      f.version('2');
+      expect(await f.call()).toHaveProperty('result');
+      const changed = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId);
+      expect(changed).toHaveLength(1);
+      expect(changed[0]).toMatchObject({
+        serverVersion: '2',
+        source: 'live',
+        tools: first[0]!.tools,
+      });
+      expect(changed[0]!.capturedAt > first[0]!.capturedAt).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+});
+
+it('observes native outer commits and implicit commits without counting savepoints or rollback', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-mcp-commit-observer-'));
+  const db = new Database(join(root, 'observer.sqlite'));
+  db.exec('CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)');
+  const trace = observeMcpPhysicalCommits(db.name);
+  try {
+    db.prepare('INSERT INTO sample VALUES (?, ?)').run(1, 'implicit');
+    db.transaction(() => {
+      db.prepare('INSERT INTO sample VALUES (?, ?)').run(2, 'outer');
+      db.transaction(() => {
+        db.prepare('INSERT INTO sample VALUES (?, ?)').run(3, 'savepoint');
+      })();
+    }).immediate();
+    expect(() =>
+      db.transaction(() => {
+        db.prepare('INSERT INTO sample VALUES (?, ?)').run(4, 'rolled-back');
+        throw new Error('rollback');
+      })()
+    ).toThrow('rollback');
+    db.prepare('INSERT INTO sample VALUES (?, ?) RETURNING id').get(5, 'returning');
+    db.prepare('SELECT * FROM sample').all();
+    db.pragma('synchronous = FULL');
+    expect(trace.commits.map((group) => group.length)).toEqual([1, 2, 1]);
+    expect(db.prepare('SELECT id FROM sample ORDER BY id').all()).toEqual([
+      { id: 1 },
+      { id: 2 },
+      { id: 3 },
+      { id: 5 },
+    ]);
+    const published: string[][] = [];
+    trace.afterCommit((writes) => {
+      published.push([...writes]);
+    });
+    db.transaction(() => {
+      db.prepare('INSERT INTO sample VALUES (?, ?)').run(6, 'before-savepoint');
+      expect(() =>
+        db.transaction(() => {
+          db.prepare('UPDATE sample SET value = ? WHERE id = ?').run('discarded', 1);
+          db.prepare('INSERT INTO sample VALUES (?, ?)').run(7, 'discarded');
+          throw new Error('caught nested rollback');
+        })()
+      ).toThrow('caught nested rollback');
+      db.prepare('INSERT INTO sample VALUES (?, ?)').run(8, 'after-savepoint');
+    }).immediate();
+    expect(trace.commits.slice(3).map((group) => group.length)).toEqual([2]);
+    expect(published).toEqual(trace.commits.slice(3));
+    expect(published.flat().some((sql) => /^UPDATE sample/i.test(sql))).toBe(false);
+    expect(db.prepare('SELECT id, value FROM sample ORDER BY id').all()).toEqual([
+      { id: 1, value: 'implicit' },
+      { id: 2, value: 'outer' },
+      { id: 3, value: 'savepoint' },
+      { id: 5, value: 'returning' },
+      { id: 6, value: 'before-savepoint' },
+      { id: 8, value: 'after-savepoint' },
+    ]);
+  } finally {
+    trace.restore();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe('MCP current permission at commit acknowledgement', () => {
+  for (const { change, label } of [
+    {
+      change: 'user',
+      label: 'refuses discovery when authority is revoked after the permitting commit',
+    },
+    {
+      change: 'policy',
+      label: 'refuses discovery when admitted Policy changes after the permitting commit',
+    },
+  ] as const) {
+    it(label, async () => {
+      const f = await createMcpCommitFixture();
+      let revoked = false;
+      try {
+        f.trace.afterCommit((writes) => {
+          if (!revoked && writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))) {
+            revoked = true;
+            const userId = f.environmentPackage.scope.triggerActor.id;
+            if (change === 'user') {
+              f.coreDb.sqlite
+                .transaction(() => {
+                  expect(disableCanonicalUser(f.coreDb, userId)?.changed).toBe(true);
+                })
+                .immediate();
+            } else {
+              const principal = { kind: 'human' as const, id: userId };
+              const prepared = preparePolicyDocument({
+                current: EMPTY_POLICY_DOCUMENT,
+                userId,
+                now: new Date().toISOString(),
+                proposed: PolicyDocumentV1Schema.parse({
+                  schemaVersion: 1,
+                  statements: [
+                    {
+                      id: 'prohibit-after-permitting-commit',
+                      kind: 'permission',
+                      effect: 'prohibit',
+                      grant: { kind: 'ordinary' },
+                      author: principal,
+                      authority: { kind: 'human', userId },
+                      authoredAt: new Date().toISOString(),
+                      state: 'active',
+                      scope: {
+                        subjects: [principal],
+                        actions: ['tool.use'],
+                        resources: [
+                          {
+                            kind: 'mcp-tool',
+                            workspaceId: f.workspaceId,
+                            serverId: 'echo',
+                            toolName: 'echo',
+                          },
+                        ],
+                      },
+                      lifetime: {
+                        anchor: {
+                          owner: { kind: 'workspace', workspaceId: f.workspaceId },
+                          kind: 'workspace',
+                          id: f.workspaceId,
+                        },
+                      },
+                    },
+                  ],
+                }),
+              });
+              recordPolicyWriteDecision({
+                coreDb: f.coreDb,
+                actor: { kind: 'local', userId },
+                candidate: {
+                  artifactId: testEntityId('ar', 'policy-after-commit'),
+                  contentDigest: policyDigest(prepared.document),
+                },
+                proposal: {
+                  schemaVersion: 1,
+                  proposer: principal,
+                  rationale: 'Revoke Tool authority after the original permitting commit.',
+                  baseRevision: policyDigest(EMPTY_POLICY_DOCUMENT),
+                  proposed: prepared.document,
+                  diff: prepared.diff,
+                  classification: prepared.classification,
+                  validation: 'valid',
+                },
+                requestId: 'req_policy_after_commit',
+                threadId: f.environmentPackage.scope.threadId,
+                turnId: f.environmentPackage.scope.turnId,
+              });
+              f.runtimeConfig.openKitConfig.policy = {
+                ...f.runtimeConfig.openKitConfig.policy,
+                mediation: prepared.document,
+              };
+              expect(readAdmittedPolicyDocument(f.coreDb, prepared.document)).toEqual(
+                prepared.document
+              );
+            }
+          }
+        });
+        const response = await f.call();
+        // L:143 and M:205 require a typed, durable denial before upstream contact.
+        if (change === 'policy')
+          expect(response).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+        else expect(response).toHaveProperty('error');
+        expect(revoked).toBe(true);
+        const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+        expect(calls).toEqual([
+          expect.objectContaining({
+            id: deriveEntityId('cap', [
+              'mcp',
+              f.environmentPackage.snapshotId,
+              'echo',
+              'mcp.call-tool',
+              1,
+            ]),
+            packageSnapshotId: f.environmentPackage.snapshotId,
+          }),
+        ]);
+        if (change === 'policy') expect(calls[0]!.status).toBe('denied');
+        else expect(['failed', 'denied']).toContain(calls[0]!.status);
+        const audit = listWorkspaceAuditEvents(f.db, f.workspaceId);
+        for (const action of ['capability.admit', 'capability.finish']) {
+          expect(
+            audit.filter((row) => row.action === action && row.capabilityCallId === calls[0]!.id)
+          ).toHaveLength(1);
+        }
+        expect(f.gateway.listTools).not.toHaveBeenCalled();
+        expect(f.contacts()).toBe(0);
+        expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+  }
+
+  it('allows only one overlapping call to consume the last finite Policy use', async () => {
+    let entered = 0;
+    let ready!: () => void;
+    let release!: () => void;
+    const bothEntered = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const version = `sha256:${'7'.repeat(64)}`;
+    const interception = new PolicyInterception({
+      id: 'commit-finite-gate',
+      version,
+      async invoke() {
+        if (++entered === 2) ready();
+        await held;
+        return { decision: 'allow' };
+      },
+    });
+    const f = await createMcpCommitFixture(interception);
+    try {
+      const userId = f.environmentPackage.scope.triggerActor.id;
+      const principal = { kind: 'human' as const, id: userId };
+      const scope = {
+        subjects: [principal],
+        actions: ['tool.use'],
+        resources: [
+          {
+            kind: 'mcp-tool' as const,
+            workspaceId: f.workspaceId,
+            serverId: 'echo',
+            toolName: 'echo',
+          },
+        ],
+      };
+      const prepared = preparePolicyDocument({
+        current: EMPTY_POLICY_DOCUMENT,
+        userId,
+        now: new Date().toISOString(),
+        proposed: PolicyDocumentV1Schema.parse({
+          schemaVersion: 1,
+          statements: [
+            {
+              id: 'finite-commit-gate',
+              kind: 'binding',
+              author: principal,
+              authority: { kind: 'human', userId },
+              authoredAt: new Date().toISOString(),
+              scope,
+              lifetime: {
+                anchor: {
+                  owner: { kind: 'workspace', workspaceId: f.workspaceId },
+                  kind: 'workspace',
+                  id: f.workspaceId,
+                },
+                uses: 1,
+              },
+              state: 'active',
+              operation: 'mcp.call-tool',
+              stage: 'decide',
+              mode: 'gate',
+              participant: { kind: 'deterministic', id: 'commit-finite-gate', version },
+              inputDisclosure: scope,
+              order: 0,
+              timeoutMs: 10000,
+              circuit: { failures: 1, recoveryAfterMs: 1 },
+            },
+          ],
+        }),
+      });
+      recordPolicyWriteDecision({
+        coreDb: f.coreDb,
+        actor: { kind: 'local', userId },
+        candidate: {
+          artifactId: testEntityId('ar', 'finite-commit-policy'),
+          contentDigest: policyDigest(prepared.document),
+        },
+        proposal: {
+          schemaVersion: 1,
+          proposer: principal,
+          rationale: 'Race one admitted finite Policy use.',
+          baseRevision: policyDigest(EMPTY_POLICY_DOCUMENT),
+          proposed: prepared.document,
+          diff: prepared.diff,
+          classification: prepared.classification,
+          validation: 'valid',
+        },
+        requestId: 'req_finite_commit_policy',
+        threadId: f.environmentPackage.scope.threadId,
+        turnId: f.environmentPackage.scope.turnId,
+      });
+      f.runtimeConfig.openKitConfig.policy = {
+        ...f.runtimeConfig.openKitConfig.policy,
+        mediation: prepared.document,
+      };
+      const calls = [f.call(501), f.call(502)];
+      await bothEntered;
+      release();
+      const results = await Promise.all(calls);
+      expect(results.filter((result) => result.result && !result.result.isError)).toHaveLength(1);
+      expect(f.contacts()).toBe(1);
+      const decisions = listExportableWorkspacePermissionDecisions(f.db, f.workspaceId);
+      expect(
+        decisions.filter(
+          (decision) => decision.result === 'allow' && decision.mediation?.role === 'final'
+        )
+      ).toHaveLength(1);
+      expect(decisions.flatMap((decision) => decision.mediation?.consumedStatements ?? [])).toEqual(
+        [{ id: 'finite-commit-gate', digest: policyDigest(prepared.document.statements[0]) }]
+      );
+    } finally {
+      release?.();
+      await f.close();
+    }
+  });
+});
+
+it('withholds a completed Tool result after authority loss without reopening its durable outcome', async () => {
+  const f = await createMcpCommitFixture();
+  let revoked = false;
+  try {
+    f.trace.afterCommit((writes) => {
+      if (!revoked && writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql))) {
+        revoked = true;
+        f.coreDb.sqlite
+          .transaction(() => {
+            expect(
+              disableCanonicalUser(f.coreDb, f.environmentPackage.scope.triggerActor.id)?.changed
+            ).toBe(true);
+          })
+          .immediate();
+      }
+    });
+    const response = await f.call(6001);
+    expect(revoked).toBe(true);
+    expect(response).toMatchObject({ error: { data: { code: 'mcp-policy-stale' } } });
+    expect(response).not.toHaveProperty('result');
+    expect(f.contacts()).toBe(1);
+    expectMcpCommittedTuples(f);
+    const original = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+    expect(await f.call(6001)).toHaveProperty('error');
+    expect(f.contacts()).toBe(1);
+    expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual(original);
+  } finally {
+    await f.close();
+  }
 });

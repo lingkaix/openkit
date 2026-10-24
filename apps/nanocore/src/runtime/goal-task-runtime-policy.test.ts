@@ -873,7 +873,7 @@ describe('Goal Coordinator missing Task grant routing', () => {
   it('preserves the actual Coordinator destination without a human request, effect or finite use', async () => {
     const f = await fixture({ taskGrant: false, uses: 2 });
     const mcp = await f.setupMcp();
-    const decide = vi.spyOn(mcp.interception, 'decide');
+    const decide = vi.spyOn(mcp.interception, 'tryDecideSynchronously');
     const goalPending = listThreadPendingRequests(
       f.db.sqlite,
       f.scope.workspaceId,
@@ -926,7 +926,7 @@ describe('Goal Coordinator missing Task grant routing', () => {
   it('rolls back the declined gap fact when its Goal marker update fails and permits a new request', async () => {
     const f = await fixture({ taskGrant: false, uses: 2 });
     const mcp = await f.setupMcp();
-    const decide = vi.spyOn(mcp.interception, 'decide');
+    const decide = vi.spyOn(mcp.interception, 'tryDecideSynchronously');
     const calls = () =>
       listWorkspaceCapabilityCalls(f.db, f.scope.workspaceId).filter(
         (call) => call.operation === 'mcp.call-tool' && call.turnId === mcp.turn.id

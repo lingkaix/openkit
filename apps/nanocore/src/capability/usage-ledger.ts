@@ -697,8 +697,9 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
 export function stampCapabilityCallSchemaSnapshot(
   input: StampCapabilityCallSchemaSnapshotInput
 ): void {
-  findCapabilityCallById(input.workspaceDb, input.callId);
+  const call = findCapabilityCallById(input.workspaceDb, input.callId);
   const parsed = CapabilityCallSchema.shape.schemaSnapshotId.unwrap().parse(input.schemaSnapshotId);
+  if (call?.schema_snapshot_id === parsed) return;
   const result = input.workspaceDb.sqlite
     .prepare(
       `UPDATE capability_calls

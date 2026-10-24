@@ -73,6 +73,8 @@ export function recordMcpToolSchemaSnapshot(input: {
   tools: z.infer<typeof WorkerCapabilityMcpToolSchema>[];
   workspaceDb: WorkspaceDb;
   workspaceId: string;
+  /** Synchronous local binding only: before capture commit, or immediately on durable reuse. */
+  onRecorded?: (schemaSnapshotId: string) => void;
 }): string {
   const server = input.environmentPackage.supply.mcpServers.find(
     (candidate) => candidate.id === input.serverId
@@ -89,21 +91,60 @@ export function recordMcpToolSchemaSnapshot(input: {
   const tools = canonicalMcpToolSchemas(input.tools);
   const toolsJson = JSON.stringify(tools);
   const contentDigest = mcpToolSchemaContentDigest(tools);
-
-  return input.workspaceDb.sqlite
-    .transaction(() => {
-      const previous = input.workspaceDb.sqlite
-        .prepare(
-          `SELECT schema_version AS schemaVersion, captured_at
+  const previous = input.workspaceDb.sqlite
+    .prepare(
+      `SELECT schema_version AS schemaVersion, captured_at, snapshot_id, content_digest,
+                  server_version, tools_json, source_ref
            FROM mcp_tool_schema_snapshots
            WHERE workspace_id = ? AND catalog_entry_id = ? AND source = ?
            ORDER BY captured_at DESC, snapshot_id DESC
            LIMIT 1`
-        )
-        .get(input.workspaceId, server.id, input.source) as
-        | { schemaVersion: unknown; captured_at: string }
-        | undefined;
-      if (previous) readRetainedV1(previous, () => undefined);
+    )
+    .get(input.workspaceId, server.id, input.source) as
+    | {
+        schemaVersion: unknown;
+        captured_at: string;
+        snapshot_id: string;
+        content_digest: string;
+        server_version: string | null;
+        tools_json: string;
+        source_ref: string | null;
+      }
+    | undefined;
+  if (previous) readRetainedV1(previous, () => undefined);
+  if (
+    previous &&
+    previous.content_digest === contentDigest &&
+    previous.server_version === (input.serverVersion ?? null) &&
+    previous.source_ref === null &&
+    JSON.stringify(canonicalMcpToolSchemas(readStoredMcpToolsV1(previous))) === toolsJson
+  ) {
+    // A different proposed ID must still pass the existing identity-conflict boundary.
+    const collision = input.workspaceDb.sqlite
+      .prepare(
+        'SELECT content_digest FROM mcp_tool_schema_snapshots WHERE snapshot_id = ? AND snapshot_id <> ?'
+      )
+      .get(input.schemaSnapshotId, previous.snapshot_id) as { content_digest: string } | undefined;
+    if (collision) {
+      const retained = readRetainedMcpToolSchemaSnapshot({
+        catalogEntryId: server.id,
+        schemaSnapshotId: input.schemaSnapshotId,
+        workspaceDb: input.workspaceDb,
+        workspaceId: input.workspaceId,
+      });
+      if (
+        !retained ||
+        collision.content_digest !== contentDigest ||
+        JSON.stringify(canonicalMcpToolSchemas(retained.tools)) !== toolsJson
+      )
+        throw new Error(`MCP schema snapshot identity conflicts: ${input.schemaSnapshotId}`);
+    }
+    input.onRecorded?.(previous.snapshot_id);
+    return previous.snapshot_id;
+  }
+
+  return input.workspaceDb.sqlite
+    .transaction(() => {
       const previousAt = previous ? Date.parse(previous.captured_at) : Number.NaN;
       const capturedAt = new Date(
         Number.isFinite(previousAt) ? Math.max(Date.now(), previousAt + 1) : Date.now()
@@ -246,6 +287,7 @@ export function recordMcpToolSchemaSnapshot(input: {
           )
           .run(input.workspaceId, server.id, TRACKING_SNAPSHOT_RETENTION);
       }
+      input.onRecorded?.(schemaSnapshotId);
       return schemaSnapshotId;
     })
     .immediate();

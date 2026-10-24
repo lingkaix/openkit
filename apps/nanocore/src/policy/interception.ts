@@ -105,8 +105,8 @@ export class PolicyInterception {
     private readonly agentParticipant?: AgentPolicyParticipant
   ) {}
 
-  /** Runs the supported pilot modes and retains evidence before releasing a result. */
-  async decide(input: InterceptionInput): Promise<InterceptionDecision> {
+  /** Shares exact invocation validation between synchronous and awaited decision entry points. */
+  private prepareDecision(input: InterceptionInput) {
     if (
       input.document.statements.some(
         (statement) =>
@@ -147,6 +147,23 @@ export class PolicyInterception {
       !humanApproved
     )
       results.push('require_approval');
+    return {
+      bindings,
+      advice,
+      invocations,
+      results,
+      used,
+      policyRevision,
+      proposalDigest,
+      humanApproved,
+    };
+  }
+
+  /** Runs the supported pilot modes and retains evidence before releasing a result. */
+  async decide(input: InterceptionInput): Promise<InterceptionDecision> {
+    const prepared = this.prepareDecision(input);
+    const { bindings, advice, invocations, results, used, humanApproved } = prepared;
+    const { policyRevision, proposalDigest } = prepared;
     for (const mode of ['transform', 'advise', 'gate'] as const) {
       for (const binding of bindings.filter((value) => value.mode === mode)) {
         if (
@@ -171,6 +188,22 @@ export class PolicyInterception {
           });
       }
     }
+    return this.finishDecision(input, prepared);
+  }
+
+  /** Joins native call admission only when no pre-decision participant needs external work. */
+  tryDecideSynchronously(input: InterceptionInput): InterceptionDecision | undefined {
+    const prepared = this.prepareDecision(input);
+    if (prepared.bindings.some((binding) => binding.mode !== 'observe')) return undefined;
+    return this.finishDecision(input, prepared);
+  }
+
+  /** Keeps current Kernel evaluation, finite-use consumption and linked Audit in one transaction. */
+  private finishDecision(
+    input: InterceptionInput,
+    prepared: ReturnType<PolicyInterception['prepareDecision']>
+  ): InterceptionDecision {
+    const { results, used, advice, policyRevision, proposalDigest, invocations } = prepared;
     let current = false;
     try {
       current = input.stillCurrent();
