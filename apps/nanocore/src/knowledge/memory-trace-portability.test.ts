@@ -163,7 +163,7 @@ describe('User Memory selection trace portability', () => {
       join(source.dataRoot, 'workspaces', source.workspace.id),
       selected.retrievalTraceRef!
     )!;
-    const exported = createVerifiedWorkspaceExport({
+    const exported = await createVerifiedWorkspaceExport({
       authorityActor: source.actorRef,
       authorityUserId: source.userId,
       administratorEligible: isCurrentDeploymentAdministrator(source.coreDb, source.actor),

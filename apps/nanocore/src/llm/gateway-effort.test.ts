@@ -755,7 +755,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
         return fauxAssistantMessage('retry served');
       },
     ]);
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date'] });
     const pending = f.post('responses', 'medium', false, false, true, toolAware);
     await vi.runAllTimersAsync();
     const response = await pending;

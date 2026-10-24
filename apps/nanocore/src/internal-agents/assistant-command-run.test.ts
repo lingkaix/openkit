@@ -1249,18 +1249,29 @@ describe('ordinary Assistant results and cancellation', () => {
 
   it('maps the shared loop deadline to the existing timeout and aborts Provider work', async () => {
     const f = await fixture();
+    const providerStarted = Promise.withResolvers<void>();
     let providerSignal: AbortSignal | undefined;
     f.createResponses.mockImplementation((_provider, _request, context) => {
       providerSignal = context?.transport?.signal;
+      providerStarted.resolve();
       return new Promise(() => {});
     });
 
-    await expectEntryFailure(
-      runAssistantCommand({ ...f.input, limits: { ...limits, deadlineMs: 10 } }),
-      'provider_call_timeout',
-      504
-    );
+    // Keep native admission on real I/O; start deadline advancement only after Provider entry.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const failure = expectEntryFailure(
+        runAssistantCommand({ ...f.input, limits: { ...limits, deadlineMs: 10 } }),
+        'provider_call_timeout',
+        504
+      );
+      await providerStarted.promise;
+      await vi.advanceTimersByTimeAsync(10);
+      await failure;
 
-    expect(providerSignal?.aborted).toBe(true);
+      expect(providerSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

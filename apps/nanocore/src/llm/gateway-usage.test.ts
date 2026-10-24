@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { GatewayUsageTracker, parseUsage, recordInternalLlmGatewayUsage } from './gateway-usage.js';
 
 /**
@@ -53,13 +55,18 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
       auditLineage: { commandRequestId: '00000000-0000-4000-8000-000000000504' },
       expectedRequestId: '00000000-0000-4000-8000-000000000503',
     },
-  ])('$name after a usage write failure', ({ requestId, auditLineage, expectedRequestId }) => {
+  ])('$name after a usage write failure', async ({
+    requestId,
+    auditLineage,
+    expectedRequestId,
+  }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-failure-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         ...(auditLineage ? { auditLineage } : {}),
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
@@ -89,9 +96,10 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         workspaceDb,
       };
 
-      expect(() => recordInternalLlmGatewayUsage(input)).toThrow(
-        'injected internal usage write failure'
-      );
+      await expect(recordInternalLlmGatewayUsage(input)).rejects.toMatchObject({
+        code: 'usage_record_failed',
+        status: 500,
+      });
       expect(
         workspaceDb.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(call.id)
       ).toMatchObject({
@@ -126,18 +134,20 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('keeps command lineage out of normal usage and the call request', () => {
+  it('keeps command lineage out of normal usage and the call request', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-success-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -162,7 +172,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         workspaceDb,
       };
 
-      const usageIds = recordInternalLlmGatewayUsage(input);
+      const usageIds = await recordInternalLlmGatewayUsage(input);
 
       expect(usageIds).toHaveLength(2);
       expect(
@@ -206,6 +216,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           .all(call.id)
       ).toEqual([expect.objectContaining({ action: 'capability.admit', request_id: null })]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -478,7 +489,7 @@ it.each([
     succeeded: false,
     expected: [],
   },
-])('retains internal usage $name with exact capability lineage', ({
+])('retains internal usage $name with exact capability lineage', async ({
   usage,
   succeeded,
   expected,
@@ -488,9 +499,10 @@ it.each([
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   try {
     applyScopedMigrations(workspaceDb);
+    await openTestNativeWorkspace(workspaceDb);
     const threadId = testEntityId('th', 'usage-components');
     const turnId = testEntityId('tu', 'usage-components');
-    const call = startCapabilityCall({
+    const call = await startCapabilityCall({
       authorityActor: { kind: 'user', id: testEntityId('usr', 'usage-components') },
       capabilityId: 'inference.local.goal_coordinator',
       family: 'llm',
@@ -502,7 +514,7 @@ it.each([
       workspaceDb,
       workspaceId,
     });
-    const usageIds = recordInternalLlmGatewayUsage({
+    const usageIds = await recordInternalLlmGatewayUsage({
       call,
       workspaceDb,
       logicalModelId: 'logical_test',
@@ -535,6 +547,7 @@ it.each([
       [...usageIds].sort()
     );
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }

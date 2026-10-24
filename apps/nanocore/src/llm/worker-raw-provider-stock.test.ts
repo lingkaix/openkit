@@ -9,24 +9,29 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
-  initializeWorkerRawOutput,
-  observeWorkerRawOutput,
+  createWorkerRawOutputCoalescer,
   readWorkerRawOutput,
 } from '../runtime/worker-raw-output.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import type { RawModelOutputPosition } from './raw-provider-output.js';
 
 const roots: string[] = [],
   databases: WorkspaceDb[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 /** Real stock SDK parser, client and migrated usage ledger. Only upstream wire bytes are controlled. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'raw-stock-'));
   roots.push(root);
   const scope = {
@@ -37,7 +42,8 @@ function fixture() {
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
-  const call = startCapabilityCall({
+  await openTestNativeWorkspace(db);
+  const call = await startCapabilityCall({
     workspaceDb: db,
     ...scope,
     authorityActor: null,
@@ -46,8 +52,19 @@ function fixture() {
     capabilityId: 'llm.gateway.use',
     redactionClass: 'metadata-only',
     serviceRef: 'worker-inference-gateway',
+    initializeRaw: true,
   });
-  initializeWorkerRawOutput(db, call, scope);
+  const rawOutput = createWorkerRawOutputCoalescer(
+    { byteLength: 0, coverage: 'pending', positions: {} },
+    readWorkerRawOutput(db, scope),
+    async (positions, immediate) => {
+      await getControlStoreWorkerClient().workspaceCapability(
+        db,
+        { kind: 'raw-observe', ...scope, callId: call.id, positions: [...positions] },
+        { immediate }
+      );
+    }
+  );
   const stock = deepseekProvider(),
     models = createModels();
   models.setProvider(stock);
@@ -78,7 +95,7 @@ function fixture() {
       events++;
     },
     observe: (position: RawModelOutputPosition) => {
-      observeWorkerRawOutput(db, { ...scope, ...position, callId: call.id, attemptId });
+      rawOutput.observe({ ...position, attemptId });
     },
     fail: (error: Error): never => {
       throw error;
@@ -114,6 +131,7 @@ function fixture() {
     chunk,
     encode,
     boundary,
+    cover: rawOutput.cover,
     pending: () => pending,
     events: () => events,
   };
@@ -123,7 +141,7 @@ it.each([
   false,
   true,
 ])('meters stock raw argument spelling before JSON normalization, stream=%s', async (stream) => {
-  const f = fixture();
+  const f = await fixture();
   const wire =
     [
       f.chunk({ role: 'assistant' }),
@@ -157,13 +175,14 @@ it.each([
       )
     ).text();
   else await f.client.createChatCompletion(f.provider, f.request, undefined, transport);
+  await f.cover();
   expect(readWorkerRawOutput(f.db, f.scope)).toEqual({ rawOutputBytes: 24, exhausted: false });
   expect(f.events()).toBeGreaterThanOrEqual(5);
   expect(f.pending()).toBe(0);
 });
 
 it('retains raw failed-attempt prefixes even when the stock parser cannot return a complete response', async () => {
-  const f = fixture();
+  const f = await fixture();
   const wire = [f.chunk({ role: 'assistant' }), f.chunk({ content: 'failed prefix' })]
     .map(f.encode)
     .join('');
@@ -176,13 +195,14 @@ it('retains raw failed-attempt prefixes even when the stock parser cannot return
         rawOutput: f.boundary(String(attempt)),
       })
     ).rejects.toThrow();
+    await f.cover();
     expect(readWorkerRawOutput(f.db, f.scope).rawOutputBytes).toBe((attempt + 1) * 13);
   }
   expect(f.pending()).toBe(0);
 });
 
 it('keeps native source lifetime pending when public cancellation wins before upstream EOF', async () => {
-  const f = fixture(),
+  const f = await fixture(),
     abort = new AbortController();
   let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
   let releaseCancellation: (() => void) | undefined;
@@ -217,8 +237,10 @@ it('keeps native source lifetime pending when public cancellation wins before up
   );
   const reader = stream.getReader();
   try {
+    await f.cover();
     while (readWorkerRawOutput(f.db, f.scope).rawOutputBytes < 6) {
       await reader.read();
+      await f.cover();
     }
     abort.abort(new Error('Synthetic caller cancellation.'));
     let failure: unknown;

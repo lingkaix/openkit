@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
 import type { ResolvedLogicalModel } from './logical-models.js';
 
@@ -45,13 +47,14 @@ describe('dispatchLogicalModel member selection', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
       const authorityActor = {
         kind: 'agent',
         id: 'agent_builder',
         responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       } as const;
       const agentSessionId = 'as_00000000-0000-7000-8000-000000000001';
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         authorityActor,
         agentSessionId,
         capabilityId: 'llm.responses',
@@ -80,6 +83,7 @@ describe('dispatchLogicalModel member selection', () => {
         consumerWorkspaceId: workspaceId,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

@@ -74,7 +74,11 @@ import type {
 } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
-import { type InternalAgentProviderRequest, runInternalAgentLoop } from './internal-agent-loop.js';
+import {
+  type InternalAgentProviderCall,
+  type InternalAgentProviderRequest,
+  runInternalAgentLoop,
+} from './internal-agent-loop.js';
 import { internalContextFailure } from './rolling-context.js';
 
 const logicalModel: ResolvedLogicalModel = {
@@ -1849,7 +1853,7 @@ describe('slice 1d internal logical call', () => {
 });
 
 describe('slice 1d round 2 internal lifecycle', () => {
-  it('settles a deadline-cancelled call before owned capture closes and ignores late completion', async () => {
+  it('joins a deadline-cancelled Gateway call and ignores late completion', async () => {
     const capture = await captureBinding();
     const faux = fauxProvider({
       api: 'openai-responses',
@@ -1870,6 +1874,7 @@ describe('slice 1d round 2 internal lifecycle', () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const onDispatch = vi.fn();
+    let gatewayCall: ReturnType<InternalAgentProviderCall> | undefined;
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
@@ -1918,7 +1923,10 @@ describe('slice 1d round 2 internal lifecycle', () => {
               tools: [],
               limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 1_000 },
             },
-            provider
+            (modelRequest) => {
+              gatewayCall = provider(modelRequest);
+              return gatewayCall;
+            }
           );
         }
       );
@@ -1940,10 +1948,13 @@ describe('slice 1d round 2 internal lifecycle', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       const result = await pending;
       expect(result).toMatchObject({ kind: 'limit_reached', limit: 'deadline' });
+      // Loop exit is a fuse result; the Gateway promise joins its own native terminal write.
+      expect(gatewayCall).toBeDefined();
+      await expect(gatewayCall).rejects.toThrow();
       const settled = read();
       expect(settled.calls).toEqual([
         expect.objectContaining({
-          status: expect.stringMatching(/^(failed|aborted)$/),
+          status: 'timed-out',
           threadId: capture.threadId,
           turnId: capture.turnId,
         }),
@@ -2646,7 +2657,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
     `);
     if (boundary === 'reported-callback') {
       f.createResponses.mockImplementation(async (_provider, _input, context) => {
-        context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+        await context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
         throw new Error('The failed usage callback must not return.');
       });
     }

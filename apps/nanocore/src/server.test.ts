@@ -2534,7 +2534,7 @@ describe('nanocore server', () => {
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     let callId = '';
     try {
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: LOCAL_USER_ID },
         workspaceDb: sourceDb,
         callId: 'cap_00000000-0000-7314-89d4-4cbdd63256ba',
@@ -2549,7 +2549,7 @@ describe('nanocore server', () => {
         now: new Date('2026-07-06T00:00:00.000Z'),
       });
       callId = call.id;
-      recordUsage({
+      await recordUsage({
         workspaceDb: sourceDb,
         call,
         records: [
@@ -2565,7 +2565,7 @@ describe('nanocore server', () => {
         ],
         now: new Date('2026-07-06T00:00:01.000Z'),
       });
-      finishCapabilityCall({
+      await finishCapabilityCall({
         workspaceDb: sourceDb,
         callId,
         status: 'succeeded',
@@ -4421,7 +4421,7 @@ describe('nanocore server', () => {
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7378-ad6d-2afc4837357e',
         turnId: 'tu_00000000-0000-774a-912b-efa5c1c24c5a',
@@ -4432,7 +4432,7 @@ describe('nanocore server', () => {
         workerSessionId: testEntityId('as', 'session_runtime'),
         now: () => '2026-07-07T00:04:00.000Z',
       });
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7378-ad6d-2afc4837357e',
@@ -4962,7 +4962,7 @@ describe('nanocore server', () => {
     await store.updateTurn(turn.id, { agentSessionId });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         contextDigest: 'sha256:reconnect-pending',
         diagnosticsSummary: 'Original worker may reconnect.',
         iteration: 1,
@@ -5071,7 +5071,7 @@ describe('nanocore server', () => {
       });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      upsertWorkerCheckpoint(sourceDb, {
+      await upsertWorkerCheckpoint(sourceDb, {
         contextDigest: 'sha256:checkpoint-context',
         diagnosticsSummary: 'checkpoint diagnostics',
         iteration: 3,
@@ -6987,7 +6987,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash,
@@ -7080,7 +7080,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash: `sha256:stale-boot-no-lease-${status}`,
@@ -7155,7 +7155,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash,
@@ -7240,7 +7240,7 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash: `sha256:provenance-skip-${status}`,
@@ -7334,7 +7334,7 @@ describe('nanocore server', () => {
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash: `sha256:provenance-keep-${suffix}`,
@@ -7392,7 +7392,7 @@ describe('nanocore server', () => {
     );
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash: 'sha256:live-boot-no-lease',
@@ -7459,7 +7459,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash: 'sha256:interrupted-boot-no-lease',
@@ -7536,7 +7536,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
         requestInputHash: 'sha256:live-lease-boot',
@@ -7588,7 +7588,7 @@ describe('nanocore server', () => {
     );
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId: '0190f4c8-0000-7000-8000-000000000494',
         requestInputHash: 'sha256:missing-turn-boot',

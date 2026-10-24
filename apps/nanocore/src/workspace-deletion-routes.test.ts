@@ -1747,7 +1747,7 @@ it.each([
     request = writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
     const exportId = workspaceDeletionRecoveryExportId(requestId);
     const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000973');
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -1758,20 +1758,22 @@ it.each([
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    ).rejects.toThrow('Workspace deletion recovery export authority is inconsistent.');
     expect(
       existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
     ).toBe(false);
-    const exported = createVerifiedWorkspaceExport({
-      authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      coreDb,
-      dataRoot,
-      deletionRecoveryRequestId: requestId,
-      exportId,
-      repositoryWorkspaceDb,
-      store,
-      workspaceId: workspace.id,
-    }).verified;
+    const exported = (
+      await createVerifiedWorkspaceExport({
+        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).verified;
     if (crashPoint !== 'export') {
       request = writeWorkspaceDeletionRequest(dataRoot, {
         ...request,
@@ -1887,7 +1889,7 @@ it('preserves private Thread ownership only through the exact current deletion r
       return db;
     };
     const ordinaryExportId = testEntityId('wsexp', 'ordinary-private-export');
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: ownerUserId,
         coreDb,
@@ -1897,7 +1899,7 @@ it('preserves private Thread ownership only through the exact current deletion r
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Private Thread history requires a separately authorized export.');
+    ).rejects.toThrow('Private Thread history requires a separately authorized export.');
     expect(
       existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, ordinaryExportId))
     ).toBe(false);
@@ -1922,16 +1924,18 @@ it('preserves private Thread ownership only through the exact current deletion r
     )();
     writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
     const exportId = workspaceDeletionRecoveryExportId(requestId);
-    const exported = createVerifiedWorkspaceExport({
-      authorityUserId: ownerUserId,
-      coreDb,
-      dataRoot,
-      deletionRecoveryRequestId: requestId,
-      exportId,
-      repositoryWorkspaceDb,
-      store,
-      workspaceId: workspace.id,
-    }).verified;
+    const exported = (
+      await createVerifiedWorkspaceExport({
+        authorityUserId: ownerUserId,
+        coreDb,
+        dataRoot,
+        deletionRecoveryRequestId: requestId,
+        exportId,
+        repositoryWorkspaceDb,
+        store,
+        workspaceId: workspace.id,
+      })
+    ).verified;
     const threads = exported.fileContents
       .get('records/threads.jsonl')!
       .trim()
@@ -1945,7 +1949,7 @@ it('preserves private Thread ownership only through the exact current deletion r
       })
     );
     const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000975');
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: ownerUserId,
         coreDb,
@@ -1956,7 +1960,7 @@ it('preserves private Thread ownership only through the exact current deletion r
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    ).rejects.toThrow('Workspace deletion recovery export authority is inconsistent.');
     expect(
       existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
     ).toBe(false);
@@ -1966,7 +1970,7 @@ it('preserves private Thread ownership only through the exact current deletion r
       recoveryExportId: exportId,
       recoveryExportManifestDigest: exported.manifestDigest,
     });
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: ownerUserId,
         coreDb,
@@ -1977,7 +1981,7 @@ it('preserves private Thread ownership only through the exact current deletion r
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Workspace deletion recovery export authority is inconsistent.');
+    ).rejects.toThrow('Workspace deletion recovery export authority is inconsistent.');
     expect(
       verifyWorkspaceExportTree({
         exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, exportId),
@@ -2079,7 +2083,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       readFileSync(join(dataRoot, 'workspaces', workspace.id, traceRelativePath), 'utf8')
     );
     const unauthorizedExportId = 'wsexp_00000000-0000-796a-a49a-520342225098';
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -2089,7 +2093,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Notebook export requires current source disclosure authority.');
+    ).rejects.toThrow('Notebook export requires current source disclosure authority.');
     expect(
       existsSync(
         join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unauthorizedExportId)
@@ -2097,7 +2101,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     ).toBe(false);
     const unboundRequestId = '00000000-0000-4000-8000-000000000903';
     const unboundExportId = workspaceDeletionRecoveryExportId(unboundRequestId);
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -2108,7 +2112,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(
       existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unboundExportId))
     ).toBe(false);

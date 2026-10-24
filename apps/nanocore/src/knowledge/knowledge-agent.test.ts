@@ -379,7 +379,7 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     'Which launch gate and date?',
     actor
   );
-  const askingCall = startCapabilityCall({
+  const askingCall = await startCapabilityCall({
     workspaceDb,
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -747,7 +747,7 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     );
   });
   const admitted = vi.fn();
-  const knowledgeCall = startCapabilityCall({
+  const knowledgeCall = await startCapabilityCall({
     workspaceDb: f.workspaceDb,
     workspaceId: f.workspace.id,
     threadId: thread.id,

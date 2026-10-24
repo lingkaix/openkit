@@ -11,6 +11,7 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAuthMiddleware } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import { listServerCapabilityCalls } from './capability/usage-ledger.js';
 import type { ProviderProfile } from './config/providers-loader.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -32,6 +33,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { openTestNativeWorkspace } from './test-support/store.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -1697,11 +1699,14 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-76a4-a1a2-51cea225d649');
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Gateway fixture');
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
         dataRoot,
+        store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1716,7 +1721,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '66666666-6666-4666-8666-666666666666',
-              workspaceId: 'ws_00000000-0000-76a4-a1a2-51cea225d649',
+              workspaceId: workspace.id,
             },
           },
         }),
@@ -1729,7 +1734,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('"code":"provider_error"');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-76a4-a1a2-51cea225d649');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
         expect(
           workspaceDb.sqlite
@@ -1750,6 +1755,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1768,11 +1774,19 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-7a46-8fac-cc6ea3e31976');
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Gateway Responses usage');
+      await store.createThread(
+        workspace.id,
+        'Gateway Responses usage',
+        testEntityId('th', 'thread_2')
+      );
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
         dataRoot,
+        store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1788,7 +1802,7 @@ describe('OpenAI-compatible agent gateway', () => {
             openkit: {
               requestId: '22222222-2222-4222-8222-222222222222',
               threadId: testEntityId('th', 'thread_2'),
-              workspaceId: 'ws_00000000-0000-7a46-8fac-cc6ea3e31976',
+              workspaceId: workspace.id,
             },
           },
         }),
@@ -1798,7 +1812,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       expect(res.status, responseText).toBe(200);
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7a46-8fac-cc6ea3e31976');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
         expect(
           workspaceDb.sqlite
@@ -1824,6 +1838,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1847,11 +1862,14 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-70f3-916e-08bf980b7d98');
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Gateway fixture');
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
         dataRoot,
+        store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1866,7 +1884,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '77777777-7777-4777-8777-777777777777',
-              workspaceId: 'ws_00000000-0000-70f3-916e-08bf980b7d98',
+              workspaceId: workspace.id,
             },
           },
         }),
@@ -1879,7 +1897,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('"code":"provider_error"');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-70f3-916e-08bf980b7d98');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
         expect(
           workspaceDb.sqlite
@@ -1900,6 +1918,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1990,11 +2009,14 @@ describe('OpenAI-compatible agent gateway', () => {
 
       try {
         applyMigrations(coreDb);
-        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
+        const store = await createDemoStore({ dataRoot });
+        const workspace = await store.createWorkspace('Gateway fixture');
+        recordLocalGatewayAuthority(coreDb, workspace.id);
 
         const app = createApp({
           coreDb,
           dataRoot,
+          store,
           ...createAnthropicProviderOptions(),
           llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
             piAiClient: new PiAiGatewayClient({ models }),
@@ -2003,14 +2025,19 @@ describe('OpenAI-compatible agent gateway', () => {
 
         const res = await app.request(testCase.path, {
           method: 'POST',
-          body: JSON.stringify(testCase.body),
+          body: JSON.stringify({
+            ...testCase.body,
+            metadata: {
+              openkit: { ...testCase.body.metadata.openkit, workspaceId: workspace.id },
+            },
+          }),
           headers: { 'content-type': 'application/json' },
         });
 
         expect(res.status).toBe(200);
         await expect(res.text()).resolves.toContain('data: [DONE]');
 
-        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
+        const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
         try {
           expect(
             workspaceDb.sqlite
@@ -2030,6 +2057,7 @@ describe('OpenAI-compatible agent gateway', () => {
           workspaceDb.sqlite.close();
         }
       } finally {
+        await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();
       }
     }
@@ -2054,11 +2082,14 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-710a-b9be-85d5d38a9121');
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Gateway fixture');
+      recordLocalGatewayAuthority(coreDb, workspace.id);
 
       const app = createApp({
         coreDb,
         dataRoot,
+        store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
@@ -2074,7 +2105,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: '55555555-5555-4555-8555-555555555555',
-              workspaceId: 'ws_00000000-0000-710a-b9be-85d5d38a9121',
+              workspaceId: workspace.id,
             },
           },
         }),
@@ -2090,7 +2121,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('data: [DONE]');
       expect(body).not.toContain('tok_secret');
 
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-710a-b9be-85d5d38a9121');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
         expect(
           workspaceDb.sqlite
@@ -2111,6 +2142,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2154,11 +2186,14 @@ describe('OpenAI-compatible agent gateway', () => {
 
       try {
         applyMigrations(coreDb);
-        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
+        const store = await createDemoStore({ dataRoot });
+        const workspace = await store.createWorkspace('Gateway fixture');
+        recordLocalGatewayAuthority(coreDb, workspace.id);
 
         const app = createApp({
           coreDb,
           dataRoot,
+          store,
           ...createAnthropicProviderOptions(),
           llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
             piAiClient: new PiAiGatewayClient({ models }),
@@ -2174,7 +2209,7 @@ describe('OpenAI-compatible agent gateway', () => {
             metadata: {
               openkit: {
                 requestId: testCase.requestId,
-                workspaceId: testCase.workspaceId,
+                workspaceId: workspace.id,
               },
             },
           }),
@@ -2188,7 +2223,7 @@ describe('OpenAI-compatible agent gateway', () => {
         expect(body).toContain('data: [DONE]');
         expect(body).not.toContain('tok_secret');
 
-        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
+        const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
         try {
           expect(
             workspaceDb.sqlite
@@ -2209,6 +2244,7 @@ describe('OpenAI-compatible agent gateway', () => {
           workspaceDb.sqlite.close();
         }
       } finally {
+        await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();
       }
     }
@@ -2243,10 +2279,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
       try {
         applyMigrations(coreDb);
-        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
+        const store = await createDemoStore({ dataRoot });
+        const workspace = await store.createWorkspace('Gateway fixture');
+        recordLocalGatewayAuthority(coreDb, workspace.id);
         const app = createApp({
           coreDb,
           dataRoot,
+          store,
           ...createOllamaProviderOptions(),
           llmGatewayDispatcher: {
             createChatCompletion: async () => {
@@ -2263,7 +2302,7 @@ describe('OpenAI-compatible agent gateway', () => {
             metadata: {
               openkit: {
                 requestId: testCase.requestId,
-                workspaceId: testCase.workspaceId,
+                workspaceId: workspace.id,
               },
             },
           }),
@@ -2271,7 +2310,7 @@ describe('OpenAI-compatible agent gateway', () => {
         });
 
         expect(res.status).toBe(testCase.responseStatus);
-        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
+        const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
         try {
           expect(
             workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
@@ -2283,6 +2322,7 @@ describe('OpenAI-compatible agent gateway', () => {
           workspaceDb.sqlite.close();
         }
       } finally {
+        await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();
       }
     }
@@ -2299,10 +2339,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, 'ws_00000000-0000-7b62-8774-b2367fdb4577');
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Gateway fixture');
+      recordLocalGatewayAuthority(coreDb, workspace.id);
       const app = createApp({
         coreDb,
         dataRoot,
+        store,
         ...createOllamaProviderOptions(),
         llmGatewayDispatcher: {
           createChatCompletion: async (_provider, _request, context = {}) => {
@@ -2327,7 +2370,7 @@ describe('OpenAI-compatible agent gateway', () => {
           metadata: {
             openkit: {
               requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-              workspaceId: 'ws_00000000-0000-7b62-8774-b2367fdb4577',
+              workspaceId: workspace.id,
             },
           },
         }),
@@ -2343,7 +2386,7 @@ describe('OpenAI-compatible agent gateway', () => {
       await expect(res.json()).resolves.toMatchObject({
         error: { code: 'gateway_request_cancelled' },
       });
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7b62-8774-b2367fdb4577');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
         expect(
           workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
@@ -2352,6 +2395,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2390,6 +2434,7 @@ describe('OpenAI-compatible agent gateway', () => {
         secretRef: 'vault://vault_00000000-0000-74a5-95fb-e62d2749a997',
         vendor: 'openai',
       };
+      const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
       const app = createApp({
         coreDb,
         dataRoot,
@@ -2431,6 +2476,7 @@ describe('OpenAI-compatible agent gateway', () => {
         error: { code: 'model_not_configured' },
       });
       expect(seenApiKeys).toEqual([]);
+      expect(resolve).not.toHaveBeenCalled();
       expect(listVaultUseRecords(coreDb)).toEqual([]);
 
       const res = await app.request('/v1/chat/completions', {
@@ -2445,13 +2491,21 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ id: 'chatcmpl_vault_gateway' });
       expect(seenApiKeys).toEqual(['sk-vault-gateway']);
-      expect(listVaultUseRecords(coreDb)).toEqual([
-        expect.objectContaining({
+      const calls = listServerCapabilityCalls(coreDb);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ capabilityId: 'llm.chat_completions', status: 'succeeded' });
+      const uses = listVaultUseRecords(coreDb);
+      // The Vault owner records every actual resolution, including current-authority rechecks.
+      expect(resolve).toHaveBeenCalled();
+      expect(uses).toHaveLength(resolve.mock.calls.length);
+      for (const use of uses) {
+        expect(use).toMatchObject({
+          capabilityCallId: calls[0]!.id,
           outcome: 'succeeded',
           resolvingPath: 'provider',
           vaultReferenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
-        }),
-      ]);
+        });
+      }
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-gateway');
     } finally {
       coreDb.sqlite.close();
@@ -2606,6 +2660,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      const fixtureWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        applyScopedMigrations(fixtureWorkspaceDb);
+        await openTestNativeWorkspace(fixtureWorkspaceDb);
+      } finally {
+        fixtureWorkspaceDb.sqlite.close();
+      }
       recordLocalGatewayAuthority(coreDb, workspaceId);
       const app = createDirectGatewayApp({
         coreDb,
@@ -2664,6 +2725,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2818,11 +2880,14 @@ describe('OpenAI-compatible agent gateway', () => {
 
       try {
         applyMigrations(coreDb);
-        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
+        const store = await createDemoStore({ dataRoot });
+        const workspace = await store.createWorkspace('Gateway fixture');
+        recordLocalGatewayAuthority(coreDb, workspace.id);
 
         const app = createApp({
           coreDb,
           dataRoot,
+          store,
           ...createOllamaProviderOptions(),
           llmPiAiClient: {
             createChatCompletionStream: async () => stream,
@@ -2838,7 +2903,7 @@ describe('OpenAI-compatible agent gateway', () => {
             metadata: {
               openkit: {
                 requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-                workspaceId: testCase.workspaceId,
+                workspaceId: workspace.id,
               },
             },
           }),
@@ -2854,7 +2919,7 @@ describe('OpenAI-compatible agent gateway', () => {
         expect(body).not.toContain(testCase.code);
         expect(body).not.toContain('tok_secret');
 
-        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
+        const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
         try {
           expect(
             workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
@@ -2866,6 +2931,7 @@ describe('OpenAI-compatible agent gateway', () => {
           workspaceDb.sqlite.close();
         }
       } finally {
+        await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();
       }
     }

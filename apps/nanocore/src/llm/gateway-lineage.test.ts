@@ -541,7 +541,7 @@ describe('public durable logical Gateway lineage', () => {
     const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
       applyScopedMigrations(db);
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         workspaceDb: db,
         workspaceId: f.workspaceId,
         threadId: thread.id,
@@ -551,7 +551,7 @@ describe('public durable logical Gateway lineage', () => {
         operation: 'responses',
         redactionClass: 'metadata-only',
       });
-      recordUsage({
+      await recordUsage({
         workspaceDb: db,
         call,
         records: [{ category: 'llm', unit: 'tokens', quantity: 1, source: 'reported' }],
@@ -579,7 +579,7 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('same-member retry keeps one call and deduplicates identical usage references', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date'] });
     const f = await fixture();
     f.primary.setResponses([
       Object.assign(
@@ -611,7 +611,7 @@ describe('public durable logical Gateway lineage', () => {
     const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
       applyScopedMigrations(db);
-      startCapabilityCall({
+      await startCapabilityCall({
         workspaceDb: db,
         workspaceId: f.workspaceId,
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -639,11 +639,11 @@ describe('public durable logical Gateway lineage', () => {
   });
   it('identical backend usage collapses to one measurement cited by both retry entries', async () => {
     const f = await fixture();
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date'] });
     const dispatch = vi
       .spyOn(f.dispatcher, 'createResponses')
       .mockImplementation(async (_provider, request, context) => {
-        context?.onUsage?.({ total_tokens: 42 });
+        await context?.onUsage?.({ total_tokens: 42 });
         if (dispatch.mock.calls.length === 1)
           throw new GatewayAttemptFailure({ kind: 'rate_limited', settled: true });
         return {

@@ -481,7 +481,7 @@ async function preparedMaterial() {
     sessionCompatibilityKey: 'fixture-context',
     now,
   });
-  const checkpoint = upsertWorkerCheckpoint(f.db, {
+  const checkpoint = await upsertWorkerCheckpoint(f.db, {
     // S39 retains historical Goal/Task lineage without requiring a still-live Goal owner.
     goalId: 'goal_material_context',
     taskId: 'task_material_context',

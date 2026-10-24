@@ -3586,7 +3586,7 @@ describe('Assistant execution deadline', () => {
       ]),
       llmGatewayDispatcher: { createResponses: dispatch } as never,
     });
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date'] });
     try {
       const before = Date.now();
       const pending = fixture.submit('Explain a short concept.');

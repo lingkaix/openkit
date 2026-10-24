@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InternalRoleProfilesConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import {
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -11,6 +14,8 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
+import * as gatewayProvider from './gateway-provider.js';
+import type { InternalAgentProviderCall } from './internal-agent-loop.js';
 import { runKnowledgeManagerAgent } from './knowledge-manager-agent.js';
 import { internalContextDigest } from './rolling-context.js';
 
@@ -91,6 +96,16 @@ async function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limi
         },
       ],
     },
+  });
+  const createGatewayProvider = gatewayProvider.createInternalAgentGatewayProvider;
+  let gatewayCall: ReturnType<InternalAgentProviderCall> | undefined;
+  // Observe the original Gateway promise without replacing its dispatch or native closeout.
+  vi.spyOn(gatewayProvider, 'createInternalAgentGatewayProvider').mockImplementation((options) => {
+    const provider = createGatewayProvider(options);
+    return (request) => {
+      gatewayCall = provider(request);
+      return gatewayCall;
+    };
   });
   const dispatched = Promise.withResolvers<void>();
   const response = Promise.withResolvers<ProviderResponse>();
@@ -186,6 +201,7 @@ async function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limi
     createResponses,
     dispatched: dispatched.promise,
     providerSignal: () => providerSignal,
+    gatewayCall: () => gatewayCall,
     run,
     finish,
   };
@@ -249,8 +265,11 @@ describe('Knowledge Manager run deadline', () => {
     };
     await vi.advanceTimersByTimeAsync(1);
     const outcome = await result;
+    // The role fuse result does not acknowledge the Gateway's independent terminal write.
+    await expect(f.gatewayCall()).rejects.toThrow();
     const settledTurn = f.store.getTurnById(f.turn.id);
     const settledCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
+    const settledUsage = listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id);
     f.finish();
     await vi.advanceTimersByTimeAsync(1);
     expect.soft(before).toEqual({ status: 'running', aborted: false });
@@ -267,12 +286,14 @@ describe('Knowledge Manager run deadline', () => {
     expect(f.store.getTurnById(f.turn.id).items.map(({ type }) => type)).toEqual(['user-message']);
     expect.soft(settledCalls).toEqual([
       expect.objectContaining({
-        status: expect.stringMatching(/^(failed|aborted)$/),
+        status: 'timed-out',
         turnId: f.turn.id,
       }),
     ]);
+    expect(settledUsage).toEqual([]);
     expect(f.store.getTurnById(f.turn.id)).toEqual(settledTurn);
     expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toEqual(settledCalls);
+    expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id)).toEqual(settledUsage);
   });
 
   it('keeps caller cancellation distinct from a deadline and never retries the call', async () => {
@@ -284,8 +305,10 @@ describe('Knowledge Manager run deadline', () => {
     const reason = new DOMException('Caller cancelled.', 'AbortError');
     f.controller.abort(reason);
     expect(await result).toEqual({ kind: 'failed', error: reason });
+    await expect(f.gatewayCall()).rejects.toThrow();
     const settledTurn = f.store.getTurnById(f.turn.id);
     const settledCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
+    const settledUsage = listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id);
     f.finish();
     await vi.advanceTimersByTimeAsync(300_000);
     expect(f.createResponses).toHaveBeenCalledTimes(1);
@@ -294,11 +317,13 @@ describe('Knowledge Manager run deadline', () => {
     expect(f.store.getTurnById(f.turn.id).items.map(({ type }) => type)).toEqual(['user-message']);
     expect(settledCalls).toEqual([
       expect.objectContaining({
-        status: expect.stringMatching(/^(failed|aborted)$/),
+        status: 'aborted',
         turnId: f.turn.id,
       }),
     ]);
+    expect(settledUsage).toEqual([]);
     expect(f.store.getTurnById(f.turn.id)).toEqual(settledTurn);
     expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toEqual(settledCalls);
+    expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id)).toEqual(settledUsage);
   });
 });

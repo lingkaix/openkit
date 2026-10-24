@@ -74,3 +74,5 @@ Rolling context reports unavailable required source evidence as `internal_agent_
 Internal Chat and Knowledge Manager interruption forward the original command carrier to the active run owner. That owner acknowledges the native Stop receipt and Audit before it signals cancellation, then waits for its ordinary terminal publication. Stop acceptance supplies no execution, terminal or cleanup proof and leaves the conversation result receipt with its original owner.
 
 The Goal Coordinator uses current native Policy facts, explicit bounded Task dispatch, and Knowledge queries for specific missing facts. Captured inactive domains are approval candidates. Publication failures use the existing exact approval retry; unsupported candidates require a corrected proposal and new approval. Shared deadline errors do not assign a failure phase.
+
+The bounded loop can return its deadline before an independent Gateway call finishes cancellation. The Gateway retains its own ledger handle through terminal acknowledgement, classifies proved timeout/caller abort from the actual error, and never relabels an independently settled Provider failure from a later signal.

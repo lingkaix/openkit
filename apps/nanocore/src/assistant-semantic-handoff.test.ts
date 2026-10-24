@@ -420,7 +420,7 @@ describe('Assistant semantic Task handoff', () => {
       agentId: f.selected.manifest.id,
       startedAt: now,
     });
-    upsertWorkerCheckpoint(f.workspaceDb, {
+    await upsertWorkerCheckpoint(f.workspaceDb, {
       workspaceId: f.workspace.id,
       threadId: receiving.id,
       turnId,

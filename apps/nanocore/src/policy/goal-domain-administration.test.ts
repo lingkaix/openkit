@@ -458,7 +458,7 @@ async function fixture() {
     sessionCompatibilityKey: 'issue-review',
     now: () => new Date().toISOString(),
   });
-  upsertWorkerCheckpoint(db, {
+  await upsertWorkerCheckpoint(db, {
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,

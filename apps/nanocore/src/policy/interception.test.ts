@@ -9,9 +9,11 @@ import {
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as audit from '../audit-events.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { PolicyInterception } from './interception.js';
 import {
   listExportableWorkspacePermissionDecisions,
@@ -100,7 +102,8 @@ function kernel(allow = true, operation = 'tool.use') {
   return evaluateAccess(policy, { user: 'u', operation, target: 'o' });
 }
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0)) close();
 });
@@ -151,6 +154,7 @@ describe('bounded native Policy pipeline', () => {
       },
     });
     const input = fixture([finite]);
+    await openTestNativeWorkspace(input.workspaceDb);
     const statement = { id: finite.id, digest: policyDigest(finite) };
     const evaluation = {
       ...input,
@@ -175,8 +179,16 @@ describe('bounded native Policy pipeline', () => {
         proposalDigest: policyDigest('another-call'),
       })
     ).toBe(false);
-    await expect(pipeline.decide(evaluation)).rejects.toThrow(/use limit is exhausted/);
+    const beforeExhaustion = {
+      decisions: listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId),
+      audit: audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId),
+    };
+    await expect(pipeline.decide(evaluation)).rejects.toMatchObject({ commit: 'not-committed' });
     expect(readPolicyStatementUseCount(input.workspaceDb, statement)).toBe(1);
+    expect({
+      decisions: listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId),
+      audit: audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId),
+    }).toEqual(beforeExhaustion);
     expect(
       listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
         (row) => row.decisionId === decision.decisionId
@@ -493,16 +505,29 @@ describe('bounded native Policy pipeline', () => {
 
   it('does not release participant output when required Audit evidence cannot be written', async () => {
     const input = fixture([binding('context')]);
+    await openTestNativeWorkspace(input.workspaceDb);
     const finalKernel = vi.fn(() => kernel());
-    vi.spyOn(audit, 'recordWorkspaceAuditEvent').mockImplementation(() => {
-      throw new Error('Audit write failed.');
-    });
+    // The native owner must roll back the gate decision if its required Audit insert fails.
+    input.workspaceDb.sqlite.exec(`
+      CREATE TRIGGER reject_interception_permission_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'permission.decision'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected participant audit failure');
+      END
+    `);
+    const invoke = vi.fn(async () => ({ decision: 'allow' }));
     const pipeline = new PolicyInterception({
       id: 'test',
       version: participantVersion,
-      invoke: async () => ({ decision: 'allow' }),
+      invoke,
     });
-    await expect(pipeline.decide({ ...input, finalKernel })).rejects.toThrow('Audit write failed.');
+    await expect(pipeline.decide({ ...input, finalKernel })).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(invoke).toHaveBeenCalledOnce();
     expect(finalKernel).not.toHaveBeenCalled();
+    expect(listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId)).toEqual([]);
+    expect(audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId)).toEqual([]);
   });
 });

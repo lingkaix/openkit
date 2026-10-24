@@ -1774,7 +1774,9 @@ export class PiAiGatewayClient {
               return;
             }
 
-            const event = structuredClone(result.value);
+            // Terminal failure evidence can contain opaque provider objects such as Headers.
+            const event =
+              result.value.type === 'error' ? result.value : structuredClone(result.value);
             controller = coverModelOutputController(output, rawOutput?.coverAcknowledgement?.());
             if (event.type === 'error')
               terminalFailure = attachPiAiFailure(
@@ -3919,7 +3921,9 @@ function toResponsesSseStream(
             return;
           }
 
-          const event = structuredClone(result.value);
+          // Terminal failure evidence can contain opaque provider objects such as Headers.
+          const event =
+            result.value.type === 'error' ? result.value : structuredClone(result.value);
           envelope = sourceEnvelope ? structuredClone(sourceEnvelope) : undefined;
           controller = coverModelOutputController(output, rawOutput?.coverAcknowledgement?.());
           const source =

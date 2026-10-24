@@ -342,11 +342,26 @@ export function createInternalAgentGatewayProvider(
       return { message };
     } catch (error) {
       callFinished = true;
+      const cancelled =
+        request.signal.aborted &&
+        (error === request.signal.reason ||
+          (error instanceof GatewayAttemptFailure &&
+            error.failure.kind === 'cancelled' &&
+            error.cause === request.signal.reason));
+      const terminalError = cancelled ? request.signal.reason : error;
       if (call)
         await finishCapabilityCall({
           workspaceDb,
           callId: call.id,
-          status: 'failed',
+          // Classify the actual failure; a later caller abort cannot relabel a settled Provider error.
+          status:
+            (terminalError instanceof DOMException && terminalError.name === 'TimeoutError') ||
+            (terminalError instanceof OpenAICompatibleProviderError &&
+              (terminalError.status === 408 || terminalError.status === 504))
+              ? 'timed-out'
+              : cancelled
+                ? 'aborted'
+                : 'failed',
           ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
           errorCode: projectGatewayFailure(error, 'internal_inference_failed').code,
         });

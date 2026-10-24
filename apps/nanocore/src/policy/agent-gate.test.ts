@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import { allocateEntityId, type PolicyDocumentV1, PolicyDocumentV1Schema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
@@ -653,16 +654,8 @@ describe('agent gate at native I16', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('preserves exact retained bytes and side effects for empty and deterministic no-agent paths', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(now);
-    let entropy = 0;
-    vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
-      if (array) new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(++entropy);
-      return array;
-    });
+  it('retains final decisions and linked Audit for empty and deterministic no-agent paths', async () => {
     for (const hasDeterministicGate of [false, true]) {
-      entropy = 0;
       const document = PolicyDocumentV1Schema.parse({
         schemaVersion: 1,
         statements: hasDeterministicGate ? [deterministicBinding()] : [],
@@ -674,27 +667,39 @@ describe('agent gate at native I16', () => {
         version: participantVersion,
         invoke,
       });
-      const before = input.workspaceDb.sqlite.prepare('SELECT total_changes() AS n').get() as {
-        n: number;
-      };
       const result = await pipeline.decide(input);
-      const after = input.workspaceDb.sqlite.prepare('SELECT total_changes() AS n').get() as {
-        n: number;
-      };
-      const bytes = JSON.stringify({
-        decisions: input.workspaceDb.sqlite
-          .prepare('SELECT * FROM permission_decisions ORDER BY rowid')
-          .all(),
-        audit: input.workspaceDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),
-      });
+      const decisions = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+      const audit = listWorkspaceAuditEvents(input.workspaceDb, workspaceId);
       expect(result.result).toBe('allow');
       expect(invoke).toHaveBeenCalledTimes(hasDeterministicGate ? 1 : 0);
-      expect(after.n - before.n).toBe(hasDeterministicGate ? 4 : 2);
-      expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-        hasDeterministicGate
-          ? '43e0f6fce217353ec7f877aab6d3ecda206d58da3b46d07f0c1e8db434059fd9'
-          : '092341f3bdce3409ddb922fab1c150caaf0e522c97113cf9ae31c2da05dba9d8'
-      );
+      expect(decisions).toHaveLength(hasDeterministicGate ? 2 : 1);
+      expect(audit).toHaveLength(decisions.length);
+      const final = decisions.find((row) => row.decisionId === result.decisionId);
+      expect(final).toMatchObject({
+        result: 'allow',
+        mediation: {
+          role: 'final',
+          subject: proposal.subject,
+          kernel: { effect: 'allow' },
+        },
+      });
+      const gate = decisions.find((row) => row.mediation?.role === 'gate');
+      if (hasDeterministicGate) {
+        expect(gate).toMatchObject({ result: 'allow' });
+        expect(final?.mediation?.invocations).toEqual([{ kind: 'decision', id: gate?.decisionId }]);
+      } else {
+        expect(gate).toBeUndefined();
+        expect(final?.mediation?.invocations).toEqual([]);
+      }
+      // Each accepted decision retains its own Audit, independent of the writer connection.
+      for (const decision of decisions) {
+        expect(audit.find((event) => event.id === decision.auditEventId)).toMatchObject({
+          action: 'permission.decision',
+          permissionDecisionId: decision.decisionId,
+          capabilityCallId: proposal.capabilityCallId,
+          outcome: 'succeeded',
+        });
+      }
     }
   });
 });

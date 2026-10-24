@@ -231,7 +231,7 @@ describe('canonical Notebook Workspace portability', () => {
   it('rebuilds a new target Notebook through the existing verified Workspace archive import', async () => {
     const f = await source();
     const target = deployment();
-    const exported = createVerifiedWorkspaceExport({
+    const exported = await createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
       authorityActor: { kind: 'user', id: LOCAL_USER_ID },
       requestActor: { kind: 'local', userId: LOCAL_USER_ID },
@@ -365,7 +365,7 @@ describe('canonical Notebook Workspace portability', () => {
     expect(unresolvedNotebookSubjects(edited.files, scopeId)).toEqual(new Set());
     expect(f.notebook.readRevision(assessedRevision).files['notes/portable.md']).toBe(f.content);
 
-    const exported = createVerifiedWorkspaceExport({
+    const exported = await createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
       authorityActor: { kind: 'user', id: LOCAL_USER_ID },
       requestActor: { kind: 'local', userId: LOCAL_USER_ID },
@@ -447,7 +447,7 @@ describe('canonical Notebook Workspace portability', () => {
       }),
     ]);
     expect(selected.retrievalTraceRef).toBeDefined();
-    const exported = createVerifiedWorkspaceExport({
+    const exported = await createVerifiedWorkspaceExport({
       authorityUserId: LOCAL_USER_ID,
       authorityActor: { kind: 'user', id: LOCAL_USER_ID },
       requestActor: { kind: 'local', userId: LOCAL_USER_ID },

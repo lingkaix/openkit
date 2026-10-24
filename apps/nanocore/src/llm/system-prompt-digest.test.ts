@@ -1,24 +1,22 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import type { WorkspaceDb } from '../storage/db.js';
+import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability/usage-ledger.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openWorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import {
   digestLlmSystemPrompt,
   persistLlmCapabilityCallSystemPromptDigest,
 } from './system-prompt-digest.js';
 
 const DEFAULT_LITERAL = 'You are a helpful assistant.';
-
-/**
- * Builds a workspace-db handle around one sqlite stub.
- *
- * @param sqlite Sqlite surface used by the digest persist helper.
- * @returns Workspace database handle used by the digest persist helper.
- */
-function memoryWorkspaceDb(sqlite: WorkspaceDb['sqlite']): WorkspaceDb {
-  return { sqlite } as WorkspaceDb;
-}
 
 describe('digestLlmSystemPrompt', () => {
   it('groups by Core-intended system prompts and keeps absent distinct from an explicit default literal', () => {
@@ -142,58 +140,71 @@ describe('digestLlmSystemPrompt', () => {
 });
 
 describe('persistLlmCapabilityCallSystemPromptDigest', () => {
-  it('updates only family llm CapabilityCall rows', () => {
+  it('updates only family llm CapabilityCall rows', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-system-prompt-digest-'));
+    const workspaceId = testEntityId('ws', 'system-prompt-digest');
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const digest = `sha256:${createHash('sha256').update('present').digest('hex')}`;
-    const statements: string[] = [];
-    const workspaceDb = memoryWorkspaceDb({
-      prepare(sql: string) {
-        statements.push(sql);
-        return {
-          get: () => ({ schema_version: 1 }),
-          run: () => ({ changes: 1 }),
-        };
-      },
-    } as unknown as WorkspaceDb['sqlite']);
-
-    persistLlmCapabilityCallSystemPromptDigest({
-      callId: 'cap_00000000-0000-7778-bed1-7052f64c5b45',
-      systemPromptDigest: digest,
-      workspaceDb,
-    });
-
-    expect(statements).toHaveLength(2);
-    expect(statements[0]).toContain('SELECT schema_version');
-    expect(statements[0]).toContain("family = 'llm'");
-    expect(statements[0]).toContain('capability_id IN');
-    expect(statements[0]).toContain("'llm.chat_completions'");
-    expect(statements[0]).toContain("'llm.responses'");
-    expect(statements[1]).toContain('UPDATE capability_calls');
-    expect(statements[1]).toContain('system_prompt_digest');
-    expect(statements[1]).toContain("family = 'llm'");
-    expect(statements[1]).toContain('capability_id IN');
-    expect(statements[1]).toContain("'llm.chat_completions'");
-    expect(statements[1]).toContain("'llm.responses'");
+    try {
+      applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
+      // The evidence owner restricts the digest to the two Gateway-entry capabilities.
+      for (const [family, capabilityId, eligible] of [
+        ['llm', 'llm.chat_completions', true],
+        ['llm', 'llm.responses', true],
+        ['llm', 'inference.local.goal_coordinator', false],
+        ['mcp', 'mcp.call-tool', false],
+      ] as const) {
+        const call = await startCapabilityCall({
+          authorityActor: { kind: 'user', id: testEntityId('usr', 'system-prompt-digest') },
+          capabilityId,
+          family,
+          operation: capabilityId,
+          redactionClass: 'metadata-only',
+          workspaceDb,
+          workspaceId,
+        });
+        const persistence = persistLlmCapabilityCallSystemPromptDigest({
+          callId: call.id,
+          systemPromptDigest: digest,
+          workspaceDb,
+        });
+        if (eligible) await persistence;
+        else await expect(persistence).rejects.toMatchObject({ commit: 'not-committed' });
+        const retained = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).find(
+          (row) => row.id === call.id
+        );
+        expect(retained).toBeDefined();
+        if (eligible) expect(retained).toHaveProperty('systemPromptDigest', digest);
+        else expect(retained).not.toHaveProperty('systemPromptDigest');
+      }
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
-  it('refuses to record the digest when the family llm row is not updated', () => {
+  it('refuses to record the digest when the family llm row is not updated', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-system-prompt-digest-missing-'));
+    const workspaceId = testEntityId('ws', 'system-prompt-digest-missing');
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const digest = `sha256:${createHash('sha256').update('present').digest('hex')}`;
-    const workspaceDb = memoryWorkspaceDb({
-      prepare() {
-        return {
-          get: () => ({ schema_version: 1 }),
-          run: () => ({ changes: 0 }),
-        };
-      },
-    } as unknown as WorkspaceDb['sqlite']);
-
-    expect(() =>
-      persistLlmCapabilityCallSystemPromptDigest({
-        callId: 'cap_00000000-0000-7a46-8a8c-842fc3cca76c',
-        systemPromptDigest: digest,
-        workspaceDb,
-      })
-    ).toThrow(
-      'LLM capability call system-prompt digest was not recorded: cap_00000000-0000-7a46-8a8c-842fc3cca76c'
-    );
+    try {
+      applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
+      await expect(
+        persistLlmCapabilityCallSystemPromptDigest({
+          callId: testEntityId('cap', 'system-prompt-digest-missing'),
+          systemPromptDigest: digest,
+          workspaceDb,
+        })
+      ).rejects.toMatchObject({ commit: 'not-committed' });
+      expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceId)).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });

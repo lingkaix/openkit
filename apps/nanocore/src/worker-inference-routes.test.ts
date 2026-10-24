@@ -170,7 +170,7 @@ class FakeWorkerInferenceDispatcher {
     this.observeSource(context, request.stream ? '' : 'worker chat ok');
     context.transport?.onCodexTurnState?.('worker-provider-response-state');
 
-    return streamText('data: {"id":"chatcmpl_worker_stream"}\n\ndata: [DONE]\n\n');
+    return streamText('data: {"id":"chatcmpl_worker_stream"}\n\ndata: [DONE]\n\n', context);
   }
 
   /**
@@ -250,7 +250,7 @@ class FakeWorkerInferenceDispatcher {
       return new ReadableStream<Uint8Array>({
         start: (controller) => {
           this.lifecycleController = controller;
-          controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+          controller.enqueue(encodeSourceChunk('data: {"type":"response.created"}\n\n', context));
         },
       });
     }
@@ -260,11 +260,14 @@ class FakeWorkerInferenceDispatcher {
         cancel: async (reason) => {
           this.responsesStreamCancellations.push(reason);
           await Promise.resolve();
-          context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
+          await context.onUsage?.({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
         },
         start(controller) {
           controller.enqueue(
-            new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"Hi"}\n\n')
+            encodeSourceChunk(
+              'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n',
+              context
+            )
           );
         },
       });
@@ -278,8 +281,9 @@ class FakeWorkerInferenceDispatcher {
           if (!emitted) {
             emitted = true;
             controller.enqueue(
-              new TextEncoder().encode(
-                'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
+              encodeSourceChunk(
+                'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n',
+                context
               )
             );
             return;
@@ -289,7 +293,7 @@ class FakeWorkerInferenceDispatcher {
       });
     }
 
-    return streamText('data: {"type":"response.completed"}\n\ndata: [DONE]\n\n');
+    return streamText('data: {"type":"response.completed"}\n\ndata: [DONE]\n\n', context);
   }
 }
 
@@ -667,15 +671,30 @@ async function createWorkerInferenceRouteFixture(
 }
 
 /**
+ * Encodes fixed fixture output and binds its exact bytes to the real source-prefix acknowledgement.
+ *
+ * @param value Provider text to encode without changes.
+ * @param context Existing routed raw-output owner.
+ * @returns Encoded bytes with their covering acknowledgement, when this route supplies one.
+ */
+function encodeSourceChunk(value: string, context: LLMGatewayDispatchContext): Uint8Array {
+  const chunk = new TextEncoder().encode(value);
+  const bind = context.transport?.rawOutput?.coverAcknowledgement?.();
+  bind?.(chunk);
+  return chunk;
+}
+
+/**
  * Creates one byte-preserving text stream.
  *
  * @param value Text to emit once.
+ * @param context Existing routed raw-output owner.
  * @returns Readable UTF-8 stream.
  */
-function streamText(value: string): ReadableStream<Uint8Array> {
+function streamText(value: string, context: LLMGatewayDispatchContext): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode(value));
+      controller.enqueue(encodeSourceChunk(value, context));
       controller.close();
     },
   });
@@ -1570,7 +1589,7 @@ describe('worker inference routes', () => {
   });
 
   it('emits a bounded SSE heartbeat while worker inference is idle', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldHoldResponsesStream = true;
     const response = await postWorkerResponses(fixture, {
@@ -2620,7 +2639,7 @@ describe('worker inference pre-commit privacy', () => {
       item: { type: 'function_call', id: 'call', name: 'status' },
     },
   ])('holds Response and heartbeat until the first output: %j', async (output) => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.holdLifecycle = true;
     let visible: Response | undefined;
@@ -2633,11 +2652,15 @@ describe('worker inference pre-commit privacy', () => {
       return response;
     });
     try {
+      await vi.waitUntil(() => fixture.dispatcher.lifecycleController, { timeout: 30_000 });
       await vi.advanceTimersByTimeAsync(1000);
       expect(fixture.dispatcher.lifecycleController).toBeDefined();
       expect(visible).toBeUndefined();
       fixture.dispatcher.lifecycleController!.enqueue(
-        new TextEncoder().encode(`data: ${JSON.stringify(output)}\n\n`)
+        encodeSourceChunk(
+          `data: ${JSON.stringify(output)}\n\n`,
+          fixture.dispatcher.responseCalls[0]!.context
+        )
       );
       const response = await pending;
       expect(response.status).toBe(200);
@@ -2658,7 +2681,7 @@ describe('worker inference pre-commit privacy', () => {
   });
 
   it('returns private JSON for a held first failure without publishing lifecycle or heartbeat', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const fixture = await createWorkerInferenceRouteFixture();
     fixture.dispatcher.holdLifecycle = true;
     const pending = postWorkerResponses(fixture, {
@@ -2667,6 +2690,7 @@ describe('worker inference pre-commit privacy', () => {
       stream: true,
     });
     try {
+      await vi.waitUntil(() => fixture.dispatcher.lifecycleController, { timeout: 30_000 });
       await vi.advanceTimersByTimeAsync(1000);
       fixture.dispatcher.lifecycleController!.error(
         Object.assign(new Error('private quota'), {
@@ -2718,7 +2742,8 @@ describe('Round 2 worker exhaustion cause', () => {
   for (const endpoint of ['responses', 'chat/completions'] as const) {
     for (const stream of [false, true]) {
       it.each(workerCauseCases)(`${endpoint} stream=${stream}: $name`, async (scenario) => {
-        vi.useFakeTimers();
+        // Native writer replies can arrive after a fake-timer drain has finished.
+        vi.useFakeTimers({ toFake: ['Date'] });
         try {
           const disabled = 'disabled' in scenario;
           const terminal = scenario.kind === 'context_overflow';
@@ -2756,7 +2781,6 @@ describe('Round 2 worker exhaustion cause', () => {
                 : { messages: [{ role: 'user', content: 'Hello' }] }),
             }),
           });
-          await vi.runAllTimersAsync();
           const response = await pending;
           expect(response.status).toBe(disabled || terminal ? scenario.status : 503);
           expect(response.headers.get('content-type')).toContain('application/json');
@@ -2838,7 +2862,7 @@ describe('slice 1d Worker durable selection', () => {
     }
   });
   it('A2 subscription check failure records one unavailable entry, no attempt and the closed public cause', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date'] });
     const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
       subscriptionFamily: 'openai-codex',
       subscriptionCheckUnavailable: true,
@@ -2846,7 +2870,6 @@ describe('slice 1d Worker durable selection', () => {
     });
     try {
       const pending = postWorkerResponses(f, { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID });
-      await vi.runAllTimersAsync();
       const response = await pending;
       expect(response.status).toBe(503);
       expect(await response.json()).toMatchObject({
@@ -2931,7 +2954,7 @@ describe('slice 1d round 2 terminal frame closeout', () => {
             pull(controller) {
               if (index < frames.length)
                 controller.enqueue(
-                  new TextEncoder().encode(`data: ${JSON.stringify(frames[index++])}\n\n`)
+                  encodeSourceChunk(`data: ${JSON.stringify(frames[index++])}\n\n`, context)
                 );
               else controller.close();
             },

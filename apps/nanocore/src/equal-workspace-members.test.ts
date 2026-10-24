@@ -177,7 +177,7 @@ it('admits member management and exact member deletion replay while preserving p
       member.secret
     );
     expect(ordinaryExport.status, await ordinaryExport.clone().text()).toBe(500);
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: USER_IDS.member,
         coreDb,
@@ -186,9 +186,9 @@ it('admits member management and exact member deletion replay while preserving p
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow('Private Thread history requires a separately authorized export.');
+    ).rejects.toThrow('Private Thread history requires a separately authorized export.');
     const missingDeletionRequestId = randomUUID();
-    expect(() =>
+    await expect(
       createVerifiedWorkspaceExport({
         authorityUserId: USER_IDS.owner,
         coreDb,
@@ -199,7 +199,7 @@ it('admits member management and exact member deletion replay while preserving p
         store,
         workspaceId: workspace.id,
       })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(existsSync(join(root, 'server', 'exports', 'workspaces', workspace.id))).toBe(false);
     const requestId = randomUUID();
     const deletionInput = {
