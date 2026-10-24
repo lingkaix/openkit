@@ -287,6 +287,8 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
     | 'freshness_expired'
     | 'budget_exceeded'
     | 'source_unavailable';
+  /** Optional finite diagnosis; it grants no eligibility or access authority. */
+  eligibilityReason?: KnowledgeRetrievalResponse['excluded'][number]['eligibilityReason'];
 }
 
 /** Exact authoritative Knowledge Page selected for one Task worker Context Package. */
@@ -1008,10 +1010,19 @@ async function retrieveNotebookSelection(
     }
 
     if (!parsed.ok || !document || validation.conformance !== 'scope-schema-valid') {
+      const readable = pageReadable(candidate.knowledgePageId, content);
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest: pageReadable(candidate.knowledgePageId, content) ? contentDigest : null,
+        contentDigest: readable ? contentDigest : null,
         reason: 'lower_conformance',
+        ...(readable
+          ? {
+              eligibilityReason:
+                !parsed.ok || !document
+                  ? ('parse_invalid' as const)
+                  : ('scope_conformance_failed' as const),
+            }
+          : {}),
       });
       continue;
     }
@@ -1027,18 +1038,21 @@ async function retrieveNotebookSelection(
     const reviewState = stringFrontmatterField(document, 'review_state');
 
     // Apply conflict exclusion to active facts while preserving explicit non-active inspection.
-    if (
-      validation.errors.length > 0 ||
+    const eligibilityReason =
+      (validation.errors.length > 0 && 'validation_errors') ||
       (stringFrontmatterField(document, 'openkit_status') === 'active' &&
         ['Claim', 'Observation'].includes(stringFrontmatterField(document, 'type') ?? '') &&
-        stringFrontmatterField(document, 'conflict_status') === 'unresolved') ||
-      !states.includes(
+        stringFrontmatterField(document, 'conflict_status') === 'unresolved' &&
+        'active_conflict_unresolved') ||
+      (!states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
-      ) ||
+      ) &&
+        'state_not_selected') ||
       (stringFrontmatterField(document, 'openkit_status') === 'active' &&
         conflictSubjects.has(
           formatReferenceUri({ scopeId: sourceScope, objectId: candidate.knowledgePageId })
-        )) ||
+        ) &&
+        'active_conflict_unresolved') ||
       (reviewState !== 'accepted' &&
         reviewState !== 'user-authored' &&
         !(
@@ -1049,13 +1063,18 @@ async function retrieveNotebookSelection(
             content,
             memory ? 'user' : server ? 'server' : 'workspace'
           )
-        )) ||
-      ((reviewState === 'accepted' || reviewState === 'delegated') && !referenceProof)
-    ) {
+        ) &&
+        'review_state_ineligible') ||
+      ((reviewState === 'accepted' || reviewState === 'delegated') &&
+        !referenceProof &&
+        'reference_proof_missing_or_mismatch');
+    if (eligibilityReason) {
+      const readable = pageReadable(candidate.knowledgePageId, content);
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
-        contentDigest: pageReadable(candidate.knowledgePageId, content) ? contentDigest : null,
+        contentDigest: readable ? contentDigest : null,
         reason: 'lower_conformance',
+        ...(readable ? { eligibilityReason } : {}),
       });
       continue;
     }

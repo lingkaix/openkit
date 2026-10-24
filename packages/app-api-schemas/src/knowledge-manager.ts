@@ -264,6 +264,17 @@ export const KnowledgeRetrievalExclusionSchema = z
       'budget_exceeded',
       'source_unavailable',
     ]),
+    eligibilityReason: z
+      .enum([
+        'parse_invalid',
+        'scope_conformance_failed',
+        'validation_errors',
+        'state_not_selected',
+        'active_conflict_unresolved',
+        'review_state_ineligible',
+        'reference_proof_missing_or_mismatch',
+      ])
+      .optional(),
   })
   .strict();
 

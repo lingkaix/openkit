@@ -68535,6 +68535,18 @@
                     "budget_exceeded",
                     "source_unavailable"
                   ]
+                },
+                "eligibilityReason": {
+                  "type": "string",
+                  "enum": [
+                    "parse_invalid",
+                    "scope_conformance_failed",
+                    "validation_errors",
+                    "state_not_selected",
+                    "active_conflict_unresolved",
+                    "review_state_ineligible",
+                    "reference_proof_missing_or_mismatch"
+                  ]
                 }
               },
               "required": [
@@ -69041,6 +69053,18 @@
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
+                  ]
+                },
+                "eligibilityReason": {
+                  "type": "string",
+                  "enum": [
+                    "parse_invalid",
+                    "scope_conformance_failed",
+                    "validation_errors",
+                    "state_not_selected",
+                    "active_conflict_unresolved",
+                    "review_state_ineligible",
+                    "reference_proof_missing_or_mismatch"
                   ]
                 }
               },
@@ -72559,6 +72583,18 @@
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
+                  ]
+                },
+                "eligibilityReason": {
+                  "type": "string",
+                  "enum": [
+                    "parse_invalid",
+                    "scope_conformance_failed",
+                    "validation_errors",
+                    "state_not_selected",
+                    "active_conflict_unresolved",
+                    "review_state_ineligible",
+                    "reference_proof_missing_or_mismatch"
                   ]
                 }
               },
@@ -151189,5 +151225,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cee567cdcadaea71d7652b316fe7e11efbb9685d4f913db4d4ca2a7e5ca74a2c"
+  "x-openkit-source-digest": "sha256:8e2a2dcb50bcef5f19008804b22234f15ed4870ffc08ad96abfdffc08f07123b"
 }

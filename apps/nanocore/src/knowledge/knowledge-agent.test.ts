@@ -878,15 +878,25 @@ it('refuses an overview-only answer when its Server credential is revoked during
     'Revoked overview evidence must not produce a delivered answer'
   ).toBeUndefined();
   expect(outcome.error).toMatchObject({
-    code: 'workspace_access_denied',
-    message: 'Server Knowledge access denied.',
+    code: 'knowledge_query_failed',
+    status: 422,
+    details: { threadId: expect.any(String), turnId: expect.any(String) },
   });
-  const work = f.store
-    .listThreads(f.workspace.id)
-    .flatMap((thread) => f.store.listThreadTurns(f.workspace.id, thread.id))
-    .find((turn) => turn.agentId === 'knowledge-manager');
-  expect(work).toMatchObject({ status: 'failed' });
-  expect(work!.items.filter((item) => item.type === 'tool-call')).toEqual([]);
+  const failure = outcome.error as { details: { threadId: string; turnId: string } };
+  const work = f.store.getTurnById(failure.details.turnId);
+  // KM query execution keeps its public refusal and the bounded source cause in separate owners.
+  expect(work).toMatchObject({
+    threadId: failure.details.threadId,
+    agentId: 'knowledge-manager',
+    status: 'failed',
+    error: { code: 'provider_call_failed' },
+  });
+  expect(work.items.filter((item) => item.type === 'tool-call')).toEqual([]);
+  expect(
+    listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id).find(
+      (call) => call.id === f.askingCall.id
+    )?.extensions?.['openkit.knowledge/delivery']
+  ).toBeUndefined();
 }, 120_000);
 
 it('rejects an unread citation and retains a failed Knowledge Manager Turn instead of a completed answer', async () => {
@@ -1439,7 +1449,31 @@ it('rechecks Memory page suppression before delivering a synthesized answer', as
     });
     return message('You prefer violet tea.', [f.citation], null);
   });
-  await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
+  const outcome = await f.askMemory().then(
+    (answer) => ({ answer, error: undefined }),
+    (error: unknown) => ({ answer: undefined, error })
+  );
+  expect(outcome.answer).toBeUndefined();
+  expect(outcome.error).toMatchObject({
+    code: 'knowledge_query_failed',
+    status: 422,
+    details: { threadId: expect.any(String), turnId: expect.any(String) },
+  });
+  const failure = outcome.error as { details: { threadId: string; turnId: string } };
+  const work = f.store.getTurnById(failure.details.turnId);
+  expect(work).toMatchObject({
+    threadId: failure.details.threadId,
+    status: 'failed',
+    error: { code: 'internal_agent_context_source_unavailable' },
+  });
+  expect(
+    work.items.filter(
+      (item) =>
+        item.type === 'tool-call' && item.tool === 'knowledge.result' && item.status === 'completed'
+    )
+  ).toEqual([]);
+  expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_PAGE');
+  expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_SOURCE');
   expect(readPage).toContain('USER_PRIVATE_PAGE');
   expect(await readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
 });
@@ -1455,7 +1489,31 @@ it('rechecks current User authority after Memory page reads before answer delive
     f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
     return message('You prefer violet tea.', [f.citation], null);
   });
-  await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
+  const outcome = await f.askMemory().then(
+    (answer) => ({ answer, error: undefined }),
+    (error: unknown) => ({ answer: undefined, error })
+  );
+  expect(outcome.answer).toBeUndefined();
+  expect(outcome.error).toMatchObject({
+    code: 'knowledge_query_failed',
+    status: 422,
+    details: { threadId: expect.any(String), turnId: expect.any(String) },
+  });
+  const failure = outcome.error as { details: { threadId: string; turnId: string } };
+  const work = f.store.getTurnById(failure.details.turnId);
+  expect(work).toMatchObject({
+    threadId: failure.details.threadId,
+    status: 'failed',
+    error: { code: 'provider_call_failed' },
+  });
+  expect(
+    work.items.filter(
+      (item) =>
+        item.type === 'tool-call' && item.tool === 'knowledge.result' && item.status === 'completed'
+    )
+  ).toEqual([]);
+  expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_PAGE');
+  expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_SOURCE');
   expect(readPage).toContain('USER_PRIVATE_PAGE');
 });
 

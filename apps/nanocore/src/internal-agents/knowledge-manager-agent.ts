@@ -24,6 +24,7 @@ import {
   type AgentMessage,
   type AgentTool,
   type InternalAgentProviderCall,
+  InternalAgentProviderError,
   type JsonSchema,
   runInternalAgentLoop,
 } from './internal-agent-loop.js';
@@ -466,6 +467,8 @@ async function executeKnowledgeManagerAgent(
           await commitMessages(exit.messages);
         }
         signal.throwIfAborted();
+        if (exit.kind === 'failed')
+          throw new InternalAgentProviderError(exit.code, 'Knowledge Manager provider failed.');
         input.assertCurrent();
         if (resultText === undefined)
           throw new Error(`Knowledge Manager returned no accepted result (${exit.kind}).`);
@@ -493,7 +496,10 @@ async function executeKnowledgeManagerAgent(
         completedAt: new Date().toISOString(),
         error: timeout ??
           internalContextFailure(error) ?? {
-            code: 'knowledge_manager_failed',
+            code:
+              error instanceof InternalAgentProviderError && error.code === 'provider_call_failed'
+                ? error.code
+                : 'knowledge_manager_failed',
             message:
               'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
           },

@@ -575,6 +575,7 @@ export function internalContextSourceUnavailable(
     | 'internalContextSourceDigest'
     | 'readInternalContextEvidence'
     | 'readTurnRetrievalTraces'
+    | 'readThreadRetrievalTraces'
     | 'assertConversationRetrievalTraceReadable'
     | 'assertKnowledgeRetrievalTraceReadable'
     | 'assertKnowledgeRetrievalSelectionReadable'

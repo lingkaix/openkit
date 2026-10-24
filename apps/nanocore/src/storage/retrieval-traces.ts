@@ -132,13 +132,37 @@ export function readTurnRetrievalTraces(
   threadId: string,
   turnId: string
 ): Array<{ reference: RetrievalTraceReference; trace: ProductRetrievalTrace }> {
-  const scopeId = `retrieval-trace/turn/${workspaceId}/${threadId}/${turnId}`;
+  return readOwnedRetrievalTraces(
+    workspaceRoot,
+    `retrieval-trace/turn/${workspaceId}/${threadId}/${turnId}`
+  );
+}
+
+/** Reads only the exact Thread-owned query inventory, without descending through its Turns. */
+export function readThreadRetrievalTraces(
+  workspaceRoot: string,
+  workspaceId: string,
+  threadId: string
+) {
+  return readOwnedRetrievalTraces(
+    workspaceRoot,
+    `retrieval-trace/thread/${workspaceId}/${threadId}`
+  );
+}
+
+/** Shares canonical path, retained decoding and identity checks for the existing query owners. */
+function readOwnedRetrievalTraces(workspaceRoot: string, scopeId: string) {
   const scope = parseReferenceScope(scopeId);
-  if (!scope || scope.family !== 'retrieval-trace' || scope.kind !== 'turn')
+  if (!scope || scope.family !== 'retrieval-trace')
     throw new Error('Invalid retrieval trace owner.');
   let directory = workspaceRoot;
   assertCanonicalDirectory(directory);
-  for (const segment of ['threads', scope.threadId, 'turns', scope.turnId, 'retrieval-traces']) {
+  for (const segment of [
+    'threads',
+    scope.threadId,
+    ...(scope.kind === 'turn' ? ['turns', scope.turnId] : []),
+    'retrieval-traces',
+  ]) {
     directory = join(directory, segment);
     if (!existsSync(directory)) return [];
     assertCanonicalDirectory(directory);

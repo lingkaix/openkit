@@ -636,11 +636,11 @@ export async function askKnowledgeAgent(
       strategy: 'compaction',
       knowledgeProjection: 'selection',
       serverKnowledgeActor: access.serverKnowledgeActor ?? access.requestActor,
-      ...(access.outputThreadId && access.outputTurnId
+      ...(access.outputThreadId
         ? {
             retrievalContext: {
               threadId: access.outputThreadId,
-              turnId: access.outputTurnId,
+              ...(access.outputTurnId ? { turnId: access.outputTurnId } : {}),
             },
           }
         : {}),

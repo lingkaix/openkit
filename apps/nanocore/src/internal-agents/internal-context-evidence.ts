@@ -16,7 +16,7 @@ import {
   prepareKnowledgeRetrievalTraceRead,
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
-import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
+import { readThreadRetrievalTraces, readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
 import {
   type AssistantHistoryAuthority,
   assertConversationRetrievalTraceReadable,
@@ -43,7 +43,7 @@ export function readInternalContextEvidence(
     /** KM queries alone verify their content-free-exclusion selection projection. */
     readonly knowledgeProjection?: 'selection';
     /** Trusted retained asking lineage for a query; maintenance defaults to its source Turn. */
-    readonly retrievalContext?: { readonly threadId: string; readonly turnId: string };
+    readonly retrievalContext?: { readonly threadId: string; readonly turnId?: string };
     /** Actual current Server credential from native query admission, never model input. */
     readonly serverKnowledgeActor?: Actor | undefined;
   }
@@ -107,8 +107,10 @@ function contextEvidenceInventory(input: Parameters<typeof readInternalContextEv
     input.strategy === 'compaction' ? internalContextEvidenceReferences(input.items) : [];
   const runContext = { threadId: input.threadId, turnId: input.items[0]?.turnId };
   const contexts = [runContext, ...(input.retrievalContext ? [input.retrievalContext] : [])];
-  const scopeFor = (context: typeof runContext) =>
-    `retrieval-trace/turn/${input.workspaceId}/${context.threadId}/${context.turnId}`;
+  const scopeFor = (context: { threadId: string; turnId?: string | undefined }) =>
+    context.turnId === undefined
+      ? `retrieval-trace/thread/${input.workspaceId}/${context.threadId}`
+      : `retrieval-trace/turn/${input.workspaceId}/${context.threadId}/${context.turnId}`;
   if (
     input.strategy === 'compaction' &&
     references.some(
@@ -120,17 +122,23 @@ function contextEvidenceInventory(input: Parameters<typeof readInternalContextEv
     input.strategy === 'compaction'
       ? contexts.filter(
           (context, index) =>
-            context.turnId &&
             contexts.findIndex((candidate) => scopeFor(candidate) === scopeFor(context)) ===
-              index &&
-            references.some((reference) => reference.scopeId === scopeFor(context))
+              index && references.some((reference) => reference.scopeId === scopeFor(context))
         )
       : [...new Set(input.items.map((item) => item.turnId))]
           .sort()
           .map((turnId) => ({ threadId: input.threadId, turnId }));
   const inventory = owners.flatMap((context) => {
-    const turnId = context.turnId!;
+    const turnId = context.turnId;
     try {
+      if (turnId === undefined) {
+        input.store.getThread(input.workspaceId, context.threadId);
+        return readThreadRetrievalTraces(
+          join(dataRoot, 'workspaces', input.workspaceId),
+          input.workspaceId,
+          context.threadId
+        );
+      }
       input.store.getTurn(input.workspaceId, context.threadId, turnId);
       return readTurnRetrievalTraces(
         join(dataRoot, 'workspaces', input.workspaceId),
@@ -139,7 +147,9 @@ function contextEvidenceInventory(input: Parameters<typeof readInternalContextEv
         turnId
       );
     } catch {
-      throw internalContextSourceUnavailable('readTurnRetrievalTraces');
+      throw internalContextSourceUnavailable(
+        turnId === undefined ? 'readThreadRetrievalTraces' : 'readTurnRetrievalTraces'
+      );
     }
   });
   const entries = internalContextEvidenceEntries(input.items, inventory, input.strategy);

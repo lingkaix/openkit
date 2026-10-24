@@ -43,6 +43,7 @@ import {
   resolveRegisteredKnowledgeSourceReference,
   stringFrontmatterField,
   stringListFrontmatterField,
+  updateOkfFrontmatter,
   validateScopeKnowledgeSchema,
 } from './okf.js';
 import {
@@ -561,6 +562,47 @@ export async function prepareUserMemoryMaintenance(
                   ),
                 ].sort();
                 const baseFiles = notebook.readRevision(baseRevision).files;
+                if (input.tellContent !== undefined) {
+                  const now = new Date().toISOString();
+                  edit = {
+                    ...edit,
+                    changes: edit.changes
+                      .map(({ path, content }) => {
+                        if (content === null) return { path, content };
+                        const page = parseOkfDocument({ path, content });
+                        // Publication owns reserved-file validation and its safe diagnostics.
+                        if (page.document?.reserved) return { path, content };
+                        if (!page.ok) throw new NotebookError('invalid_request');
+                        const previous =
+                          baseFiles[path] === undefined
+                            ? undefined
+                            : parseOkfDocument({ path, content: baseFiles[path] });
+                        if (previous && !previous.ok) throw new NotebookError('recovery_required');
+                        const fields = previous?.document.frontmatter;
+                        let bytes = updateOkfFrontmatter({
+                          path,
+                          content,
+                          updates: {
+                            openkit_status: fields?.openkit_status ?? 'active',
+                            status: fields?.status ?? 'stable',
+                            created_at: fields?.created_at ?? now,
+                            updated_at: fields?.updated_at ?? now,
+                            // Native attribution is applied below; model claims cannot update the clock.
+                            review_state: fields?.review_state ?? 'accepted',
+                          },
+                        });
+                        if (bytes !== baseFiles[path])
+                          bytes = updateOkfFrontmatter({
+                            path,
+                            content: bytes,
+                            updates: { updated_at: now },
+                          });
+                        return { path, content: bytes };
+                      })
+                      .filter(({ path, content }) => content !== (baseFiles[path] ?? null)),
+                  };
+                  if (!edit.changes.length) return { outcome: 'no_change' };
+                }
                 const setting = settings();
                 const delegated =
                   setting.enabled &&
