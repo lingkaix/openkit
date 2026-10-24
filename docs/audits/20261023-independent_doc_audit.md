@@ -221,7 +221,36 @@ Each row is finding P0-G4-NN. The chosen home decides only the audit group; it c
 
 ## G1 Whole-System Findings
 
-Filled in Phase 1.
+### Method
+
+- Top-down derivation: each capability that [Product Vision](../product-vision.md) requires was mapped to the Core document and the specification that should own it. The derivation used `git grep` over `docs/core/` and the active specifications at the base SHA.
+- Clean-room probe: `git archive 996085376c65d973ce9e3c899779ba78d5297fec docs AGENTS.md` was extracted into an empty directory outside the repository. Eight fresh read-only inspector contexts, one per module, received only that directory and a written brief: domain and protocol, identity and Policy, Vault and mediation, worker execution, storage and recovery, knowledge, the work model, and generative and deployment surfaces. Each wrote an implementation plan and a gap list. The brief and raw outputs stay uncommitted under the audit's temporary working space.
+- The probe produced 237 candidate gaps: 149 guesses, 47 contradictions, 17 dangling references, and 24 code dependences. A candidate is not reported as a fact until the group that owns it verifies it against the documents at the group base SHA. Each group record lists the candidates it verified and their dispositions.
+
+### Top-Down Derivation
+
+| ID | Vision capability | Finding | Owning group |
+| --- | --- | --- | --- |
+| G1-TD-01 | Multi-channel communication gateway (Product Vision 6.2: Discord, Signal, Slack) | `docs/core/communication.md` names Discord as the first external team channel and refers to a "common channel contract". No active specification owns that common channel contract. The Discord binding, pairing, and response rules live in a section of `20260930-pending_requests.md`. Signal and Slack have no owner and no recorded deferral. | communication |
+| G1-TD-02 | Dynamic orchestration through an `agent config pack` (Product Vision 6.1) | No Core document or specification uses the term or states that the direction is deferred. Workflow Coordinator owns worker selection only. | architecture |
+| G1-TD-03 | Compute and agent-platform neutrality, external platforms as peers, and return of user data (Product Vision 4.4) | `docs/core/architecture.md` states the doctrine. The only specification is `20261020-compute_neutrality_target.md` (`Draft`, `Not Started`). No accepted document defines the capability declaration that Policy uses to refuse a placement, or the data-return contract. | architecture |
+| G1-TD-04 | Unified proxy with LLM fallback, load balancing, and rate limiting (Product Vision 6.5) | The LLM Gateway owns ordered failover. No owner decides load balancing; `20260721-provider_subscription_accounts.md` excludes an account load balancer. `docs/core/mediation.md` lets early implementations omit rate-limit controls. | mediation |
+| G1-TD-05 | Minimum management and configuration burden: the NanoCore built-in agent generates and updates AEP and Policy, selects and maintains Worker Agent and sandbox image, and monitors work in the middle (Product Vision 9.1) | Only `20260922-delegated_worker_policy_maintenance.md` covers a bounded class of worker sandbox and network configuration. No Core document or specification owns AEP generation, Worker Agent or image selection and maintenance by an internal agent, or in-the-middle monitoring. | architecture |
+| G1-TD-06 | Task Evaluator internal agent (Product Vision 6.4) | `docs/core/architecture.md` reserves the role. No action: the reservation is explicit. | architecture |
+| G1-TD-07 | Tauri desktop packaging (Product Vision 1) | Deferred beyond `v0.1.0` by an engineer decision that `20260710-web_ui_rebuild_stack.md` cites. No action. | architecture |
+
+### Clean-Room Probe Themes
+
+| Theme | Candidate examples | Owning groups |
+| --- | --- | --- |
+| G1-CR-T1. Retained and wire shapes are defined by code, not by documents. Field sets of Workspace, Thread, Turn, Item, `CapabilityCall`, `UsageRecord`, Vault records, Policy statements, SQLite tables, and migrations are owned by schema packages, source files, and migration journals. | DOMAIN-02, DOMAIN-13, DOMAIN-14, AUTHZ-04, AUTHZ-20, MEDIATION-05, MEDIATION-10, MEDIATION-11, STORAGE-03, STORAGE-04 | protocol, contract-evolution, every held storage group; question Q-01 |
+| G1-CR-T2. Closed enumerations are named but not listed: Workspace, Thread, and Item status, `TriggerSource` values, `stopReason`, and the mapping from error code to HTTP status. | DOMAIN-01, DOMAIN-04, DOMAIN-09, DOMAIN-12, MEDIATION-13 | protocol, foundation, mediation |
+| G1-CR-T3. Contradictions between a Core document and a specification, between two specifications, or inside one specification. | DOMAIN-07, DOMAIN-15, AUTHZ-01, AUTHZ-05, AUTHZ-08, AUTHZ-14, AUTHZ-27, MEDIATION-08, MEDIATION-09, STORAGE-01, STORAGE-02 | the group of each cited owner |
+| G1-CR-T4. A specification interleaves its target contract and its current implementation, so a rebuilder cannot tell which behavior conforms. | DOMAIN-07, MEDIATION-19, MEDIATION-22 | mediation, vault, communication |
+| G1-CR-T5. An external library defines observable behavior or retained bytes, so a rebuild in another stack cannot reproduce it: pi-ai provider transport and credential serialization, Better Auth credentials and sessions. | MEDIATION-16, MEDIATION-17, AUTHZ-10 | mediation, identity; question Q-02 |
+| G1-CR-T6. Experience-chosen numbers, such as retry delays, idle bounds, and grace periods, are not stated. | MEDIATION-03, MEDIATION-14, MEDIATION-18, AUTHZ-07 | No action unless a number defines a wire or retained format: [Documentation Writing](../writing.md#normative-text) makes such numbers current defaults. |
+
+Raw candidate counts per module: domain 20, identity and Policy 34, Vault and mediation 27, worker execution 29, storage and recovery 27, knowledge 33, work model 32, surfaces 35.
 
 ## Statistics Per Goal
 
@@ -237,4 +266,18 @@ None yet.
 
 ## Questions For The Engineer
 
-None yet.
+Each question states the context and evidence, the options, the recommendation with its first-principles reason, and what the audit did meanwhile.
+
+### Q-01. Does the rebuild test read schema packages and conformance fixtures as part of the documents?
+
+- Context: [Documentation Writing](../writing.md) and [Engineering Doctrine](../engineering-doctrine.md) make the documents the source of truth and test them by a rebuild from the documents alone. The doctrine also says that boundary conformance tests are part of the executable specification. `20260704-app_api_openapi_projection.md` makes the shared schema packages the single App API contract source, and `20261017-retained_format_register.md` names source readers and fixtures for retained formats. The clean-room probe could not recover field sets, SQLite tables, or migrations from `docs/` (theme G1-CR-T1).
+- Options: (A) The rebuild corpus includes the machine-readable schema packages, conformance fixtures, and migration files, and the documentation model says so. (B) Specifications state every retained and wire field in prose. (C) Durable retained formats get a generated, committed reference projection under the Generated Projections type, while release-coupled wire shapes stay in the schema packages under option A.
+- Recommendation: C. Retained data carries the only compatibility obligation (NONNEG-001), so its format must survive a rebuild in another stack. A generated projection keeps one fact in one place and cannot drift, and prose copies of schemas would violate One Fact, One Place.
+- Meanwhile: no document was changed for this theme. Group records cite the affected candidates.
+
+### Q-02. How are retained bytes that an external library defines governed?
+
+- Context: Better Auth owns password credentials and sessions (`20260628-nanocore_config_identity_contract.md`), and pi-ai owns the subscription credential serialization stored in the Vault (`20260721-provider_subscription_accounts.md`). A rebuild in another stack cannot open those retained records (theme G1-CR-T5).
+- Options: (A) Record each such format in the retained format register as externally owned, with its pinned dependency version and the continuity rule that applies to it. (B) Specify the bytes in OpenKit documents. (C) Accept that a rebuild resets these records.
+- Recommendation: A. It states the obligation where retained formats are already inventoried, and it does not copy a third-party format into prose.
+- Meanwhile: no change.
