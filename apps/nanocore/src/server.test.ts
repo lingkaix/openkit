@@ -7974,6 +7974,8 @@ describe('nanocore server', () => {
       expect(listGoalsForThread(workspaceDb, shared.id)).toHaveLength(1);
       expect(assistantCalls).toBe(2);
     } finally {
+      // Join accepted Goal and outcome publications before closing their Core dependency.
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
