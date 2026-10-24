@@ -5,12 +5,17 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
-import { WorkerRawOutputBudgetExceededError } from '../runtime/worker-raw-output.js';
+import {
+  readWorkerRawOutput,
+  WorkerRawOutputAuthorityError,
+  WorkerRawOutputBudgetExceededError,
+} from '../runtime/worker-raw-output.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -45,7 +50,8 @@ afterEach(async () => {
 async function fixture(
   configured = true,
   requestKind?: 'turn' | 'prewarm' | 'compaction',
-  nativeStop = true
+  nativeStop = true,
+  rawSource: 'complete' | 'controlled' = 'complete'
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
   roots.push(dataRoot);
@@ -107,20 +113,23 @@ async function fixture(
       gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
     })
   );
-  // This controlled Provider double knows its complete source before public SSE delivery.
+  // Existing cases know the complete source before delivery. Fault cases own source lifetime.
   const observedDispatch = (...args: unknown[]) => {
-    const boundary = (args[2] as LLMGatewayDispatchContext | undefined)?.transport?.rawOutput;
-    const settle = boundary?.sourceStarted();
-    boundary?.sourceEvent();
-    settle?.();
+    if (rawSource === 'complete') {
+      const boundary = (args[2] as LLMGatewayDispatchContext | undefined)?.transport?.rawOutput;
+      const settle = boundary?.sourceStarted();
+      boundary?.sourceEvent();
+      settle?.();
+    }
     return dispatch(...args);
   };
+  const onRawOutputStop = vi.fn(async () => {});
   const app = new Hono<{ Variables: AuthVariables }>();
   registerWorkerInferenceRoutes({
     app,
     coreDb,
     workerControlGateway: gateway,
-    ...(nativeStop ? { onRawOutputStop: vi.fn(async () => {}) } : {}),
+    ...(nativeStop ? { onRawOutputStop } : {}),
     llmGatewayDispatcher: {
       createResponses: observedDispatch,
       createResponsesStream: observedDispatch,
@@ -153,7 +162,24 @@ async function fixture(
     dispatch,
     resolveGatewayProvider,
     environmentPackage,
+    onRawOutputStop,
     turn,
+    ledgerCalls: () => {
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        return listWorkspaceCapabilityCalls(db, workspace.id);
+      } finally {
+        db.sqlite.close();
+      }
+    },
+    rawOutput: () => {
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        return readWorkerRawOutput(db, environmentPackage.scope);
+      } finally {
+        db.sqlite.close();
+      }
+    },
     post: (stream: boolean, endpoint = 'responses') =>
       app.request(`/api/worker-inference/v1/${endpoint}`, {
         method: 'POST',
@@ -209,6 +235,178 @@ function failedStream(error: unknown, endpoint = 'responses') {
     },
   });
 }
+
+it('keeps a pending sibling alive when a non-admission failure has no raw source', async () => {
+  const f = await fixture(true, undefined, true, 'controlled');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const enteredA = Promise.withResolvers<LLMGatewayDispatchContext>();
+  const releaseA = Promise.withResolvers<void>();
+  f.dispatch
+    .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+      enteredA.resolve(context);
+      await releaseA.promise;
+      const settle = context.transport!.rawOutput!.sourceStarted();
+      context.transport!.rawOutput!.sourceEvent();
+      settle();
+      return { id: 'response-a', object: 'response', status: 'completed', output: [] };
+    })
+    .mockRejectedValueOnce(
+      Object.assign(new TypeError('exception-message-canary'), {
+        name: 'exception-name-canary',
+        code: 'exception-code-canary',
+      })
+    );
+  const pendingA = f.post(false);
+  const contextA = await enteredA.promise;
+  const callA = f.ledgerCalls()[0]!;
+  try {
+    const responseB = await f.post(false);
+    const callB = f.ledgerCalls().find((call) => call.id !== callA.id)!;
+
+    // Reliability: no reached native source and no public output is complete-empty proof.
+    expect.soft(contextA.transport!.signal!.aborted).toBe(false);
+    expect.soft(f.onRawOutputStop).not.toHaveBeenCalled();
+    expect.soft(callB).toMatchObject({ status: 'failed', errorCode: 'worker_inference_failed' });
+    expect.soft(callB.extensions?.['openkit.worker/rawOutput']).toMatchObject({
+      byteLength: 0,
+      coverage: 'complete',
+    });
+    expect.soft(responseB.status).toBe(400);
+    const bodyB = await responseB.json();
+    expect.soft(bodyB).toMatchObject({
+      error: { code: expect.any(String), message: expect.any(String) },
+    });
+    expect.soft(bodyB.error.code).not.toMatch(/^worker_raw_output_(?:unavailable|exhausted)$/);
+    expect.soft(JSON.stringify(bodyB)).not.toContain('canary');
+    const diagnostics = warn.mock.calls.map(([message]) => JSON.parse(message));
+    expect
+      .soft(diagnostics.filter((entry) => entry.code === 'worker_raw_output_stopped'))
+      .toEqual([]);
+    // Item 3d: the trusted exception class survives unknown dispatch classification.
+    expect.soft(diagnostics.find((entry) => entry.capabilityCallId === callB.id)).toMatchObject({
+      code: 'worker_inference_failed',
+      phase: 'dispatch',
+      failureKind: 'unknown',
+      outputBegan: false,
+      exceptionClass: 'type_error',
+    });
+    expect.soft(JSON.stringify(diagnostics)).not.toContain('canary');
+  } finally {
+    releaseA.resolve();
+    await (await pendingA).text();
+  }
+  expect(f.ledgerCalls().find((call) => call.id === callA.id)).toMatchObject({
+    status: 'succeeded',
+  });
+  expect(f.rawOutput()).toEqual({ rawOutputBytes: 0, exhausted: false });
+});
+
+it.each([
+  { failure: 'incomplete settlement', stage: 'settlement', causeCode: 'raw_source_incomplete' },
+  { failure: 'explicit raw failure', stage: 'source', causeCode: 'raw_authority_unavailable' },
+] as const)('retains B as the first raw-stop origin after $failure', async ({
+  failure,
+  stage,
+  causeCode,
+}) => {
+  const f = await fixture(true, undefined, true, 'controlled');
+  const enteredA = Promise.withResolvers<void>();
+  const releaseA = Promise.withResolvers<void>();
+  const loggedA = Promise.withResolvers<void>();
+  let callAId: string | undefined;
+  let originAtAbort: unknown;
+  const warn = vi.spyOn(console, 'warn').mockImplementation((message) => {
+    const diagnostic = JSON.parse(message);
+    if (diagnostic.code === 'worker_inference_failed' && diagnostic.capabilityCallId === callAId)
+      loggedA.resolve();
+  });
+  f.dispatch
+    .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+      const raw = context.transport!.rawOutput!;
+      const settle = raw.sourceStarted();
+      const aborted = Promise.withResolvers<never>();
+      const signal = context.transport!.signal!;
+      signal.addEventListener(
+        'abort',
+        () => {
+          originAtAbort = warn.mock.calls
+            .map(([message]) => JSON.parse(message))
+            .find((entry) => entry.code === 'worker_raw_output_stopped');
+          aborted.reject(signal.reason);
+        },
+        { once: true }
+      );
+      enteredA.resolve();
+      try {
+        await Promise.race([releaseA.promise, aborted.promise]);
+      } finally {
+        settle();
+      }
+      throw new Error('unexpected-release-canary');
+    })
+    .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+      // A reached source with zero hooks is unknown even after it settles.
+      const raw = context.transport!.rawOutput!;
+      const settle = raw.sourceStarted();
+      settle();
+      if (failure === 'explicit raw failure') {
+        let rawFailure: unknown;
+        try {
+          raw.fail(new WorkerRawOutputAuthorityError());
+        } catch (error) {
+          rawFailure = error;
+        }
+        // Force the sibling to report first, independently of the origin record.
+        await loggedA.promise;
+        throw rawFailure;
+      }
+      throw new TypeError('exception-message-canary');
+    });
+  const pendingA = f.post(false);
+  await enteredA.promise;
+  callAId = f.ledgerCalls()[0]!.id;
+  try {
+    const responseB = await f.post(false);
+    await responseB.text();
+    await (await pendingA).text();
+    const callB = f.ledgerCalls().find((call) => call.id !== callAId)!;
+    const origin = {
+      code: 'worker_raw_output_stopped',
+      capabilityCallId: callB.id,
+      phase: 'dispatch',
+      stage,
+      causeCode,
+    };
+
+    // Item 3d requires the first origin before abort can create sibling failures.
+    expect.soft(originAtAbort).toMatchObject(origin);
+    const diagnostics = warn.mock.calls.map(([message]) => JSON.parse(message));
+    const stops = diagnostics.filter((entry) => entry.code === 'worker_raw_output_stopped');
+    expect.soft(stops).toHaveLength(1);
+    expect.soft(stops[0]).toMatchObject(origin);
+    if (failure === 'explicit raw failure') {
+      const failures = diagnostics.filter((entry) => entry.code === 'worker_inference_failed');
+      expect.soft(failures[0]?.capabilityCallId).toBe(callAId);
+    }
+    expect.soft(f.onRawOutputStop).toHaveBeenCalledTimes(1);
+    expect.soft(f.onRawOutputStop).toHaveBeenCalledWith(f.environmentPackage.scope, 'error');
+    expect.soft(f.ledgerCalls()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: callAId, errorCode: 'worker_raw_output_unavailable' }),
+        expect.objectContaining({
+          id: callB.id,
+          status: 'failed',
+          errorCode: 'worker_raw_output_unavailable',
+        }),
+      ])
+    );
+    expect.soft(() => f.rawOutput()).toThrow(WorkerRawOutputAuthorityError);
+    expect.soft(JSON.stringify(diagnostics)).not.toContain('canary');
+  } finally {
+    releaseA.resolve();
+    await pendingA;
+  }
+});
 
 it.each([
   'responses',

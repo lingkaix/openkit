@@ -1739,6 +1739,14 @@ const GATEWAY_FAILURE_CODES: Record<PiAiFailureKind, string> = {
   unknown: 'provider_error',
 };
 
+/** Classifies trusted exception identity without reading private text or arbitrary fields. */
+function workerInferenceExceptionClass(error: unknown) {
+  if (error instanceof TypeError) return 'type_error';
+  if (error instanceof RangeError) return 'range_error';
+  if (error instanceof SyntaxError) return 'syntax_error';
+  return error instanceof Error ? 'error' : 'non_error';
+}
+
 /**
  * Projects one normalized provider failure code onto a fixed public message.
  *
@@ -1940,8 +1948,32 @@ export function registerWorkerInferenceRoutes({
           workspaceDb.sqlite.close();
         }
       };
-      const failRaw = (error: Error): never => {
+      const failRaw = (
+        error: Error,
+        stage: 'admission' | 'source' | 'stream-prepare' | 'settlement' = 'source',
+        causeCode:
+          | 'raw_authority_unavailable'
+          | 'raw_source_incomplete'
+          | 'raw_persistence_failed' = 'raw_authority_unavailable'
+      ): never => {
         const exhausted = error instanceof WorkerRawOutputBudgetExceededError;
+        const firstStop = !rawGroup.stopRequested;
+        if (firstStop) {
+          rawGroup.stopRequested = true;
+          try {
+            console.warn(
+              JSON.stringify({
+                code: 'worker_raw_output_stopped',
+                capabilityCallId: durableCall.call.id,
+                phase,
+                stage,
+                causeCode: exhausted ? 'budget_exhausted' : causeCode,
+              })
+            );
+          } catch {
+            /* Optional diagnostics never replace raw stop or durable failure. */
+          }
+        }
         if (!exhausted) {
           try {
             withRawDb((db) => invalidateWorkerRawOutputProof(db, scope, durableCall.call.id));
@@ -1956,8 +1988,7 @@ export function registerWorkerInferenceRoutes({
               : 'worker_raw_output_unavailable';
           entry.controller.abort(error);
         }
-        if (!rawGroup.stopRequested) {
-          rawGroup.stopRequested = true;
+        if (firstStop) {
           if (onRawOutputStop)
             void onRawOutputStop(scope, exhausted ? 'budget_exhausted' : 'error').catch(() => {
               workerControlGateway.unregisterSession(environmentPackage.snapshotId);
@@ -1980,7 +2011,12 @@ export function registerWorkerInferenceRoutes({
           rawObservers.every(
             (observer) =>
               observer.pending === 0 &&
-              (observer.locallyRefused || (observer.started > 0 && observer.events > 0))
+              (observer.locallyRefused ||
+                (observer.started > 0 && observer.events > 0) ||
+                (status !== 'succeeded' &&
+                  !activeExecution?.outputBegan &&
+                  observer.started === 0 &&
+                  observer.events === 0))
           );
         let persisted = false;
         try {
@@ -1991,7 +2027,11 @@ export function registerWorkerInferenceRoutes({
         }
         if (!complete || !persisted) {
           try {
-            failRaw(new WorkerRawOutputAuthorityError());
+            failRaw(
+              new WorkerRawOutputAuthorityError(),
+              'settlement',
+              complete ? 'raw_persistence_failed' : 'raw_source_incomplete'
+            );
           } catch {
             /* The durable unavailable marker precedes public terminalization. */
           }
@@ -2002,6 +2042,7 @@ export function registerWorkerInferenceRoutes({
       let correlation: { corr: string; attempt: number } | undefined;
       let activeExecution: GatewayAttemptContext | undefined;
       let observedFailure: PiAiFailure | undefined;
+      let observedExceptionClass: ReturnType<typeof workerInferenceExceptionClass> | undefined;
       let observedHttpRejection: number | undefined;
       let observedProviderError: ProviderHttpErrorDiagnostic | undefined;
       /** Emits selected diagnostic fields without exception text, raw bodies, or synthetic HTTP status. */
@@ -2021,6 +2062,9 @@ export function registerWorkerInferenceRoutes({
               message: 'Worker inference call failed.',
               phase: failurePhase,
               failureKind: kind && Object.hasOwn(GATEWAY_FAILURE_CODES, kind) ? kind : 'unknown',
+              ...(kind === undefined || kind === 'unknown'
+                ? { exceptionClass: observedExceptionClass ?? workerInferenceExceptionClass(error) }
+                : {}),
               ...(typeof status === 'number' &&
               Number.isInteger(status) &&
               status >= 100 &&
@@ -2071,7 +2115,10 @@ export function registerWorkerInferenceRoutes({
           )
             throw new WorkerRawOutputAuthorityError();
         } catch (error) {
-          failRaw(error instanceof Error ? error : new WorkerRawOutputAuthorityError());
+          failRaw(
+            error instanceof Error ? error : new WorkerRawOutputAuthorityError(),
+            'admission'
+          );
         }
         if (!logicalModel) {
           throw new WorkerInferenceRouteError(
@@ -2109,6 +2156,7 @@ export function registerWorkerInferenceRoutes({
             phase = 'selection';
             activeExecution = undefined;
             observedFailure = undefined;
+            observedExceptionClass = undefined;
             observedHttpRejection = undefined;
             observedProviderError = undefined;
           },
@@ -2275,7 +2323,7 @@ export function registerWorkerInferenceRoutes({
                   const prepared = await execution.prepareStream(stream);
                   if (!rawObserver.started || !rawObserver.events) {
                     void prepared.cancel().catch(() => undefined);
-                    failRaw(new WorkerRawOutputAuthorityError());
+                    failRaw(new WorkerRawOutputAuthorityError(), 'stream-prepare');
                   }
                   return workerInferenceStreamResponse(
                     rewriteGatewayStreamModel(prepared, logicalModel.id),
@@ -2317,7 +2365,7 @@ export function registerWorkerInferenceRoutes({
                 const prepared = await execution.prepareStream(stream);
                 if (!rawObserver.started || !rawObserver.events) {
                   void prepared.cancel().catch(() => undefined);
-                  failRaw(new WorkerRawOutputAuthorityError());
+                  failRaw(new WorkerRawOutputAuthorityError(), 'stream-prepare');
                 }
                 return workerInferenceStreamResponse(
                   rewriteGatewayStreamModel(prepared, logicalModel.id),
@@ -2341,6 +2389,7 @@ export function registerWorkerInferenceRoutes({
               );
               return workerResponse;
             } catch (error) {
+              observedExceptionClass = workerInferenceExceptionClass(error);
               // Stock can normalize callback errors; retain the trusted pre-inference refusal category.
               const failure = admissionFailure
                 ? new GatewayAttemptFailure(
