@@ -1778,10 +1778,13 @@ describe('worker MCP routes', () => {
     }
   });
 
+  // AUX-GROK MCP cascade diagnosis (aux-grok-mcp-cascade-diagnosis.md; #485): no fixed timer; about 150-180 FULL writer round trips plus Main work take 17-25 s quietly, so a runner timeout can abandon a body whose process-wide client shutdown cascades into later cases.
   it.each([
     'Workspace member',
     'nonmember administrator',
-  ] as const)('reads only current same-Sandbox peers through Turn-scoped handles without changing their records: %s', async (audience) => {
+  ] as const)('reads only current same-Sandbox peers through Turn-scoped handles without changing their records: %s', {
+    timeout: 60_000,
+  }, async (audience) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-work-peers-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2537,7 +2540,9 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it('keeps a tracking server schema fixed within a Turn and refreshes it on the next Turn', async () => {
+  it('keeps a tracking server schema fixed within a Turn and refreshes it on the next Turn', {
+    timeout: 60_000,
+  }, async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-turn-schema-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2862,7 +2867,9 @@ describe('worker MCP routes', () => {
   it.each([
     'revocation',
     'lineage',
-  ] as const)('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift: %s', async (fault) => {
+  ] as const)('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift: %s', {
+    timeout: 60_000,
+  }, async (fault) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3196,7 +3203,9 @@ describe('worker MCP routes', () => {
     'unknown-effect',
     'no-contact',
     'credential-after-claim',
-  ] as const)('re-evaluates current authority before granting a captured MCP call: %s', async (change) => {
+  ] as const)('re-evaluates current authority before granting a captured MCP call: %s', {
+    timeout: 60_000,
+  }, async (change) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
