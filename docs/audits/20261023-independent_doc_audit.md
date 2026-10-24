@@ -39,7 +39,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/protocol.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
 | `docs/core/communication.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
 | `docs/core/identity.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
-| `docs/core/policy.md` | policy | open, pending | — |
+| `docs/core/policy.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/core/vault.md` | vault | open, pending | — |
 | `docs/core/mediation.md` | mediation | open, pending | — |
 | `docs/core/agent-supply.md` | agent-supply | open, pending | — |
@@ -83,10 +83,10 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260628-nanocore_config_identity_contract.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
 | `docs/specs/20260704-remote_auth_credential_bootstrap.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
 | `docs/specs/20260715-multi_user_workspace_system.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
-| `docs/specs/20260629-openkit_policy_model.md` | policy | open, pending | — |
-| `docs/specs/20260703-policy_enforcement_mapping.md` | policy | open, pending | — |
-| `docs/specs/20260909-thread_visibility_and_sharing.md` | policy | open, pending | — |
-| `docs/specs/20260930-pending_requests.md` | policy | open, pending | — |
+| `docs/specs/20260629-openkit_policy_model.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260703-policy_enforcement_mapping.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260909-thread_visibility_and_sharing.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260930-pending_requests.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/specs/20260703-vault_secret_injection.md` | vault | open, pending | — |
 | `docs/specs/20260704-vault_backend_implementation.md` | vault | open, pending | — |
 | `docs/specs/20260709-worker_credential_access_declarations.md` | vault | open, pending | — |
@@ -276,6 +276,9 @@ Filled at close-out.
 | #468 `[auth] Bootstrap notice omits that the credential cannot be recovered, and the token file stays after consumption` | identity | ID-RA-07 | low |
 | #469 `[workspace-sharing] Access-change residue remains after the equal-member cutover, and the Workspace summary is not closed` | identity | ID-MU-06, 07 | low |
 | #470 `[config] knowledgeMaintenance parsing strips unknown keys although the contract gives it a strict shape` | identity | ID-CFG-05 | ordinary |
+| #471 `[thread] Thread records never emit the thread-entry and thread-visibility required features` | policy | PO-TVS-01 | blocking candidate (retained data) |
+| #472 `[discord] A paired Discord account gains administrator eligibility from an owned server-admin Token` | policy | PO-PR-04 | blocking candidate (authorization) |
+| #473 `[pending-requests] A repeated command-intent approval with a new request id is not deduplicated` | policy | PO-PR-01 | ordinary |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -362,3 +365,16 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-57 | identity | Private-Thread administrator gap and MU line 656 | Open a low issue |
 | Q-58 | identity | Identity numbers and labels | As Q-23 and Q-28 |
 | Q-59 | identity | "Roles" in Identity Core | Replace with policy attributes |
+| Q-60 | policy | Kernel trace names for a missing grant and a prohibition | Name the Kernel codes; keep the product reasons |
+| Q-61 | policy | Goal-domain activation and Task join status (PM and PEM conflict) | Amend PM to the PEM status when the Goal group is released |
+| Q-62 | policy | Did the three new Policy families land with their consumers | Restate in the present tense and name active consumers |
+| Q-63 | policy | `knowledge-manager` as a `Thread.entryPath` value | Add the value to TVS |
+| Q-64 | policy | Interim contract for an explicit `workspace` conversation Thread | Formal work only; refuse in a personal Workspace |
+| Q-65 | policy | Outcome Turn trigger actor for a withdrawal, and "first" | Ending actor; readiness order |
+| Q-66 | policy | Policy-grant actor clause | Mark as retained-read validation |
+| Q-67 | policy | Target id and `turnId` fields of response commands | Name them in Resolve |
+| Q-68 | policy | Order of authority, state, and shape checks | Authority, state, shape |
+| Q-69 | policy | Unreadable request rows in Thread lists | Count against the bound; refuse archive with `recovery_required` |
+| Q-70 | policy | Agent-principal status sentence in Core Doctrine | Move the status to the specifications |
+| Q-71 | policy | Policy numbers and labels | As Q-23 and Q-28 |
+| Q-72 | policy | Local-mode Discord administrator eligibility | Treat channel input as an ordinary actor in both modes |
