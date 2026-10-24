@@ -303,7 +303,7 @@ Canonical file-backed record directories must be listed by the owning storage sp
 
 Agent manifests may add optional fields and optional sections over time.
 
-Older readers may ignore fields they do not understand, but they must reject a manifest when `requiredFeatures`, `minCoreVersion`, or required backend capabilities name unsupported behavior.
+Older readers may ignore descriptive fields they do not understand, but they must reject a manifest when `requiredFeatures`, `minCoreVersion`, or required backend capabilities name unsupported behavior. An unknown key inside an authority-bearing section of an authored manifest fails closed under [Hand-Written Configuration](../core/contract-evolution.md#hand-written-configuration) ([Open Extension Partition](../decisions/20261005-open_extension_partition.md)).
 
 New fields under `workspace`, `vault`, `policy`, `sandbox`, `providers`, `mcp`, `tools`, `resources`, `scale`, `observability`, or `lifecycle` are authority-bearing unless the owning manifest spec explicitly marks them as descriptive metadata.
 
