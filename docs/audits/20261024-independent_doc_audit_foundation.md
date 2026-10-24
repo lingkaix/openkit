@@ -3,7 +3,7 @@ date: "2026-10-24"
 ---
 # Independent Documentation Audit: Foundation Group
 
-This non-authorizing record holds the foundation group of the [independent documentation audit](20261023-independent_doc_audit.md). It records observations, dispositions, and questions. It does not authorize design.
+This non-authorizing record holds the foundation group of the [independent documentation audit](20261023-independent_doc_audit.md). Its owning rule is [Change Execution Governance](../change-execution.md). It records observations, dispositions, and questions. It does not authorize design.
 
 ## Scope And Base
 

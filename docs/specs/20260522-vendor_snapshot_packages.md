@@ -108,7 +108,7 @@ Reviewers should treat generated or vendored artifact diffs as source updates fr
 
 ## Current Implementation Projection
 
-`packages/codex-app-server-schema/` contains Codex app-server generated schemas, package metadata, a validation script, package-local maintenance guidance, and package-local agent rules.
+`packages/codex-app-server-schema/` contains Codex app-server generated schemas, package metadata, a validation script, package-local maintenance guidance, and package-local agent rules. Its metadata records one SHA-256 checksum for each generated JSON file, the consumed upstream implementation values, and the consumed-surface dispositions, and its validation script checks them.
 
 `packages/models-dev-catalog/` contains dated `models.dev` snapshots, snapshot metadata, checksum validation, provider-template traceability validation, package-local maintenance guidance, and package-local agent rules.
 

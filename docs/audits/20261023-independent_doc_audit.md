@@ -34,7 +34,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/core-concepts.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/core/README.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/core/AGENTS.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
-| `docs/core/contract-evolution.md` | contract-evolution | open, pending | — |
+| `docs/core/contract-evolution.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/core/architecture.md` | architecture | open, pending | — |
 | `docs/core/protocol.md` | protocol | open, pending | — |
 | `docs/core/communication.md` | communication | open, pending | — |
@@ -59,11 +59,11 @@ The ledger lists every Core document and every active specification with its hom
 | --- | --- | --- | --- |
 | `docs/specs/20260709-quick_chat_workspace.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/specs/20260711-scheduler_recurring_event_triggers.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
-| `docs/specs/20260703-schema_evolution_record_envelope.md` | contract-evolution | open, pending | — |
-| `docs/specs/20260715-contract_stability_baseline.md` | contract-evolution | open, pending | — |
-| `docs/specs/20261017-retained_format_register.md` | contract-evolution | open, pending | — |
-| `docs/specs/20260522-vendor_snapshot_packages.md` | contract-evolution | open, pending | — |
-| `docs/specs/20261012-product_integrity_check.md` | contract-evolution | open, pending | — |
+| `docs/specs/20260703-schema_evolution_record_envelope.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20260715-contract_stability_baseline.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20261017-retained_format_register.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20260522-vendor_snapshot_packages.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20261012-product_integrity_check.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/specs/20260813-internal_agent_runtime.md` | architecture | open, pending | — |
 | `docs/specs/20260909-internal_agent_resource_integration.md` | architecture | open, pending | — |
 | `docs/specs/20260704-workflow_coordinator_internal_agent.md` | architecture | open, pending | — |
@@ -263,6 +263,8 @@ Filled at close-out.
 | #454 `[workspace-sharing] Personal Workspace share refusal emits a code outside the published error enum` | foundation | FND-PW-01 | ordinary |
 | #455 `[dashboard] Default Agent projection skips the User preference` | foundation | FND-CC-01 | ordinary |
 | #456 `[recurring-schedules] A very large fixed interval can stop every recurring scan` | foundation | FND-RT-04 | blocking candidate (recovery) |
+| #457 `[record-envelope] Envelope readers skip schemaVersion, minCoreVersion and Gateway requiredFeatures checks` | contract-evolution | CE-ENV-01, 02, 03, 05 | blocking candidate (retained data) |
+| #458 `[record-envelope] Required feature recurring-history-v1 does not use the registered identifier form` | contract-evolution | CE-ENV-REG | blocking candidate (retained data) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -298,3 +300,11 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-06 | foundation | Do stale pending expiries share the expired-range write bound | Read the bound per phase and say so |
 | Q-07 | foundation | Does the "Migration preserves" acceptance bullet still apply | Replace its first clause |
 | Q-08 | foundation | A past audit record contains a local absolute path | Approve a one-time redaction |
+| Q-09 | contract-evolution | Is the Pi coding agent patch an accepted exception to the no-patch rule | Record a bounded exception, then remove the patch upstream |
+| Q-10 | contract-evolution | Snapshot evidence for registry and rolling-API sources | Name three source kinds and their identities |
+| Q-11 | contract-evolution | Does the snapshot contract cover the Retrieval Kernel dictionary archive | State that build-supply archives are outside it |
+| Q-12 | contract-evolution | Re-derive the Terminal Turn Consistency read design against the control store | Re-derive it when the operation is implemented |
+| Q-13 | contract-evolution | Mechanism for the release-coupled contract identity gate | State the protocol version, doctor check and strict parsing |
+| Q-14 | contract-evolution | Narrow the L0 testing statement of the stability baseline | Narrow it to the frontmatter check |
+| Q-15 | contract-evolution | Casing of required features in Knowledge frontmatter | Add a named exception |
+| Q-16 | contract-evolution | When to re-baseline the retained format register against the control store | With the held control-store specification |
