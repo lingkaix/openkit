@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import type { PiAiFailure } from './llm/pi-ai-failure.js';
+import type { ControlCapabilityAdmissionFailure } from './storage/control-store-capability.js';
 import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
 
 /** Safe fields explicitly authored by the failure owner; causal failures remain private. */
@@ -87,4 +89,72 @@ export class IdempotencyKeyConflictError extends Error {
     super('The requestId was already used for different command input.');
     this.name = 'IdempotencyKeyConflictError';
   }
+}
+
+/**
+ * Error raised by worker control request validation.
+ */
+export class WorkerControlGatewayError extends Error {
+  /** Stable machine-readable error code. */
+  public readonly code: string;
+  /** HTTP status that routes should use when projecting this error. */
+  public readonly status: number;
+
+  /**
+   * Creates a worker control gateway error.
+   *
+   * @param code Stable error code.
+   * @param message Human-readable message.
+   * @param status HTTP status.
+   */
+  public constructor(code: string, message: string, status: number) {
+    super(message);
+    this.name = 'WorkerControlGatewayError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+/** One failure projection; the original exception stays private and never supplies classification. */
+export class GatewayAttemptFailure extends Error {
+  /** Boundary-produced or owner-assigned failure evidence. */
+  public readonly failure: PiAiFailure;
+  /** Local member checks may advance but are never retried as reached Provider attempts. */
+  public readonly beforeDispatch: boolean;
+  /** Creates a typed private failure without inventing upstream status. */
+  public constructor(failure: PiAiFailure, original?: unknown, beforeDispatch = false) {
+    super('Provider attempt failed.', { cause: original });
+    this.failure = failure;
+    this.beforeDispatch = beforeDispatch;
+  }
+}
+
+/** Uses the same trusted class boundary as existing operation error projection. */
+export function projectControlCapabilityFailure(error: unknown) {
+  const failure =
+    error instanceof WorkerControlGatewayError ||
+    error instanceof TurnStartValidationError ||
+    error instanceof OperationError
+      ? error
+      : undefined;
+  if (!failure) return undefined;
+  const kind =
+    failure instanceof WorkerControlGatewayError
+      ? ('mcp' as const)
+      : failure instanceof TurnStartValidationError
+        ? ('turn' as const)
+        : ('operation' as const);
+  return { kind, code: failure.code, message: failure.message, status: failure.status };
+}
+/** Restores the same public owner class; arbitrary native exceptions have no projection. */
+export function restoreControlCapabilityFailure(
+  value: Exclude<ControlCapabilityAdmissionFailure, { kind: 'unknown' }>
+): Error {
+  if (value.kind === 'mcp')
+    return new WorkerControlGatewayError(value.code, value.message, value.status);
+  if (value.kind === 'turn')
+    return new TurnStartValidationError(value.code, value.message, value.status);
+  if (value.code === 'capability_request_reused')
+    return new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
+  return new OperationError(value.code, value.message, value.status);
 }

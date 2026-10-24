@@ -16,7 +16,7 @@ import type {
   ControlMaintenanceAdmissionResult,
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, restoreControlCapabilityFailure } from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
 import {
   type ControlGoalCommandInput,
@@ -42,8 +42,7 @@ import type { ControlAdmission, ControlAdmissionResult } from './control-store-a
 import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
-  controlCapabilityTextSpan,
-  controlCapabilityTransferText,
+  controlCapabilityText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
@@ -70,10 +69,12 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import type { WorkspaceDb } from './db.js';
 import type {
   ControlWorkObservationInput,
   ControlWorkObservationResult,
 } from './work-observations.js';
+import { nativeProductScope } from './workspace-file-records.js';
 
 /** A refusal or uncertain result, never a substitute for the original SQL command receipt. */
 export class ControlStoreWorkerError extends Error {
@@ -116,6 +117,8 @@ interface Opening {
   readonly host: WriterHost;
   readonly path: string;
   identity: string | undefined;
+  /** True only after the original native ACK and physical identity validation. */
+  acknowledged: boolean;
   readonly promise: Promise<void>;
 }
 
@@ -134,6 +137,8 @@ interface Pending {
   readonly request: ControlWorkerRequest;
   /** Unposted capture waiters share this same finite admission map and byte budget. */
   posted: boolean;
+  /** The original admitted scope ACK gates posting after finite request admission. */
+  ready: boolean;
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly inputBytes: number;
@@ -409,6 +414,7 @@ class ControlStoreWorkerClient {
     const opening: Opening = {
       command: binding,
       ...physical,
+      acknowledged: false,
       promise: this.request({ ...binding, operation: 'open' }, undefined, physical.host).then(
         () => {
           try {
@@ -417,6 +423,7 @@ class ControlStoreWorkerClient {
             if (opening.identity !== undefined && opening.identity !== identity)
               throw new Error('Physical database changed.');
             opening.identity = identity;
+            opening.acknowledged = true;
           } catch {
             this.fail(physical.host);
             throw new ControlStoreWorkerError('unavailable', 'unknown');
@@ -539,7 +546,7 @@ class ControlStoreWorkerClient {
         remaining: admitted.length,
       };
       for (const entry of admitted) entry.cohort = cohort;
-      if (!this.backupPaused) this.post(requests[0]!.id, admitted[0]!);
+      if (!this.backupPaused) this.post(admitted[0]!);
     }
     return Promise.allSettled(results);
   }
@@ -595,13 +602,36 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'journal' }>).resultJson;
   }
 
+  /** Uses only the exact Workspace scope already admitted by its existing product owner. */
+  async workspaceCapability(
+    db: WorkspaceDb,
+    input: ControlCapabilityCommandInput,
+    options: { readonly immediate?: boolean } = {}
+  ): Promise<ControlCapabilityCommandResult> {
+    const scope = nativeProductScope(db.dataRoot, {
+      kind: 'workspace',
+      workspaceId: db.workspaceId,
+    });
+    const database = `workspace:${scope.path}`;
+    const admitted = this.openings.get(database);
+    if (
+      !admitted ||
+      admitted.command.path !== scope.path ||
+      admitted.command.dataRoot !== db.dataRoot ||
+      !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    return this.capability(database, input, options);
+  }
+
   /** Submits prepared family facts through the bounded writer and awaits durable acknowledgement. */
   async capability(
     database: string,
-    input: ControlCapabilityCommandInput
+    input: ControlCapabilityCommandInput,
+    options: { readonly immediate?: boolean } = {}
   ): Promise<ControlCapabilityCommandResult> {
     try {
-      const text = controlCapabilityTransferText(input);
+      const text = controlCapabilityText(input);
       if (
         text !== undefined &&
         Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
@@ -609,12 +639,30 @@ class ControlStoreWorkerClient {
         throw new ControlStoreWorkerError('busy', 'not-committed');
       const transfer = prepareControlCapabilityTransfer(input);
       const reply = await this.request(
-        { operation: 'capability', database, input: transfer.input },
+        {
+          operation: 'capability',
+          database,
+          input: transfer.input,
+          immediate: options.immediate ?? false,
+        },
         transfer.parts
       );
       return (reply as Extract<Success, { operation: 'capability' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'capability') {
+        if (error.domain.kind === 'pending')
+          throw new PendingRequestCommandError(
+            error.domain.code,
+            error.domain.message,
+            error.domain.status
+          );
+        if (error.domain.kind)
+          throw restoreControlCapabilityFailure({
+            kind: error.domain.kind,
+            code: error.domain.code,
+            message: error.domain.message,
+            status: error.domain.status,
+          });
         if (error.domain.code === 'unsupported_retained_format')
           throw new TypeError('Unsupported retained record format.');
         if (error.domain.code === 'idempotency_key_conflict')
@@ -749,7 +797,7 @@ class ControlStoreWorkerClient {
       if (!this.backupPaused) return;
       this.backupPaused = false;
       this.backupDrain = undefined;
-      for (const [id, entry] of this.pending) if (!entry.posted) this.post(id, entry);
+      for (const entry of this.pending.values()) if (!entry.posted) this.post(entry);
     };
     await new Promise<void>((resolve) => {
       this.backupDrain = resolve;
@@ -829,7 +877,19 @@ class ControlStoreWorkerClient {
     const database = 'database' in command ? command.database : undefined;
     const context = this.operationContext.getStore();
     const borrowed = database !== undefined && context?.active && context.reservation === database;
-    const host = target ?? (database === undefined ? undefined : this.openings.get(database)?.host);
+    const opening = database === undefined ? undefined : this.openings.get(database);
+    const host = target ?? opening?.host;
+    // An ACK may be validated before older scope reactions run. They keep their prefix.
+    const ready =
+      command.operation !== 'open' &&
+      opening &&
+      (!opening.acknowledged ||
+        [...this.pending.values()].some(
+          (entry) =>
+            !entry.ready && 'database' in entry.command && entry.command.database === database
+        ))
+        ? opening.promise
+        : undefined;
     if (!host || host.failed)
       return Promise.reject(
         new ControlStoreWorkerError(host ? 'unavailable' : 'not-open', 'not-committed')
@@ -865,7 +925,7 @@ class ControlStoreWorkerClient {
         command.operation === 'material'
           ? controlMaterialTransferSize(command.input)
           : {
-              byteLength: controlCapabilityTextSpan(command.input)?.byteLength ?? 0,
+              byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
               replyByteLength: 0,
             };
       if (!size)
@@ -903,7 +963,7 @@ class ControlStoreWorkerClient {
     // Posting normally transfers ownership immediately. A capture hold must take the same
     // immutable input now, so its caller cannot change a bounded envelope before resume.
     let admittedRequest = request;
-    if (this.backupPaused || deferPost) {
+    if (this.backupPaused || deferPost || ready !== undefined) {
       try {
         admittedRequest = structuredClone(request, {
           transfer: 'content' in request && request.content ? [request.content] : [],
@@ -920,7 +980,7 @@ class ControlStoreWorkerClient {
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
     const id = this.nextId++;
-    return new Promise<Success>((resolve, reject) => {
+    const result = new Promise<Success>((resolve, reject) => {
       this.inputBytes += inputBytes;
       host.inputBytes += inputBytes;
       this.materialBytes += materialBytes;
@@ -932,6 +992,7 @@ class ControlStoreWorkerClient {
         command: admittedRequest,
         request: admittedRequest,
         posted: false,
+        ready: ready === undefined,
         materialBytes,
         inputBytes,
         resolve,
@@ -941,16 +1002,42 @@ class ControlStoreWorkerClient {
       if (database !== undefined && !borrowed)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
       worker.ref();
-      if (!this.backupPaused && !deferPost) this.post(id, entry);
+      if (ready !== undefined) {
+        void ready.then(
+          () => {
+            if (this.pending.get(id) !== entry) return;
+            entry.ready = true;
+            if (!this.backupPaused && (!deferPost || entry.cohort)) this.post(entry);
+          },
+          (error: unknown) => {
+            this.complete(
+              id,
+              undefined,
+              new ControlStoreWorkerError(
+                error instanceof ControlStoreWorkerError ? error.code : 'unavailable',
+                'not-committed'
+              )
+            );
+          }
+        );
+      } else if (!this.backupPaused && !deferPost) this.post(entry);
     });
+    if (ready !== undefined) {
+      // Shutdown drains the original admitted request, including its unposted open wait.
+      this.operations.set(result, undefined);
+      const release = () => this.operations.delete(result);
+      void result.then(release, release);
+    }
+    return result;
   }
 
-  /** Posts an admitted message once, including a message held by data-root capture. */
-  private post(id: number, entry: Pending): void {
-    if (entry.posted) return;
+  /** Posts an admitted message once, after its scope ACK and any data-root capture hold. */
+  private post(entry: Pending): void {
+    if (entry.posted || !entry.ready) return;
     const members = entry.cohort?.frame.requests.map(
       (request) => this.pending.get(request.id)!
     ) ?? [entry];
+    if (members.some((member) => !member.ready)) return;
     for (const member of members) member.posted = true;
     try {
       const request = entry.request;

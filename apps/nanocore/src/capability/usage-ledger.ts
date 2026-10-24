@@ -255,11 +255,11 @@ export function normalizeCapabilityRequestId(requestId: string | null | undefine
  * @param input Gateway call context and database handle.
  * @returns Durable call summary.
  */
-export function startCapabilityCall(
+export function startCapabilityCallInDb(
   input: StartServerCapabilityCallInput
 ): StartedCapabilityCall<ServerGatewayCallContext>;
-export function startCapabilityCall(input: StartCapabilityCallInput): StartedCapabilityCall;
-export function startCapabilityCall(
+export function startCapabilityCallInDb(input: StartCapabilityCallInput): StartedCapabilityCall;
+export function startCapabilityCallInDb(
   input: StartCapabilityCallInput | StartServerCapabilityCallInput
 ): StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> {
   return input.workspaceDb.sqlite
@@ -459,7 +459,7 @@ function readCapabilityAdmissionAttribution(
  * @param input Usage rows, durable call summary and optional command audit lineage.
  * @returns Retained IDs, including existing equivalent measurements, in input order.
  */
-export function recordUsage(input: RecordUsageInput): string[] {
+export function recordUsageInDb(input: RecordUsageInput): string[] {
   const context = input.call.context;
   if (
     input.workspaceDb.scope === 'core'
@@ -555,7 +555,7 @@ export function recordUsage(input: RecordUsageInput): string[] {
     }
   } catch (error) {
     try {
-      finishCapabilityCall({
+      finishCapabilityCallInDb({
         auditLineage: input.auditLineage,
         workspaceDb: input.workspaceDb,
         callId: input.call.id,
@@ -612,7 +612,7 @@ function hasEquivalentUsageRecord(
  *
  * @param input Terminal status and optional trusted command lineage for audit.
  */
-export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
+export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void {
   const now = input.now ?? new Date();
   const completedAt = now.toISOString();
 
@@ -694,7 +694,7 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
 }
 
 /** Binds one running call to exactly one schema snapshot before its effect. */
-export function stampCapabilityCallSchemaSnapshot(
+export function stampCapabilityCallSchemaSnapshotInDb(
   input: StampCapabilityCallSchemaSnapshotInput
 ): void {
   const call = findCapabilityCallById(input.workspaceDb, input.callId);
@@ -727,7 +727,7 @@ export function recoverRunningCapabilityCalls(input: RecoverRunningCapabilityCal
     .all('running') as CapabilityCallRow[];
 
   for (const call of calls) {
-    finishCapabilityCall({
+    finishCapabilityCallInDb({
       callId: call.call_id,
       errorCode: 'capability_call_recovered_after_restart',
       now,
@@ -1346,8 +1346,9 @@ export interface GatewayCallLedgerBinding {
 }
 
 /** Appends or settles one entry atomically; the open logical call remains the sole owner. */
-export function writeGatewayRouteLineage(
-  input: GatewayCallLedgerBinding & {
+export function writeGatewayRouteLineageInDb(
+  input: Omit<GatewayCallLedgerBinding, 'call'> & {
+    readonly call: Pick<StartedCapabilityCall, 'id'>;
     readonly logicalModelId: string;
     readonly entry: GatewayRouteLineageEntry;
     readonly entryIndex?: number;
@@ -1391,4 +1392,44 @@ export function hasCapabilityCallRequestId(
     .get(workspaceId, requestId) as { schema_version: number } | undefined;
   if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return row !== undefined;
+}
+
+/** Dormant preparation keeps public calls synchronous through their unchanged deciding bodies. */
+export {
+  finishCapabilityCallInDb as finishCapabilityCall,
+  recordUsageInDb as recordUsage,
+  stampCapabilityCallSchemaSnapshotInDb as stampCapabilityCallSchemaSnapshot,
+  startCapabilityCallInDb as startCapabilityCall,
+  writeGatewayRouteLineageInDb as writeGatewayRouteLineage,
+};
+
+/** Updates the original worker cache fields on the same retained Call. */
+export function writeCapabilityCallCacheInDb(input: {
+  readonly workspaceDb: WorkspaceDb;
+  readonly callId: string;
+  readonly runtimeCacheLineageRef: string | null;
+  readonly summary: string;
+}): void {
+  const retainedCall = input.workspaceDb.sqlite
+    .prepare('SELECT schema_version FROM capability_calls WHERE call_id = ?')
+    .get(input.callId) as { schema_version: number } | undefined;
+  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
+  input.workspaceDb.sqlite
+    .prepare(
+      'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
+    )
+    .run(input.runtimeCacheLineageRef, input.summary, input.callId);
+}
+
+/** Preserves the original running-only Item clear before the Call terminal mutation. */
+export function clearCapabilityCallItemInDb(workspaceDb: WorkspaceDb, callId: string): void {
+  const retainedCall = workspaceDb.sqlite
+    .prepare("SELECT schema_version FROM capability_calls WHERE call_id = ? AND status = 'running'")
+    .get(callId) as { schema_version: number } | undefined;
+  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
+  workspaceDb.sqlite
+    .prepare(`UPDATE capability_calls
+             SET item_id = NULL
+             WHERE call_id = ? AND status = 'running'`)
+    .run(callId);
 }

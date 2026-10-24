@@ -6,8 +6,8 @@ import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { WorkerControlGatewayError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 const TRACKING_SNAPSHOT_RETENTION = 8;
 
@@ -79,7 +79,7 @@ export interface ExportableMcpToolSchemaSnapshot {
  *
  * @param input Snapshot persistence context.
  */
-export function recordMcpToolSchemaSnapshot(input: {
+export type RecordMcpToolSchemaSnapshotInput = {
   capabilityCallId?: string | undefined;
   environmentPackage: McpToolSchemaEnvironment;
   schemaSnapshotId: string;
@@ -91,222 +91,171 @@ export function recordMcpToolSchemaSnapshot(input: {
   workspaceId: string;
   /** Synchronous local binding only: before capture commit, or immediately on durable reuse. */
   onRecorded?: (schemaSnapshotId: string) => void;
-}): string {
-  const server = input.environmentPackage.supply.mcpServers.find(
-    (candidate) => candidate.id === input.serverId
+};
+
+/** Keeps Main capture synchronous and unchanged observations outside a write transaction until the whole writer switch. */
+export function recordMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotInput): string {
+  const prepared = prepareMcpToolSchemaSnapshot(input);
+  return prepared.reusedSnapshotId !== null
+    ? recordMcpToolSchemaSnapshotInDb(input, prepared)
+    : input.workspaceDb.sqlite
+        .transaction(() => recordMcpToolSchemaSnapshotInDb(input, prepared))
+        .immediate();
+}
+
+/** Applies the original complete capture/bind body on the caller's native savepoint or Main transaction. */
+export function recordMcpToolSchemaSnapshotInDb(
+  input: RecordMcpToolSchemaSnapshotInput,
+  prepared = prepareMcpToolSchemaSnapshot(input)
+): string {
+  const { server, toolsJson, contentDigest, previous, reusedSnapshotId } = prepared;
+  if (reusedSnapshotId !== null) {
+    input.onRecorded?.(reusedSnapshotId);
+    return reusedSnapshotId;
+  }
+
+  const previousAt = previous ? Date.parse(previous.captured_at) : Number.NaN;
+  const capturedAt = new Date(
+    Number.isFinite(previousAt) ? Math.max(Date.now(), previousAt + 1) : Date.now()
   );
-
-  if (!server) {
-    throw new WorkerControlGatewayError(
-      'mcp-server-unavailable',
-      `MCP server is not enabled for this worker session: ${input.serverId}`,
-      404
-    );
-  }
-
-  const tools = canonicalMcpToolSchemas(input.tools);
-  const toolsJson = JSON.stringify(tools);
-  const contentDigest = mcpToolSchemaContentDigest(tools);
-  const previous = input.workspaceDb.sqlite
+  const existing = input.workspaceDb.sqlite
     .prepare(
-      `SELECT schema_version AS schemaVersion, captured_at, snapshot_id, content_digest,
-                  server_version, tools_json, source_ref
-           FROM mcp_tool_schema_snapshots
-           WHERE workspace_id = ? AND catalog_entry_id = ? AND source = ?
-           ORDER BY captured_at DESC, snapshot_id DESC
-           LIMIT 1`
+      `SELECT schema_version AS schemaVersion, snapshot_id
+       FROM mcp_tool_schema_snapshots
+       WHERE workspace_id = ?
+         AND catalog_entry_id = ?
+         AND source = ?
+         AND content_digest = ?`
     )
-    .get(input.workspaceId, server.id, input.source) as
-    | {
-        schemaVersion: unknown;
-        captured_at: string;
-        snapshot_id: string;
-        content_digest: string;
-        server_version: string | null;
-        tools_json: string;
-        source_ref: string | null;
-      }
+    .get(input.workspaceId, server.id, input.source, contentDigest) as
+    | { schemaVersion: unknown; snapshot_id: string }
     | undefined;
-  if (previous) readRetainedV1(previous, () => undefined);
-  if (
-    previous &&
-    previous.content_digest === contentDigest &&
-    previous.server_version === (input.serverVersion ?? null) &&
-    previous.source_ref === null &&
-    JSON.stringify(canonicalMcpToolSchemas(readStoredMcpToolsV1(previous))) === toolsJson
-  ) {
-    // A different proposed ID must still pass the existing identity-conflict boundary.
-    const collision = input.workspaceDb.sqlite
-      .prepare(
-        'SELECT content_digest FROM mcp_tool_schema_snapshots WHERE snapshot_id = ? AND snapshot_id <> ?'
-      )
-      .get(input.schemaSnapshotId, previous.snapshot_id) as { content_digest: string } | undefined;
-    if (collision) {
-      const retained = readRetainedMcpToolSchemaSnapshot({
-        catalogEntryId: server.id,
-        schemaSnapshotId: input.schemaSnapshotId,
-        workspaceDb: input.workspaceDb,
-        workspaceId: input.workspaceId,
-      });
-      if (
-        !retained ||
-        collision.content_digest !== contentDigest ||
-        JSON.stringify(canonicalMcpToolSchemas(retained.tools)) !== toolsJson
-      )
-        throw new Error(`MCP schema snapshot identity conflicts: ${input.schemaSnapshotId}`);
-    }
-    input.onRecorded?.(previous.snapshot_id);
-    return previous.snapshot_id;
-  }
-
-  return input.workspaceDb.sqlite
-    .transaction(() => {
-      const previousAt = previous ? Date.parse(previous.captured_at) : Number.NaN;
-      const capturedAt = new Date(
-        Number.isFinite(previousAt) ? Math.max(Date.now(), previousAt + 1) : Date.now()
-      );
-      const existing = input.workspaceDb.sqlite
-        .prepare(
-          `SELECT schema_version AS schemaVersion, snapshot_id
-           FROM mcp_tool_schema_snapshots
-           WHERE workspace_id = ?
-             AND catalog_entry_id = ?
-             AND source = ?
-             AND content_digest = ?`
-        )
-        .get(input.workspaceId, server.id, input.source, contentDigest) as
-        | { schemaVersion: unknown; snapshot_id: string }
-        | undefined;
-      if (existing) readRetainedV1(existing, () => undefined);
-      const inserted = input.workspaceDb.sqlite
-        .prepare(
-          `INSERT OR IGNORE INTO mcp_tool_schema_snapshots (
-            schema_version,
-            snapshot_id,
-            workspace_id,
-            catalog_entry_id,
-            source_ref,
-            server_version,
-            content_digest,
-            tools_json,
-            source,
-            captured_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          writeRetainedV1({}).schemaVersion,
-          input.schemaSnapshotId,
-          input.workspaceId,
-          server.id,
-          null,
-          input.serverVersion ?? null,
-          contentDigest,
-          toolsJson,
-          input.source,
-          capturedAt.toISOString()
-        );
-      const collision =
-        inserted.changes === 0
-          ? (input.workspaceDb.sqlite
-              .prepare(
-                `SELECT schema_version AS schemaVersion, snapshot_id, workspace_id, catalog_entry_id, content_digest, tools_json, source
-                 FROM mcp_tool_schema_snapshots
-                 WHERE snapshot_id = ?`
-              )
-              .get(input.schemaSnapshotId) as
-              | {
-                  schemaVersion: unknown;
-                  catalog_entry_id: string;
-                  content_digest: string;
-                  snapshot_id: string;
-                  source: 'aep' | 'live';
-                  tools_json: string;
-                  workspace_id: string;
-                }
-              | undefined)
-          : undefined;
-      let collisionToolsMatch = false;
-      if (collision) {
-        readRetainedV1(collision, () => undefined);
-        try {
-          collisionToolsMatch =
-            JSON.stringify(
-              canonicalMcpToolSchemas(
-                z.array(StoredMcpToolV1Schema).parse(JSON.parse(collision.tools_json))
-              )
-            ) === toolsJson;
-        } catch {}
-      }
-      if (
-        collision &&
-        (collision.workspace_id !== input.workspaceId ||
-          collision.catalog_entry_id !== server.id ||
-          collision.content_digest !== contentDigest ||
-          !collisionToolsMatch)
-      ) {
-        throw new Error(`MCP schema snapshot identity conflicts: ${input.schemaSnapshotId}`);
-      }
-      const schemaSnapshotId =
-        existing?.snapshot_id ?? collision?.snapshot_id ?? input.schemaSnapshotId;
-      if (existing || collision) {
-        input.workspaceDb.sqlite
+  if (existing) readRetainedV1(existing, () => undefined);
+  const inserted = input.workspaceDb.sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO mcp_tool_schema_snapshots (
+        schema_version,
+        snapshot_id,
+        workspace_id,
+        catalog_entry_id,
+        source_ref,
+        server_version,
+        content_digest,
+        tools_json,
+        source,
+        captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      writeRetainedV1({}).schemaVersion,
+      input.schemaSnapshotId,
+      input.workspaceId,
+      server.id,
+      null,
+      input.serverVersion ?? null,
+      contentDigest,
+      toolsJson,
+      input.source,
+      capturedAt.toISOString()
+    );
+  const collision =
+    inserted.changes === 0
+      ? (input.workspaceDb.sqlite
           .prepare(
-            `UPDATE mcp_tool_schema_snapshots
-             SET captured_at = ?, server_version = ?, tools_json = ?, source = 'live', source_ref = NULL
+            `SELECT schema_version AS schemaVersion, snapshot_id, workspace_id, catalog_entry_id, content_digest, tools_json, source
+             FROM mcp_tool_schema_snapshots
              WHERE snapshot_id = ?`
           )
-          .run(capturedAt.toISOString(), input.serverVersion ?? null, toolsJson, schemaSnapshotId);
-      }
-      if (inserted.changes === 1 || collision?.source === 'aep') {
-        recordWorkspaceAuditEvent({
-          action: 'mcp.schema.capture',
-          actor: input.environmentPackage.scope.triggerActor,
-          agentId: input.environmentPackage.agent.agentId,
-          agentSessionId: input.environmentPackage.scope.agentSessionId,
-          capabilityCallId: input.capabilityCallId ?? null,
-          category: 'capability',
-          occurredAt: capturedAt,
-          outcome: 'succeeded',
-          resource: `mcp-schema:${schemaSnapshotId}`,
-          summary: `Captured MCP tool schema for ${server.id}.`,
-          workspaceDb: input.workspaceDb,
-          workspaceId: input.workspaceId,
-        });
-      }
+          .get(input.schemaSnapshotId) as
+          | {
+              schemaVersion: unknown;
+              catalog_entry_id: string;
+              content_digest: string;
+              snapshot_id: string;
+              source: 'aep' | 'live';
+              tools_json: string;
+              workspace_id: string;
+            }
+          | undefined)
+      : undefined;
+  let collisionToolsMatch = false;
+  if (collision) {
+    readRetainedV1(collision, () => undefined);
+    try {
+      collisionToolsMatch =
+        JSON.stringify(
+          canonicalMcpToolSchemas(
+            z.array(StoredMcpToolV1Schema).parse(JSON.parse(collision.tools_json))
+          )
+        ) === toolsJson;
+    } catch {}
+  }
+  if (
+    collision &&
+    (collision.workspace_id !== input.workspaceId ||
+      collision.catalog_entry_id !== server.id ||
+      collision.content_digest !== contentDigest ||
+      !collisionToolsMatch)
+  ) {
+    throw new Error(`MCP schema snapshot identity conflicts: ${input.schemaSnapshotId}`);
+  }
+  const schemaSnapshotId =
+    existing?.snapshot_id ?? collision?.snapshot_id ?? input.schemaSnapshotId;
+  if (existing || collision) {
+    input.workspaceDb.sqlite
+      .prepare(
+        `UPDATE mcp_tool_schema_snapshots
+         SET captured_at = ?, server_version = ?, tools_json = ?, source = 'live', source_ref = NULL
+         WHERE snapshot_id = ?`
+      )
+      .run(capturedAt.toISOString(), input.serverVersion ?? null, toolsJson, schemaSnapshotId);
+  }
+  if (inserted.changes === 1 || collision?.source === 'aep') {
+    recordWorkspaceAuditEvent({
+      action: 'mcp.schema.capture',
+      actor: input.environmentPackage.scope.triggerActor,
+      agentId: input.environmentPackage.agent.agentId,
+      agentSessionId: input.environmentPackage.scope.agentSessionId,
+      capabilityCallId: input.capabilityCallId ?? null,
+      category: 'capability',
+      occurredAt: capturedAt,
+      outcome: 'succeeded',
+      resource: `mcp-schema:${schemaSnapshotId}`,
+      summary: `Captured MCP tool schema for ${server.id}.`,
+      workspaceDb: input.workspaceDb,
+      workspaceId: input.workspaceId,
+    });
+  }
 
-      if (server.schemaPolicy === 'tracking') {
-        const retainedCalls = input.workspaceDb.sqlite
-          .prepare(
-            'SELECT schema_version FROM capability_calls WHERE schema_snapshot_id IS NOT NULL'
-          )
-          .all() as { schema_version: number }[];
-        for (const call of retainedCalls) {
-          readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
-        }
-        input.workspaceDb.sqlite
-          .prepare(
-            `DELETE FROM mcp_tool_schema_snapshots
-         WHERE snapshot_id IN (
-           SELECT snapshot_id
-           FROM mcp_tool_schema_snapshots
-           WHERE workspace_id = ?
-             AND catalog_entry_id = ?
-             AND source = 'live'
-             AND snapshot_id NOT IN (
-               SELECT schema_snapshot_id
-               FROM capability_calls
-               WHERE schema_snapshot_id IS NOT NULL
-             )
-           ORDER BY captured_at DESC, snapshot_id DESC
-           LIMIT -1 OFFSET ?
-         )`
-          )
-          .run(input.workspaceId, server.id, TRACKING_SNAPSHOT_RETENTION);
-      }
-      input.onRecorded?.(schemaSnapshotId);
-      return schemaSnapshotId;
-    })
-    .immediate();
+  if (server.schemaPolicy === 'tracking') {
+    const retainedCalls = input.workspaceDb.sqlite
+      .prepare('SELECT schema_version FROM capability_calls WHERE schema_snapshot_id IS NOT NULL')
+      .all() as { schema_version: number }[];
+    for (const call of retainedCalls) {
+      readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
+    }
+    input.workspaceDb.sqlite
+      .prepare(
+        `DELETE FROM mcp_tool_schema_snapshots
+     WHERE snapshot_id IN (
+       SELECT snapshot_id
+       FROM mcp_tool_schema_snapshots
+       WHERE workspace_id = ?
+         AND catalog_entry_id = ?
+         AND source = 'live'
+         AND snapshot_id NOT IN (
+           SELECT schema_snapshot_id
+           FROM capability_calls
+           WHERE schema_snapshot_id IS NOT NULL
+         )
+       ORDER BY captured_at DESC, snapshot_id DESC
+       LIMIT -1 OFFSET ?
+     )`
+      )
+      .run(input.workspaceId, server.id, TRACKING_SNAPSHOT_RETENTION);
+  }
+  input.onRecorded?.(schemaSnapshotId);
+  return schemaSnapshotId;
 }
 
 /**
@@ -566,4 +515,75 @@ export function readTurnMcpToolSchemaSnapshot(input: {
     );
   }
   return snapshot;
+}
+
+/** The original latest-observation/collision decision, shared by capture and native no-write prefix. */
+export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotInput) {
+  const server = input.environmentPackage.supply.mcpServers.find(
+    (candidate) => candidate.id === input.serverId
+  );
+
+  if (!server) {
+    throw new WorkerControlGatewayError(
+      'mcp-server-unavailable',
+      `MCP server is not enabled for this worker session: ${input.serverId}`,
+      404
+    );
+  }
+
+  const tools = canonicalMcpToolSchemas(input.tools);
+  const toolsJson = JSON.stringify(tools);
+  const contentDigest = mcpToolSchemaContentDigest(tools);
+  const previous = input.workspaceDb.sqlite
+    .prepare(
+      `SELECT schema_version AS schemaVersion, captured_at, snapshot_id, content_digest,
+                  server_version, tools_json, source_ref
+           FROM mcp_tool_schema_snapshots
+           WHERE workspace_id = ? AND catalog_entry_id = ? AND source = ?
+           ORDER BY captured_at DESC, snapshot_id DESC
+           LIMIT 1`
+    )
+    .get(input.workspaceId, server.id, input.source) as
+    | {
+        schemaVersion: unknown;
+        captured_at: string;
+        snapshot_id: string;
+        content_digest: string;
+        server_version: string | null;
+        tools_json: string;
+        source_ref: string | null;
+      }
+    | undefined;
+  if (previous) readRetainedV1(previous, () => undefined);
+  if (
+    previous &&
+    previous.content_digest === contentDigest &&
+    previous.server_version === (input.serverVersion ?? null) &&
+    previous.source_ref === null &&
+    JSON.stringify(canonicalMcpToolSchemas(readStoredMcpToolsV1(previous))) === toolsJson
+  ) {
+    // A different proposed ID must still pass the existing identity-conflict boundary.
+    const collision = input.workspaceDb.sqlite
+      .prepare(
+        'SELECT content_digest FROM mcp_tool_schema_snapshots WHERE snapshot_id = ? AND snapshot_id <> ?'
+      )
+      .get(input.schemaSnapshotId, previous.snapshot_id) as { content_digest: string } | undefined;
+    if (collision) {
+      const retained = readRetainedMcpToolSchemaSnapshot({
+        catalogEntryId: server.id,
+        schemaSnapshotId: input.schemaSnapshotId,
+        workspaceDb: input.workspaceDb,
+        workspaceId: input.workspaceId,
+      });
+      if (
+        !retained ||
+        collision.content_digest !== contentDigest ||
+        JSON.stringify(canonicalMcpToolSchemas(retained.tools)) !== toolsJson
+      )
+        throw new Error(`MCP schema snapshot identity conflicts: ${input.schemaSnapshotId}`);
+    }
+    return { server, toolsJson, contentDigest, previous, reusedSnapshotId: previous.snapshot_id };
+  }
+
+  return { server, toolsJson, contentDigest, previous, reusedSnapshotId: null };
 }

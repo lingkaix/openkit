@@ -22,7 +22,7 @@ import {
 } from '../artifact-reviews.js';
 import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   applyControlExecutionJournal,
   decodeExecutionJournalIntent,
@@ -30,6 +30,7 @@ import {
   readExecutionJournalRoot,
 } from '../runtime/execution-journal.js';
 import {
+  advanceGoalRevision,
   applyControlGoalCommand,
   GoalCommandError,
   type PreparedControlGoalCommand,
@@ -65,6 +66,7 @@ import {
   applyControlCapabilityCommand,
   type ControlCapabilityCommandInput,
   prepareControlCapabilityCommand,
+  tryControlCapabilityReuse,
 } from './control-store-capability.js';
 import {
   applyControlPendingTransition,
@@ -261,11 +263,19 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
   ) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
-  } else if (
-    operation === 'capability' &&
-    (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
-  ) {
-    domain = { operation, code: error.code, message: error.message, status: error.status };
+  } else if (operation === 'capability') {
+    const projected = projectControlCapabilityFailure(error);
+    if (projected) domain = { operation, ...projected };
+    else if (error instanceof PendingRequestCommandError)
+      domain = {
+        operation,
+        kind: 'pending',
+        code: error.code,
+        message: error.message,
+        status: error.status,
+      };
+    else if (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
+      domain = { operation, code: error.code, message: error.message, status: error.status };
   } else if (
     operation === 'material' &&
     (error instanceof WorkspaceMaterialError ||
@@ -306,7 +316,15 @@ function failureCode(error: unknown): ControlWorkerFailureCode {
   )
     return 'precondition';
   if (error instanceof ControlStoreBusyError) return 'busy';
-  const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
+  // The usage owner preserves its original SQLite cause; corruption still poisons this handle.
+  const failure =
+    error instanceof OperationError &&
+    error.code === 'usage_record_failed' &&
+    error.cause instanceof Database.SqliteError
+      ? error.cause
+      : error;
+  const code =
+    failure !== null && typeof failure === 'object' && 'code' in failure ? failure.code : null;
   if (code === 'migration_missing' || code === 'migration_failed') return code;
   if (code === 'SQLITE_NOTADB' || (typeof code === 'string' && code.startsWith('SQLITE_CORRUPT')))
     return 'integrity';
@@ -463,6 +481,30 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'capability': {
       const input = request.input;
+      const addCall = (callId: string) => {
+        const call = owner.sqlite
+          .prepare('SELECT turn_id, agent_session_id FROM capability_calls WHERE call_id=?')
+          .get(callId) as
+          | {
+              turn_id: string | null;
+              agent_session_id: string | null;
+            }
+          | undefined;
+        if (call?.turn_id) lanes.add(call.turn_id);
+        if (call?.agent_session_id) lanes.add(`session:${call.agent_session_id}`);
+      };
+      if (input.kind === 'finish' || input.kind === 'attribution') {
+        addCall(input.callId);
+        break;
+      }
+      if (input.kind === 'participant-audit') {
+        if (input.event.capabilityCallId) addCall(input.event.capabilityCallId);
+        if (input.event.turnId) lanes.add(input.event.turnId);
+        if (input.event.agentSessionId) lanes.add(`session:${input.event.agentSessionId}`);
+        const process = input.event.policyInvocation?.subject.process;
+        if (process) lanes.add(process.turnId);
+        break;
+      }
       const context =
         input.kind === 'mcp-schema'
           ? input.environmentPackage.scope
@@ -848,10 +890,39 @@ function refusePoisonedPending(owner: OwnedDatabase): void {
 /**
  * Commits at most 32 transitions, with a savepoint per transition.
  *
- * Entry failures roll back before siblings proceed. All replies wait for outer COMMIT, including error replies, so an enclosing failure cannot become success. A commit failure poisons this handle: original receipt inspection, not automatic retry or an invented recovery path, decides uncertain results.
+ * Entry failures roll back before siblings proceed. Mutation replies wait for outer COMMIT, including error replies, so an enclosing failure cannot become success. An unchanged leading MCP observation can reply from already durable facts without BEGIN. A commit failure poisons this handle: original receipt inspection, not automatic retry or an invented recovery path, decides uncertain results.
  */
 function flush(owner: OwnedDatabase): void {
   unschedule(owner);
+  // Reuse only an actual leading prefix after earlier mutation ACKs; never read ahead into a selected batch.
+  while (owner.scopeDb?.scope === 'workspace') {
+    const first = owner.pending[0];
+    if (
+      !first?.ready ||
+      first.refusal ||
+      first.predecessorFailed ||
+      first.operation !== 'capability' ||
+      first.preparedCapability?.kind !== 'mcp-schema'
+    )
+      break;
+    let outcome: ControlWorkerReply;
+    try {
+      const result = tryControlCapabilityReuse(owner.scopeDb, first.preparedCapability);
+      if (result === undefined) break;
+      outcome = {
+        version: CONTROL_WORKER_VERSION,
+        id: first.id,
+        status: 'ok',
+        operation: 'capability',
+        result,
+      };
+      if (!isControlWorkerReply(outcome)) throw new Error('Invalid database writer result.');
+    } catch {
+      // The ordinary savepoint owns refusals and poisoning; no fast-path failure becomes success.
+      break;
+    }
+    complete(owner, first, outcome);
+  }
   // Archive starts a batch so its immutable canonical proof includes every earlier committed writer.
   const archiveIndex = owner.pending.findIndex((request) => archivedThreads(request).length > 0);
   if (archiveIndex === 0 && owner.scopeDb?.scope === 'workspace') {
@@ -1132,9 +1203,12 @@ function flush(owner: OwnedDatabase): void {
               result,
             };
           } else if (request.operation === 'capability') {
-            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedCapability)
+            const db = owner.scopeDb;
+            if (db?.scope !== 'workspace' || !request.preparedCapability)
               throw new WorkerRawOutputAuthorityError();
-            const result = applyControlCapabilityCommand(owner.scopeDb, request.preparedCapability);
+            const result = applyControlCapabilityCommand(db, request.preparedCapability, (goalId) =>
+              advanceGoalRevision(db, goalId)
+            );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -1243,6 +1317,14 @@ function schedule(owner: OwnedDatabase): void {
   if (!ready.length) return;
   if (
     ready.length >= CONTROL_WORKER_LIMITS.batchTransitions ||
+    owner.pending.some(
+      (request) =>
+        request.operation === 'capability' &&
+        request.ready &&
+        (request.immediate ||
+          request.input.kind === 'raw-settle' ||
+          request.input.kind === 'raw-invalidate')
+    ) ||
     owner.pending.some(
       (request) =>
         request.cohort?.immediate &&

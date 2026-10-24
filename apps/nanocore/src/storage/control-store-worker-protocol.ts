@@ -48,7 +48,7 @@ import {
   ControlCapabilityCommandResultSchema,
   type ControlCapabilityWireInput,
   ControlCapabilityWireInputSchema,
-  controlCapabilityTextSpan,
+  controlCapabilityText,
 } from './control-store-capability.js';
 import {
   type ControlPendingTransition,
@@ -158,6 +158,7 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'capability';
           readonly input: ControlCapabilityWireInput;
+          readonly immediate?: boolean;
           readonly content?: ArrayBuffer;
         }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
@@ -285,6 +286,8 @@ export interface ControlWorkerDomainRefusal {
   readonly code: string;
   readonly message: string;
   readonly status: number;
+  /** Trusted original owner class for this capability refusal. */
+  readonly kind?: 'operation' | 'mcp' | 'turn' | 'pending';
 }
 
 /**
@@ -416,7 +419,10 @@ function isSqlResult(value: unknown): boolean {
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
   return (
     isRecord(value) &&
-    exactFields(value, ['operation', 'code', 'message', 'status']) &&
+    exactFields(value, ['operation', 'code', 'message', 'status'], ['kind']) &&
+    (value.kind === undefined ||
+      (value.operation === 'capability' &&
+        ['operation', 'mcp', 'turn', 'pending'].includes(String(value.kind)))) &&
     // This reserved owner refusal carries no native exception text or SQL details.
     (value.code !== 'unsupported_retained_format' ||
       ((value.operation === 'goal' || value.operation === 'capability') &&
@@ -733,8 +739,13 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'capability') {
     try {
       const parsed = ControlCapabilityWireInputSchema.safeParse(value.input);
-      if (!parsed.success || !exactFields(value, [...scoped, 'input'], ['content'])) return false;
-      const span = controlCapabilityTextSpan(parsed.data);
+      if (
+        !parsed.success ||
+        !exactFields(value, [...scoped, 'input'], ['content', 'immediate']) ||
+        (value.immediate !== undefined && typeof value.immediate !== 'boolean')
+      )
+        return false;
+      const span = controlCapabilityText(parsed.data);
       return (
         (span
           ? controlMaterialArrayBufferByteLength(value.content) === span.byteLength

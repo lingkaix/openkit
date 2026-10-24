@@ -11,12 +11,70 @@ import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 
+const coalescing = vi.hoisted(() => ({ gate: undefined as SharedArrayBuffer | undefined }));
+
+// Keep the native entry, SQL and transport. Only the existing 5 ms scheduling callback is held.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (coalescing.gate === undefined) {
+          super(filename, options);
+          return;
+        }
+        const prelude = `
+          const { workerData } = require('node:worker_threads');
+          const gate = new Int32Array(workerData.coalescingGate);
+          const schedule = globalThis.setTimeout;
+          const cancel = globalThis.clearTimeout;
+          const held = new Map();
+          globalThis.setTimeout = function(callback, delay, ...args) {
+            if (delay !== 5 || Atomics.load(gate, 0) !== 1)
+              return schedule(callback, delay, ...args);
+            const timer = schedule(() => {}, 2147483647);
+            held.set(timer, () => callback(...args));
+            Atomics.add(gate, 1, 1);
+            return timer;
+          };
+          globalThis.clearTimeout = function(timer) {
+            held.delete(timer);
+            return cancel(timer);
+          };
+          // Release is cleanup only. Native setImmediate work remains available while timers are held.
+          setInterval(() => {
+            if (Atomics.load(gate, 0) === 1) return;
+            const callbacks = [...held];
+            held.clear();
+            for (const [timer, callback] of callbacks) {
+              cancel(timer);
+              Atomics.add(gate, 2, 1);
+              callback();
+            }
+          }, 1).unref();
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: { ...options?.workerData, coalescingGate: coalescing.gate },
+        });
+      }
+    },
+  };
+});
+
 const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
 let client: ReturnType<typeof getControlStoreWorkerClient> | undefined;
 
 afterEach(async () => {
+  if (coalescing.gate !== undefined) Atomics.store(new Int32Array(coalescing.gate), 0, 0);
   await client?.shutdown();
+  coalescing.gate = undefined;
   client = undefined;
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -100,6 +158,64 @@ function proof(db: WorkspaceDb, callId: string) {
 }
 
 describe('dormant native CapabilityCall raw observation boundary', () => {
+  it('acknowledges raw settle with its retained prefix while the writer coalescing timer is held', async () => {
+    coalescing.gate = new SharedArrayBuffer(12);
+    const gate = new Int32Array(coalescing.gate);
+    const f = fixture();
+    const inference = await f.inference();
+    const writer = await f.open();
+    await writer.capability(f.workspaceId, {
+      kind: 'raw-observe',
+      ...inference.scope,
+      callId: inference.callId,
+      positions: [position(inference, 'text', 0, 7)],
+    });
+
+    Atomics.store(gate, 0, 1);
+    let outcome: PromiseSettledResult<unknown> | undefined;
+    const settling = writer
+      .capability(f.workspaceId, {
+        kind: 'raw-settle',
+        ...inference.scope,
+        callId: inference.callId,
+        complete: true,
+      })
+      .then(
+        (value) => {
+          outcome = { status: 'fulfilled', value };
+        },
+        (reason) => {
+          outcome = { status: 'rejected', reason };
+        }
+      );
+    try {
+      // DX Write And Space Budget: barriers never deliberately wait for the 5 ms writer timer.
+      // The normal waitFor guard bounds the check; no elapsed-time threshold decides acceptance.
+      await vi.waitFor(() => {
+        expect(
+          outcome,
+          `Raw settle must ACK before timer release; native held timers: ${Atomics.load(gate, 1)}.`
+        ).toEqual({ status: 'fulfilled', value: null });
+      });
+      expect(Atomics.load(gate, 2)).toBe(0);
+      expect(readWorkerRawOutput(f.db, inference.scope)).toEqual({
+        rawOutputBytes: 7,
+        exhausted: false,
+      });
+      const retained = listWorkspaceCapabilityCalls(f.db, f.workspaceId).find(
+        (call) => call.id === inference.callId
+      );
+      expect(retained?.extensions?.['openkit.worker/rawOutput']).toMatchObject({
+        byteLength: 7,
+        coverage: 'complete',
+      });
+      expect(retained?.status).toBe('running');
+    } finally {
+      Atomics.store(gate, 0, 0);
+      await settling;
+    }
+  });
+
   it('returns the final Turn aggregate and the total new charge for all positions in one command', async () => {
     const f = fixture();
     const inference = await f.inference();

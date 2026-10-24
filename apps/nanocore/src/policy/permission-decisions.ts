@@ -4,6 +4,7 @@ import {
   type ActorRef,
   type AuditEvent,
   allocateEntityId,
+  deriveEntityId,
   isEntityId,
   type PolicyDecisionV1,
   PolicyDecisionV1Schema,
@@ -18,6 +19,14 @@ import { z } from 'zod';
 
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
+import {
+  executionCallIdForRequest,
+  PendingRequestCommandError,
+  type PendingRequestRecord,
+  readPendingRequest,
+} from '../runtime/pending-requests.js';
+import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
+import type { ControlCapabilityCommandInput } from '../storage/control-store-capability.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
 import {
@@ -412,7 +421,7 @@ export interface RecordBootPolicySelfCheckDecisionsInput {
  * @param input Permission decision record input.
  */
 export function recordPermissionDecision(input: RecordPermissionDecisionInput): void {
-  recordProductPermissionDecision({
+  recordProductPermissionDecisionInDb({
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     ...(input.workspaceDb ? { workspaceDb: input.workspaceDb } : {}),
     decisionId: input.decisionId,
@@ -441,12 +450,43 @@ export function recordPermissionDecision(input: RecordPermissionDecisionInput): 
   });
 }
 
+/** Public decisions retain their original synchronous owner until the complete family flip. */
+export { recordProductPermissionDecisionInDb as recordProductPermissionDecision };
+
+/** Normalizes descriptive JSON once; the existing native envelope validates the prepared decision. */
+export function prepareControlPermissionDecision(
+  input: RecordProductPermissionDecisionInput
+): Extract<ControlCapabilityCommandInput, { kind: 'permission' }>['decision'] {
+  const {
+    workspaceDb: _db,
+    coreDb: _core,
+    workspaceId: _workspace,
+    ownerScope: _scope,
+    now,
+    uses,
+    subjectSummary,
+    resourceSummary,
+    contextSummary,
+    ...decision
+  } = input;
+  // Original SQL JSON semantics omit undefined descriptive fields; authority facts are not JSON-cloned.
+  const summaries = JSON.parse(JSON.stringify({ subjectSummary, resourceSummary, contextSummary }));
+  return {
+    ...decision,
+    ...summaries,
+    ...(uses === undefined ? {} : { uses: [...uses] }),
+    now: (now ?? new Date()).toISOString(),
+  };
+}
+
 /**
  * Records one immutable product-level permission decision row.
  *
  * @param input Product permission decision record input.
  */
-export function recordProductPermissionDecision(input: RecordProductPermissionDecisionInput): void {
+export function recordProductPermissionDecisionInDb(
+  input: RecordProductPermissionDecisionInput
+): void {
   if (input.result === 'require_approval' && !input.requiredApprovalKind) {
     throw new Error('require_approval permission decisions require requiredApprovalKind.');
   }
@@ -963,7 +1003,7 @@ function mapServerPermissionDecisionRow(
  * @param input Gateway policy decision input.
  */
 export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionInput): void {
-  recordProductPermissionDecision({
+  recordProductPermissionDecisionInDb({
     coreDb: input.coreDb,
     decisionId: allocateEntityId('pd'),
     ownerScope: 'server',
@@ -989,7 +1029,7 @@ export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionIn
  * @param input Worker-turn launch decision input.
  */
 export function recordWorkerTurnLaunchDecision(input: RecordWorkerTurnLaunchDecisionInput): void {
-  recordProductPermissionDecision({
+  recordProductPermissionDecisionInDb({
     workspaceDb: input.workspaceDb,
     decisionId: allocateEntityId('pd'),
     ownerScope: 'workspace',
@@ -1172,4 +1212,201 @@ export function recordBootPolicySelfCheckDecisions(
  */
 function mapPolicyEffect(effect: PolicyDecision['effect']): PermissionDecisionResult {
   return effect;
+}
+
+/** Original captured source authority on the actual Workspace connection. */
+export function readCapturedMediationSource(
+  record: PendingRequestRecord,
+  sqlite: WorkspaceDb['sqlite']
+): ReturnType<typeof readPermissionDecisionRowV1> | null {
+  if (record.policyDecisionId === null) return null;
+  const row = sqlite
+    .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
+    .get(record.policyDecisionId);
+  if (!row)
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'Captured Policy source is missing.',
+      409
+    );
+  const source = readPermissionDecisionRowV1(row);
+  if (!source.mediation) return null;
+  const target = source.resourceSummary as Record<string, unknown> | null;
+  const context = source.contextSummary as Record<string, unknown> | null;
+  const process = source.mediation.subject.process;
+  if (
+    source.ownerScope !== 'workspace' ||
+    source.workspaceId !== record.workspaceId ||
+    source.action !== 'tool.use' ||
+    !['require_escalation', 'require_approval'].includes(source.result) ||
+    source.mediation.role !== 'final' ||
+    source.mediation.operation !== 'mcp.call-tool' ||
+    source.mediation.stage !== 'decide' ||
+    source.mediation.kernel?.effect !== 'allow' ||
+    target?.serverId !== record.serverId ||
+    target?.toolName !== record.toolName ||
+    context?.threadId !== record.threadId ||
+    context?.turnId !== record.raisingTurnId ||
+    process?.workspaceId !== record.workspaceId ||
+    process.threadId !== record.threadId ||
+    process.turnId !== record.raisingTurnId ||
+    source.mediation.subject.responsibleHumanId !== record.responsibleUserId
+  )
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'Captured Policy source does not match the request.',
+      409
+    );
+  return source;
+}
+
+/** Original reviewed-decision and linked-Audit comparisons; Main checks current() before this pure body. */
+export function readCapturedMediationAllowInDb(
+  record: PendingRequestRecord,
+  sqlite: WorkspaceDb['sqlite'],
+  source: ReturnType<typeof readPermissionDecisionRowV1>,
+  reviewed: { readonly decisionId: string } | undefined
+) {
+  if (!reviewed) return null;
+  const row = sqlite
+    .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
+    .get(reviewed.decisionId);
+  if (!row) return null;
+  const decision = readPermissionDecisionRowV1(row);
+  const mediation = decision.mediation;
+  const original = source.mediation!;
+  const target = decision.resourceSummary as Record<string, unknown> | null;
+  const context = decision.contextSummary as Record<string, unknown> | null;
+  const capabilityCallId = executionCallIdForRequest(record.requestId);
+  if (
+    decision.ownerScope !== 'workspace' ||
+    decision.workspaceId !== record.workspaceId ||
+    decision.action !== 'tool.use' ||
+    decision.result !== 'allow' ||
+    decision.approvalId !== null ||
+    mediation?.role !== 'final' ||
+    mediation.kernel?.effect !== 'allow' ||
+    mediation.operation !== original.operation ||
+    mediation.stage !== original.stage ||
+    decision.policySnapshotId !== source.policySnapshotId ||
+    mediation.authorizationRevision !== original.authorizationRevision ||
+    mediation.proposalDigest !== original.proposalDigest ||
+    !isDeepStrictEqual(mediation.subject, original.subject) ||
+    target?.serverId !== record.serverId ||
+    target?.toolName !== record.toolName ||
+    context?.humanApprovalRequestId !== record.requestId ||
+    context?.approvalSourceDecisionId !== record.policyDecisionId ||
+    context?.capabilityCallId !== capabilityCallId ||
+    context?.threadId !== record.threadId ||
+    context?.turnId !== record.raisingTurnId ||
+    !decision.auditEventId
+  )
+    return null;
+  const auditRow = sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+    .get(decision.auditEventId);
+  if (!auditRow) return null;
+  const audit = readAuditEventRowV1(auditRow);
+  if (
+    audit.actor?.kind !== 'user' ||
+    context.humanApprovalDeciderId !== audit.actor.id ||
+    audit.permissionDecisionId !== decision.decisionId ||
+    audit.workspaceId !== record.workspaceId ||
+    audit.capabilityCallId !== capabilityCallId ||
+    audit.threadId !== record.threadId ||
+    audit.turnId !== record.raisingTurnId ||
+    audit.action !== 'permission.decision' ||
+    audit.resource !== 'permission:tool.use' ||
+    audit.outcome !== 'succeeded'
+  )
+    return null;
+  return { decision, actor: audit.actor };
+}
+
+/** Rebuilds the original captured outcome from the actual retained request and reviewed evaluation. */
+export function prepareCapturedPermissionDecision(
+  record: PendingRequestRecord,
+  workspaceDb: WorkspaceDb,
+  reviewed: ReturnType<typeof readCapturedMediationAllowInDb>,
+  failure: string | undefined,
+  now: Date
+) {
+  const callId = executionCallIdForRequest(record.requestId);
+  return prepareControlPermissionDecision({
+    workspaceDb,
+    now,
+    workspaceId: record.workspaceId,
+    ownerScope: 'workspace',
+    decisionId: deriveEntityId('pd', ['pending_execution', record.requestId]),
+    action: 'tool.use',
+    approvalId: record.requestId,
+    auditActor: reviewed?.actor ?? { kind: 'user', id: record.responsibleUserId },
+    subjectSummary: reviewed?.decision.subjectSummary ?? {
+      responsibleUserId: record.responsibleUserId,
+      agentId: record.agentId,
+    },
+    resourceSummary: { serverId: record.serverId, toolName: record.toolName },
+    contextSummary: {
+      capabilityCallId: callId,
+      threadId: record.threadId,
+      turnId: record.raisingTurnId,
+      packageSnapshotId: record.packageDigest,
+      ...(failure ? { upstreamContacted: false, refusalReason: failure } : {}),
+      ...(reviewed ? { originEvaluationDecisionId: reviewed.decision.decisionId } : {}),
+    },
+    ...(reviewed ? { mediation: { ...reviewed.decision.mediation!, consumedStatements: [] } } : {}),
+    enforcementPoint: reviewed?.decision.enforcementPoint ?? 'approval.respond',
+    policyEngineVersion:
+      reviewed?.decision.policyEngineVersion ?? 'nanocore-workspace-role-policy:v1',
+    policySnapshotId: reviewed?.decision.policySnapshotId ?? 'policy_snapshot_runtime',
+    reasonCode: failure ? 'mcp_approval_submission_refused' : 'mcp_approval_grant_reauthorized',
+    result: failure ? 'deny' : 'allow',
+  });
+}
+
+/** Reads the real claimed request and rebuilds its original admission facts before Call insertion. */
+export function prepareCapturedCapabilityAdmission(
+  workspaceDb: WorkspaceDb,
+  input: NonNullable<Extract<ControlCapabilityCommandInput, { kind: 'admit' }>['capturedSource']>,
+  commandRequestId: string | null | undefined,
+  now: Date
+) {
+  const record = readPendingRequest(workspaceDb.sqlite, input.requestId);
+  if (
+    !record ||
+    record.workspaceId !== workspaceDb.workspaceId ||
+    record.policyDecisionId !== input.sourceDecisionId
+  )
+    throw new WorkerRawOutputAuthorityError();
+  const source = readCapturedMediationSource(record, workspaceDb.sqlite);
+  const reviewed =
+    source && !input.failure && input.reviewedDecisionId
+      ? readCapturedMediationAllowInDb(record, workspaceDb.sqlite, source, {
+          decisionId: input.reviewedDecisionId,
+        })
+      : null;
+  const refusal = input.failure ?? (source && !reviewed ? 'policy-changed' : undefined);
+  return {
+    callId: executionCallIdForRequest(record.requestId),
+    context: {
+      threadId: record.threadId,
+      turnId: record.raisingTurnId,
+      agentId: record.agentId,
+      agentSessionId: record.agentSessionId,
+      packageSnapshotId: record.packageDigest,
+      schemaSnapshotId: record.schemaSnapshotId,
+      authorityActor: { kind: 'user' as const, id: record.responsibleUserId },
+      requestId: commandRequestId,
+      family: 'mcp' as const,
+      operation: 'mcp.call-tool',
+      capabilityId: 'mcp.call-tool',
+      itemId: null,
+      providerRef: record.serverId,
+      serviceRef: `mcp-tool:${record.toolName}`,
+      redactionClass: 'metadata-only',
+      summary: 'Captured pending call execution.',
+    },
+    decision: prepareCapturedPermissionDecision(record, workspaceDb, reviewed, refusal, now),
+    refusal,
+  };
 }

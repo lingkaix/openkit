@@ -1,3 +1,7 @@
+import { WorkerControlGatewayError } from '../operation-error.js';
+
+export { WorkerControlGatewayError } from '../operation-error.js';
+
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
@@ -486,30 +490,6 @@ interface WorkerControlSessionState {
   highestEventSequence: number | null;
   /** Highest worker sequence accepted per sequenced control operation. */
   readonly highestOperationSequenceByOperation: Map<string, number>;
-}
-
-/**
- * Error raised by worker control request validation.
- */
-export class WorkerControlGatewayError extends Error {
-  /** Stable machine-readable error code. */
-  public readonly code: string;
-  /** HTTP status that routes should use when projecting this error. */
-  public readonly status: number;
-
-  /**
-   * Creates a worker control gateway error.
-   *
-   * @param code Stable error code.
-   * @param message Human-readable message.
-   * @param status HTTP status.
-   */
-  public constructor(code: string, message: string, status: number) {
-    super(message);
-    this.name = 'WorkerControlGatewayError';
-    this.code = code;
-    this.status = status;
-  }
 }
 
 /**

@@ -237,18 +237,7 @@ export function observeWorkerRawOutput(
     readonly bytePosition: number;
   }
 ): { rawOutputBytes: number; exhausted: boolean; chargedBytes: number } {
-  if (
-    !input.attemptId ||
-    input.attemptId.length > 4096 ||
-    !Number.isSafeInteger(input.partId) ||
-    input.partId < 0 ||
-    !Number.isSafeInteger(input.fromBytePosition) ||
-    input.fromBytePosition < 0 ||
-    !Number.isSafeInteger(input.bytePosition) ||
-    input.bytePosition < input.fromBytePosition ||
-    !['text', 'tool-arguments', 'reasoning'].includes(input.field)
-  )
-    throw new WorkerRawOutputAuthorityError();
+  assertWorkerRawOutputPosition(input);
   const key = createHash('sha256')
     .update(JSON.stringify([input.attemptId, input.partId, input.field]))
     .digest('hex');
@@ -291,6 +280,23 @@ export type WorkerRawOutputPosition = Omit<
   Parameters<typeof observeWorkerRawOutput>[1],
   keyof WorkerRawOutputScope | 'callId'
 >;
+
+/** Applies the same closed source-position predicate to direct observations and coalesced watermarks. */
+function assertWorkerRawOutputPosition(position: WorkerRawOutputPosition): void {
+  if (
+    typeof position.attemptId !== 'string' ||
+    !position.attemptId ||
+    position.attemptId.length > 4096 ||
+    !Number.isSafeInteger(position.partId) ||
+    position.partId < 0 ||
+    !Number.isSafeInteger(position.fromBytePosition) ||
+    position.fromBytePosition < 0 ||
+    !Number.isSafeInteger(position.bytePosition) ||
+    position.bytePosition < position.fromBytePosition ||
+    !['text', 'tool-arguments', 'reasoning'].includes(position.field)
+  )
+    throw new WorkerRawOutputAuthorityError();
+}
 
 /** Shared provisional Turn total, initialized from acknowledged canonical proof by the Gateway. */
 export interface WorkerRawOutputTurnWatermark {
@@ -363,19 +369,7 @@ export function createWorkerRawOutputCoalescer(
     /** Runs synchronously before normalization; merge only after checking this exact source prefix. */
     observe(position: WorkerRawOutputPosition) {
       if (failure) throw failure.error;
-      if (
-        typeof position.attemptId !== 'string' ||
-        !position.attemptId ||
-        position.attemptId.length > 4096 ||
-        !Number.isSafeInteger(position.partId) ||
-        position.partId < 0 ||
-        !Number.isSafeInteger(position.fromBytePosition) ||
-        position.fromBytePosition < 0 ||
-        !Number.isSafeInteger(position.bytePosition) ||
-        position.bytePosition < position.fromBytePosition ||
-        !['text', 'tool-arguments', 'reasoning'].includes(position.field)
-      )
-        throw new WorkerRawOutputAuthorityError();
+      assertWorkerRawOutputPosition(position);
       const key = createHash('sha256')
         .update(JSON.stringify([position.attemptId, position.partId, position.field]))
         .digest('hex');

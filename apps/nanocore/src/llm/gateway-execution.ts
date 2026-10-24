@@ -1,3 +1,7 @@
+import { GatewayAttemptFailure } from '../operation-error.js';
+
+export { GatewayAttemptFailure } from '../operation-error.js';
+
 import type { ResolvedLogicalModel, ResolvedLogicalModelRoute } from './logical-models.js';
 import type { PiAiFailure, PiAiFailureKind } from './pi-ai-failure.js';
 
@@ -60,20 +64,6 @@ export function planLogicalModel(
               : 'backup';
     return { route, selected: reason === 'primary' || reason === 'backup', reason };
   });
-}
-
-/** One failure projection; the original exception stays private and never supplies classification. */
-export class GatewayAttemptFailure extends Error {
-  /** Boundary-produced or owner-assigned failure evidence. */
-  public readonly failure: PiAiFailure;
-  /** Local member checks may advance but are never retried as reached Provider attempts. */
-  public readonly beforeDispatch: boolean;
-  /** Creates a typed private failure without inventing upstream status. */
-  public constructor(failure: PiAiFailure, original?: unknown, beforeDispatch = false) {
-    super('Provider attempt failed.', { cause: original });
-    this.failure = failure;
-    this.beforeDispatch = beforeDispatch;
-  }
 }
 
 /** Stable tier exhaustion with only the terminating closed kind as its optional cause. */

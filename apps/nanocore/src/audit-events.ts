@@ -427,7 +427,7 @@ export function prepareAuditEvent(
   input: Omit<RecordWorkspaceAuditEventInput, 'workspaceDb' | 'workspaceId'> & {
     workspaceId: string | null;
   }
-): AuditEvent {
+): AuditEvent & { createdAt: string; occurredAt: string } {
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
   const event = AuditEventSchema.parse({
@@ -463,7 +463,7 @@ export function prepareAuditEvent(
     occurredAt,
   });
 
-  return event;
+  return { ...event, createdAt, occurredAt };
 }
 
 /**
