@@ -43,7 +43,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/vault.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/core/mediation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/core/agent-supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
-| `docs/core/sandbox.md` | sandbox | open, pending | — |
+| `docs/core/sandbox.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/core/agent-session.md` | agent-session | open, pending | — |
 | `docs/core/knowledge.md` | knowledge | open, pending | — |
 | `docs/core/generative-apps.md` | generative-apps | open, pending | — |
@@ -106,13 +106,13 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260907-mcp_catalog_management.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260704-workspace_data_source_catalog.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
-| `docs/specs/20260709-worker_sandbox_freedom_policy.md` | sandbox | open, pending | — |
-| `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` | sandbox | open, pending | — |
-| `docs/specs/20260721-worker_execution_environment_images.md` | sandbox | open, pending | — |
-| `docs/specs/20260910-persistent_worker_volumes.md` | sandbox | open, pending | — |
-| `docs/specs/20260922-delegated_worker_policy_maintenance.md` | sandbox | open, pending | — |
-| `docs/specs/20260703-workspace_synchronization.md` | sandbox | open, pending | — |
-| `docs/specs/20260629-worker_runtime_communication_model.md` | sandbox | open, pending | — |
+| `docs/specs/20260709-worker_sandbox_freedom_policy.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260721-worker_execution_environment_images.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260910-persistent_worker_volumes.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260922-delegated_worker_policy_maintenance.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260703-workspace_synchronization.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260629-worker_runtime_communication_model.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/specs/20260704-agent_session_continuity.md` | agent-session | open, pending | — |
 | `docs/specs/20260704-session_static_workspace_materialization.md` | agent-session | open, pending | — |
 | `docs/specs/20260716-codex_worker_adapter.md` | agent-session | open, pending | — |
@@ -297,6 +297,9 @@ Filled at close-out.
 | #490 `[mcp] Plugin MCP package data key derives from the entry id, so installations do not get their own key` | agent-supply | AS-MCC-04 | ordinary |
 | #491 `[aep] Build egress host accepts URL, path, and port forms at package resolution` | agent-supply | AS-MAR-02 | ordinary |
 | #492 `[catalog] Skill directory walk rejects a directory at depth 32 although 32 levels are allowed` | agent-supply | AS-SKL-05 | low |
+| #493 `[sandbox] OpenShell policy projection merges or drops AEP network grants instead of failing launch` | sandbox | SB-FRE-01, SB-FRE-03 | ordinary |
+| #494 `[gateway] A disallowed worker logical model fails with worker_inference_lineage_mismatch instead of worker_logical_model_not_allowed` | sandbox | SB-WRC-02 | low |
+| #495 `[sync] Captured Workspace snapshot candidates never become a change set, a review, or a worker output manifest` | sandbox | SB-SYN-01 | ordinary (enhancement) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -445,3 +448,11 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-119 | agent-supply | HTTPS-only Git data sources | State HTTPS and the key set |
 | Q-120 | agent-supply | Source-id lineage on capability rows | Applies to future source-aware producers |
 | Q-121 | agent-supply | Agent-supply history, status, numbers, time-relative text | As Q-28 |
+| Q-122 | sandbox | Git candidates and Workspace Sync Review | Add the Git carve-out: inspection evidence only |
+| Q-123 | sandbox | SYN State Model as a stored state machine | Trim to the persisted outcome values |
+| Q-124 | sandbox | Real-host check that `/capabilities/*` is absent | Prove the three enabled routes and nothing more |
+| Q-125 | sandbox | Worker-control protocol identifier, event list, interrupt | State the identifier once in the protocol owner; align the event list |
+| Q-126 | sandbox | IMG acceptance and layout lines | Install into a user environment under `/sandbox`; inert `ENTRYPOINT` and `CMD`; name `/openkit/instructions` |
+| Q-127 | sandbox | Writable temporary root and `http`/`https` grants | Name the root; refuse non-`rest` at authoring |
+| Q-128 | sandbox | `implementation: Partial` on the Deprecated Cell specification | Set `N/A` in a governance-approved metadata change |
+| Q-129 | sandbox | Sandbox history, numbers, labels | As Q-28 |
