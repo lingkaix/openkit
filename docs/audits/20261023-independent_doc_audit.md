@@ -35,7 +35,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/README.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/core/AGENTS.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/core/contract-evolution.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
-| `docs/core/architecture.md` | architecture | open, pending | — |
+| `docs/core/architecture.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/core/protocol.md` | protocol | open, pending | — |
 | `docs/core/communication.md` | communication | open, pending | — |
 | `docs/core/identity.md` | identity | open, pending | — |
@@ -64,17 +64,17 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20261017-retained_format_register.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/specs/20260522-vendor_snapshot_packages.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/specs/20261012-product_integrity_check.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
-| `docs/specs/20260813-internal_agent_runtime.md` | architecture | open, pending | — |
-| `docs/specs/20260909-internal_agent_resource_integration.md` | architecture | open, pending | — |
-| `docs/specs/20260704-workflow_coordinator_internal_agent.md` | architecture | open, pending | — |
-| `docs/specs/20260704-nanocore_bootstrap_readiness.md` | architecture | open, pending | — |
-| `docs/specs/20260708-container_image_packaging.md` | architecture | open, pending | — |
-| `docs/specs/20260909-deployment_host_requirements.md` | architecture | open, pending | — |
-| `docs/specs/20260910-app_update_delivery.md` | architecture | open, pending | — |
-| `docs/specs/20260628-web_product_surface_projection.md` | architecture | open, pending | — |
-| `docs/specs/20260710-web_ui_rebuild_stack.md` | architecture | open, pending | — |
-| `docs/specs/20260910-agent_operator_skill.md` | architecture | open, pending | — |
-| `docs/specs/20261020-compute_neutrality_target.md` | architecture | open, pending | — |
+| `docs/specs/20260813-internal_agent_runtime.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260909-internal_agent_resource_integration.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260704-workflow_coordinator_internal_agent.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260704-nanocore_bootstrap_readiness.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260708-container_image_packaging.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260909-deployment_host_requirements.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260910-app_update_delivery.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260628-web_product_surface_projection.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260710-web_ui_rebuild_stack.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260910-agent_operator_skill.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20261020-compute_neutrality_target.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/specs/20261021-protocol_identifiers_and_enums.md` | protocol | open, pending | — |
 | `docs/specs/20260704-app_api_openapi_projection.md` | protocol | open, pending | — |
 | `docs/specs/20260703-worker_control_protocol.md` | communication | open, pending | — |
@@ -265,6 +265,9 @@ Filled at close-out.
 | #456 `[recurring-schedules] A very large fixed interval can stop every recurring scan` | foundation | FND-RT-04 | blocking candidate (recovery) |
 | #457 `[record-envelope] Envelope readers skip schemaVersion, minCoreVersion and Gateway requiredFeatures checks` | contract-evolution | CE-ENV-01, 02, 03, 05 | blocking candidate (retained data) |
 | #458 `[record-envelope] Required feature recurring-history-v1 does not use the registered identifier form` | contract-evolution | CE-ENV-REG | blocking candidate (retained data) |
+| #460 `[bootstrap] Signal handlers register after boot, and readiness does not derive vault, LLM gateway or knowledge index state` | architecture | AR-WFB-06, 07, 08 | blocking candidate (recovery) for the signal handlers |
+| #461 `[app-update] Status for a missing update ID returns app_update_unavailable instead of recovery_required` | architecture | AR-DEP-01 | blocking candidate (recovery) |
+| #462 `[internal-agent] A Tool result sanitizer exception becomes a correctable Tool error instead of a failed exit` | architecture | AR-IAR-02 | ordinary |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -308,3 +311,15 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-14 | contract-evolution | Narrow the L0 testing statement of the stability baseline | Narrow it to the frontmatter check |
 | Q-15 | contract-evolution | Casing of required features in Knowledge frontmatter | Add a named exception |
 | Q-16 | contract-evolution | When to re-baseline the retained format register against the control store | With the held control-store specification |
+| Q-17 | architecture | Keep the ten-kind Coordinator classification contract | Narrow it to explicit entry with the work-model release |
+| Q-18 | architecture | Drop planning and stopping from the Coordinator row in Core Architecture | Drop them after the Goal release |
+| Q-19 | architecture | Limits for a profile-less Knowledge Manager or Goal Coordinator run | Use the schema default for every role |
+| Q-20 | architecture | A maximum for `deadlineMs` | Add a schema maximum at the Node timer limit |
+| Q-21 | architecture | Does worker selection consume a runtime label | Remove it with the Goal release |
+| Q-22 | architecture | Name of Workspace quarantine | Name the error and reason codes with the fault-tolerance release |
+| Q-23 | architecture | Marking of experience-chosen numbers | Engineer states each property; mark as current defaults |
+| Q-24 | architecture | Default Core mode of a formal release App image | Change the image default to `server` |
+| Q-25 | architecture | Does the model-delivery refusal cover `app-update.preflight` | State that preflight is allowed |
+| Q-26 | architecture | May Vault screens show an AgentSession id | Vault owner defines a user-facing grant target |
+| Q-27 | architecture | The virtualization MUST | Replace with a measured-need rule |
+| Q-28 | architecture | Undefined plan labels | Link or replace each label |
