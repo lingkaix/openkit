@@ -13,6 +13,7 @@ import {
   ReasoningEffortSchema,
   readRetainedV1,
 } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
@@ -1747,6 +1748,19 @@ function workerInferenceExceptionClass(error: unknown) {
   return error instanceof Error ? 'error' : 'non_error';
 }
 
+/** Projects trusted raw-stop identity without exception text or arbitrary codes. */
+function workerRawOutputExceptionClass(error: unknown): string {
+  if (error instanceof Database.SqliteError) return error.code;
+  if (error instanceof WorkerRawOutputAuthorityError) return 'raw-authority';
+  if (error instanceof WorkerRawOutputBudgetExceededError) return 'budget';
+  if (
+    error instanceof GatewayUnsupportedFeatureError &&
+    error.feature === 'Worker raw output observation'
+  )
+    return 'raw-observer';
+  return 'other';
+}
+
 /**
  * Projects one normalized provider failure code onto a fixed public message.
  *
@@ -1948,6 +1962,7 @@ export function registerWorkerInferenceRoutes({
           workspaceDb.sqlite.close();
         }
       };
+      let rawPersistenceFailure: unknown;
       const failRaw = (
         error: Error,
         stage: 'admission' | 'source' | 'stream-prepare' | 'settlement' = 'source',
@@ -1961,12 +1976,15 @@ export function registerWorkerInferenceRoutes({
         if (firstStop) {
           rawGroup.stopRequested = true;
           try {
+            const errorClass = workerRawOutputExceptionClass(rawPersistenceFailure ?? error);
+            if (errorClass.startsWith('SQLITE_')) causeCode = 'raw_persistence_failed';
             console.warn(
               JSON.stringify({
                 code: 'worker_raw_output_stopped',
                 capabilityCallId: durableCall.call.id,
                 phase,
                 stage,
+                errorClass,
                 causeCode: exhausted ? 'budget_exhausted' : causeCode,
               })
             );
@@ -2022,7 +2040,8 @@ export function registerWorkerInferenceRoutes({
         try {
           withRawDb((db) => settleWorkerRawOutput(db, scope, durableCall.call.id, complete));
           persisted = true;
-        } catch {
+        } catch (error) {
+          rawPersistenceFailure = error;
           /* A pending proof remains non-completable if persistence fails. */
         }
         if (!complete || !persisted) {

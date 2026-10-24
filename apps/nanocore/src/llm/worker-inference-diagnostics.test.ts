@@ -24,8 +24,9 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerInferenceRoutes } from './gateway-routes.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
-import type {
-  LLMGatewayDispatchContext,
+import { PiAiGatewayClient } from './pi-ai-client.js';
+import {
+  type LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
 } from './provider-dispatcher.js';
 
@@ -236,6 +237,95 @@ function failedStream(error: unknown, endpoint = 'responses') {
   });
 }
 
+it('measures stock source progression while Worker response consumption is paused', async () => {
+  const f = await fixture(true, undefined, true, 'controlled');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
+  f.resolveGatewayProvider.mockReturnValue({
+    id: 'provider',
+    displayName: 'Provider',
+    adapterId: 'capacity-fixture',
+    apiKey: 'synthetic',
+    baseUrl: 'https://provider.invalid/v1',
+    models: ['native-model'],
+    requiresApiKey: true,
+    gatewayCapabilities: { responses: 'bridged', chatCompletions: 'native' },
+    modelMetadata: { 'native-model': { limit: { context: 400_000, output: 32_000 } } },
+  });
+  f.dispatch.mockImplementation((provider, request, context: LLMGatewayDispatchContext) =>
+    dispatcher.createChatCompletionStream(provider, request, context)
+  );
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          source = controller;
+        },
+      }),
+      { headers: { 'content-type': 'text/event-stream' } }
+    )
+  );
+  const emit = (content: string, finishReason: string | null = null) =>
+    source.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({
+          id: 'chat_capacity',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'native-model',
+          choices: [{ index: 0, delta: { content }, finish_reason: finishReason }],
+        })}\n\n`
+      )
+    );
+  const chunk = 'x'.repeat(1024);
+  emit(chunk);
+  const response = await f.post(true, 'chat/completions');
+  const observations: unknown[] = [];
+  let offered = 1;
+  try {
+    for (const dose of [8, 16]) {
+      while (offered < dose) {
+        emit(chunk);
+        offered += 1;
+      }
+      // Positive owner evidence only; failure to reach this frontier is an unresolved probe.
+      await vi.waitFor(() => expect(f.rawOutput().rawOutputBytes).toBe(dose * chunk.length));
+      const call = f.ledgerCalls()[0]!;
+      observations.push({
+        offeredDeltas: dose,
+        canonicalRawBytes: f.rawOutput().rawOutputBytes,
+        publicBodyUsed: response.bodyUsed,
+        callStatus: call.status,
+        rawCoverage: (call.extensions?.['openkit.worker/rawOutput'] as { coverage?: string })
+          ?.coverage,
+      });
+    }
+  } finally {
+    emit('', 'stop');
+    source.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+    source.close();
+    const body = await response.text();
+    const deliveredText = body
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? '')
+      .join('');
+    expect(deliveredText).toBe(chunk.repeat(offered));
+    expect(f.ledgerCalls()[0]).toMatchObject({ status: 'succeeded' });
+    expect(f.onRawOutputStop).not.toHaveBeenCalled();
+    process.stdout.write(
+      JSON.stringify({
+        probe: 'R1843-source-harness-feasibility',
+        observations,
+        drainedBytes: deliveredText.length,
+        finalRawBytes: f.rawOutput().rawOutputBytes,
+        nativeStopRequests: f.onRawOutputStop.mock.calls.length,
+      }) + '\n'
+    );
+  }
+});
+
 it('keeps a pending sibling alive when a non-admission failure has no raw source', async () => {
   const f = await fixture(true, undefined, true, 'controlled');
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -385,6 +475,10 @@ it.each([
     expect.soft(stops).toHaveLength(1);
     expect.soft(stops[0]).toMatchObject(origin);
     if (failure === 'explicit raw failure') {
+      // W-LEASE-2 diagnostics keep the trusted coarse refusal class.
+      expect.soft(stops[0]).toMatchObject({
+        errorClass: 'raw-authority',
+      });
       const failures = diagnostics.filter((entry) => entry.code === 'worker_inference_failed');
       expect.soft(failures[0]?.capabilityCallId).toBe(callAId);
     }
@@ -846,7 +940,7 @@ it('blocks Provider access before execution when native stop coverage is absent'
 
 it('preserves raw-output exhaustion before native compaction commits', async () => {
   const f = await fixture(true, 'compaction');
-  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
     context.transport!.rawOutput!.fail(new WorkerRawOutputBudgetExceededError());
   });
@@ -859,6 +953,11 @@ it('preserves raw-output exhaustion before native compaction commits', async () 
     { status: 'failed', error_code: 'worker_raw_output_exhausted' },
   ]);
   expect(f.dispatch).toHaveBeenCalledTimes(1);
+  const stop = warn.mock.calls
+    .map(([message]) => JSON.parse(message))
+    .find((entry) => entry.code === 'worker_raw_output_stopped');
+  expect(stop).toMatchObject({ causeCode: 'budget_exhausted', errorClass: 'budget' });
+  expect(stop).not.toHaveProperty('reasonCode');
 });
 
 it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {

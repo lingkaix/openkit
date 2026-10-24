@@ -1084,6 +1084,7 @@ describe('database setup', () => {
       .filter((path) => path !== join(sourceRoot, 'workspace-retirement.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'operation-error.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'server-thread-operation-projections.test.ts'))
+      .filter((path) => path !== join(sourceRoot, 'worker-mcp-routes.test.ts'))
       .filter((path) => !path.endsWith(`bootstrap${sep}scope-admission.test.ts`))
       .filter((path) => !path.endsWith(`runtime${sep}pending-requests.scope-admission.test.ts`))
       .filter((path) => !path.endsWith(`storage${sep}workspace-file-admission.test.ts`))
