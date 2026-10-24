@@ -25,6 +25,7 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
@@ -151,7 +152,8 @@ describe('work observation portable closure', () => {
           ts: turn.startedAt,
         },
       ]);
-      const exported = createVerifiedWorkspaceExport({
+      const exported = await createVerifiedWorkspaceExport({
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -317,7 +319,8 @@ describe('work observation portable closure', () => {
           }),
           turn.id
         );
-      const exported = createVerifiedWorkspaceExport({
+      const exported = await createVerifiedWorkspaceExport({
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -440,7 +443,8 @@ describe('work observation portable closure', () => {
       } finally {
         importedDb.sqlite.close();
       }
-      const reexported = createVerifiedWorkspaceExport({
+      const reexported = await createVerifiedWorkspaceExport({
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -599,7 +603,8 @@ describe('work observation portable closure', () => {
         byteOffset: 0,
         bytes: Buffer.from('x'),
       });
-      const exported = createVerifiedWorkspaceExport({
+      const exported = await createVerifiedWorkspaceExport({
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -737,7 +742,8 @@ describe('work observation portable closure', () => {
           "UPDATE evidence_bundles SET retention_class = 'legal-hold' WHERE evidence_bundle_id = ?"
         )
         .run(sourceBundle.id);
-      const heldExport = createVerifiedWorkspaceExport({
+      const heldExport = await createVerifiedWorkspaceExport({
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
@@ -786,7 +792,8 @@ describe('work observation portable closure', () => {
           olderThan: '2026-09-23T00:00:00.000Z',
         }).expiredCount
       ).toBe(2);
-      const expiredExport = createVerifiedWorkspaceExport({
+      const expiredExport = await createVerifiedWorkspaceExport({
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,

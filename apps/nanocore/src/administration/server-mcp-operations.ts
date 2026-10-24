@@ -3,7 +3,7 @@ import { digestMcpConfig, McpValidatedDeclarationSchema } from '@openkit/config-
 import { allocateEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import { listServerAuditEvents, recordServerAuditEvent } from '../audit-events.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
 import { mcpEntries } from '../catalog/catalog-operations.js';
 import {
   CatalogConflictError,
@@ -137,7 +137,7 @@ export function createServerMcpOperationImplementations(
     };
     const marker = `mcp-command:${commandInputHash({ name, scope, requestId: input.requestId })}`;
     try {
-      return await runIdempotentCommand({
+      const result = await runIdempotentCommand({
         store: store!,
         inflightCommands: inflightCommands!,
         command: name,
@@ -149,6 +149,13 @@ export function createServerMcpOperationImplementations(
         replay: (record) => replay(record.response.id),
         execute: async () => {
           if (!workspaceId) requireCurrentDeploymentAdmin(coreDb!, actor);
+          else if (
+            !authorizeWorkspace(coreDb!, actor, workspaceId, {
+              mutating: true,
+              policyOperation: 'workspace.configure',
+            })
+          )
+            throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
           if (listServerAuditEvents(coreDb!).some((event) => event.resource === marker))
             throw new OperationError(
               'recovery_required',
@@ -181,6 +188,15 @@ export function createServerMcpOperationImplementations(
           return result;
         },
       });
+      if (
+        workspaceId &&
+        !authorizeWorkspace(coreDb!, actor, workspaceId, {
+          mutating: true,
+          policyOperation: 'workspace.configure',
+        })
+      )
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      return result;
     } catch (error) {
       fail(error);
     }

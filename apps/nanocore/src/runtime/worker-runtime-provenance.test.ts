@@ -33,6 +33,7 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
   createWorkerRuntimeOriginRef,
@@ -119,6 +120,7 @@ describe('worker runtime provenance import', () => {
         ).toThrow('Unsupported retained record format.');
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
       rmSync(fixture.workspaceDb.dataRoot, { recursive: true, force: true });
     }
@@ -169,6 +171,7 @@ describe('worker runtime provenance import', () => {
         )
       ).toThrow();
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -235,6 +238,7 @@ describe('worker runtime provenance import', () => {
       expect(readFileSync(capture.streamManifestPath)).toEqual(manifestBytes);
       expect(readFileSync(capture.nativeOriginIndexPath)).toEqual(indexBytes);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -512,6 +516,7 @@ describe('worker runtime provenance import', () => {
       ).toHaveLength(1);
       expect(readFileSync(normalizedPath)).toEqual(normalizedBytes);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -590,6 +595,7 @@ describe('worker runtime provenance import', () => {
       const normalizedRoot = join(fixture.workspaceRoot, 'evidence', 'bundles');
       expect(existsSync(normalizedRoot) ? readdirSync(normalizedRoot) : []).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -613,6 +619,7 @@ describe('worker runtime provenance import', () => {
         listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([expect.objectContaining({ importStatus: 'quarantined' })]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -642,6 +649,7 @@ describe('worker runtime provenance import', () => {
         expect.arrayContaining([expect.objectContaining({ runtimeRole: 'other' })])
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -677,6 +685,7 @@ describe('worker runtime provenance import', () => {
         ).size
       ).toBe(2);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -708,6 +717,7 @@ describe('worker runtime provenance import', () => {
         listWorkspaceRuntimeEvidence(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([expect.objectContaining({ outcome: 'failed' })]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -727,6 +737,7 @@ describe('worker runtime provenance import', () => {
         listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([expect.objectContaining({ importStatus: 'quarantined' })]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -767,6 +778,7 @@ describe('worker runtime provenance import', () => {
         )
       ).toBe(false);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -798,12 +810,14 @@ describe('worker runtime provenance import', () => {
         listWorkspaceRuntimeEvidence(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([expect.objectContaining({ outcome: 'failed' })]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
 
   it('reconciles multiple package-scoped gateway calls against duplicate origin refs', async () => {
     const fixture = await createImportFixture('openkit-runtime-provenance-gateway-reconciled-');
+    await openTestNativeWorkspace(fixture.workspaceDb);
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-gateway-reconciled-capture-')),
       fixture.lineage
@@ -812,15 +826,15 @@ describe('worker runtime provenance import', () => {
       fixture.lineage.packageSnapshotId,
       ROOT_NATIVE_ID
     );
-    startGatewayCall(fixture, {
+    await startGatewayCall(fixture, {
       callId: 'cap_00000000-0000-7c2e-a8be-31a449b8c65e',
       runtimeOriginRef,
     });
-    startGatewayCall(fixture, {
+    await startGatewayCall(fixture, {
       callId: 'cap_00000000-0000-7d8f-b562-3a531c1114b1',
       runtimeOriginRef,
     });
-    startGatewayCall(fixture, {
+    await startGatewayCall(fixture, {
       callId: 'cap_00000000-0000-78c4-874e-13a92c1c1354',
       packageSnapshotId: 'aepsnap_other',
       runtimeOriginRef: `rto_${'f'.repeat(24)}`,
@@ -844,17 +858,19 @@ describe('worker runtime provenance import', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
 
   it('refuses complete promotion while a package-scoped gateway call has no origin ref', async () => {
     const fixture = await createImportFixture('openkit-runtime-provenance-gateway-');
+    await openTestNativeWorkspace(fixture.workspaceDb);
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-gateway-capture-')),
       fixture.lineage
     );
-    startGatewayCall(fixture, {
+    await startGatewayCall(fixture, {
       callId: 'cap_00000000-0000-7c2e-a8be-31a449b8c65e',
     });
 
@@ -873,6 +889,7 @@ describe('worker runtime provenance import', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -890,6 +907,7 @@ describe('worker runtime provenance import', () => {
     },
   ])('quarantines an unreconciled package-scoped gateway call', async (gatewayCall) => {
     const fixture = await createImportFixture('openkit-runtime-provenance-gateway-invalid-');
+    await openTestNativeWorkspace(fixture.workspaceDb);
     const capture = createRuntimeCaptureFixture(
       mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-gateway-invalid-capture-')),
       fixture.lineage
@@ -897,7 +915,7 @@ describe('worker runtime provenance import', () => {
     const runtimeOriginRef = gatewayCall.matchedOrigin
       ? createWorkerRuntimeOriginRef(fixture.lineage.packageSnapshotId, ROOT_NATIVE_ID)
       : `rto_${'e'.repeat(24)}`;
-    startGatewayCall(fixture, { ...gatewayCall, runtimeOriginRef });
+    await startGatewayCall(fixture, { ...gatewayCall, runtimeOriginRef });
 
     try {
       const result = await importCapture(fixture, capture);
@@ -915,6 +933,7 @@ describe('worker runtime provenance import', () => {
       ]);
       expect(JSON.stringify(evidence)).not.toContain(runtimeOriginRef);
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -937,7 +956,7 @@ async function importCapture(fixture: ImportFixture, capture: RuntimeCaptureFixt
 }
 
 /** Starts one package-scoped worker inference gateway call for reconciliation tests. */
-function startGatewayCall(
+async function startGatewayCall(
   fixture: ImportFixture,
   input: {
     readonly callId: string;
@@ -945,8 +964,8 @@ function startGatewayCall(
     readonly runtimeOriginRef?: string;
     readonly threadId?: string;
   }
-): void {
-  startCapabilityCall({
+): Promise<void> {
+  await startCapabilityCall({
     agentSessionId: fixture.lineage.agentSessionId,
     authorityActor: fixture.environmentPackage.scope.triggerActor,
     callId: input.callId,
@@ -1491,6 +1510,7 @@ describe('runtime provenance publication durability', () => {
         ).map((entry) => entry.id)
       ).toEqual(expect.arrayContaining([result.rawBundleId, result.indexBundleId]));
     } finally {
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -1520,6 +1540,7 @@ describe('runtime provenance publication durability', () => {
       ).toEqual([]);
     } finally {
       publication.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -1589,6 +1610,7 @@ describe('runtime provenance publication durability', () => {
       ).toHaveLength(2);
     } finally {
       publication.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
     }
   });
@@ -1649,6 +1671,7 @@ describe('uncommitted ancestor evidence recovery', () => {
       ).toBe(true);
     } finally {
       publication.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
       rmSync(captureRoot, { recursive: true, force: true });
     }

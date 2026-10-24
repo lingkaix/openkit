@@ -13,12 +13,18 @@ import {
   admitModelRequest,
   ModelRequestAdmissionError,
 } from '../context/model-request-admission.js';
-import { LogicalModelRoutesExhaustedError } from '../llm/gateway-execution.js';
+import {
+  GatewayAttemptFailure,
+  LogicalModelRoutesExhaustedError,
+} from '../llm/gateway-execution.js';
 import { dispatchLogicalModel, projectGatewayFailure } from '../llm/gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from '../llm/gateway-usage.js';
 import { type ResolvedLogicalModel, resolveEffectiveModelMetadata } from '../llm/logical-models.js';
 import { type ModelCaptureContext, ModelCaptureError } from '../llm/model-capture.js';
-import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
+import {
+  OpenAICompatibleProviderError,
+  type OpenAICompatibleResponsesResponse,
+} from '../llm/openai-compatible-client.js';
 import { GatewayUnsupportedFeatureError } from '../llm/pi-ai-client.js';
 import type { PiAiFailure, PiAiFailureKind } from '../llm/pi-ai-failure.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -188,7 +194,11 @@ export function createInternalAgentGatewayProvider(
             contextWindowTokens,
             maxOutputTokens
           );
-          let admissionFailure: InternalAgentProviderError | undefined;
+          let admissionFailure:
+            | InternalAgentProviderError
+            | GatewayAttemptFailure
+            | OpenAICompatibleProviderError
+            | undefined;
           // A late callback from a settled member cannot replace a later attempt's diagnostics.
           let observedHttpRejection: number | undefined;
           const response = await options.dispatcher
@@ -215,10 +225,10 @@ export function createInternalAgentGatewayProvider(
                 },
                 promptCacheScope: options.promptCacheScope,
                 usageEndpoint: options.usageEndpoint,
-                onUsage: (usage) => {
+                onUsage: async (usage) => {
                   if (call && !callFinished)
-                    execution.addUsageRecordIds(
-                      recordInternalLlmGatewayUsage({
+                    await execution.addUsageRecordIds(
+                      await recordInternalLlmGatewayUsage({
                         workspaceDb,
                         call,
                         ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
@@ -238,9 +248,15 @@ export function createInternalAgentGatewayProvider(
                         final.outputReserveTokens,
                         final.codexTurnState
                       );
+                      execution.assertAuthority?.();
                     } catch (error) {
                       // Stock can flatten hook errors; preserve this trusted refusal for loop closeout.
-                      if (error instanceof InternalAgentProviderError) admissionFailure = error;
+                      if (
+                        error instanceof InternalAgentProviderError ||
+                        error instanceof GatewayAttemptFailure ||
+                        error instanceof OpenAICompatibleProviderError
+                      )
+                        admissionFailure = error;
                       throw error;
                     }
                   },
@@ -252,7 +268,7 @@ export function createInternalAgentGatewayProvider(
                   },
                   onProviderHandoff: () => {
                     failurePhase = 'transport';
-                    execution.onProviderHandoff?.();
+                    return execution.onProviderHandoff?.();
                   },
                   onProviderHttpRejection: (status) => {
                     if (Number.isInteger(status) && status >= 400 && status <= 599)
@@ -294,7 +310,7 @@ export function createInternalAgentGatewayProvider(
           failurePhase = 'output-projection';
           const message = fromResponses(response, aliasToCanonical, canonicalToAlias);
           if (call)
-            execution.addUsageRecordIds(
+            await execution.addUsageRecordIds(
               await recordInternalLlmGatewayUsage({
                 workspaceDb,
                 call,

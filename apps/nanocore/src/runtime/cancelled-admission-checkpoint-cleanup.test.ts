@@ -32,6 +32,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { cleanCancelledAdmissionTaskCheckpoints } from './cancelled-admission-checkpoint-cleanup.js';
@@ -96,7 +97,7 @@ async function closeFixture(fixture: {
 }
 
 /** Records one failed direct Task checkpoint with no Worker session. */
-function writeFailedCheckpoint(
+async function writeFailedCheckpoint(
   workspaceDb: WorkspaceDb,
   input: {
     readonly goalId?: string | null;
@@ -108,8 +109,9 @@ function writeFailedCheckpoint(
     readonly workspaceId: string;
     readonly contextDigest?: string | null;
   }
-): void {
-  upsertWorkerCheckpoint(workspaceDb, {
+): Promise<void> {
+  await openTestNativeWorkspace(workspaceDb);
+  await upsertWorkerCheckpoint(workspaceDb, {
     contextDigest: input.contextDigest ?? null,
     goalId: input.goalId ?? null,
     iteration: 0,
@@ -233,7 +235,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
       turnId,
       workspaceId: fixture.workspaceId,
     });
-    writeFailedCheckpoint(fixture.workspaceDb, {
+    await writeFailedCheckpoint(fixture.workspaceDb, {
       requestId,
       threadId: fixture.threadId,
       turnId,
@@ -245,7 +247,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
       turnId: siblingTurnId,
       workspaceId: fixture.workspaceId,
     });
-    writeFailedCheckpoint(fixture.workspaceDb, {
+    await writeFailedCheckpoint(fixture.workspaceDb, {
       requestId: '0190f4c8-0000-7000-8000-000000000592',
       threadId: fixture.threadId,
       turnId: siblingTurnId,
@@ -352,7 +354,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
       turnId,
       workspaceId: fixture.workspaceId,
     });
-    writeFailedCheckpoint(fixture.workspaceDb, {
+    await writeFailedCheckpoint(fixture.workspaceDb, {
       requestId,
       threadId: fixture.threadId,
       turnId,
@@ -486,7 +488,7 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
           testEntityId('attempt', `lease_${turnId}`)
         );
     }
-    writeFailedCheckpoint(fixture.workspaceDb, {
+    await writeFailedCheckpoint(fixture.workspaceDb, {
       contextDigest: mutate === 'runtime' ? 'sha256:context' : null,
       goalId: mutate === 'goal' ? 'goal_preserve' : null,
       requestId,
@@ -576,7 +578,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       const requestId = '0190f4c8-0000-7000-8000-000000000991';
       const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
       writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-      writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+      await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
       insertReceipt(fixture.workspaceDb, {
         expiresAt: '2020-01-02T00:00:00.000Z',
         requestId,
@@ -616,7 +618,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const requestId = '0190f4c8-0000-7000-8000-000000000992';
     const identity = { threadId: fixture.threadId, turnId, workspaceId: fixture.workspaceId };
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     insertReceipt(fixture.workspaceDb, {
       expiresAt: '2020-01-02T00:00:00.000Z',
       requestId: '0190f4c8-0000-7000-8000-000000000993',
@@ -653,7 +655,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     if (mode !== 'refused') {
       writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     }
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const unrelated = await fixture.store.createTurn(
       fixture.workspaceId,
       fixture.threadId,
@@ -716,7 +718,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       ...corruptId,
       requestId: '0190f4c8-0000-7000-8000-000000000995',
     });
-    writeFailedCheckpoint(fixture.workspaceDb, {
+    await writeFailedCheckpoint(fixture.workspaceDb, {
       ...corruptId,
       requestId: '0190f4c8-0000-7000-8000-000000000995',
     });
@@ -724,7 +726,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
       ...cleanId,
       requestId: '0190f4c8-0000-7000-8000-000000001095',
     });
-    writeFailedCheckpoint(fixture.workspaceDb, {
+    await writeFailedCheckpoint(fixture.workspaceDb, {
       ...cleanId,
       requestId: '0190f4c8-0000-7000-8000-000000001095',
     });
@@ -763,7 +765,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-749c-8e69-38e10357fa79');
     const requestId = '0190f4c8-0000-7000-8000-000000000996';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     fixture.workspaceDb.sqlite
       .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
       .run(
@@ -795,10 +797,13 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     ['artifact ids', JSON.stringify({ artifactIds: {} })],
   ] as const)('refuses incorrectly typed %s diagnostics', async (_label, diagnostics) => {
     const fixture = await createFixture();
-    const identity = identityFor(fixture, `turn_typed_${_label.replace(' ', '_')}`);
+    const identity = identityFor(
+      fixture,
+      testEntityId('tu', `turn_typed_${_label.replace(' ', '_')}`)
+    );
     const requestId = '0190f4c8-0000-7000-8000-000000000997';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     fixture.workspaceDb.sqlite
       .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
       .run(diagnostics, identity.turnId);
@@ -821,7 +826,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-7248-a8ea-70525940472a');
     const requestId = '0190f4c8-0000-7000-8000-000000000998';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     fixture.workspaceDb.sqlite
       .prepare('UPDATE worker_turn_checkpoints SET diagnostics_summary = ? WHERE turn_id = ?')
       .run('Worker start failed.', identity.turnId);
@@ -845,7 +850,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-7cd8-ac6d-ce67f0efa520');
     const requestId = '0190f4c8-0000-7000-8000-000000001001';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     fixture.workspaceDb.sqlite
       .prepare(
         `INSERT INTO runtime_evidence (
@@ -881,7 +886,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-7781-892a-3b253a33f2d9');
     const requestId = '0190f4c8-0000-7000-8000-000000001002';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     fixture.coreDb.sqlite
       .prepare(
         `INSERT INTO worker_control_records (
@@ -916,7 +921,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-7c9c-a800-07ed48da3579');
     const requestId = '0190f4c8-0000-7000-8000-000000001003';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const sessionId = 'as_00000000-0000-78a3-a9bb-2860a6e89e42';
     recordAgentEnvironmentPackageSnapshot(fixture.workspaceDb, {
       createdAt: '2026-09-22T00:00:00.000Z',
@@ -1005,7 +1010,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-780f-be6c-5b90f496572f');
     const requestId = '0190f4c8-0000-7000-8000-000000001004';
     writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const sessionId = testEntityId('as', `as_${identity.turnId}`);
     await fixture.store.createAgentSession({
       agentId: 'agent_codex_host',
@@ -1037,7 +1042,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-7e14-8c92-1734e9d4fbff');
     const requestId = '0190f4c8-0000-7000-8000-000000001005';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const checkpointBefore = getWorkerCheckpoint(
       fixture.workspaceDb,
       fixture.workspaceId,
@@ -1066,7 +1071,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-72bf-ba1a-70e8fc2f5cee');
     const requestId = '0190f4c8-0000-7000-8000-000000001006';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const schedulerBefore = schedulerSnapshot(fixture.dataRoot);
     const checkpointBefore = getWorkerCheckpoint(
       fixture.workspaceDb,
@@ -1107,7 +1112,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, testEntityId('tu', `turn_corrupt_${kind}`));
     const requestId = '0190f4c8-0000-7000-8000-000000001099';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const unrelated = await publishUnrelatedTurn(fixture.store, fixture.dataRoot);
     const historyPath = unrelated.itemsPath;
     const checkpointBefore = getWorkerCheckpoint(
@@ -1167,7 +1172,7 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     const identity = identityFor(fixture, 'tu_00000000-0000-71e2-bfd1-a8b0df334491');
     const requestId = '0190f4c8-0000-7000-8000-000000001098';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const unrelated = await publishUnrelatedTurn(fixture.store, fixture.dataRoot);
     const projectionRoot = join(
       fixture.dataRoot,
@@ -1403,7 +1408,7 @@ describe('cancelled-admission cleanup global native absence', () => {
     );
     const requestId = '0190f4c8-0000-7000-8000-000000001203';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const threadId =
       evidenceOwner === 'Server'
         ? (await fixture.store.createServerThread('Retained Server history')).id
@@ -1588,7 +1593,7 @@ describe('cancelled-admission cleanup global native absence', () => {
     const identity = identityFor(fixture, testEntityId('tu', `global_absence_${kind}`));
     const requestId = '0190f4c8-0000-7000-8000-000000001201';
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
-    writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const healthyTurn = await fixture.store.createTurn(
       fixture.workspaceId,
       fixture.threadId,

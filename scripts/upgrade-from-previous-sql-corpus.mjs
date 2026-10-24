@@ -456,7 +456,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     sql.serverDecisionId = id('pd', 'server-decision');
     sql.workspaceDecisionId = id('pd', 'workspace-decision');
     for (const ownerScope of ['server', 'workspace']) {
-      o.decisions.recordProductPermissionDecision({
+      await o.decisions.recordProductPermissionDecision({
         coreDb: core,
         workspaceDb: workspace,
         ownerScope,
@@ -728,7 +728,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       authoritativeGeneration: null,
       observedAt: new Date().toISOString(),
     });
-    const call = o.usage.startCapabilityCall({
+    const call = await o.usage.startCapabilityCall({
       workspaceDb: workspace,
       workspaceId,
       threadId,
@@ -746,7 +746,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       now: new Date(NOW),
     });
     sql.capabilityCallId = call.id;
-    o.usage.recordUsage({
+    await o.usage.recordUsage({
       workspaceDb: workspace,
       call,
       now: new Date(NOW),
@@ -761,7 +761,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
         },
       ],
     });
-    o.usage.finishCapabilityCall({
+    await o.usage.finishCapabilityCall({
       workspaceDb: workspace,
       callId: call.id,
       status: 'succeeded',

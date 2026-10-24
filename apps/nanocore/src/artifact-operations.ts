@@ -47,6 +47,7 @@ import {
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { resolveTarget } from './operation-resolvers.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -384,6 +385,32 @@ export function createArtifactOperationImplementations(
           responseId: (result) => result.artifactId,
         });
 
+        if (
+          context.kind !== 'public' ||
+          !coreDb ||
+          !isWorkspaceOperationAuthorized(
+            coreDb,
+            context.actor,
+            workspaceId,
+            ARTIFACT_OPERATION_DEFINITIONS['artifact.introduce']
+          )
+        )
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        assertArtifactWorkspaceLineage(
+          actorId,
+          administratorEligible(context),
+          store,
+          workspaceId,
+          artifactId
+        );
+        resolveTarget(
+          ARTIFACT_OPERATION_DEFINITIONS['artifact.introduce'].target,
+          input,
+          { coreDb, store },
+          context,
+          workspaceId,
+          ARTIFACT_OPERATION_DEFINITIONS['artifact.introduce'].policyOperation
+        );
         return response;
       } catch (error) {
         artifactOperationFailure(error);
@@ -766,10 +793,10 @@ export function createArtifactOperationImplementations(
                     resolve(committed.value);
                   },
                 })
-                  .then((followUpTurn) => {
+                  .then(async (followUpTurn) => {
                     const completionDb = openReceiptDb(workspaceId);
                     try {
-                      updateWorkerCheckpoint(completionDb, {
+                      await updateWorkerCheckpoint(completionDb, {
                         authorityActor: followUpTurn.triggerActor,
                         workspaceId,
                         threadId: sourceThreadId,

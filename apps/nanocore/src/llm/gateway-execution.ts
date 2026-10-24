@@ -104,7 +104,9 @@ export interface GatewayAttemptContext {
   readonly retryIndex: number;
   readonly selectionReason: string;
   /** Records optional effort facts at stock-adapter handoff after OpenKit admission, independently of output or commit. */
-  readonly onProviderHandoff?: () => void;
+  readonly onProviderHandoff?: () => void | Promise<void>;
+  /** Revalidates selected credentials after awaited Workspace preparation. */
+  readonly assertAuthority?: () => void;
   /** True only after outward model content or a validated non-stream result is released. */
   readonly outputBegan: boolean;
   /** True once stream preparation succeeded; its terminal result arrives during consumption. */
@@ -114,10 +116,10 @@ export interface GatewayAttemptContext {
   /** Reads privately before releasing the public Response/heartbeat. */
   prepareStream(
     stream: ReadableStream<Uint8Array>,
-    observe?: (state: GatewayStreamState, error?: unknown) => void
+    observe?: (state: GatewayStreamState, error?: unknown) => void | Promise<void>
   ): Promise<ReadableStream<Uint8Array>>;
   /** Associates existing retained measurements with this descriptive attempt. */
-  addUsageRecordIds(ids: readonly string[]): void;
+  addUsageRecordIds(ids: readonly string[]): void | Promise<void>;
 }
 
 /**
@@ -210,9 +212,9 @@ export async function executeGatewayPlan<T>(input: {
               input.signal,
               deadline,
               clock,
-              (state, error) => {
+              async (state, error) => {
                 if (state === 'output') outputBegan = true;
-                observe?.(state, error);
+                await observe?.(state, error);
               }
             );
             streamPrepared = true;
@@ -423,7 +425,7 @@ export async function prepareGatewayStream(
   signal: AbortSignal,
   deadline: number,
   clock: GatewayClock = gatewayClock,
-  observe?: (state: GatewayStreamState, error?: unknown) => void
+  observe?: (state: GatewayStreamState, error?: unknown) => void | Promise<void>
 ): Promise<ReadableStream<Uint8Array>> {
   const reader = stream.getReader();
   const held: Uint8Array[] = [];
@@ -468,13 +470,13 @@ export async function prepareGatewayStream(
   let releasedFrames = '';
   const releasedDecoder = new TextDecoder();
   let terminalObserved = false;
-  const release = (chunk: Uint8Array) => {
+  const release = async (chunk: Uint8Array) => {
     releasedFrames += releasedDecoder.decode(chunk, { stream: true });
     let boundary = /\r?\n\r?\n/.exec(releasedFrames);
     while (boundary?.index !== undefined) {
       const state = streamEventState(releasedFrames.slice(0, boundary.index));
       if (['failed', 'completed', 'incomplete'].includes(state)) terminalObserved = true;
-      observe?.(state);
+      await observe?.(state);
       releasedFrames = releasedFrames.slice(boundary.index + boundary[0].length);
       boundary = /\r?\n\r?\n/.exec(releasedFrames);
     }
@@ -485,7 +487,7 @@ export async function prepareGatewayStream(
       async pull(controller) {
         if (index < held.length) {
           const chunk = held[index++]!;
-          release(chunk);
+          await release(chunk);
           controller.enqueue(chunk);
           return;
         }
@@ -495,7 +497,7 @@ export async function prepareGatewayStream(
           if (result.done) {
             reader.releaseLock();
             if (!terminalObserved) {
-              observe?.('unknown');
+              await observe?.('unknown');
               controller.error(
                 Object.assign(new Error('Provider stream ended without terminal evidence.'), {
                   code: 'provider_stream_truncated',
@@ -503,18 +505,18 @@ export async function prepareGatewayStream(
               );
             } else controller.close();
           } else {
-            release(result.value);
+            await release(result.value);
             controller.enqueue(result.value);
           }
         } catch (error) {
-          observe?.('failed', error);
+          await observe?.('failed', error);
           reader.releaseLock();
           controller.error(error);
         }
       },
       async cancel(reason) {
         try {
-          observe?.('interrupted');
+          await observe?.('interrupted');
           await reader.cancel(reason);
         } finally {
           reader.releaseLock();

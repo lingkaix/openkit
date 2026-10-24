@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
-import { openCoreDb } from '../storage/db.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, type WorkspaceDb } from '../storage/db.js';
 import { coreDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 
 /**
  * Creates a Store after initializing the native Core schema in a caller-owned fixture root.
@@ -26,4 +28,27 @@ export function initializeTestCore(dataRoot: string): void {
       coreDb.sqlite.close();
     }
   }
+}
+
+/**
+ * Opens the existing native owner for an already migrated private Workspace fixture.
+ * Callers must drain the shared client before they close handles or remove fixture roots.
+ *
+ * @param workspaceDb Existing migrated Workspace handle; no authority or schema is created.
+ * @returns Acknowledgement that the exact existing native scope is open.
+ */
+export async function openTestNativeWorkspace(workspaceDb: WorkspaceDb): Promise<void> {
+  const scope = nativeProductScope(workspaceDb.dataRoot, {
+    kind: 'workspace',
+    workspaceId: workspaceDb.workspaceId,
+  });
+  await getControlStoreWorkerClient().open({
+    database: `workspace:${scope.path}`,
+    path: scope.path,
+    dataRoot: workspaceDb.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
 }

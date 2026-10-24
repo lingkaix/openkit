@@ -42,6 +42,7 @@ import {
   decode as decodeControlProduct,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -3383,13 +3384,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       try {
         applyScopedMigrations(initializationDb);
-        authorizeWorkspaceBaselineInitialization(
-          initializationDb,
-          this.workspaceCollectionIdentity(
-            this.requireSession(environmentPackage.snapshotId),
-            'baseline'
-          )
+        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+          `workspace:${initializationDb.sqlite.name}`
         );
+        try {
+          authorizeWorkspaceBaselineInitialization(
+            initializationDb,
+            this.workspaceCollectionIdentity(
+              this.requireSession(environmentPackage.snapshotId),
+              'baseline'
+            )
+          );
+        } finally {
+          resume();
+        }
       } finally {
         initializationDb.sqlite.close();
       }
@@ -4591,13 +4599,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               : 'effect_failed',
           cause: result.cause,
         });
-      acceptWorkspaceBaseline(
-        db,
-        identity,
-        result.head as { tree: string; manifest: string },
-        expected,
-        sources[0]?.source.kind === 'git' ? (sources[0].source.commit ?? null) : null
+      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+        `workspace:${db.sqlite.name}`
       );
+      try {
+        acceptWorkspaceBaseline(
+          db,
+          identity,
+          result.head as { tree: string; manifest: string },
+          expected,
+          sources[0]?.source.kind === 'git' ? (sources[0].source.commit ?? null) : null
+        );
+      } finally {
+        resume();
+      }
     } finally {
       db.sqlite.close();
     }
@@ -4634,31 +4649,38 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             ? getWorkerBackendSession(this.coreDb, session.attemptId)
             : null;
         if (idleAnchor) {
-          const original = (
-            this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
-          ).getAgentSession(identity.agentSessionId).retainedStorage;
-          if (
-            !original ||
-            original.storageRef !== identity.storageRef ||
-            original.workSlotRef !== identity.workSlot ||
-            original.attachmentGeneration !== identity.attachmentGeneration
-          )
-            throw new WorkspaceCaptureRecoveryRequired(
-              'Idle capture lacks its original attachment generation.'
-            );
-          db.sqlite
-            .transaction(() => {
-              if (
-                listWorkspaceReconciliationRecords(db, identity.workspaceId).some(
-                  (record) => record.id === `wrr_capture_${identity.collectionId}`
+          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${db.sqlite.name}`
+          );
+          try {
+            const original = (
+              this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
+            ).getAgentSession(identity.agentSessionId).retainedStorage;
+            if (
+              !original ||
+              original.storageRef !== identity.storageRef ||
+              original.workSlotRef !== identity.workSlot ||
+              original.attachmentGeneration !== identity.attachmentGeneration
+            )
+              throw new WorkspaceCaptureRecoveryRequired(
+                'Idle capture lacks its original attachment generation.'
+              );
+            db.sqlite
+              .transaction(() => {
+                if (
+                  listWorkspaceReconciliationRecords(db, identity.workspaceId).some(
+                    (record) => record.id === `wrr_capture_${identity.collectionId}`
+                  )
                 )
-              )
-                throw new WorkspaceCaptureRecoveryRequired(
-                  'Idle capture already has its original continuation.'
-                );
-              recordWorkspaceCaptureRecovery(db, idleAnchor, identity, null);
-            })
-            .immediate();
+                  throw new WorkspaceCaptureRecoveryRequired(
+                    'Idle capture already has its original continuation.'
+                  );
+                recordWorkspaceCaptureRecovery(db, idleAnchor, identity, null);
+              })
+              .immediate();
+          } finally {
+            resume();
+          }
           // Workspace acknowledgement precedes Core drain; neither permits dispatch on partial failure.
           this.coreDb.sqlite
             .transaction(() => {
@@ -4711,23 +4733,30 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             );
             candidate = preserved.candidate;
           }
-          receipt = db.sqlite.transaction(() => {
-            if (
-              idleAnchor &&
-              !listWorkspaceReconciliationRecords(db, identity.workspaceId).some(
-                (record) =>
-                  record.id === `wrr_capture_${identity.collectionId}` &&
-                  record.stateAfter === 'requires-human'
+          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${db.sqlite.name}`
+          );
+          try {
+            receipt = db.sqlite.transaction(() => {
+              if (
+                idleAnchor &&
+                !listWorkspaceReconciliationRecords(db, identity.workspaceId).some(
+                  (record) =>
+                    record.id === `wrr_capture_${identity.collectionId}` &&
+                    record.stateAfter === 'requires-human'
+                )
               )
-            )
-              throw new WorkspaceCaptureRecoveryRequired(
-                'Idle capture disposition changed during collection.'
-              );
-            const accepted = acceptWorkspaceCapture(db, identity, durable, candidate, preserved);
-            if (idleAnchor)
-              completeWorkspaceCaptureRecovery(db, idleAnchor, identity, preserved ?? null);
-            return accepted;
-          })();
+                throw new WorkspaceCaptureRecoveryRequired(
+                  'Idle capture disposition changed during collection.'
+                );
+              const accepted = acceptWorkspaceCapture(db, identity, durable, candidate, preserved);
+              if (idleAnchor)
+                completeWorkspaceCaptureRecovery(db, idleAnchor, identity, preserved ?? null);
+              return accepted;
+            })();
+          } finally {
+            resume();
+          }
         } catch (error) {
           // Even an idle scan has an existing positive drain; raw absence grants no later scan.
           this.drainSandboxAdmission(
@@ -4737,7 +4766,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           try {
             const anchor = getWorkerBackendSession(this.coreDb, session.attemptId);
             if (!anchor) throw new Error('Workspace capture lost its original backend anchor.');
-            recordWorkspaceCaptureRecovery(db, anchor, identity, preserved ?? null);
+            const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+              `workspace:${db.sqlite.name}`
+            );
+            try {
+              recordWorkspaceCaptureRecovery(db, anchor, identity, preserved ?? null);
+            } finally {
+              resume();
+            }
           } catch {
             console.error(
               'Workspace capture recovery publication is incomplete; backend remains drained.'

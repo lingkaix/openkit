@@ -912,7 +912,7 @@ async function replayTaskModeCommand(
               checkpoint,
             });
           if (currentTurn.status === 'failed' && !currentTurn.agentSessionId)
-            return recoverSessionlessTaskAdmission({
+            return await recoverSessionlessTaskAdmission({
               coreDb,
               store,
               workspaceDb,
@@ -1124,7 +1124,7 @@ async function recoverDirectTaskModeCheckpoint(input: {
     throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
   }
   if (turn.status === 'failed' && !turn.agentSessionId && checkpoint.workerSessionId === null)
-    return recoverSessionlessTaskAdmission(input);
+    return await recoverSessionlessTaskAdmission(input);
   const initiatingItem = turn.items.find(
     (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
   );
@@ -1182,7 +1182,7 @@ async function recoverDirectTaskModeCheckpoint(input: {
       artifactIds: currentEvidence.artifactIds,
     };
     stage = workerTurnStageForStopReason(stopReason);
-    updateWorkerCheckpoint(input.workspaceDb, {
+    await updateWorkerCheckpoint(input.workspaceDb, {
       authorityActor: turn.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
@@ -1262,7 +1262,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     if (entries.length > 0) {
       if (entries.length !== 1)
         throw directTaskModeRecoveryError('The sessionless Task has no unique admission owner.');
-      const recovered = recoverSessionlessTaskAdmission({ ...checkpoint, ...input });
+      const recovered = await recoverSessionlessTaskAdmission({ ...checkpoint, ...input });
       if (recovered.turn.status !== 'failed') return 'live';
       if (!(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, checkpoint)))
         throw directTaskModeRecoveryError(
@@ -1356,7 +1356,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
         checkpoint.threadId,
         turn
       );
-      updateWorkerCheckpoint(input.workspaceDb, {
+      await updateWorkerCheckpoint(input.workspaceDb, {
         authorityActor: turn.triggerActor,
         workspaceId: checkpoint.workspaceId,
         threadId: checkpoint.threadId,
@@ -1587,7 +1587,7 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
  * @returns Current Task projection; a retained preparing checkpoint is projected failed only after complete proof.
  * @throws TurnStartValidationError when admission, execution absence or terminal proof conflicts.
  */
-function recoverSessionlessTaskAdmission(input: {
+async function recoverSessionlessTaskAdmission(input: {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
@@ -1597,7 +1597,7 @@ function recoverSessionlessTaskAdmission(input: {
   readonly turnId: string;
   readonly requestId: string;
   readonly requestInputHash: string;
-}): StartTaskModeResponse {
+}): Promise<StartTaskModeResponse> {
   const { checkpoint } = input;
   const entries = input.coreDb.sqlite
     .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
@@ -1825,7 +1825,7 @@ function recoverSessionlessTaskAdmission(input: {
       'The sessionless Task failure evidence contradicts its owners.'
     );
   if (checkpoint?.stage === 'preparing')
-    updateWorkerCheckpoint(input.workspaceDb, {
+    await updateWorkerCheckpoint(input.workspaceDb, {
       authorityActor: turn.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
@@ -3547,7 +3547,7 @@ export function createConversationService({
                   reservedTurnId: turnId,
                   ...(workerStorageChoice ? { workerStorageChoice } : {}),
                   onTurnCreated: async (created, agentSessionId) => {
-                    onAdmitted(created, agentSessionId);
+                    await onAdmitted(created, agentSessionId);
                     const createdAt = created.startedAt ?? new Date().toISOString();
                     for (const artifact of artifacts) {
                       await store.createItem({
@@ -4542,8 +4542,8 @@ export function createConversationService({
                     requestedAgentId: delegation.taskDecision!.worker.agentId,
                     ...(proposed.modelId ? { modelId: proposed.modelId } : {}),
                     reservedTurnId,
-                    onTurnCreated: (created, agentSessionId) => {
-                      onAdmitted(created, agentSessionId);
+                    onTurnCreated: async (created, agentSessionId) => {
+                      await onAdmitted(created, agentSessionId);
                       validateLiveTaskAdmission({
                         coreDb,
                         store,
@@ -5208,8 +5208,8 @@ export function createTaskStartOperation({
                 requestedAgentId: taskDecision.worker.agentId,
                 reservedTurnId: turnId,
                 ...(workerStorageChoice ? { workerStorageChoice } : {}),
-                onTurnCreated: (created, agentSessionId) => {
-                  onAdmitted(created, agentSessionId);
+                onTurnCreated: async (created, agentSessionId) => {
+                  await onAdmitted(created, agentSessionId);
                   validateLiveTaskAdmission({
                     coreDb,
                     store,

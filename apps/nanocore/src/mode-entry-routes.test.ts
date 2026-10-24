@@ -214,7 +214,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
     const turn = store.getTurnById(turnId);
     const db = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
-      bindWorkerCheckpointToPreparedSession({
+      await bindWorkerCheckpointToPreparedSession({
         coreDb,
         workspaceDb: db,
         store,
@@ -1981,6 +1981,7 @@ describe('mode command failure diagnostics', () => {
       ]);
     } finally {
       vi.restoreAllMocks();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -2348,6 +2349,7 @@ describe('Task durable admission response', () => {
         })
       ).toHaveLength(0);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -2492,7 +2494,7 @@ describe('Task durable admission response', () => {
         )
       );
     };
-    const checkpointDeletion = vi.spyOn(checkpointOwners, 'clearWorkerCheckpoint');
+    const deletedCheckpointTurns: string[] = [];
     const loopSettled = Promise.withResolvers<void>();
     const originalLoop = loopOwners.runWorkerTurnLoop;
     const loopObservation = vi
@@ -2506,6 +2508,7 @@ describe('Task durable admission response', () => {
       .mockImplementation((...args) =>
         originalCollection(...args).then(
           (result) => {
+            if (result) deletedCheckpointTurns.push(args[1].turnId);
             collected.resolve();
             return result;
           },
@@ -2857,7 +2860,7 @@ describe('Task durable admission response', () => {
         workspaceDb.sqlite.close();
       }
       expect(
-        checkpointDeletion.mock.calls.filter(([, , , clearedTurnId]) => clearedTurnId === turnId)
+        deletedCheckpointTurns.filter((clearedTurnId) => clearedTurnId === turnId)
       ).toHaveLength(entry === 'closeout-failure' ? 0 : 1);
       const closedAttempt = observeExecutionAttempts(coreDb).filter(
         (attempt) =>
@@ -2974,12 +2977,11 @@ describe('Task durable admission response', () => {
       await setImmediate();
       receiptPublication.mockRestore();
       terminalPublication.mockRestore();
-      checkpointDeletion.mockRestore();
       loopObservation.mockRestore();
       collectionObservation.mockRestore();
       await native.restore();
-      coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   }, 60_000);
@@ -3424,6 +3426,7 @@ describe('exact Task Agent selection', () => {
       async cleanup() {
         await settlePreparation();
         prepare.mockRestore();
+        await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });
       },
@@ -3839,6 +3842,7 @@ describe('route B queued Task receipts', () => {
       expect(executor.launches).toBe(0);
     } finally {
       prepare.mockRestore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -4758,7 +4762,8 @@ async function assistantWiringFixture(
         )
         .filter((row) => row.type === 'env.bound'),
     dispatchCount: () => createResponses.mock.calls.length + createChatCompletion.mock.calls.length,
-    close: () => {
+    close: async () => {
+      await shutdownControlStoreWorkerClient();
       vi.restoreAllMocks();
       syncBuiltinESMExports();
       workspaceDb.sqlite.close();
@@ -5040,7 +5045,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.createResponses).toHaveBeenCalledTimes(beforeReplay);
     } finally {
       await closeRetrievalServices();
-      f.close();
+      await f.close();
     }
   }, 120_000);
 
@@ -5181,7 +5186,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(invoked.mock.calls[1]![1].requestId).not.toBe(requestId);
       expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner)).items).toHaveLength(2);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5228,7 +5233,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.createResponses).toHaveBeenCalledOnce();
       expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner)).items).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5289,7 +5294,7 @@ describe('#144 real Assistant command wiring', () => {
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5319,7 +5324,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(f.createResponses).toHaveBeenCalledOnce();
       expect(f.createChatCompletion).not.toHaveBeenCalled();
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5568,7 +5573,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(JSON.stringify(publicViews)).not.toContain('assistantSkillAdmission');
       expect(JSON.stringify(publicViews)).not.toContain(f.imported!.version.digest);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5600,7 +5605,7 @@ describe('#144 real Assistant command wiring', () => {
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5636,7 +5641,7 @@ describe('#144 real Assistant command wiring', () => {
     } finally {
       release.resolve();
       await pending;
-      f.close();
+      await f.close();
     }
   });
 
@@ -5665,7 +5670,7 @@ describe('#144 real Assistant command wiring', () => {
         f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
       ).toEqual(items);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5713,7 +5718,7 @@ describe('#144 real Assistant command wiring', () => {
         f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
       ).toEqual(items);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5742,7 +5747,7 @@ describe('#144 real Assistant command wiring', () => {
         f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
       ).toHaveLength(2);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5802,7 +5807,7 @@ describe('#144 real Assistant command wiring', () => {
         message: 'Skill resource access is denied.',
       });
     } finally {
-      f.close();
+      await f.close();
     }
   }, 60_000);
 
@@ -5825,7 +5830,7 @@ describe('#144 real Assistant command wiring', () => {
         expect(f.dispatchCount()).toBe(0);
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5853,7 +5858,7 @@ describe('#144 real Assistant command wiring', () => {
       // The shared loop rejects schema-invalid values; semantic invalidity reaches native invocation.
       expect(native.invoked.mock.calls.length).toBeLessThanOrEqual(1);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5909,7 +5914,7 @@ describe('#144 real Assistant command wiring', () => {
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5959,7 +5964,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(observations[0]).not.toContain(f.dataRoot);
       expect(observations[0]).not.toContain('private-source-canary');
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -5985,7 +5990,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(observations.join('')).not.toContain('private-output-canary');
       expect(observations.join('')).not.toContain(f.dataRoot);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -6027,7 +6032,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(native.invoked).toHaveBeenCalledOnce();
       expect(native.dispatched).toHaveBeenCalledOnce();
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -6060,7 +6065,7 @@ describe('#144 real Assistant command wiring', () => {
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -6120,7 +6125,7 @@ describe('#144 real Assistant command wiring', () => {
     } finally {
       release.resolve();
       await pending;
-      f.close();
+      await f.close();
     }
   });
 
@@ -6165,7 +6170,7 @@ describe('#144 real Assistant command wiring', () => {
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -6204,7 +6209,7 @@ describe('#144 real Assistant command wiring', () => {
           .filter((item) => item.type === 'assistant-message')
       ).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -6246,7 +6251,7 @@ describe('#144 real Assistant command wiring', () => {
         expect(observations[0]).not.toContain('private-source-canary');
         expect(observations[0]).not.toContain(f.dataRoot);
       } finally {
-        f.close();
+        await f.close();
       }
     }
   );
@@ -6269,7 +6274,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(observations.join('')).not.toContain('private-handler-canary');
       expect(observations.join('')).not.toContain(f.dataRoot);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 });

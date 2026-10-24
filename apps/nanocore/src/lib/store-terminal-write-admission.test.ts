@@ -128,7 +128,7 @@ async function seedMcpBootItem(input: {
         { force: true, recursive: true }
       );
     }
-    const call = startCapabilityCall({
+    const call = await startCapabilityCall({
       agentId: 'agent_codex',
       agentSessionId: environmentPackage.scope.agentSessionId,
       authorityActor: turn.triggerActor,
@@ -147,7 +147,7 @@ async function seedMcpBootItem(input: {
       workspaceDb,
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    finishCapabilityCall({
+    await finishCapabilityCall({
       callId: call.id,
       now: ledgerNow,
       status: 'succeeded',
@@ -161,6 +161,7 @@ async function seedMcpBootItem(input: {
         .run(call.id);
     }
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
   }
   if (input.skipExistingItem) {
@@ -341,7 +342,7 @@ describe('post-terminal write admission', () => {
         triggerActor: turn.triggerActor,
         workspaceInputIds: [],
       });
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         agentId: 'agent_codex',
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: turn.triggerActor,
@@ -359,8 +360,9 @@ describe('post-terminal write admission', () => {
         workspaceDb,
         workspaceId: workspaceIdForOwner(turn.owner),
       });
-      finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
+      await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
 
@@ -381,7 +383,7 @@ describe('post-terminal write admission', () => {
     const conflictDb = openWorkspaceDb(conflictRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(conflictDb);
     try {
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         agentId: 'agent_codex',
         agentSessionId: 'as_00000000-0000-775f-b465-57ce886fa280',
         authorityActor: conflictTurn.triggerActor,
@@ -399,8 +401,9 @@ describe('post-terminal write admission', () => {
         workspaceDb: conflictDb,
         workspaceId: workspaceIdForOwner(conflictTurn.owner),
       });
-      finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb: conflictDb });
+      await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb: conflictDb });
     } finally {
+      await shutdownControlStoreWorkerClient();
       conflictDb.sqlite.close();
     }
     await conflictStore.createItem(

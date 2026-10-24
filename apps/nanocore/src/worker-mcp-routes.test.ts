@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+
 import Database from 'better-sqlite3';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -167,6 +169,7 @@ import {
 } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from './test-support/store.js';
 import {
   createVaultGrant,
   importWorkspaceVaultGrants,
@@ -851,9 +854,9 @@ describe('worker MCP routes', () => {
       await approvalClient.close();
       await gateway.close();
       vaultUnlockState.lock();
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -1769,8 +1772,8 @@ describe('worker MCP routes', () => {
       await sessionClient.close().catch(() => undefined);
       await statelessClient.close().catch(() => undefined);
       await workerMcpGateway.close();
-      coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -3178,8 +3181,8 @@ describe('worker MCP routes', () => {
       submitObservation.mockRestore();
       await native.restore();
       await workerMcpGateway.close();
-      workspaceDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -3353,83 +3356,6 @@ describe('worker MCP routes', () => {
           }
         )
       );
-      if (change === 'unchanged') {
-        const db = openWorkspaceDb(dataRoot, workspaceId);
-        recordMcpToolSchemaSnapshot({
-          environmentPackage,
-          serverId: 'echo',
-          source: 'live',
-          tools: [mcpEchoTool()],
-          schemaSnapshotId: 'nested-lock-schema',
-          workspaceDb: db,
-          workspaceId,
-        });
-        const before = new Set(
-          listWorkspaceCapabilityCalls(db, workspaceId).map((call) => call.id)
-        );
-        const start = capabilityLedger.startCapabilityCall;
-        let nativeFailure: unknown;
-        const discoveries = vi.spyOn(workerMcpGateway, 'listTools');
-        const admission = vi
-          .spyOn(capabilityLedger, 'startCapabilityCall')
-          .mockImplementation((input) => {
-            if (input.operation !== 'mcp.list-tools') return start(input);
-            expect(
-              listWorkspaceCapabilityCalls(db, workspaceId).filter((call) => !before.has(call.id))
-            ).toMatchObject([{ operation: 'mcp.call-tool', status: 'running' }]);
-            db.sqlite.exec('BEGIN IMMEDIATE');
-            try {
-              return start(input);
-            } catch (error) {
-              nativeFailure = error;
-              throw error;
-            } finally {
-              db.sqlite.exec('ROLLBACK');
-            }
-          });
-        try {
-          const refusal: unknown = await client
-            .callTool({
-              name: 'echo',
-              arguments: { message: 'nested storage refusal' },
-            })
-            .then(
-              () => undefined,
-              (error: unknown) => error
-            );
-          expect(nativeFailure).toMatchObject({ code: 'SQLITE_BUSY' });
-          expect(discoveries).not.toHaveBeenCalled();
-          expect(upstream).not.toHaveBeenCalled();
-          expect(
-            listWorkspaceCapabilityCalls(db, workspaceId).filter((call) => !before.has(call.id))
-          ).toMatchObject([
-            {
-              operation: 'mcp.call-tool',
-              status: 'failed',
-              errorCode: 'operation_storage_unavailable',
-            },
-          ]);
-          expect(refusal).toMatchObject({
-            data: {
-              code: 'operation_storage_unavailable',
-              status: 503,
-              message: expect.stringMatching(/inspect.*(original|request|outcome)/i),
-            },
-          });
-          const received = refusal as { message: string; data: { message: string } };
-          expect(received.message).toContain(received.data.message);
-          const publicText = JSON.stringify({ message: received.message, data: received.data });
-          expect(publicText).not.toContain(dataRoot);
-          expect(publicText).not.toMatch(
-            /SQLITE|database is locked|capability_calls|INSERT|SELECT|roll.?back|not.?committed/i
-          );
-        } finally {
-          admission.mockRestore();
-          discoveries.mockRestore();
-          if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
-          db.sqlite.close();
-        }
-      }
       await client.listTools();
       const pending = await client.callTool({
         name: 'echo',
@@ -3553,9 +3479,10 @@ describe('worker MCP routes', () => {
               ? 'execution-error'
               : 'approved-executed';
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      await openTestNativeWorkspace(workspaceDb);
       const captured = readPendingRequest(workspaceDb.sqlite, approvalItem.approvalRequestId)!;
       let prepared: PreparedCapturedPendingCall | undefined;
-      let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+      let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
       const context = { catalog, coreDb, workspaceDb, workerMcpGateway, record: captured };
       const respond = () =>
         respondRecordedApproval({
@@ -3600,8 +3527,8 @@ describe('worker MCP routes', () => {
               sqlite: workspaceDb.sqlite,
               prepared,
             }),
-          admitExecution: (failure) => {
-            executionCall = admitCapturedPendingCall(
+          admitExecution: async (failure) => {
+            executionCall = await admitCapturedPendingCall(
               captured,
               workspaceDb,
               '00000000-0000-4000-8000-000000000117',
@@ -3673,14 +3600,15 @@ describe('worker MCP routes', () => {
         expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(usage);
         expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
         if (change === 'unchanged') {
+          await openTestNativeWorkspace(workspaceDb);
           const scope = { workspaceDb, workspaceId, catalogEntryId: 'echo' };
           const currentId = () =>
             readCurrentMcpToolSchemaSnapshot({ ...scope, pinnedSchemaSnapshotId: null })
               ?.schemaSnapshotId;
           type Tool = { name: string; inputSchema: Record<string, unknown> };
           const tool = (v: string | number) => ({ inputSchema: { const: v }, name: 'echo' });
-          const record = (id: string, tools: Tool[]) =>
-            recordMcpToolSchemaSnapshot({
+          const record = async (id: string, tools: Tool[]) =>
+            await recordMcpToolSchemaSnapshot({
               environmentPackage,
               serverId: 'echo',
               source: 'live',
@@ -3699,14 +3627,7 @@ describe('worker MCP routes', () => {
               (row) => row.schemaSnapshotId === referencedId
             )?.source
           ).toBe('live');
-          const fixedNow = vi
-            .spyOn(Date, 'now')
-            .mockReturnValue(Date.parse('2026-09-03T01:00:00Z'));
-          try {
-            for (const label of ['a', 'b', 'a']) record(`mcpsnap_${label}`, [tool(label)]);
-          } finally {
-            fixedNow.mockRestore();
-          }
+          for (const label of ['a', 'b', 'a']) await record(`mcpsnap_${label}`, [tool(label)]);
           expect(currentId()).toBe('mcpsnap_a');
           const tools = [{ inputSchema: { type: 'object' }, name: 'imported' }];
           const history = (id: string, catalogEntryId: string) => ({
@@ -3720,7 +3641,9 @@ describe('worker MCP routes', () => {
             tools,
             workspaceId,
           });
+          await shutdownControlStoreWorkerClient();
           importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_imported_history', 'echo')]);
+          await openTestNativeWorkspace(workspaceDb);
           expect(currentId()).toBe('mcpsnap_a');
           const captures = () =>
             listWorkspaceAuditEvents(workspaceDb, workspaceId).filter(
@@ -3729,20 +3652,24 @@ describe('worker MCP routes', () => {
                 event.resource === 'mcp-schema:mcpsnap_imported_history'
             );
           const beforePromotion = captures().length;
-          record('mcpsnap_imported_history', tools);
-          record('mcpsnap_imported_history', tools);
+          await record('mcpsnap_imported_history', tools);
+          await record('mcpsnap_imported_history', tools);
           expect(captures()).toHaveLength(beforePromotion + 1);
           expect(currentId()).toBe('mcpsnap_imported_history');
+          await shutdownControlStoreWorkerClient();
           importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_cross_catalog', 'other')]);
+          await openTestNativeWorkspace(workspaceDb);
           const beforeConflict = listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId);
-          expect(() => record('mcpsnap_cross_catalog', tools)).toThrow(Error);
+          await expect(async () => await record('mcpsnap_cross_catalog', tools)).rejects.toThrow(
+            Error
+          );
           expect(listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId)).toEqual(
             beforeConflict
           );
           const churn = Array.from({ length: 10 }, (_, index) => `mcpsnap_retention_${index}`);
-          churn.forEach((id, index) => {
-            record(id, [tool(index)]);
-          });
+          for (const [index, id] of churn.entries()) {
+            await record(id, [tool(index)]);
+          }
           expect(churn.some((id) => retained(id) === null)).toBe(true);
           expect(retained(referencedId)).toEqual(referenced);
           expect(currentId()).toBe(churn.at(-1));
@@ -3768,7 +3695,7 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it.each([
+  it.for([
     {
       transientPreparation: false,
       entry: 'direct Task',
@@ -3801,825 +3728,896 @@ describe('worker MCP routes', () => {
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
     },
-  ])('starts a definition-derived $entry, observes attention, responds and delivers the captured outcome once', async ({
-    transientPreparation,
-    ownerCommand,
-    refuseFirst,
-    decision,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-'));
-    const exportRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-export-'));
-    const callFile = join(dataRoot, 'mcp-calls.txt');
-    const coreDb = openCoreDb(dataRoot);
-    const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const agentSetup = createTestAgentSetup({
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-      mcpIds: ['echo'],
-    });
-    admitTestNativeEnvironment(coreDb, agentSetup.manifest);
-    let repositoryApprovalId: string | null = null;
-    const catalog = parseWorkspaceMcpServerCatalog({
-      schemaVersion: 1,
-      servers: [
-        {
-          allowedTools: ['echo'],
-          enabled: true,
-          id: 'echo',
-          schemaPolicy: 'tracking',
-          timeoutMs: 2_000,
-          transport: {
-            args: [
-              fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url)),
-              callFile,
-            ],
-            command: process.execPath,
-            kind: 'stdio',
+  ])(
+    'starts a definition-derived $entry, observes attention, responds and delivers the captured outcome once',
+    { timeout: 60_000 },
+    async (
+      { transientPreparation, ownerCommand, refuseFirst, decision },
+      { signal: caseSignal }
+    ) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-'));
+      const exportRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-export-'));
+      const callFile = join(dataRoot, 'mcp-calls.txt');
+      const coreDb = openCoreDb(dataRoot);
+      const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000n);
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const agentSetup = createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+        mcpIds: ['echo'],
+      });
+      admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+      let repositoryApprovalId: string | null = null;
+      const catalog = parseWorkspaceMcpServerCatalog({
+        schemaVersion: 1,
+        servers: [
+          {
+            allowedTools: ['echo'],
+            enabled: true,
+            id: 'echo',
+            schemaPolicy: 'tracking',
+            timeoutMs: 2_000,
+            transport: {
+              args: [
+                fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url)),
+                callFile,
+              ],
+              command: process.execPath,
+              kind: 'stdio',
+            },
           },
-        },
-      ],
-    });
-    const lifecyclePolicy = admitTestMcpApproval({
-      coreDb,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      serverId: 'echo',
-      toolName: 'echo',
-      userId: 'usr_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: testEntityId('tu', 'lifecycle-policy'),
-    });
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot,
-      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-        agentManifests: [agentSetup.manifest],
+        ],
+      });
+      const lifecyclePolicy = admitTestMcpApproval({
+        coreDb,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        serverId: 'echo',
+        toolName: 'echo',
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: testEntityId('tu', 'lifecycle-policy'),
+      });
+      const runtimeConfigManager = createRuntimeConfigManager({
         dataRoot,
-        gatewayConfig: createTestGatewayConfig(),
-        openKitConfig: {
-          defaults: { defaultAgentId: agentSetup.manifest.id },
-          policy: { mediation: lifecyclePolicy },
-        },
-        providerRegistry: new ProviderRegistry([
-          {
-            displayName: 'Agent OpenRouter',
-            id: 'agent-openrouter',
-            kind: 'local',
-            models: ['openai/gpt-5.2'],
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          agentManifests: [agentSetup.manifest],
+          dataRoot,
+          gatewayConfig: createTestGatewayConfig(),
+          openKitConfig: {
+            defaults: { defaultAgentId: agentSetup.manifest.id },
+            policy: { mediation: lifecyclePolicy },
           },
-        ]),
-        workspaceConfigs: [
-          {
-            config: {
-              schemaVersion: 1,
-              workspace: {
-                agents: [{ agentId: agentSetup.manifest.id, profileId: 'default' }],
-                defaultAgentId: agentSetup.manifest.id,
-                name: 'Demo Workspace',
-              },
+          providerRegistry: new ProviderRegistry([
+            {
+              displayName: 'Agent OpenRouter',
+              id: 'agent-openrouter',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
             },
-            path: join(
-              dataRoot,
-              'workspaces',
-              'ws_00000000-0000-7000-8000-000000000001',
-              'config',
-              'workspace.jsonc'
-            ),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        ],
-        workspaceMcpServerCatalogs: [
-          {
-            catalog,
-            path: join(
-              dataRoot,
-              'workspaces',
-              'ws_00000000-0000-7000-8000-000000000001',
-              'config',
-              'catalog/catalog.json'
-            ),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        ],
-      }),
-    });
-    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment_mcp_lifecycle',
-      identityId: 'identity_mcp_lifecycle',
-      observedAt: '2026-09-03T00:00:00.000Z',
-      targetId: 'target_local',
-    });
-    upsertNanoHostRuntimeTarget(coreDb, {
-      ...target,
-      freshEmpty: true,
-      observedAt: '2026-09-03T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-    const terminalEvents = new Map<string, Buffer>();
-    let liveCaptureCount = 0;
-    const sandboxSessionRoot = join(dataRoot, 'sandbox-sessions');
-    let liveFilePath = '';
-    const nanoHostSessionDispatch: NanoHostSessionDispatch = {
-      async effect(
-        requestOrConnection: object,
-        carriedRequest?: NanoHostSessionEffectRequest
-      ): Promise<unknown> {
-        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
-        if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
-        if (request.kind === 'image.inspect') {
-          return {
-            digest: request.input.imageDigest,
-            environmentDefaults: {
-              defaultsDigest:
-                'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
-              values: {},
-            },
-            platform: { architecture: 'arm64', os: 'linux' },
-            storageLayout: {
-              family: 'openkit-worker',
-              gid: 1000,
-              targets: [{ target: '/openkit/threads' }, { target: '/workspace' }],
-              uid: 1000,
-              version: '1',
-              workingDirectory: '/workspace',
-            },
-          };
-        }
-        if (request.kind === 'sandbox.create') {
-          return {
-            sandboxId: request.input.sandboxId,
-            state: 'created',
-            storage: {
-              ...request.input.storage,
-              targets: request.input.storage.targets.map((target) => ({
-                ...target,
-                initialized: true,
-              })),
-            },
-          };
-        }
-        if (request.kind === 'workspace.collect') {
-          // This source-less fixture accepts the real empty baseline before native Turn admission.
-          return request.input.mode === 'baseline'
-            ? {
-                requestId: request.requestId,
-                outcome: 'baseline',
-                head: {
-                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          ]),
+          workspaceConfigs: [
+            {
+              config: {
+                schemaVersion: 1,
+                workspace: {
+                  agents: [{ agentId: agentSetup.manifest.id, profileId: 'default' }],
+                  defaultAgentId: agentSetup.manifest.id,
+                  name: 'Demo Workspace',
                 },
-              }
-            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
-        }
-        if (request.kind === 'reference.import') return { state: 'imported' };
-        if (request.kind === 'bridge.open') {
-          return { accepted: true, integrationReady: true, state: 'open' };
-        }
-        if (request.kind === 'file.export') {
-          if (request.input.purpose === 'artifact-submission') {
-            expect(request.signal).toBeInstanceOf(AbortSignal);
-            liveCaptureCount += 1;
-            expect(request.input.maxByteLength).toBe(1_000_000_001);
-            const directory = mkdtempSync(join(exportRoot, 'live-'));
-            const stagingPath = join(directory, 'body');
-            expect(request.input.slot).toBe('turn-output');
-            expect(request.input.relativePath).toMatch(/^[A-Za-z0-9_-]+\/outputs\/submitted\.md$/);
-            expect(join(sandboxSessionRoot, request.input.relativePath)).toBe(liveFilePath);
-            const liveFileBytes = readFileSync(liveFilePath);
-            writeFileSync(stagingPath, liveFileBytes);
+              },
+              path: join(
+                dataRoot,
+                'workspaces',
+                'ws_00000000-0000-7000-8000-000000000001',
+                'config',
+                'workspace.jsonc'
+              ),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+          ],
+          workspaceMcpServerCatalogs: [
+            {
+              catalog,
+              path: join(
+                dataRoot,
+                'workspaces',
+                'ws_00000000-0000-7000-8000-000000000001',
+                'config',
+                'catalog/catalog.json'
+              ),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+          ],
+        }),
+      });
+      const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment_mcp_lifecycle',
+        identityId: 'identity_mcp_lifecycle',
+        observedAt: '2026-09-03T00:00:00.000Z',
+        targetId: 'target_local',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...target,
+        freshEmpty: true,
+        observedAt: '2026-09-03T00:00:01.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      const terminalEvents = new Map<string, Buffer>();
+      let liveCaptureCount = 0;
+      const sandboxSessionRoot = join(dataRoot, 'sandbox-sessions');
+      let liveFilePath = '';
+      const nanoHostSessionDispatch: NanoHostSessionDispatch = {
+        async effect(
+          requestOrConnection: object,
+          carriedRequest?: NanoHostSessionEffectRequest
+        ): Promise<unknown> {
+          const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+          if (request.kind === 'image.inspect') {
             return {
-              stagingPath,
-              byteLength: liveFileBytes.length,
-              sha256: `sha256:${createHash('sha256').update(liveFileBytes).digest('hex')}`,
+              digest: request.input.imageDigest,
+              environmentDefaults: {
+                defaultsDigest:
+                  'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+                values: {},
+              },
+              platform: { architecture: 'arm64', os: 'linux' },
+              storageLayout: {
+                family: 'openkit-worker',
+                gid: 1000,
+                targets: [{ target: '/openkit/threads' }, { target: '/workspace' }],
+                uid: 1000,
+                version: '1',
+                workingDirectory: '/workspace',
+              },
             };
           }
-          if (request.input.presence === 'optional') return { state: 'absent' };
-          const relativePath = String(request.input.relativePath);
-          const packageSnapshotId = String(request.input.packageSnapshotId);
-          const bytes = relativePath.endsWith('events.jsonl')
-            ? terminalEvents.get(packageSnapshotId)
-            : Buffer.alloc(0);
-          if (!bytes) throw new Error('The terminal transcript is unavailable.');
-          const directory = mkdtempSync(join(exportRoot, 'result-'));
-          const stagingPath = join(directory, 'payload');
-          writeFileSync(stagingPath, bytes);
-          return {
-            byteLength: bytes.byteLength,
-            sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-            stagingPath,
-          };
-        }
-        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
-          return { state: 'deleted' };
-        }
-        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
-      },
-      async poll() {
-        return null;
-      },
-      async result() {},
-      async route() {
-        throw new Error('Unexpected semantic route.');
-      },
-    };
-    const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-    const startup = observeNativeTaskStartup(store);
-    const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
-      fileAdmission,
-      coreDb,
-      readRuntimeConfig: () => runtimeConfigManager.current(),
-      env: {},
-      nanoHostSessionDispatch,
-      store,
-      workerControlGateway,
-      workspaceMutationAdmission,
-    });
-    const execution = vi.spyOn(workerLifecycleRuntime.turnExecutor, 'startTurn');
-    let firstTurnId: string | undefined;
-    const firstResult = Promise.withResolvers<void>();
-    void firstResult.promise.catch(() => undefined);
-    const updateItem = store.updateItem.bind(store);
-    const resultPublication = vi
-      .spyOn(store, 'updateItem')
-      .mockImplementation((id, input, admission) => {
-        const publication = updateItem(id, input, admission);
-        if (
-          firstTurnId &&
-          id === deriveEntityId('it', ['worker-result', firstTurnId]) &&
-          'level' in input &&
-          input.level === 'info'
-        ) {
-          void publication.then(() => firstResult.resolve(), firstResult.reject);
-        }
-        return publication;
-      });
-    const app = createApp({
-      fileAdmission,
-      coreDb,
-      dataRoot,
-      nanoHostSessionDispatch,
-      runtimeConfigManager,
-      store,
-      workerControlGateway,
-      workerLifecycleRuntime,
-      workerMcpGateway,
-      workspaceMutationAdmission,
-    });
-
-    const dispatchNext = async (
-      operation:
-        | 'session.open'
-        | 'turn.start'
-        | 'turn.interrupt'
-        | 'session.inspect'
-        | 'session.close'
-    ) => {
-      for (let attempt = 0; attempt < 1_000; attempt += 1) {
-        const bindings = coreDb.sqlite
-          .prepare(`SELECT sandbox_integration_binding_ref AS integrationRef
-            FROM sandbox_runtime_records`)
-          .all() as { integrationRef: string }[];
-        let binding: { integrationRef: string } | undefined;
-        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
-        for (const candidate of bindings) {
-          command = dispatchNanoHostHarnessOperation(coreDb, {
-            sandboxIntegrationBindingRef: candidate.integrationRef,
-          });
-          if (command) {
-            binding = candidate;
-            break;
+          if (request.kind === 'sandbox.create') {
+            return {
+              sandboxId: request.input.sandboxId,
+              state: 'created',
+              storage: {
+                ...request.input.storage,
+                targets: request.input.storage.targets.map((target) => ({
+                  ...target,
+                  initialized: true,
+                })),
+              },
+            };
           }
-        }
-        if (command) {
-          if (operation === 'turn.start' && command.operation === 'session.inspect') {
-            workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
-            settle(
-              { command, integrationRef: binding!.integrationRef },
-              {
-                childState: 'absent',
-                cleanupState: 'clean',
-                nativeHandleDigest: 'b'.repeat(64),
-                nativeHandleState: 'ready',
-                state: 'open',
-              }
-            );
-            continue;
+          if (request.kind === 'workspace.collect') {
+            // This source-less fixture accepts the real empty baseline before native Turn admission.
+            return request.input.mode === 'baseline'
+              ? {
+                  requestId: request.requestId,
+                  outcome: 'baseline',
+                  head: {
+                    tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                    manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                  },
+                }
+              : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
           }
-          expect(command.operation).toBe(operation);
-          workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
-          return { command, integrationRef: binding!.integrationRef };
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 1));
-      }
-      throw new Error(
-        `Expected queued NanoHost Harness operation: ${operation}; Turns: ${JSON.stringify(
-          store
-            .listThreads('ws_00000000-0000-7000-8000-000000000001')
-            .flatMap((thread) =>
-              store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)
-            )
-            .map((turn) => ({ id: turn.id, status: turn.status, error: turn.error }))
-        )}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
-      );
-    };
-    const settle = (
-      dispatched: Awaited<ReturnType<typeof dispatchNext>>,
-      body: Readonly<Record<string, unknown>>
-    ) => {
-      const result = {
-        body,
-        disposition: 'succeeded' as const,
-        harnessInstanceId: dispatched.command.harnessInstanceId,
-        operationId: dispatched.command.operationId,
-        schemaVersion: 2 as const,
-        sequence: dispatched.command.sequence,
+          if (request.kind === 'reference.import') return { state: 'imported' };
+          if (request.kind === 'bridge.open') {
+            return { accepted: true, integrationReady: true, state: 'open' };
+          }
+          if (request.kind === 'file.export') {
+            if (request.input.purpose === 'artifact-submission') {
+              expect(request.signal).toBeInstanceOf(AbortSignal);
+              liveCaptureCount += 1;
+              expect(request.input.maxByteLength).toBe(1_000_000_001);
+              const directory = mkdtempSync(join(exportRoot, 'live-'));
+              const stagingPath = join(directory, 'body');
+              expect(request.input.slot).toBe('turn-output');
+              expect(request.input.relativePath).toMatch(
+                /^[A-Za-z0-9_-]+\/outputs\/submitted\.md$/
+              );
+              expect(join(sandboxSessionRoot, request.input.relativePath)).toBe(liveFilePath);
+              const liveFileBytes = readFileSync(liveFilePath);
+              writeFileSync(stagingPath, liveFileBytes);
+              return {
+                stagingPath,
+                byteLength: liveFileBytes.length,
+                sha256: `sha256:${createHash('sha256').update(liveFileBytes).digest('hex')}`,
+              };
+            }
+            if (request.input.presence === 'optional') return { state: 'absent' };
+            const relativePath = String(request.input.relativePath);
+            const packageSnapshotId = String(request.input.packageSnapshotId);
+            const bytes = relativePath.endsWith('events.jsonl')
+              ? terminalEvents.get(packageSnapshotId)
+              : Buffer.alloc(0);
+            if (!bytes) throw new Error('The terminal transcript is unavailable.');
+            const directory = mkdtempSync(join(exportRoot, 'result-'));
+            const stagingPath = join(directory, 'payload');
+            writeFileSync(stagingPath, bytes);
+            return {
+              byteLength: bytes.byteLength,
+              sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+              stagingPath,
+            };
+          }
+          if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+            return { state: 'deleted' };
+          }
+          throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+        },
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('Unexpected semantic route.');
+        },
       };
-      settleNanoHostHarnessOperation(coreDb, {
-        result,
-        sandboxIntegrationBindingRef: dispatched.integrationRef,
-        timestamp: new Date().toISOString(),
+      const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+      const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+      const startup = observeNativeTaskStartup(store);
+      const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+        fileAdmission,
+        coreDb,
+        readRuntimeConfig: () => runtimeConfigManager.current(),
+        env: {},
+        nanoHostSessionDispatch,
+        store,
+        workerControlGateway,
+        workspaceMutationAdmission,
       });
-      workerLifecycleRuntime.acceptNanoHostHarnessResult(result);
-    };
-    const driveTask = async (blocked: boolean) => {
-      if (blocked) {
-        const opened = await dispatchNext('session.open');
-        settle(opened, {
-          maxActiveTurns: opened.command.body.maxActiveTurns,
-          nativeHandleDigest: null,
-          nativeHandleState: 'pending',
-          state: 'open',
+      const execution = vi.spyOn(workerLifecycleRuntime.turnExecutor, 'startTurn');
+      let firstTurnId: string | undefined;
+      const firstResult = Promise.withResolvers<void>();
+      void firstResult.promise.catch(() => undefined);
+      const updateItem = store.updateItem.bind(store);
+      const resultPublication = vi
+        .spyOn(store, 'updateItem')
+        .mockImplementation((id, input, admission) => {
+          const publication = updateItem(id, input, admission);
+          if (
+            firstTurnId &&
+            id === deriveEntityId('it', ['worker-result', firstTurnId]) &&
+            'level' in input &&
+            input.level === 'info'
+          ) {
+            void publication.then(() => firstResult.resolve(), firstResult.reject);
+          }
+          return publication;
         });
-      }
-      const started = await dispatchNext('turn.start');
-      settle(started, {
-        nativeHandleDigest: blocked ? null : 'b'.repeat(64),
-        nativeHandleState: blocked ? 'pending' : 'ready',
-        state: 'started',
+      const app = createApp({
+        fileAdmission,
+        coreDb,
+        dataRoot,
+        nanoHostSessionDispatch,
+        runtimeConfigManager,
+        store,
+        workerControlGateway,
+        workerLifecycleRuntime,
+        workerMcpGateway,
+        workspaceMutationAdmission,
       });
-      const commandBody = started.command.body as Record<string, unknown>;
-      const capabilityToken = String(commandBody.capabilityToken);
-      const workerControlToken = String(commandBody.workerControlToken);
-      const environmentPackage = workerControlGateway.authenticatePackageToken(
-        `Bearer ${capabilityToken}`,
-        { tokenFamily: 'capability' }
-      );
-      await startup.waitFor(environmentPackage.scope.turnId);
-      expect(environmentPackage.workspace.inputs.every((input) => input.kind === 'generated')).toBe(
-        true
-      );
-      expect(environmentPackage.workspace.outputs).toEqual([
-        {
-          id: 'turn-output-root',
-          path: `/openkit/sessions/${environmentPackage.scope.agentSessionId}/outputs`,
-          registerAsArtifacts: true,
-          retention: 'sync-on-turn-end',
-        },
-      ]);
-      const localOutputRoot = join(
-        sandboxSessionRoot,
-        environmentPackage.scope.agentSessionId,
-        'outputs'
-      );
-      mkdirSync(localOutputRoot, { recursive: true });
-      liveFilePath = join(localOutputRoot, 'submitted.md');
-      writeFileSync(liveFilePath, 'Captured by the existing configured runtime.\n');
-      const lineage = {
-        agentSessionId: environmentPackage.scope.agentSessionId,
-        packageSnapshotId: environmentPackage.snapshotId,
-        requestId: environmentPackage.scope.requestId,
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      };
-      const processKey = createHash('sha256')
-        .update(`process:${environmentPackage.snapshotId}`)
-        .digest('base64url');
-      const heartbeat = await app.request('/api/worker-control/heartbeat', {
-        body: JSON.stringify({
-          body: {
-            message: null,
-            processKeyHash: createHash('sha256')
-              .update(Buffer.from(processKey, 'base64url'))
-              .digest('base64url'),
-            status: 'starting',
-          },
-          lineage,
-          operation: 'heartbeat',
-          schemaVersion: 2,
-          sequence: 0,
-        }),
-        headers: {
-          authorization: `Bearer ${workerControlToken}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      expect(heartbeat.status, await heartbeat.clone().text()).toBe(200);
 
-      const work = new Client({ name: 'submission-composition-test', version: '1.0.0' });
-      await work.connect(
-        new StreamableHTTPClientTransport(
-          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
-          {
-            fetch: (request, init) => app.fetch(new Request(request, init)),
-            requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+      const dispatchNext = async (
+        operation:
+          | 'session.open'
+          | 'turn.start'
+          | 'turn.interrupt'
+          | 'session.inspect'
+          | 'session.close'
+      ) => {
+        while (!caseSignal.aborted) {
+          const bindings = coreDb.sqlite
+            .prepare(`SELECT sandbox_integration_binding_ref AS integrationRef
+            FROM sandbox_runtime_records`)
+            .all() as { integrationRef: string }[];
+          let binding: { integrationRef: string } | undefined;
+          let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+          for (const candidate of bindings) {
+            command = dispatchNanoHostHarnessOperation(coreDb, {
+              sandboxIntegrationBindingRef: candidate.integrationRef,
+            });
+            if (command) {
+              binding = candidate;
+              break;
+            }
           }
-        )
-      );
-      const discovery = await work.listTools();
-      expect(
-        discovery.tools.find((tool) => tool.name === 'work_artifact_submit')?.description
-      ).toContain(environmentPackage.workspace.outputs[0]!.path);
-      const submission = {
-        requestId: `capture-${environmentPackage.scope.turnId}`,
-        path: `${environmentPackage.workspace.outputs[0]!.path}/submitted.md`,
-        kind: 'report',
-        title: 'Captured report',
-        mediaType: 'text/markdown',
+          if (command) {
+            if (operation === 'turn.start' && command.operation === 'session.inspect') {
+              workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
+              settle(
+                { command, integrationRef: binding!.integrationRef },
+                {
+                  childState: 'absent',
+                  cleanupState: 'clean',
+                  nativeHandleDigest: 'b'.repeat(64),
+                  nativeHandleState: 'ready',
+                  state: 'open',
+                }
+              );
+              continue;
+            }
+            expect(command.operation).toBe(operation);
+            workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
+            return { command, integrationRef: binding!.integrationRef };
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        }
+        throw new Error(
+          `Expected queued NanoHost Harness operation: ${operation}; Turns: ${JSON.stringify(
+            store
+              .listThreads('ws_00000000-0000-7000-8000-000000000001')
+              .flatMap((thread) =>
+                store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)
+              )
+              .map((turn) => ({ id: turn.id, status: turn.status, error: turn.error }))
+          )}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
+        );
       };
-      const beforeRefusal = liveCaptureCount;
-      await expect(
-        work.callTool({
-          name: 'work_artifact_submit',
-          arguments: {
-            ...submission,
-            requestId: `path-refusal-${environmentPackage.scope.turnId}`,
-            path: '/workspace/.openkit/cache/escape.md',
+      const settle = (
+        dispatched: Awaited<ReturnType<typeof dispatchNext>>,
+        body: Readonly<Record<string, unknown>>
+      ) => {
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: dispatched.command.harnessInstanceId,
+          operationId: dispatched.command.operationId,
+          schemaVersion: 2 as const,
+          sequence: dispatched.command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: dispatched.integrationRef,
+          timestamp: new Date().toISOString(),
+        });
+        workerLifecycleRuntime.acceptNanoHostHarnessResult(result);
+      };
+      const driveTask = async (blocked: boolean) => {
+        if (blocked) {
+          const opened = await dispatchNext('session.open');
+          settle(opened, {
+            maxActiveTurns: opened.command.body.maxActiveTurns,
+            nativeHandleDigest: null,
+            nativeHandleState: 'pending',
+            state: 'open',
+          });
+        }
+        const started = await dispatchNext('turn.start');
+        settle(started, {
+          nativeHandleDigest: blocked ? null : 'b'.repeat(64),
+          nativeHandleState: blocked ? 'pending' : 'ready',
+          state: 'started',
+        });
+        const commandBody = started.command.body as Record<string, unknown>;
+        const capabilityToken = String(commandBody.capabilityToken);
+        const workerControlToken = String(commandBody.workerControlToken);
+        const environmentPackage = workerControlGateway.authenticatePackageToken(
+          `Bearer ${capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        await startup.waitFor(environmentPackage.scope.turnId);
+        expect(
+          environmentPackage.workspace.inputs.every((input) => input.kind === 'generated')
+        ).toBe(true);
+        expect(environmentPackage.workspace.outputs).toEqual([
+          {
+            id: 'turn-output-root',
+            path: `/openkit/sessions/${environmentPackage.scope.agentSessionId}/outputs`,
+            registerAsArtifacts: true,
+            retention: 'sync-on-turn-end',
           },
-        })
-      ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
-      expect(liveCaptureCount).toBe(beforeRefusal);
-      const originalBytes = readFileSync(liveFilePath);
-      writeFileSync(liveFilePath, capabilityToken);
-      await expect(
-        work.callTool({
-          name: 'work_artifact_submit',
-          arguments: {
-            ...submission,
-            requestId: `credential-refusal-${environmentPackage.scope.turnId}`,
+        ]);
+        const localOutputRoot = join(
+          sandboxSessionRoot,
+          environmentPackage.scope.agentSessionId,
+          'outputs'
+        );
+        mkdirSync(localOutputRoot, { recursive: true });
+        liveFilePath = join(localOutputRoot, 'submitted.md');
+        writeFileSync(liveFilePath, 'Captured by the existing configured runtime.\n');
+        const lineage = {
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          requestId: environmentPackage.scope.requestId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        };
+        const processKey = createHash('sha256')
+          .update(`process:${environmentPackage.snapshotId}`)
+          .digest('base64url');
+        const heartbeat = await app.request('/api/worker-control/heartbeat', {
+          body: JSON.stringify({
+            body: {
+              message: null,
+              processKeyHash: createHash('sha256')
+                .update(Buffer.from(processKey, 'base64url'))
+                .digest('base64url'),
+              status: 'starting',
+            },
+            lineage,
+            operation: 'heartbeat',
+            schemaVersion: 2,
+            sequence: 0,
+          }),
+          headers: {
+            authorization: `Bearer ${workerControlToken}`,
+            'content-type': 'application/json',
           },
-        })
-      ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
-      expect(
-        store
-          .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
-          .filter((artifact) => artifact.turnId === environmentPackage.scope.turnId)
-      ).toHaveLength(0);
-      expect(store.getTurnById(environmentPackage.scope.turnId).status).toBe('running');
-      writeFileSync(liveFilePath, originalBytes);
-      const capturesBefore = liveCaptureCount;
-      const submitted = await work.callTool({
-        name: 'work_artifact_submit',
-        arguments: submission,
-      });
-      expect(submitted.isError).toBe(false);
-      const artifactId = String(submitted.structuredContent!.artifactId);
-      const readback = await app.request(
-        ...operationRequest('artifact.read', {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          artifactId,
-        })
-      );
-      expect(readback.status).toBe(200);
-      expect(await readback.json()).toMatchObject({
-        id: artifactId,
-        content: {
-          format: 'file',
+          method: 'POST',
+        });
+        expect(heartbeat.status, await heartbeat.clone().text()).toBe(200);
+
+        const work = new Client({ name: 'submission-composition-test', version: '1.0.0' });
+        await work.connect(
+          new StreamableHTTPClientTransport(
+            new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+            {
+              fetch: (request, init) => app.fetch(new Request(request, init)),
+              requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+            }
+          )
+        );
+        const discovery = await work.listTools();
+        expect(
+          discovery.tools.find((tool) => tool.name === 'work_artifact_submit')?.description
+        ).toContain(environmentPackage.workspace.outputs[0]!.path);
+        const submission = {
+          requestId: `capture-${environmentPackage.scope.turnId}`,
+          path: `${environmentPackage.workspace.outputs[0]!.path}/submitted.md`,
+          kind: 'report',
+          title: 'Captured report',
           mediaType: 'text/markdown',
-          byteLength: originalBytes.byteLength,
-        },
-      });
-      // The public descriptor is not a byte oracle; read the exact immutable original.
-      const downloadOriginal = async () => {
-        const downloaded = await app.request(
-          `/api/app/operations/artifact.download?${new URLSearchParams({
+        };
+        const beforeRefusal = liveCaptureCount;
+        await expect(
+          work.callTool({
+            name: 'work_artifact_submit',
+            arguments: {
+              ...submission,
+              requestId: `path-refusal-${environmentPackage.scope.turnId}`,
+              path: '/workspace/.openkit/cache/escape.md',
+            },
+          })
+        ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
+        expect(liveCaptureCount).toBe(beforeRefusal);
+        const originalBytes = readFileSync(liveFilePath);
+        writeFileSync(liveFilePath, capabilityToken);
+        await expect(
+          work.callTool({
+            name: 'work_artifact_submit',
+            arguments: {
+              ...submission,
+              requestId: `credential-refusal-${environmentPackage.scope.turnId}`,
+            },
+          })
+        ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
+        expect(
+          store
+            .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
+            .filter((artifact) => artifact.turnId === environmentPackage.scope.turnId)
+        ).toHaveLength(0);
+        expect(store.getTurnById(environmentPackage.scope.turnId).status).toBe('running');
+        writeFileSync(liveFilePath, originalBytes);
+        const capturesBefore = liveCaptureCount;
+        const submitted = await work.callTool({
+          name: 'work_artifact_submit',
+          arguments: submission,
+        });
+        expect(submitted.isError).toBe(false);
+        const artifactId = String(submitted.structuredContent!.artifactId);
+        const readback = await app.request(
+          ...operationRequest('artifact.read', {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             artifactId,
-            artifactVersion: '1',
-          })}`
+          })
         );
-        expect(downloaded.status).toBe(200);
-        expect(downloaded.headers.get('x-openkit-content-digest')).toBe(
-          `sha256:${createHash('sha256').update(originalBytes).digest('hex')}`
-        );
-        return Buffer.from(await downloaded.arrayBuffer());
-      };
-      expect(await downloadOriginal()).toEqual(originalBytes);
-      const publishedBytes = readFileSync(liveFilePath);
-      writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
-      expect(
-        (await work.callTool({ name: 'work_artifact_submit', arguments: submission }))
-          .structuredContent!.artifactId
-      ).toBe(artifactId);
-      expect(liveCaptureCount).toBe(capturesBefore + 1);
-      expect(await downloadOriginal()).toEqual(publishedBytes);
-      await work.close();
-      const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
-      await client.connect(
-        new StreamableHTTPClientTransport(
-          new URL(`http://nanocore.test/api/worker-capabilities/mcp/${'echo'}`),
-          {
-            fetch: (request, init) => app.fetch(new Request(request, init)),
-            requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
-          }
-        )
-      );
-      await client.listTools();
-      let toolCall: unknown = null;
-      if (blocked) {
-        const result = await client.callTool({
-          name: 'echo',
-          arguments: { message: 'public-task' },
-        });
-        expect(result).toMatchObject({
-          isError: true,
-          structuredContent: { status: 'pending-approval' },
-        });
-        repositoryApprovalId = String(result.structuredContent!.requestId);
-        toolCall = result;
-        expect(existsSync(callFile)).toBe(false);
-      } else {
-        const deliveryDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        try {
-          expect(readPendingRequest(deliveryDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
-            'delivered'
-          );
-          const inputText = JSON.stringify(environmentPackage);
-          expect(inputText).toContain(repositoryApprovalId);
-          if (refuseFirst) expect(inputText).toContain('Continue after refused admission.');
-        } finally {
-          deliveryDb.sqlite.close();
-        }
-      }
-      await client.close();
-      const terminalBody = {
-        evidenceManifestDigests: {},
-        status: 'completed' as const,
-        stopReason: 'completed',
-      };
-      terminalEvents.set(
-        environmentPackage.snapshotId,
-        Buffer.from(
-          `${JSON.stringify(
-            buildWorkerCanonicalTerminalEventRecord({
-              data: terminalBody,
-              lineage,
-              sequence: 1,
-            })
-          )}\n`
-        )
-      );
-      const finalStatus = await app.request('/api/worker-control/final-status', {
-        body: JSON.stringify({
-          body: terminalBody,
-          lineage,
-          operation: 'final_status',
-          schemaVersion: 2,
-          sequence: 1,
-        }),
-        headers: {
-          authorization: `Bearer ${workerControlToken}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      expect(finalStatus.status, await finalStatus.clone().text()).toBe(200);
-      const inspected = await dispatchNext('session.inspect');
-      settle(inspected, {
-        childState: 'absent',
-        cleanupState: 'clean',
-        nativeHandleDigest: 'b'.repeat(64),
-        nativeHandleState: 'ready',
-        state: 'open',
-      });
-      // The inspection result releases the executor; join its publication before fixture teardown.
-      const running = execution.mock.calls.findIndex(
-        ([, turnId]) => turnId === environmentPackage.scope.turnId
-      );
-      if (running < 0) throw new Error('Expected the admitted Task execution.');
-      await execution.mock.results[running]!.value;
-      return { agentSessionId: environmentPackage.scope.agentSessionId, toolCall };
-    };
-
-    try {
-      const firstRequest = app.request(
-        ...operationRequest(
-          ownerCommand,
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
+        expect(readback.status).toBe(200);
+        expect(await readback.json()).toMatchObject({
+          id: artifactId,
+          content: {
+            format: 'file',
+            mediaType: 'text/markdown',
+            byteLength: originalBytes.byteLength,
           },
-          {
-            body: JSON.stringify({
-              input: 'Implement the bounded MCP Task fix.',
-              requestId: '0190f4c8-0000-7000-8000-000000000501',
-              ...(ownerCommand === 'conversation.submit'
-                ? {
-                    artifactRefs: [],
-                    targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
-                  }
-                : {}),
-            }),
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        )
-      );
-      const admittedFirstRequest = firstRequest.then(async (response) => {
-        expect(response.status, await response.clone().text()).toBe(202);
-        return response;
-      });
-      // Start the Harness dispatch budget after durable admission, not during request preparation.
-      const firstResponse = await admittedFirstRequest;
-      expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
-      const firstTask =
-        ownerCommand === 'conversation.submit'
-          ? SubmitConversationResponseSchema.parse(await firstResponse.json())
-          : StartTaskModeResponseSchema.parse(await firstResponse.json());
-      firstTurnId = firstTask.turn.id;
-      const firstRun = await driveTask(true);
-      // Task closeout includes native release and the conversation's final display publication.
-      const started = execution.mock.calls.findIndex(([, turnId]) => turnId === firstTask.turn.id);
-      expect(started).toBeGreaterThanOrEqual(0);
-      await execution.mock.results[started]!.value;
-      if (ownerCommand === 'conversation.submit') await firstResult.promise;
-      expect(
-        listSchedulerExecutionAttemptsForTurn(coreDb, {
-          workspaceId: workspaceIdForOwner(firstTask.turn.owner),
-          threadId: firstTask.turn.threadId,
-          turnId: firstTask.turn.id,
-        }).every((attempt) => attempt.phase === 'closed')
-      ).toBe(true);
-      const durableTurn = store.getTurnById(firstTask.turn.id);
-      if (ownerCommand === 'conversation.submit') {
-        expect(durableTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
+        });
+        // The public descriptor is not a byte oracle; read the exact immutable original.
+        const downloadOriginal = async () => {
+          const downloaded = await app.request(
+            `/api/app/operations/artifact.download?${new URLSearchParams({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              artifactId,
+              artifactVersion: '1',
+            })}`
+          );
+          expect(downloaded.status).toBe(200);
+          expect(downloaded.headers.get('x-openkit-content-digest')).toBe(
+            `sha256:${createHash('sha256').update(originalBytes).digest('hex')}`
+          );
+          return Buffer.from(await downloaded.arrayBuffer());
+        };
+        expect(await downloadOriginal()).toEqual(originalBytes);
+        const publishedBytes = readFileSync(liveFilePath);
+        writeFileSync(liveFilePath, 'A later edit cannot mutate the committed output.');
         expect(
-          store.getThread(workspaceIdForOwner(durableTurn.owner), durableTurn.threadId)
-            .parentThreadId
-        ).toBe('th_00000000-0000-7000-8000-000000000001');
-      }
-      expect(durableTurn.status).toBe('completed');
-      if ('outcome' in firstTask) expect(firstTask.outcome).toBe('accepted');
-      expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('idle');
-      expect(
-        store
-          .listCommandRequests()
-          .filter(
-            (receipt) =>
-              receipt.response.kind === 'turn' && receipt.response.id === firstTask.turn.id
+          (await work.callTool({ name: 'work_artifact_submit', arguments: submission }))
+            .structuredContent!.artifactId
+        ).toBe(artifactId);
+        expect(liveCaptureCount).toBe(capturesBefore + 1);
+        expect(await downloadOriginal()).toEqual(publishedBytes);
+        await work.close();
+        const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
+        await client.connect(
+          new StreamableHTTPClientTransport(
+            new URL(`http://nanocore.test/api/worker-capabilities/mcp/${'echo'}`),
+            {
+              fetch: (request, init) => app.fetch(new Request(request, init)),
+              requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+            }
           )
-          .map((receipt) => receipt.command)
-      ).toEqual([ownerCommand]);
-      // Settled owner replay is compared across all three projections without another Worker launch.
-      const replayInput = {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        input: 'Implement the bounded MCP Task fix.',
-        requestId: '0190f4c8-0000-7000-8000-000000000501',
-        ...(ownerCommand === 'conversation.submit'
-          ? { artifactRefs: [], targetRef: `warm-worker:${agentSetup.manifest.id}:default` }
-          : {}),
+        );
+        await client.listTools();
+        let toolCall: unknown = null;
+        if (blocked) {
+          const result = await client.callTool({
+            name: 'echo',
+            arguments: { message: 'public-task' },
+          });
+          expect(result).toMatchObject({
+            isError: true,
+            structuredContent: { status: 'pending-approval' },
+          });
+          repositoryApprovalId = String(result.structuredContent!.requestId);
+          toolCall = result;
+          expect(existsSync(callFile)).toBe(false);
+        } else {
+          const deliveryDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+          try {
+            expect(readPendingRequest(deliveryDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
+              'delivered'
+            );
+            const inputText = JSON.stringify(environmentPackage);
+            expect(inputText).toContain(repositoryApprovalId);
+            if (refuseFirst) expect(inputText).toContain('Continue after refused admission.');
+          } finally {
+            deliveryDb.sqlite.close();
+          }
+        }
+        await client.close();
+        const terminalBody = {
+          evidenceManifestDigests: {},
+          status: 'completed' as const,
+          stopReason: 'completed',
+        };
+        terminalEvents.set(
+          environmentPackage.snapshotId,
+          Buffer.from(
+            `${JSON.stringify(
+              buildWorkerCanonicalTerminalEventRecord({
+                data: terminalBody,
+                lineage,
+                sequence: 1,
+              })
+            )}\n`
+          )
+        );
+        const finalStatus = await app.request('/api/worker-control/final-status', {
+          body: JSON.stringify({
+            body: terminalBody,
+            lineage,
+            operation: 'final_status',
+            schemaVersion: 2,
+            sequence: 1,
+          }),
+          headers: {
+            authorization: `Bearer ${workerControlToken}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        });
+        expect(finalStatus.status, await finalStatus.clone().text()).toBe(200);
+        const inspected = await dispatchNext('session.inspect');
+        settle(inspected, {
+          childState: 'absent',
+          cleanupState: 'clean',
+          nativeHandleDigest: 'b'.repeat(64),
+          nativeHandleState: 'ready',
+          state: 'open',
+        });
+        // The inspection result releases the executor; join its publication before fixture teardown.
+        const running = execution.mock.calls.findIndex(
+          ([, turnId]) => turnId === environmentPackage.scope.turnId
+        );
+        if (running < 0) throw new Error('Expected the admitted Task execution.');
+        await execution.mock.results[running]!.value;
+        return { agentSessionId: environmentPackage.scope.agentSessionId, toolCall };
       };
-      const nativeClient = createCoreClient({
-        baseUrl: 'http://nanocore.test',
-        fetch: (input, init) => app.fetch(new Request(input, init)),
-      });
-      const replayResponse = await app.request(
-        ...operationRequest(ownerCommand, {}, { body: JSON.stringify(replayInput) })
-      );
-      expect(replayResponse.status, await replayResponse.clone().text()).toBe(202);
-      const replayResult = await replayResponse.json();
-      expect(await nativeClient.operations[ownerCommand](replayInput as never)).toEqual(
-        replayResult
-      );
-      const { operationCatalog } = await import(
-        new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
-      );
-      const cliOperation = operationCatalog.find(
-        (entry: { id: string }) => entry.id === ownerCommand
-      )!;
-      expect(
-        await cliOperation.handler(
-          { client: nativeClient },
-          cliOperation.inputSchema.parse(replayInput)
-        )
-      ).toEqual(replayResult);
-      expect(repositoryApprovalId).not.toBeNull();
-      const attentionResponse = await app.request(
-        ...operationRequest(
-          'attention.list',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          undefined
-        )
-      );
-      expect(
-        ListHumanAttentionResponseSchema.parse(await attentionResponse.json()).items
-      ).toContainEqual(
-        expect.objectContaining({
-          id: `approval:${repositoryApprovalId}`,
-          actions: expect.arrayContaining([expect.objectContaining({ kind: 'grant_approval' })]),
-        })
-      );
-      const originalSnapshot = runtimeConfigManager.current();
-      const preparationFailure = new Error('Transient pending outcome preparation failure');
-      const preparationFault = transientPreparation
-        ? vi
-            .spyOn(workerLifecycleRuntime.turnExecutor, 'prepareAgentSessionForTurn')
-            .mockRejectedValue(preparationFailure)
-        : undefined;
-      const providerFault =
-        refuseFirst && !transientPreparation
+
+      try {
+        const firstRequest = app.request(
+          ...operationRequest(
+            ownerCommand,
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            {
+              body: JSON.stringify({
+                input: 'Implement the bounded MCP Task fix.',
+                requestId: '0190f4c8-0000-7000-8000-000000000501',
+                ...(ownerCommand === 'conversation.submit'
+                  ? {
+                      artifactRefs: [],
+                      targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+                    }
+                  : {}),
+              }),
+              headers: { 'content-type': 'application/json' },
+              method: 'POST',
+            }
+          )
+        );
+        const admittedFirstRequest = firstRequest.then(async (response) => {
+          expect(response.status, await response.clone().text()).toBe(202);
+          return response;
+        });
+        // Observe Harness dispatch after durable admission.
+        const firstResponse = await admittedFirstRequest;
+        expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
+        const firstTask =
+          ownerCommand === 'conversation.submit'
+            ? SubmitConversationResponseSchema.parse(await firstResponse.json())
+            : StartTaskModeResponseSchema.parse(await firstResponse.json());
+        firstTurnId = firstTask.turn.id;
+        const firstRun = await driveTask(true);
+        // Task closeout includes native release and the conversation's final display publication.
+        const started = execution.mock.calls.findIndex(
+          ([, turnId]) => turnId === firstTask.turn.id
+        );
+        expect(started).toBeGreaterThanOrEqual(0);
+        await execution.mock.results[started]!.value;
+        if (ownerCommand === 'conversation.submit') await firstResult.promise;
+        expect(
+          listSchedulerExecutionAttemptsForTurn(coreDb, {
+            workspaceId: workspaceIdForOwner(firstTask.turn.owner),
+            threadId: firstTask.turn.threadId,
+            turnId: firstTask.turn.id,
+          }).every((attempt) => attempt.phase === 'closed')
+        ).toBe(true);
+        const durableTurn = store.getTurnById(firstTask.turn.id);
+        if (ownerCommand === 'conversation.submit') {
+          expect(durableTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
+          expect(
+            store.getThread(workspaceIdForOwner(durableTurn.owner), durableTurn.threadId)
+              .parentThreadId
+          ).toBe('th_00000000-0000-7000-8000-000000000001');
+        }
+        expect(durableTurn.status).toBe('completed');
+        if ('outcome' in firstTask) expect(firstTask.outcome).toBe('accepted');
+        expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('idle');
+        expect(
+          store
+            .listCommandRequests()
+            .filter(
+              (receipt) =>
+                receipt.response.kind === 'turn' && receipt.response.id === firstTask.turn.id
+            )
+            .map((receipt) => receipt.command)
+        ).toEqual([ownerCommand]);
+        // Settled owner replay is compared across all three projections without another Worker launch.
+        const replayInput = {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          input: 'Implement the bounded MCP Task fix.',
+          requestId: '0190f4c8-0000-7000-8000-000000000501',
+          ...(ownerCommand === 'conversation.submit'
+            ? { artifactRefs: [], targetRef: `warm-worker:${agentSetup.manifest.id}:default` }
+            : {}),
+        };
+        const nativeClient = createCoreClient({
+          baseUrl: 'http://nanocore.test',
+          fetch: (input, init) => app.fetch(new Request(input, init)),
+        });
+        const replayResponse = await app.request(
+          ...operationRequest(ownerCommand, {}, { body: JSON.stringify(replayInput) })
+        );
+        expect(replayResponse.status, await replayResponse.clone().text()).toBe(202);
+        const replayResult = await replayResponse.json();
+        expect(await nativeClient.operations[ownerCommand](replayInput as never)).toEqual(
+          replayResult
+        );
+        const { operationCatalog } = await import(
+          new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
+        );
+        const cliOperation = operationCatalog.find(
+          (entry: { id: string }) => entry.id === ownerCommand
+        )!;
+        expect(
+          await cliOperation.handler(
+            { client: nativeClient },
+            cliOperation.inputSchema.parse(replayInput)
+          )
+        ).toEqual(replayResult);
+        expect(repositoryApprovalId).not.toBeNull();
+        const attentionResponse = await app.request(
+          ...operationRequest(
+            'attention.list',
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+            undefined
+          )
+        );
+        expect(
+          ListHumanAttentionResponseSchema.parse(await attentionResponse.json()).items
+        ).toContainEqual(
+          expect.objectContaining({
+            id: `approval:${repositoryApprovalId}`,
+            actions: expect.arrayContaining([expect.objectContaining({ kind: 'grant_approval' })]),
+          })
+        );
+        const originalSnapshot = runtimeConfigManager.current();
+        const preparationFailure = new Error('Transient pending outcome preparation failure');
+        const preparationFault = transientPreparation
           ? vi
-              .spyOn(runtimeConfigManager, 'current')
-              .mockReturnValue({ ...originalSnapshot, providerRegistry: new ProviderRegistry([]) })
+              .spyOn(workerLifecycleRuntime.turnExecutor, 'prepareAgentSessionForTurn')
+              .mockRejectedValue(preparationFailure)
           : undefined;
-      const detailResponse = await app.request('/api/app/operations/thread.dashboard', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+        const providerFault =
+          refuseFirst && !transientPreparation
+            ? vi.spyOn(runtimeConfigManager, 'current').mockReturnValue({
+                ...originalSnapshot,
+                providerRegistry: new ProviderRegistry([]),
+              })
+            : undefined;
+        const detailResponse = await app.request('/api/app/operations/thread.dashboard', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: firstTask.turn.threadId,
+          }),
+        });
+        expect(detailResponse.status, await detailResponse.clone().text()).toBe(200);
+        const detailDashboard = await detailResponse.json();
+        expect(
+          detailDashboard.pendingRequests.find(
+            (row: { requestId: string }) => row.requestId === repositoryApprovalId
+          )
+        ).toMatchObject({ approvalEffect: { status: 'available' }, canRespond: true });
+        const responseInput = {
+          decision,
+          requestId: '0190f4c8-0000-7000-8000-000000000502',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: firstTask.turn.threadId,
-        }),
-      });
-      expect(detailResponse.status, await detailResponse.clone().text()).toBe(200);
-      const detailDashboard = await detailResponse.json();
-      expect(
-        detailDashboard.pendingRequests.find(
-          (row: { requestId: string }) => row.requestId === repositoryApprovalId
-        )
-      ).toMatchObject({ approvalEffect: { status: 'available' }, canRespond: true });
-      const responseInput = {
-        decision,
-        requestId: '0190f4c8-0000-7000-8000-000000000502',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: firstTask.turn.threadId,
-        turnId: firstTask.turn.id,
-      };
-      const approvalResponse = app.request(
-        ...operationRequest(
-          'approval.respond',
-          { approvalRequestId: repositoryApprovalId },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(responseInput),
+          turnId: firstTask.turn.id,
+        };
+        const approvalResponse = app.request(
+          ...operationRequest(
+            'approval.respond',
+            { approvalRequestId: repositoryApprovalId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(responseInput),
+            }
+          )
+        );
+        let responded: Response;
+        let refusedExecutionCalls: ReturnType<typeof listWorkspaceCapabilityCalls> | undefined;
+        let callsBeforeReplay: ReturnType<typeof listWorkspaceCapabilityCalls> | undefined;
+        let continuation: Awaited<ReturnType<typeof driveTask>>;
+        if (refuseFirst) {
+          responded = await approvalResponse;
+          const reviewDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+          for (let n = 0; n < 2000; n++) {
+            const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
+            if (record?.delivery === 'undelivered' && record.publicationTurnId) {
+              const publication = store.getTurnById(record.publicationTurnId);
+              if (publication.status !== 'pending' && publication.status !== 'running') break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1));
           }
-        )
-      );
-      let responded: Response;
-      let refusedExecutionCalls: ReturnType<typeof listWorkspaceCapabilityCalls> | undefined;
-      let callsBeforeReplay: ReturnType<typeof listWorkspaceCapabilityCalls> | undefined;
-      let continuation: Awaited<ReturnType<typeof driveTask>>;
-      if (refuseFirst) {
-        responded = await approvalResponse;
-        const reviewDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        for (let n = 0; n < 2000; n++) {
-          const record = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!);
-          if (record?.delivery === 'undelivered' && record.publicationTurnId) {
-            const publication = store.getTurnById(record.publicationTurnId);
-            if (publication.status !== 'pending' && publication.status !== 'running') break;
+          const refused = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
+          if (transientPreparation) {
+            expect(responded.status, await responded.clone().text()).toBe(200);
+            // Preparation refuses before any effect-capable operation, so delivery is definitely absent.
+            expect(refused.delivery).toBe('undelivered');
+            expect(store.getTurnById(refused.publicationTurnId!)).toMatchObject({
+              status: 'failed',
+              error: { code: 'worker_preparation_failed' },
+            });
+            expect(preparationFault).toHaveBeenCalledTimes(1);
+            expect(
+              listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+                workspaceId: refused.workspaceId,
+                statuses: ['admitted'],
+              })
+            ).toContainEqual(expect.objectContaining({ turnId: refused.publicationTurnId }));
+            expect(
+              listSchedulerExecutionAttemptsForTurn(coreDb, {
+                workspaceId: refused.workspaceId,
+                threadId: refused.threadId,
+                turnId: refused.publicationTurnId!,
+              })
+            ).toContainEqual(
+              expect.objectContaining({
+                phase: 'closed',
+                disposition: 'not_accepted',
+                operationId: null,
+              })
+            );
+            const count = store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              firstTask.turn.threadId
+            ).length;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(
+              store.listThreadTurns(
+                'ws_00000000-0000-7000-8000-000000000001',
+                firstTask.turn.threadId
+              )
+            ).toHaveLength(count);
+            preparationFault!.mockRestore();
+            reviewDb.sqlite.close();
+            return;
           }
-          await new Promise((resolve) => setTimeout(resolve, 1));
-        }
-        const refused = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
-        if (transientPreparation) {
-          expect(responded.status, await responded.clone().text()).toBe(200);
-          // Preparation refuses before any effect-capable operation, so delivery is definitely absent.
-          expect(refused.delivery).toBe('undelivered');
-          expect(store.getTurnById(refused.publicationTurnId!)).toMatchObject({
-            status: 'failed',
-            error: { code: 'worker_preparation_failed' },
+          // Pending Requests: Main refusal after the native claim is a known execution error.
+          expect(refused).toMatchObject({
+            state: 'resolved',
+            resolution: 'granted',
+            claim: 'finished',
+            disposition: 'execution-error',
+            delivery: 'undelivered',
+            executionCallId: executionCallIdForRequest(repositoryApprovalId!),
           });
-          expect(preparationFault).toHaveBeenCalledTimes(1);
+          refusedExecutionCalls = listWorkspaceCapabilityCalls(
+            reviewDb,
+            refused.workspaceId
+          ).filter((call) => call.family === 'mcp');
+          expect(
+            refusedExecutionCalls.filter((call) => call.id === refused.executionCallId)
+          ).toEqual([
+            expect.objectContaining({
+              requestId: responseInput.requestId,
+              status: 'failed',
+              upstreamContacted: false,
+            }),
+          ]);
+          expect(
+            listWorkspaceUsageRecords(reviewDb, refused.workspaceId).filter(
+              (usage) => usage.capabilityCallId === refused.executionCallId
+            )
+          ).toEqual([]);
+          expect(existsSync(callFile)).toBe(false);
+          const publication = store.getTurnById(refused.publicationTurnId!);
+          expect(publication.status).toBe('failed');
+          expect(publication.items).toContainEqual(
+            expect.objectContaining({
+              id: pendingRequestItemId(repositoryApprovalId!, 'disposition'),
+              type: 'tool-call',
+              result: 'execution-error',
+            })
+          );
+          expect(
+            listThreadPendingRequests(
+              reviewDb.sqlite,
+              refused.workspaceId,
+              refused.threadId
+            ).filter((record) => record.delivery === 'frozen')
+          ).toEqual([]);
           expect(
             listSchedulerAdmissionEntriesForWorkspace(coreDb, {
               workspaceId: refused.workspaceId,
-              statuses: ['admitted'],
-            })
-          ).toContainEqual(expect.objectContaining({ turnId: refused.publicationTurnId }));
-          expect(
-            listSchedulerExecutionAttemptsForTurn(coreDb, {
-              workspaceId: refused.workspaceId,
-              threadId: refused.threadId,
-              turnId: refused.publicationTurnId!,
-            })
-          ).toContainEqual(
-            expect.objectContaining({
-              phase: 'closed',
-              disposition: 'not_accepted',
-              operationId: null,
-            })
-          );
+              statuses: ['queued'],
+            }).filter((entry) => entry.turnId === refused.publicationTurnId)
+          ).toEqual([]);
           const count = store.listThreadTurns(
             'ws_00000000-0000-7000-8000-000000000001',
             firstTask.turn.threadId
@@ -4631,188 +4629,132 @@ describe('worker MCP routes', () => {
               firstTask.turn.threadId
             )
           ).toHaveLength(count);
-          preparationFault!.mockRestore();
-          reviewDb.sqlite.close();
-          return;
-        }
-        // Pending Requests: Main refusal after the native claim is a known execution error.
-        expect(refused).toMatchObject({
-          state: 'resolved',
-          resolution: 'granted',
-          claim: 'finished',
-          disposition: 'execution-error',
-          delivery: 'undelivered',
-          executionCallId: executionCallIdForRequest(repositoryApprovalId!),
-        });
-        refusedExecutionCalls = listWorkspaceCapabilityCalls(reviewDb, refused.workspaceId).filter(
-          (call) => call.family === 'mcp'
-        );
-        expect(refusedExecutionCalls.filter((call) => call.id === refused.executionCallId)).toEqual(
-          [
+          providerFault!.mockRestore();
+          const user = app.request(
+            ...operationRequest(
+              'conversation.submit',
+              {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: firstTask.turn.threadId,
+              },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  input: 'Continue after refused admission.',
+                  requestId: '0190f4c8-0000-7000-8000-000000000599',
+                  artifactRefs: [],
+                  targetRef: `running-worker:${encodeURIComponent(firstTask.turn.threadId)}:${encodeURIComponent(agentSetup.manifest.id)}`,
+                }),
+              }
+            )
+          );
+          const [userResponse, resumed] = await Promise.all([user, driveTask(false)]);
+          expect(userResponse.status, await userResponse.clone().text()).toBe(202);
+          continuation = resumed;
+          const delivered = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
+          expect(delivered.delivery).toBe('delivered');
+          expect(delivered).toMatchObject({
+            executionCallId: refused.executionCallId,
+            claim: 'finished',
+            disposition: 'execution-error',
+          });
+          expect(delivered.publicationTurnId).toBe(refused.publicationTurnId);
+          expect(delivered.deliveryTurnId).not.toBe(refused.publicationTurnId);
+          expect(store.getTurnById(delivered.deliveryTurnId!).items).toContainEqual(
             expect.objectContaining({
-              requestId: responseInput.requestId,
-              status: 'failed',
-              upstreamContacted: false,
-            }),
-          ]
-        );
-        expect(
-          listWorkspaceUsageRecords(reviewDb, refused.workspaceId).filter(
-            (usage) => usage.capabilityCallId === refused.executionCallId
-          )
-        ).toEqual([]);
-        expect(existsSync(callFile)).toBe(false);
-        const publication = store.getTurnById(refused.publicationTurnId!);
-        expect(publication.status).toBe('failed');
-        expect(publication.items).toContainEqual(
-          expect.objectContaining({
-            id: pendingRequestItemId(repositoryApprovalId!, 'disposition'),
-            type: 'tool-call',
-            result: 'execution-error',
-          })
-        );
-        expect(
-          listThreadPendingRequests(reviewDb.sqlite, refused.workspaceId, refused.threadId).filter(
-            (record) => record.delivery === 'frozen'
-          )
-        ).toEqual([]);
-        expect(
-          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-            workspaceId: refused.workspaceId,
-            statuses: ['queued'],
-          }).filter((entry) => entry.turnId === refused.publicationTurnId)
-        ).toEqual([]);
-        const count = store.listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          firstTask.turn.threadId
-        ).length;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(
-          store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
-        ).toHaveLength(count);
-        providerFault!.mockRestore();
-        const user = app.request(
+              type: 'user-message',
+              text: expect.stringContaining('Continue after refused admission.'),
+            })
+          );
+          expect(store.getTurnById(refused.publicationTurnId!).items).toEqual(publication.items);
+          expect(store.getTurnById(delivered.deliveryTurnId!).items).not.toContainEqual(
+            expect.objectContaining({
+              id: pendingRequestItemId(repositoryApprovalId!, 'disposition'),
+            })
+          );
+          callsBeforeReplay = listWorkspaceCapabilityCalls(reviewDb, refused.workspaceId).filter(
+            (call) => call.family === 'mcp'
+          );
+          // Later user work owns its calls; carrying the outcome preserves the original execution.
+          expect(
+            callsBeforeReplay.filter((call) => call.turnId !== delivered.deliveryTurnId)
+          ).toEqual(refusedExecutionCalls);
+          expect(
+            callsBeforeReplay.filter((call) => call.requestId === responseInput.requestId)
+          ).toEqual(
+            refusedExecutionCalls.filter((call) => call.requestId === responseInput.requestId)
+          );
+          reviewDb.sqlite.close();
+        } else {
+          [responded, continuation] = await Promise.all([approvalResponse, driveTask(false)]);
+        }
+        expect(responded.status, await responded.clone().text()).toBe(200);
+        expect(store.getTurnById(firstTask.turn.id).status).toBe('completed');
+        expect(continuation.agentSessionId).toBe(firstRun.agentSessionId);
+        const replay = await app.request(
           ...operationRequest(
-            'conversation.submit',
-            {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: firstTask.turn.threadId,
-            },
+            'approval.respond',
+            { approvalRequestId: repositoryApprovalId },
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                input: 'Continue after refused admission.',
-                requestId: '0190f4c8-0000-7000-8000-000000000599',
-                artifactRefs: [],
-                targetRef: `running-worker:${encodeURIComponent(firstTask.turn.threadId)}:${encodeURIComponent(agentSetup.manifest.id)}`,
-              }),
+              body: JSON.stringify(responseInput),
             }
           )
         );
-        const [userResponse, resumed] = await Promise.all([user, driveTask(false)]);
-        expect(userResponse.status, await userResponse.clone().text()).toBe(202);
-        continuation = resumed;
-        const delivered = readPendingRequest(reviewDb.sqlite, repositoryApprovalId!)!;
-        expect(delivered.delivery).toBe('delivered');
-        expect(delivered).toMatchObject({
-          executionCallId: refused.executionCallId,
-          claim: 'finished',
-          disposition: 'execution-error',
-        });
-        expect(delivered.publicationTurnId).toBe(refused.publicationTurnId);
-        expect(delivered.deliveryTurnId).not.toBe(refused.publicationTurnId);
-        expect(store.getTurnById(delivered.deliveryTurnId!).items).toContainEqual(
-          expect.objectContaining({
-            type: 'user-message',
-            text: expect.stringContaining('Continue after refused admission.'),
-          })
-        );
-        expect(store.getTurnById(refused.publicationTurnId!).items).toEqual(publication.items);
-        expect(store.getTurnById(delivered.deliveryTurnId!).items).not.toContainEqual(
-          expect.objectContaining({
-            id: pendingRequestItemId(repositoryApprovalId!, 'disposition'),
-          })
-        );
-        callsBeforeReplay = listWorkspaceCapabilityCalls(reviewDb, refused.workspaceId).filter(
-          (call) => call.family === 'mcp'
-        );
-        // Later user work owns its calls; carrying the outcome preserves the original execution.
-        expect(
-          callsBeforeReplay.filter((call) => call.turnId !== delivered.deliveryTurnId)
-        ).toEqual(refusedExecutionCalls);
-        expect(
-          callsBeforeReplay.filter((call) => call.requestId === responseInput.requestId)
-        ).toEqual(
-          refusedExecutionCalls.filter((call) => call.requestId === responseInput.requestId)
-        );
-        reviewDb.sqlite.close();
-      } else {
-        [responded, continuation] = await Promise.all([approvalResponse, driveTask(false)]);
-      }
-      expect(responded.status, await responded.clone().text()).toBe(200);
-      expect(store.getTurnById(firstTask.turn.id).status).toBe('completed');
-      expect(continuation.agentSessionId).toBe(firstRun.agentSessionId);
-      const replay = await app.request(
-        ...operationRequest(
-          'approval.respond',
-          { approvalRequestId: repositoryApprovalId },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(responseInput),
+        expect(replay.status).toBe(200);
+        if (refuseFirst) expect(await replay.json()).toEqual(await responded.clone().json());
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          if (refuseFirst) {
+            expect(
+              listWorkspaceCapabilityCalls(workspaceDb, responseInput.workspaceId).filter(
+                (call) => call.family === 'mcp'
+              )
+            ).toEqual(callsBeforeReplay);
+            expect(
+              listWorkspaceUsageRecords(workspaceDb, responseInput.workspaceId).filter(
+                (usage) =>
+                  usage.capabilityCallId === executionCallIdForRequest(repositoryApprovalId!)
+              )
+            ).toEqual([]);
           }
-        )
-      );
-      expect(replay.status).toBe(200);
-      if (refuseFirst) expect(await replay.json()).toEqual(await responded.clone().json());
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        if (refuseFirst) {
+          expect(readPendingRequest(workspaceDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
+            'delivered'
+          );
           expect(
-            listWorkspaceCapabilityCalls(workspaceDb, responseInput.workspaceId).filter(
-              (call) => call.family === 'mcp'
-            )
-          ).toEqual(callsBeforeReplay);
+            store
+              .listThreadItems('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
+              .filter(
+                (item) =>
+                  item.type === 'approval-decision' &&
+                  item.approvalRequestId === repositoryApprovalId
+              )
+          ).toHaveLength(1);
           expect(
-            listWorkspaceUsageRecords(workspaceDb, responseInput.workspaceId).filter(
-              (usage) => usage.capabilityCallId === executionCallIdForRequest(repositoryApprovalId!)
-            )
-          ).toEqual([]);
+            store
+              .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
+              .filter((turn) => turn.triggerSource?.kind === 'approval-resolution')
+          ).toHaveLength(1);
+        } finally {
+          workspaceDb.sqlite.close();
         }
-        expect(readPendingRequest(workspaceDb.sqlite, repositoryApprovalId!)?.delivery).toBe(
-          'delivered'
-        );
-        expect(
-          store
-            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
-            .filter(
-              (item) =>
-                item.type === 'approval-decision' && item.approvalRequestId === repositoryApprovalId
-            )
-        ).toHaveLength(1);
-        expect(
-          store
-            .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', firstTask.turn.threadId)
-            .filter((turn) => turn.triggerSource?.kind === 'approval-resolution')
-        ).toHaveLength(1);
+        if (!refuseFirst)
+          expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
+        else expect(existsSync(callFile)).toBe(false);
       } finally {
-        workspaceDb.sqlite.close();
+        resultPublication.mockRestore();
+        startup.restore();
+        execution.mockRestore();
+        await workerMcpGateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(exportRoot, { force: true, recursive: true });
+        rmSync(dataRoot, { force: true, recursive: true });
       }
-      if (!refuseFirst)
-        expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
-      else expect(existsSync(callFile)).toBe(false);
-    } finally {
-      resultPublication.mockRestore();
-      startup.restore();
-      execution.mockRestore();
-      await workerMcpGateway.close();
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(exportRoot, { force: true, recursive: true });
-      rmSync(dataRoot, { force: true, recursive: true });
     }
-  }, 60_000);
+  );
 
   it('maps the bounded MCP failure table without extra tool effects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-failures-'));
@@ -4934,6 +4876,7 @@ describe('worker MCP routes', () => {
         },
       ],
     };
+    const cancelledToolEntered = Promise.withResolvers<void>();
     const callTool = vi.fn(async (request: Parameters<WorkerMcpGateway['callTool']>[0]) => {
       const message = request.arguments.message;
       if (message === 'near-limit') return nearLimitResult;
@@ -4983,6 +4926,7 @@ describe('worker MCP routes', () => {
             );
           if (request.signal?.aborted) fail();
           else request.signal?.addEventListener('abort', fail, { once: true });
+          cancelledToolEntered.resolve();
         });
       }
       if (message === 'pre-cancelled') {
@@ -5200,7 +5144,8 @@ describe('worker MCP routes', () => {
         { arguments: { message: 'cancelled' }, name: 'echo' },
         { signal: cancellation.signal }
       );
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      // Cancel after the gateway owns the in-flight tool request.
+      await cancelledToolEntered.promise;
       cancellation.abort();
       await expect(cancelled).rejects.toThrow(/AbortError/);
       expect(callTool.mock.calls.length).toBe(callsBeforeCancellation + 1);
@@ -5410,6 +5355,7 @@ describe('worker MCP routes', () => {
       terminalDb.sqlite.close();
       expect(successfulUnpublished.status).toBe('succeeded');
       // Keep interrupted-call ledger recovery; Item repair has its own retained-history test.
+      await shutdownControlStoreWorkerClient();
       verifyAndMigrateExistingScopedDatabases(dataRoot);
 
       // Keep the active Tool Turn; the independent denial needs its own Thread.
@@ -5481,10 +5427,10 @@ describe('worker MCP routes', () => {
           { error_code: 'usage_record_failed', status: 'failed' },
           { error_code: null, status: 'succeeded' },
         ]);
+        // The finish-Audit fault rolls back usage with the complete settlement tuple.
         expect(
           workspaceDb.sqlite.prepare('SELECT quantity, unit FROM usage_records').all()
         ).toEqual([
-          { quantity: 1, unit: 'tool_calls' },
           { quantity: 1, unit: 'tool_calls' },
           { quantity: 1, unit: 'tool_calls' },
           { quantity: 1, unit: 'tool_calls' },
@@ -5601,10 +5547,11 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const packages: AgentEnvironmentPackage[] = [];
-    const calls: ReturnType<typeof startCapabilityCall>[] = [];
+    const calls: Awaited<ReturnType<typeof startCapabilityCall>>[] = [];
     let restoreRead: (() => void) | undefined;
     let unavailableDirectory: string | undefined;
     try {
+      await openTestNativeWorkspace(workspaceDb);
       for (const suffix of ['0_unavailable', '1_healthy']) {
         const thread = store
           .listThreads(workspaceId)
@@ -5649,7 +5596,7 @@ describe('worker MCP routes', () => {
           snapshotId: environmentPackage.snapshotId,
         });
         packages.push(environmentPackage);
-        const call = startCapabilityCall({
+        const call = await startCapabilityCall({
           workspaceDb,
           workspaceId,
           authorityActor: turn.triggerActor,
@@ -5668,7 +5615,7 @@ describe('worker MCP routes', () => {
           turnId: turn.id,
           now: new Date(turn.startedAt!),
         });
-        finishCapabilityCall({
+        await finishCapabilityCall({
           callId: call.id,
           status: 'succeeded',
           workspaceDb,
@@ -5676,6 +5623,7 @@ describe('worker MCP routes', () => {
         });
         calls.push(call);
       }
+      await shutdownControlStoreWorkerClient();
       verifyAndMigrateExistingScopedDatabases(dataRoot);
       const selected = packages[0]!;
       // Observe the real named reader's file effect; do not duplicate another owner's path layout.
@@ -5870,6 +5818,7 @@ describe('worker MCP routes', () => {
     let beforeCalls: ReturnType<typeof listWorkspaceCapabilityCalls> = [];
     let beforeUsage: ReturnType<typeof listWorkspaceUsageRecords> = [];
     try {
+      await openTestNativeWorkspace(workspaceDb);
       expect(turn).toMatchObject({
         status: 'completed',
         agentId: session.agentId,
@@ -5898,7 +5847,7 @@ describe('worker MCP routes', () => {
         turnId: turn.id,
         agentSessionId: session.id,
       });
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         agentId: session.agentId,
         agentSessionId: session.id,
         authorityActor: turn.triggerActor,
@@ -5917,7 +5866,7 @@ describe('worker MCP routes', () => {
         workspaceDb,
         workspaceId: workspaceIdForOwner(turn.owner),
       });
-      finishCapabilityCall({
+      await finishCapabilityCall({
         callId: call.id,
         status: 'succeeded',
         workspaceDb,
@@ -5926,11 +5875,11 @@ describe('worker MCP routes', () => {
       beforeCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
       beforeUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
 
-    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
     const coldStore = new FsStore({ dataRoot });
     expect(coldStore.getTurnById(turn.id).items).not.toContainEqual(
@@ -6121,19 +6070,14 @@ describe('worker MCP routes', () => {
         resolve.mockRestore();
         return;
       }
-      const initializationsBeforeCall = upstream.observed.filter((request) =>
-        request.endsWith('|initialize')
-      ).length;
-      const terminationsBeforeCall = upstream.observed.filter((request) =>
-        request.endsWith('|DELETE|')
+      const toolCallsBeforeCall = upstream.observed.filter((request) =>
+        request.endsWith('|tools/call')
       ).length;
       const result = await client.callTool({ arguments: { message: 'safe' }, name: 'echo' });
       expect(result).toMatchObject({ content: [{ text: 'safe' }] });
-      expect(upstream.observed.filter((request) => request.endsWith('|initialize'))).toHaveLength(
-        initializationsBeforeCall + 1
-      );
-      expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(
-        terminationsBeforeCall + 1
+      // MCP supply's credential contract forbids authentication-triggered tool replay.
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+        toolCallsBeforeCall + 1
       );
       expect(
         upstream.observed.some((request) =>
@@ -6419,8 +6363,8 @@ describe('worker MCP routes', () => {
       await workerMcpGateway.close();
       await upstream.close();
       vaultUnlockState.lock();
-      coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -6500,6 +6444,7 @@ function observeMcpPhysicalCommits(workspacePath: string) {
   const pending = new Map<Database.Database, string[]>();
   const savepoints = new Map<Database.Database, number[]>();
   const commits: string[][] = [];
+  const ledgerWrites: string[] = [];
   let active = true;
   let stopped = false;
   let beforeCommit: (() => void) | undefined;
@@ -6541,6 +6486,25 @@ function observeMcpPhysicalCommits(workspacePath: string) {
       if (write) {
         const changes = (result as { changes?: number } | undefined)?.changes;
         if (changes === undefined || changes > 0) {
+          const normalized = sql.replace(/\s+/g, ' ');
+          const columns = /^INSERT(?: OR \w+)? INTO audit_events\s*\(([^)]+)\)/i
+            .exec(normalized)?.[1]
+            ?.split(',')
+            .map((column) => column.trim());
+          const parameters = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+          const ownedAudit = columns?.some(
+            (column, index) =>
+              (column === 'capability_call_id' || column === 'permission_decision_id') &&
+              parameters[index] != null
+          );
+          // Inspect authority-link presence locally; retain only SQL source, never bound values.
+          if (
+            /^(?:INSERT(?: OR \w+)? INTO|REPLACE INTO|UPDATE|DELETE FROM)\s+(?:"|\x60|\[)?(capability_calls|usage_records|permission_decisions|mcp_tool_schema_snapshots)\b/i.test(
+              normalized
+            ) ||
+            ownedAudit
+          )
+            ledgerWrites.push(normalized);
           const writes = pending.get(db) ?? [];
           writes.push(sql.replace(/\s+/g, ' '));
           pending.set(db, writes);
@@ -6565,6 +6529,7 @@ function observeMcpPhysicalCommits(workspacePath: string) {
   });
   return {
     commits,
+    ledgerWrites,
     inTransaction() {
       return [...pending.keys()].some((db) => db.inTransaction);
     },
@@ -6579,6 +6544,7 @@ function observeMcpPhysicalCommits(workspacePath: string) {
     },
     reset() {
       commits.length = 0;
+      ledgerWrites.length = 0;
       pending.clear();
       savepoints.clear();
     },
@@ -6591,14 +6557,271 @@ function observeMcpPhysicalCommits(workspacePath: string) {
   };
 }
 
+/** Test-private packets never enter the production worker reply decoder. */
+interface McpNativeCommitPacket {
+  readonly mcpCommitObservation: true;
+  readonly sequence: number;
+  readonly phase: 'before' | 'after';
+  readonly writes: string[];
+  readonly ledger: boolean;
+  readonly product: boolean;
+}
+
+interface McpNativeInterception {
+  readonly path: string;
+  readonly gate: SharedArrayBuffer;
+  packet(value: McpNativeCommitPacket): void;
+}
+
+const mcpNativeInterception = vi.hoisted(() => ({
+  current: undefined as McpNativeInterception | undefined,
+}));
+
+// Wrap the actual existing entry as control-store-worker-client.test.ts does; create no extra host.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      private observation: McpNativeInterception | undefined;
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        const observation = mcpNativeInterception.current;
+        if (observation) {
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(mcpNativeObserverPrelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              mcpTestObservation: {
+                path: observation.path,
+                gate: observation.gate,
+                databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+              },
+            },
+          });
+          this.observation = observation;
+        } else {
+          super(filename, options);
+        }
+      }
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        const value = args[0] as McpNativeCommitPacket | undefined;
+        if (event === 'message' && value?.mcpCommitObservation === true && this.observation) {
+          this.observation.packet(value);
+          return true;
+        }
+        return super.emit(event, ...args);
+      }
+    },
+  };
+});
+
+// Only SQL source crosses this test-private channel. Bound parameters and result bodies never do.
+const mcpNativeObserverPrelude = String.raw`
+  const { parentPort, workerData } = require('node:worker_threads');
+  const observation = workerData.mcpTestObservation;
+  const gate = new Int32Array(observation.gate);
+  const Database = require(observation.databaseModule);
+  const sample = new Database(':memory:');
+  const statements = Object.getPrototypeOf(sample.prepare('SELECT 1'));
+  sample.close();
+  const pending = new Map();
+  const savepoints = new Map();
+  const ledgerSql = /^(?:INSERT(?: OR \w+)? INTO|REPLACE INTO|UPDATE|DELETE FROM)\s+(?:"|\x60|\[)?(capability_calls|usage_records|permission_decisions|mcp_tool_schema_snapshots)\b/i;
+  const productSql = /^(?:INSERT(?: OR \w+)? INTO|REPLACE INTO|UPDATE|DELETE FROM)\s+(?:"|\x60|\[)?control_(workspaces|threads|agent_sessions|turns|product_entries)\b/i;
+  const owns = (db) => db.name === observation.path && Atomics.load(gate, 0) === 1;
+  const stopped = () => Atomics.load(gate, 1) === 1;
+  const refuse = () => { throw new Error('Injected process cut: no later write is admitted.'); };
+  function notify(phase, writes) {
+    if (!writes.length) return;
+    const ledger = writes.some((sql) => ledgerSql.test(sql));
+    const product = writes.some((sql) => productSql.test(sql));
+    const sequence = Atomics.add(gate, 2, 1) + 1;
+    parentPort.postMessage({ mcpCommitObservation: true, sequence, phase, writes, ledger, product });
+    // Ledger cuts and revocation callbacks finish on Main before this native boundary advances.
+    if (ledger) {
+      let previous;
+      while ((previous = Atomics.load(gate, 3)) < sequence) {
+        Atomics.wait(gate, 3, previous);
+      }
+      if (stopped()) refuse();
+    }
+  }
+  function invoke(db, sql, apply) {
+    if (!owns(db)) return apply();
+    sql = sql.trim();
+    const rollback = /^ROLLBACK\b/i.test(sql);
+    const commit = /^COMMIT\b/i.test(sql);
+    const write = /^(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
+    if (stopped() && !rollback && (write || commit || /^BEGIN\b/i.test(sql))) refuse();
+    const wasInTransaction = db.inTransaction;
+    if (commit) notify('before', pending.get(db) || []);
+    if (write && !wasInTransaction) notify('before', [sql.replace(/\s+/g, ' ')]);
+    const result = apply();
+    Atomics.store(gate, 4, db.inTransaction ? 1 : 0);
+    if (/^SAVEPOINT\b/i.test(sql)) {
+      const stack = savepoints.get(db) || [];
+      stack.push({ name: sql.replace(/^SAVEPOINT\s+/i, ''), length: (pending.get(db) || []).length });
+      savepoints.set(db, stack);
+    }
+    if (/^ROLLBACK\s+TO\b/i.test(sql)) {
+      const name = sql.replace(/^ROLLBACK\s+TO\s+(?:SAVEPOINT\s+)?/i, '');
+      const stack = savepoints.get(db) || [];
+      const index = stack.findLastIndex((point) => point.name === name);
+      if (index < 0) throw new Error('Unobserved native savepoint rollback.');
+      const writes = pending.get(db);
+      if (writes) writes.splice(stack[index].length);
+      stack.splice(index + 1);
+    }
+    if (/^RELEASE\b/i.test(sql)) {
+      const name = sql.replace(/^RELEASE\s+(?:SAVEPOINT\s+)?/i, '');
+      const stack = savepoints.get(db) || [];
+      const index = stack.findLastIndex((point) => point.name === name);
+      if (index < 0) throw new Error('Unobserved native savepoint release.');
+      stack.splice(index);
+    }
+    if (rollback && !db.inTransaction) {
+      pending.delete(db);
+      savepoints.delete(db);
+    }
+    if (write && (result?.changes === undefined || result.changes > 0)) {
+      const writes = pending.get(db) || [];
+      writes.push(sql.replace(/\s+/g, ' '));
+      pending.set(db, writes);
+      if (!wasInTransaction && !db.inTransaction) {
+        pending.delete(db);
+        notify('after', writes);
+      }
+    }
+    if (commit) {
+      const writes = pending.get(db) || [];
+      pending.delete(db);
+      savepoints.delete(db);
+      notify('after', writes);
+    }
+    return result;
+  }
+  for (const method of ['run', 'get', 'all']) {
+    const original = statements[method];
+    statements[method] = function(...args) {
+      return invoke(this.database, this.source, () => original.apply(this, args));
+    };
+  }
+  const exec = Database.prototype.exec;
+  Database.prototype.exec = function(sql) {
+    // Native outer transactions and per-transition savepoints use exec; DML uses prepared statements.
+    // Refuse an unobserved multi-statement DML path rather than infer its physical commit count.
+    if (owns(this) && /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)) {
+      throw new Error('Native exec DML needs a physical-statement observation seam.');
+    }
+    return invoke(this, sql, () => exec.call(this, sql));
+  };
+  const iterate = statements.iterate;
+  statements.iterate = function(...args) {
+    if (owns(this.database) && !this.readonly) {
+      throw new Error('Native iterable DML needs a physical-statement observation seam.');
+    }
+    return iterate.apply(this, args);
+  };
+`;
+
+/** Observes real native commits; Main remains a separate negative observer, never a writer substitute. */
+function observeNativeMcpPhysicalCommits(workspacePath: string) {
+  const shared = new SharedArrayBuffer(5 * Int32Array.BYTES_PER_ELEMENT);
+  const gate = new Int32Array(shared);
+  const commits: string[][] = [];
+  const physical: McpNativeCommitPacket[] = [];
+  const productCommits: McpNativeCommitPacket[] = [];
+  const otherCommits: McpNativeCommitPacket[] = [];
+  const callbackErrors: unknown[] = [];
+  let main: ReturnType<typeof observeMcpPhysicalCommits> | undefined;
+  let beforeCommit: (() => void) | undefined;
+  let afterCommit: ((writes: string[]) => void) | undefined;
+  const interception: McpNativeInterception = {
+    path: workspacePath,
+    gate: shared,
+    packet(value) {
+      try {
+        if (value.phase === 'after') {
+          physical.push(value);
+          if (value.ledger) commits.push(value.writes);
+          if (value.product) productCommits.push(value);
+          if (!value.ledger && !value.product) otherCommits.push(value);
+        }
+        if (value.ledger) {
+          if (value.phase === 'before') beforeCommit?.();
+          else afterCommit?.(value.writes);
+        }
+      } catch (error) {
+        if (Atomics.load(gate, 1) === 0) callbackErrors.push(error);
+        Atomics.store(gate, 1, 1);
+      } finally {
+        Atomics.store(gate, 3, Math.max(Atomics.load(gate, 3), value.sequence));
+        Atomics.notify(gate, 3);
+      }
+    },
+  };
+  mcpNativeInterception.current = interception;
+  return {
+    commits,
+    physical,
+    productCommits,
+    otherCommits,
+    get mainLedgerWrites() {
+      return main?.ledgerWrites ?? [];
+    },
+    get mainCommits() {
+      return main?.commits ?? [];
+    },
+    start() {
+      main = observeMcpPhysicalCommits(workspacePath);
+      Atomics.store(gate, 0, 1);
+    },
+    inTransaction() {
+      return Atomics.load(gate, 4) === 1 || (main?.inTransaction() ?? false);
+    },
+    stop() {
+      Atomics.store(gate, 1, 1);
+    },
+    beforeCommit(callback: () => void) {
+      beforeCommit = callback;
+    },
+    afterCommit(callback: (writes: string[]) => void) {
+      afterCommit = callback;
+    },
+    reset() {
+      commits.length = 0;
+      physical.length = 0;
+      productCommits.length = 0;
+      otherCommits.length = 0;
+      main?.reset();
+    },
+    restore() {
+      Atomics.store(gate, 0, 0);
+      Atomics.store(gate, 1, 0);
+      Atomics.store(gate, 3, Atomics.load(gate, 2));
+      Atomics.notify(gate, 3);
+      main?.restore();
+      if (mcpNativeInterception.current === interception) mcpNativeInterception.current = undefined;
+      if (callbackErrors.length) throw callbackErrors[0];
+    },
+  };
+}
+
 /** Composes the public Worker MCP route with its actual Workspace ledger and Policy owners. */
 async function createMcpCommitFixture(interception = new PolicyInterception()) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-commit-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
-  const store = await createDemoStore({ dataRoot });
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const nativeTrace = observeNativeMcpPhysicalCommits(
+    join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite')
+  );
+  const store = await createDemoStore({ dataRoot });
   const threadId = 'th_00000000-0000-7000-8000-000000000001';
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
   const turn = await store.createTurn(workspaceId, threadId, 'Count MCP commits', actor);
@@ -6637,6 +6860,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
     environmentPackage,
     createdAt: '2026-10-24T00:00:00.000Z',
   });
+  await openTestNativeWorkspace(db);
   let tools = [mcpEchoTool()];
   let serverVersion = '1';
   const observations: Array<{
@@ -6705,7 +6929,8 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   };
   let app = register();
   let requestId = 0;
-  const trace = observeMcpPhysicalCommits(db.sqlite.name);
+  const trace = nativeTrace;
+  trace.start();
   return {
     dataRoot,
     coreDb,
@@ -6733,6 +6958,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       tools = value;
     },
     async call(id = ++requestId) {
+      await openTestNativeWorkspace(db);
       const response = await app.request('/api/worker-capabilities/mcp/echo', {
         method: 'POST',
         headers: {
@@ -6752,15 +6978,16 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       });
       return response.json();
     },
-    reopen() {
+    async reopen() {
+      await shutdownControlStoreWorkerClient();
       app = register();
       return openWorkspaceDb(dataRoot, workspaceId);
     },
     async close() {
       trace.restore();
+      await shutdownControlStoreWorkerClient();
       db.sqlite.close();
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     },
   };
@@ -6820,6 +7047,8 @@ describe('MCP physical commit contract', () => {
       if (warm)
         expect.soft(listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId)).toEqual(snapshots);
       // Engineer COORD05:4x accepts r1825 W1/W2 and C1/C2/C3; count native COMMIT and autocommit, not JS calls.
+      // R1842:14/22: the switched ledger and its linked Audit have no Main DML.
+      expect(f.trace.mainLedgerWrites).toEqual([]);
       expect.soft(f.trace.commits, JSON.stringify(f.trace.commits)).toHaveLength(count);
       const groups = f.trace.commits;
       expect
@@ -6907,7 +7136,7 @@ describe('MCP commit crash boundaries', () => {
       expect(response).toHaveProperty('error');
       const physicalCommits = f.trace.commits.length;
       f.trace.restore();
-      const reopened = f.reopen();
+      const reopened = await f.reopen();
       try {
         const calls = listWorkspaceCapabilityCalls(reopened, f.workspaceId);
         const expectedPresent = cut !== 'before-intent-commit';

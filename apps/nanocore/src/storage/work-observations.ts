@@ -454,7 +454,14 @@ export async function appendWorkObservation(
   const expected = await client.observation(database, { ...prepared, publishBodies: false });
   if (!prepared.publishBodies)
     return { disposition: expected.disposition, observation: expected.observation };
-  const published = publishControlWorkObservationBodies(workspaceDb, input);
+  const resume =
+    workspaceDb.scope === 'workspace' ? await client.pauseForDataRootBackup(database) : undefined;
+  let published: ControlWorkObservationInput;
+  try {
+    published = publishControlWorkObservationBodies(workspaceDb, input);
+  } finally {
+    resume?.();
+  }
   const result = await client.observation(database, published);
   return { disposition: expected.disposition, observation: result.observation };
 }

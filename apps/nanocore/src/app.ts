@@ -2420,7 +2420,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         prepared,
       });
     },
-    executeCapturedCall: (record, _actor, workspaceDb, prepared, executionCall) => {
+    executeCapturedCall: (record, _actor, workspaceDb, prepared, executionCall, current) => {
       const snapshot = runtimeConfig();
       return executeCapturedPendingCall({
         catalog: capturedMcpCatalog(record.workspaceId, snapshot),
@@ -2431,6 +2431,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         workspaceDb,
         prepared,
         executionCall,
+        current,
       });
     },
     inflightCommands,

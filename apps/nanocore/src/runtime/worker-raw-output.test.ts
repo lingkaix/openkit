@@ -12,9 +12,11 @@ import {
   listWorkspaceCapabilityCalls,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
+import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import {
   assertWorkerRawOutputFinalStatus,
   initializeWorkerRawOutput,
@@ -39,12 +41,13 @@ afterEach(async () => {
         })
     )
   );
+  await shutdownControlStoreWorkerClient();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Real migrated ledger and inference calls, including Turns that never had a checkpoint. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'worker-raw-output-'));
   roots.push(root);
   const scope = {
@@ -55,8 +58,9 @@ function fixture() {
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
-  const newCall = (database = db, initialize = true) => {
-    const call = startCapabilityCall({
+  await openTestNativeWorkspace(db);
+  const newCall = async (database = db, initialize = true) => {
+    const call = await startCapabilityCall({
       workspaceDb: database,
       ...scope,
       authorityActor: null,
@@ -69,7 +73,7 @@ function fixture() {
     if (initialize) initializeWorkerRawOutput(database, call, scope);
     return call;
   };
-  const call = newCall();
+  const call = await newCall();
   const identity = {
     ...scope,
     callId: call.id,
@@ -82,9 +86,9 @@ function fixture() {
 }
 
 describe('durable atomic Worker raw output accounting', () => {
-  it('admits exactly sixteen MiB and persists the next byte across checkpoint removal', () => {
-    const { db, scope, identity } = fixture();
-    upsertWorkerCheckpoint(db, {
+  it('admits exactly sixteen MiB and persists the next byte after checkpoint loss', async () => {
+    const { db, scope, identity } = await fixture();
+    await upsertWorkerCheckpoint(db, {
       ...scope,
       requestId: randomUUID(),
       requestInputHash: 'input',
@@ -94,7 +98,16 @@ describe('durable atomic Worker raw output accounting', () => {
     expect(
       observeWorkerRawOutput(db, { ...identity, bytePosition: MAX_WORKER_RAW_OUTPUT_BYTES })
     ).toEqual({ rawOutputBytes: 16_777_216, chargedBytes: 16_777_216, exhausted: false });
-    expect(clearWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId)).toBe(true);
+    await shutdownControlStoreWorkerClient();
+    // Fault injection removes only this checkpoint; it supplies no terminal cleanup proof.
+    // S05 Raw-Output Accounting: a lost checkpoint cannot renew the Turn allowance.
+    expect(
+      db.sqlite
+        .prepare(
+          'DELETE FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
+        )
+        .run(scope.workspaceId, scope.threadId, scope.turnId).changes
+    ).toBe(1);
     expect(
       observeWorkerRawOutput(db, {
         ...identity,
@@ -104,8 +117,8 @@ describe('durable atomic Worker raw output accounting', () => {
     ).toEqual({ rawOutputBytes: 16_777_217, chargedBytes: 1, exhausted: true });
     expect(readWorkerRawOutput(db, scope)).toEqual({ rawOutputBytes: 16_777_217, exhausted: true });
   });
-  it('deduplicates trusted positions and final snapshots, while new attempts and child calls count again', () => {
-    const { db, identity, newCall } = fixture();
+  it('deduplicates trusted positions and final snapshots, while new attempts and child calls count again', async () => {
+    const { db, identity, newCall } = await fixture();
     expect(observeWorkerRawOutput(db, { ...identity, bytePosition: 7 }).chargedBytes).toBe(7);
     expect(observeWorkerRawOutput(db, { ...identity, bytePosition: 3 }).chargedBytes).toBe(0);
     expect(observeWorkerRawOutput(db, { ...identity, bytePosition: 7 }).chargedBytes).toBe(0);
@@ -119,13 +132,13 @@ describe('durable atomic Worker raw output accounting', () => {
         .rawOutputBytes
     ).toBe(22);
     expect(
-      observeWorkerRawOutput(db, { ...identity, callId: newCall().id, bytePosition: 11 })
+      observeWorkerRawOutput(db, { ...identity, callId: (await newCall()).id, bytePosition: 11 })
         .rawOutputBytes
     ).toBe(33);
   });
   it('shares one allowance across concurrent producers through one accounting owner', async () => {
-    const state = fixture();
-    const second = state.newCall();
+    const state = await fixture();
+    const second = await state.newCall();
     const run = (callId: string, bytePosition: number) => {
       const input = { ...state.identity, callId, bytePosition };
       const script = `process.on('message', (message) => {
@@ -190,8 +203,8 @@ describe('durable atomic Worker raw output accounting', () => {
       exhausted: true,
     });
   }, 30_000);
-  it('refuses a busy accounting transaction without partial or acknowledged progress', () => {
-    const state = fixture();
+  it('refuses a busy accounting transaction without partial or acknowledged progress', async () => {
+    const state = await fixture();
     observeWorkerRawOutput(state.db, { ...state.identity, bytePosition: 41 });
     const before = listWorkspaceCapabilityCalls(state.db, state.scope.workspaceId);
     const injector = openWorkspaceDb(state.root, state.scope.workspaceId);
@@ -225,12 +238,13 @@ describe('durable atomic Worker raw output accounting', () => {
       'still settling'
     );
   }, 30_000);
-  it('retains proof through reopen, archive ledger codec and outcome Turns without checkpoints', () => {
-    const { root, db, scope, identity, call } = fixture();
+  it('retains proof through reopen, archive ledger codec and outcome Turns without checkpoints', async () => {
+    const { root, db, scope, identity, call } = await fixture();
     observeWorkerRawOutput(db, { ...identity, bytePosition: 41 });
     settleWorkerRawOutput(db, scope, call.id, true);
-    finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'succeeded' });
+    await finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'succeeded' });
     const calls = listWorkspaceCapabilityCalls(db, scope.workspaceId);
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     const reopened = openWorkspaceDb(root, scope.workspaceId);
     databases.push(reopened);
@@ -251,8 +265,8 @@ describe('durable atomic Worker raw output accounting', () => {
     expect(readWorkerRawOutput(restored, scope)).toEqual({ rawOutputBytes: 41, exhausted: false });
     expect(() => initializeWorkerRawOutput(reopened, call, scope)).toThrow('requires recovery');
   });
-  it('counts exact UTF-8, argument whitespace and visible reasoning, with value-free durable positions', () => {
-    const { db, identity } = fixture();
+  it('counts exact UTF-8, argument whitespace and visible reasoning, with value-free durable positions', async () => {
+    const { db, identity } = await fixture();
     observeWorkerRawOutput(db, { ...identity, bytePosition: Buffer.byteLength('中文🙂') });
     observeWorkerRawOutput(db, {
       ...identity,
@@ -272,8 +286,8 @@ describe('durable atomic Worker raw output accounting', () => {
     for (const value of ['body', 'why', identity.attemptId])
       expect(stored.extensions_json).not.toContain(value);
   });
-  it('refuses legacy, corrupt and gapped proof without resetting observed bytes', () => {
-    const { db, identity, scope, newCall } = fixture();
+  it('refuses legacy, corrupt and gapped proof without resetting observed bytes', async () => {
+    const { db, identity, scope, newCall } = await fixture();
     expect(() =>
       observeWorkerRawOutput(db, { ...identity, turnId: allocateEntityId('tu'), bytePosition: 2 })
     ).toThrow('requires recovery');
@@ -281,7 +295,7 @@ describe('durable atomic Worker raw output accounting', () => {
       observeWorkerRawOutput(db, { ...identity, fromBytePosition: 1, bytePosition: 2 })
     ).toThrow('requires recovery');
     observeWorkerRawOutput(db, { ...identity, bytePosition: 2 });
-    newCall(db, false);
+    await newCall(db, false);
     expect(() => readWorkerRawOutput(db, scope)).toThrow('requires recovery');
     db.sqlite.prepare('DELETE FROM capability_calls WHERE call_id <> ?').run(identity.callId);
     db.sqlite
@@ -293,12 +307,12 @@ describe('durable atomic Worker raw output accounting', () => {
       'requires recovery'
     );
   });
-  it('keeps a delayed native observer unavailable after public cancellation', () => {
-    const { db, identity, scope, call } = fixture();
+  it('keeps a delayed native observer unavailable after public cancellation', async () => {
+    const { db, identity, scope, call } = await fixture();
     observeWorkerRawOutput(db, { ...identity, bytePosition: 5 });
     expect(() => assertWorkerRawOutputFinalStatus(db, scope, true)).toThrow('still settling');
     settleWorkerRawOutput(db, scope, call.id, false);
-    finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'aborted' });
+    await finishCapabilityCall({ workspaceDb: db, callId: call.id, status: 'aborted' });
     expect(() => assertWorkerRawOutputFinalStatus(db, scope, true)).toThrow('requires recovery');
     // A late source event or later settlement cannot repair the failed coverage claim.
     expect(() =>

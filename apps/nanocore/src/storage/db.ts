@@ -7,6 +7,7 @@ import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import { configureOwnedSqlite } from './control-store.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
 import {
   coreDbPath,
   ensureLayout,
@@ -82,7 +83,7 @@ export function bindCoreSqlite(
   };
 }
 
-/** Binds a supplied Workspace writer to its same-connection ORM view; the admitting caller owns identity and lifetime. */
+/** Binds a supplied Workspace connection to its same-connection ORM view; the admitting caller owns identity and lifetime. */
 export function bindWorkspaceSqlite(
   sqlite: Database.Database,
   dataRoot: string,
@@ -264,6 +265,21 @@ export function openWorkspaceDb(dataRoot: string, workspaceId: string): Workspac
   const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId));
 
   return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
+}
+
+/**
+ * Opens an existing Workspace through the native product owner's read-only, query-only connection.
+ * No layout or schema is created. Callers own closure; synchronous reads leave no transaction across an await.
+ * @param dataRoot Data root that owns the existing Workspace.
+ * @param workspaceId Exact Workspace owner.
+ * @returns Scoped raw SQLite and ORM read views on the same connection.
+ */
+export function openWorkspaceReadDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  const reader = openControlStoreProductReadHandle(workspaceDbPath(dataRoot, workspaceId), {
+    kind: 'workspace',
+    workspaceId,
+  });
+  return bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
 }
 
 /** Opens an existing Workspace database after the current boot already verified its layout. */

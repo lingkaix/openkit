@@ -79,7 +79,7 @@ describe('Workspace failure scope isolation', () => {
     );
     const db = openWorkspaceDb(dataRoot, healthy.id);
     try {
-      upsertWorkerCheckpoint(db, {
+      await upsertWorkerCheckpoint(db, {
         workspaceId: healthy.id,
         threadId: receiving.id,
         turnId,
@@ -127,6 +127,7 @@ describe('Workspace failure scope isolation', () => {
         expect.objectContaining({ code: 'recovery_required' })
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       db.sqlite.close();
     }
   });
@@ -207,7 +208,7 @@ describe('Workspace failure scope isolation', () => {
     );
     const db = openWorkspaceDb(dataRoot, healthy.id);
     try {
-      upsertWorkerCheckpoint(db, {
+      await upsertWorkerCheckpoint(db, {
         workspaceId: healthy.id,
         threadId: receiving.id,
         turnId,
@@ -243,8 +244,8 @@ describe('Workspace failure scope isolation', () => {
         workerSessionId: null,
       });
       const canonicalPath = join(dataRoot, 'workspaces', healthy.id, 'db', 'workspace.sqlite');
-      db.sqlite.close();
       await shutdownControlStoreWorkerClient();
+      db.sqlite.close();
       if (fault === 'selected-quarantine') {
         refuseScope(dataRoot, { scope: 'workspace', id: healthy.id, check: 'recovery' });
         // Core Fault Tolerance: an exact selector does not bypass its own Workspace quarantine.
@@ -266,6 +267,7 @@ describe('Workspace failure scope isolation', () => {
         expect(existsSync(canonicalPath)).toBe(false);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       if (db.sqlite.open) db.sqlite.close();
     }
   });

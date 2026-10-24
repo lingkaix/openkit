@@ -160,8 +160,9 @@ export function createLightAppDefinitionOperationImplementations(
     };
     const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
     let published = false;
+    let response: T;
     try {
-      return await runIdempotentCommand({
+      response = await runIdempotentCommand({
         store,
         inflightCommands,
         workspaceDb,
@@ -208,6 +209,8 @@ export function createLightAppDefinitionOperationImplementations(
     } finally {
       workspaceDb.sqlite.close();
     }
+    authorize();
+    return response;
   };
   return {
     'catalog.light-app-list': (input) =>

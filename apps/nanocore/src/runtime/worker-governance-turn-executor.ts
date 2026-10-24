@@ -76,6 +76,7 @@ import {
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -2271,7 +2272,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           });
         }
         if (workspaceDb)
-          bindWorkerCheckpointToPreparedSession({
+          await bindWorkerCheckpointToPreparedSession({
             coreDb: this.coreDb!,
             workspaceDb,
             store,
@@ -2447,9 +2448,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             materialization: { ...materialization, backendKind },
           })
         : [];
-      const handoff = workspaceDb
-        ? recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, builtMaterializationRecords)
-        : { inputSnapshots, materializationRecords: builtMaterializationRecords };
+      let handoff = { inputSnapshots, materializationRecords: builtMaterializationRecords };
+      if (workspaceDb) {
+        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+          `workspace:${workspaceDb.sqlite.name}`
+        );
+        try {
+          handoff = recordWorkspaceBackendHandoff(
+            workspaceDb,
+            inputSnapshots,
+            builtMaterializationRecords
+          );
+        } finally {
+          resume();
+        }
+      }
       const materializationRecords = handoff.materializationRecords;
       backendLifecycle.workspaceHandoffState = workspaceDb ? 'complete' : 'pending';
       if (backendLifecycle.session) {
@@ -3910,7 +3923,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           artifactCreated = true;
         }
         if (workspaceDb) {
-          workspaceDb.sqlite.transaction(persist)();
+          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${workspaceDb.sqlite.name}`
+          );
+          try {
+            workspaceDb.sqlite.transaction(persist)();
+          } finally {
+            resume();
+          }
         } else {
           persist();
         }

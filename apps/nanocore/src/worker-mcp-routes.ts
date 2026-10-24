@@ -42,7 +42,7 @@ import {
 import { isThreadVisible } from './auth/thread-visibility.js';
 import {
   finishCapabilityCall,
-  recordUsage,
+  finishMcpToolCall,
   type StartCapabilityCallInput,
   type StartedCapabilityCall,
   stampCapabilityCallSchemaSnapshot,
@@ -58,7 +58,11 @@ import {
   type FsStore,
 } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import { OperationError, projectOperationError } from './operation-error.js';
+import {
+  OperationError,
+  projectOperationError,
+  restoreControlCapabilityFailure,
+} from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { isCurrentServerPolicyAuthor, readAdmittedPolicyDocument } from './policy/configuration.js';
 import type { GoalTaskPolicyService } from './policy/goal-task-policy.js';
@@ -73,7 +77,8 @@ import {
 } from './policy/mcp-tool-permissions.js';
 import {
   type PolicyUseDecision,
-  readPolicyStatementUseCount,
+  prepareControlPermissionDecision,
+  readPolicyStatementUseCount as readPolicyStatementUseCountInDb,
   recordProductPermissionDecision,
 } from './policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './policy/retained-records-v1.js';
@@ -85,15 +90,13 @@ import {
 } from './policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
-import { advanceGoalRevision } from './runtime/goal-owner.js';
 import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
   mcpToolArgumentsContentDigest,
   mcpToolSchemaContentDigest,
-  readCurrentMcpToolSchemaSnapshot,
-  readTurnMcpToolSchemaSnapshot,
-  recordMcpToolSchemaSnapshot,
+  readCurrentMcpToolSchemaSnapshot as readCurrentMcpToolSchemaSnapshotInDb,
+  readTurnMcpToolSchemaSnapshot as readTurnMcpToolSchemaSnapshotInDb,
   WorkerCapabilityMcpToolSchema,
 } from './runtime/mcp-tool-schema-snapshots.js';
 import {
@@ -134,10 +137,19 @@ import {
   WorkerRawOutputBudgetExceededError,
 } from './runtime/worker-raw-output.js';
 import {
+  type ControlCapabilityAdmissionFailure,
+  ControlCapabilityCommandInputSchema,
+} from './storage/control-store-capability.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
+import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openWorkspaceDb,
+  openWorkspaceReadDb,
   type WorkspaceDb,
 } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -151,6 +163,43 @@ import { createVaultUseAuditedBackend } from './vault/vault-use-audited-backend.
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+
+/** Reads the committed current schema without borrowing the caller's mixed-writer connection. */
+function readCurrentMcpToolSchemaSnapshot(
+  input: Parameters<typeof readCurrentMcpToolSchemaSnapshotInDb>[0]
+) {
+  const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  try {
+    return readCurrentMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader });
+  } finally {
+    reader.sqlite.close();
+  }
+}
+
+/** Reads the committed Turn schema and closes its connection before subsequent native or external work. */
+function readTurnMcpToolSchemaSnapshot(
+  input: Parameters<typeof readTurnMcpToolSchemaSnapshotInDb>[0]
+) {
+  const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  try {
+    return readTurnMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader });
+  } finally {
+    reader.sqlite.close();
+  }
+}
+
+/** Materializes the native-owned finite-use count without a Main writable ledger read. */
+function readPolicyStatementUseCount(
+  workspaceDb: WorkspaceDb,
+  statement: Parameters<typeof readPolicyStatementUseCountInDb>[1]
+): number {
+  const reader = openWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+  try {
+    return readPolicyStatementUseCountInDb(reader, statement);
+  } finally {
+    reader.sqlite.close();
+  }
+}
 
 const toolArgumentValidator = new Ajv2020({ allErrors: false, strict: false });
 interface McpApprovalEffect {
@@ -270,8 +319,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         workspaceId: environmentPackage.scope.workspaceId,
         workspaceCatalog: localCatalog ?? { schemaVersion: 1, servers: [] },
       });
-      workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, environmentPackage.scope.workspaceId);
-      applyScopedMigrations(workspaceDb);
+      workspaceDb = openWorkspaceReadDb(
+        input.coreDb.dataRoot,
+        environmentPackage.scope.workspaceId
+      );
       call = await startCapabilityCall({
         agentId: environmentPackage.agent.agentId,
         agentSessionId: environmentPackage.scope.agentSessionId,
@@ -349,10 +400,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       });
       const result = { servers };
       await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
+      requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+      requireCurrentMcpWorkspaceAuthority(input.coreDb, environmentPackage);
       return context.json(result);
     } catch (error) {
       const normalized =
-        call && workspaceDb ? finishMcpCallFailure(error, call, workspaceDb) : error;
+        call && workspaceDb ? await finishMcpCallFailure(error, call, workspaceDb) : error;
       return workerMcpHttpError(normalized);
     } finally {
       workspaceDb?.sqlite.close();
@@ -528,7 +581,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 }
               }
 
-              const call = startMcpCapabilityCall({
+              const call = await startMcpCapabilityCall({
                 capabilityId: `mcp.call-tool.${request.params.name}`,
                 environmentPackage,
                 itemId: environmentPackage.scope.itemId ?? null,
@@ -539,6 +592,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 workspaceDb: activeWorkspaceDb,
               });
               try {
+                requireCurrentBuiltinToolPolicy();
                 if (workBuiltin) {
                   const result = await dispatchOpenkitWorkTool(
                     {
@@ -641,6 +695,13 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       ? { deliveredKnowledgeAnswer: JSON.stringify(delivered) }
                       : {}),
                   });
+                  if (resultCurrent) {
+                    try {
+                      requireCurrentBuiltinToolPolicy();
+                    } catch {
+                      resultCurrent = false;
+                    }
+                  }
                   if (!resultCurrent)
                     throw new WorkerControlGatewayError(
                       'mcp-policy-stale',
@@ -692,7 +753,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   error.data.code === 'mcp-denied'
                     ? new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403)
                     : error;
-                throw finishMcpHandlerFailure(failure, call, activeWorkspaceDb);
+                throw await finishMcpHandlerFailure(failure, call, activeWorkspaceDb);
               }
             } finally {
               activeWorkspaceDb?.sqlite.close();
@@ -770,7 +831,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             environmentPackage.scope.workspaceId
           );
           applyScopedMigrations(activeWorkspaceDb);
-          const call = startMcpCapabilityCall({
+          const call = await startMcpCapabilityCall({
             capabilityId: 'mcp.list-tools',
             environmentPackage,
             itemId: environmentPackage.scope.itemId ?? null,
@@ -793,6 +854,13 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 schemaSnapshotId: current.schemaSnapshotId,
                 workspaceDb: activeWorkspaceDb,
               });
+              await finishCapabilityCall({
+                callId: call.id,
+                status: 'succeeded',
+                workspaceDb: activeWorkspaceDb,
+              });
+              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+              requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
               const result = {
                 tools: current.tools.filter(
                   (tool) =>
@@ -805,11 +873,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     ).some((rule) => rule.effect === 'prohibit')
                 ),
               };
-              await finishCapabilityCall({
-                callId: call.id,
-                status: 'succeeded',
-                workspaceDb: activeWorkspaceDb,
-              });
               return result as ListToolsResult;
             }
             const observed = await observeWorkerMcpTools({
@@ -838,6 +901,13 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               }
             }
             // Credential cleanup can await a Policy change after the original observation.
+            await finishCapabilityCall({
+              callId: call.id,
+              status: 'succeeded',
+              workspaceDb: activeWorkspaceDb,
+            });
+            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
             const result = {
               tools: observed.snapshotTools.filter(
                 (tool) =>
@@ -851,14 +921,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   ).some((rule) => rule.effect === 'prohibit')
               ),
             };
-            await finishCapabilityCall({
-              callId: call.id,
-              status: 'succeeded',
-              workspaceDb: activeWorkspaceDb,
-            });
             return result as ListToolsResult;
           } catch (error) {
-            throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
+            throw await finishMcpHandlerFailure(error, call, activeWorkspaceDb);
           }
         } finally {
           activeWorkspaceDb?.sqlite.close();
@@ -1437,9 +1502,28 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   let policyInput: ReturnType<typeof mcpInterceptionInput> | undefined;
   let synchronousDecision: InterceptionDecision | undefined;
   let admissionFailure: { error: unknown } | undefined;
-  const startCall = (callId?: string) =>
-    startMcpCapabilityCall({
-      ...(callId ? { callId } : {}),
+  const startCall = async (callId: string) => {
+    let prepared: ReturnType<PolicyInterception['prepareSynchronousDecision']>;
+    let preparedDecision: ReturnType<typeof prepareControlPermissionDecision> | undefined;
+    try {
+      if (
+        available &&
+        !approvalRequired &&
+        hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) &&
+        hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+      ) {
+        policyInput = mcpInterceptionInput(input, { id: callId });
+        prepared = input.interception.prepareSynchronousDecision(policyInput);
+        preparedDecision = prepared && prepareControlPermissionDecision(prepared.record);
+        synchronousDecision = prepared?.decision;
+      }
+    } catch (error) {
+      // Preparation failure still admits the Call for its original no-contact failure owner.
+      admissionFailure = { error };
+    }
+    const started = await startMcpCapabilityCall({
+      retainMcpAdmissionFailure: true,
+      callId,
       capabilityId: 'mcp.call-tool',
       environmentPackage: input.environmentPackage,
       itemId,
@@ -1449,60 +1533,57 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       summary: `MCP tool call ${input.serverId}/${input.toolName}.`,
       toolName: input.toolName,
       workspaceDb: input.workspaceDb,
-      onStarted: (started) => {
-        try {
-          if (
-            started.inserted &&
-            available &&
-            !approvalRequired &&
-            hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) &&
-            hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
-          ) {
-            policyInput = mcpInterceptionInput(input, started);
-            synchronousDecision = input.interception.tryDecideSynchronously(policyInput);
-            const bound =
-              synchronousDecision?.result === 'allow' && readTurnMcpToolSchemaSnapshot(input);
-            if (bound)
-              stampCapabilityCallSchemaSnapshot({
-                callId: started.id,
-                schemaSnapshotId: bound.schemaSnapshotId,
-                workspaceDb: input.workspaceDb,
-              });
-          }
-        } catch (error) {
-          // Retain the admitted call for the existing failure owner; no effect has been contacted.
-          admissionFailure = { error };
-        }
-      },
+      ...(preparedDecision ? { decision: preparedDecision } : {}),
+      ...(synchronousDecision?.result === 'allow'
+        ? { warmMcpSchema: mcpCapabilityFrame(input) }
+        : {}),
     });
+    if (started.admissionFailure) {
+      const failed = started.admissionFailure;
+      admissionFailure = {
+        error:
+          failed.kind === 'unknown'
+            ? new Error('MCP admission failed.')
+            : restoreControlCapabilityFailure(failed),
+      };
+    }
+    return started;
+  };
   let call: StartedCapabilityCall | null = null;
   if (!call) {
-    const replay = input.workspaceDb.sqlite
-      .prepare(
-        `SELECT
+    const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+    const replay = (() => {
+      try {
+        return reader.sqlite
+          .prepare(
+            `SELECT
            schema_version, workspace_id, thread_id, turn_id, item_id, agent_id, agent_session_id,
            package_snapshot_id, capability_id, family, operation, provider_ref, service_ref, status
          FROM capability_calls
          WHERE call_id = ?`
-      )
-      .get(requestCallId) as
-      | {
-          schema_version: number;
-          agent_id: string;
-          agent_session_id: string;
-          capability_id: string;
-          family: string;
-          item_id: string | null;
-          operation: string;
-          package_snapshot_id: string;
-          provider_ref: string | null;
-          service_ref: string | null;
-          status: string;
-          thread_id: string | null;
-          turn_id: string | null;
-          workspace_id: string;
-        }
-      | undefined;
+          )
+          .get(requestCallId) as
+          | {
+              schema_version: number;
+              agent_id: string;
+              agent_session_id: string;
+              capability_id: string;
+              family: string;
+              item_id: string | null;
+              operation: string;
+              package_snapshot_id: string;
+              provider_ref: string | null;
+              service_ref: string | null;
+              status: string;
+              thread_id: string | null;
+              turn_id: string | null;
+              workspace_id: string;
+            }
+          | undefined;
+      } finally {
+        reader.sqlite.close();
+      }
+    })();
     if (replay) {
       readRetainedV1({ schemaVersion: replay.schema_version }, () => undefined);
       if (
@@ -1532,7 +1613,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       throw mcpDeniedError();
     }
-    call = startCall(requestCallId);
+    call = await startCall(requestCallId);
   }
   if (!call.inserted) throw mcpDeniedError();
   let status: 'completed' | 'declined' | 'failed' = 'failed';
@@ -1545,13 +1626,32 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   let publishTerminalItem = true;
   let observedCredentials: WorkerMcpGatewayCredentials | undefined;
 
+  /** Publishes once before successful disclosure or during the original failure closeout. */
+  const publishTerminal = async (publishedCall: StartedCapabilityCall) => {
+    publishTerminalItem = false;
+    try {
+      await publishWorkerMcpItem({
+        call: publishedCall,
+        durationMs: Date.now() - startedAt,
+        environmentPackage: input.environmentPackage,
+        errorCode,
+        itemId,
+        serverId: input.serverId,
+        status,
+        store: input.input.store,
+        toolName: input.toolName,
+        workspaceDb: input.workspaceDb,
+      });
+    } catch {}
+  };
+
   try {
     if (admissionFailure) throw admissionFailure.error;
     if (
       !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
       !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
     ) {
-      recordMcpToolUseDecision(input, call, 'deny', null);
+      await recordMcpToolUseDecision(input, call, 'deny', null);
       publishTerminalItem = false;
       throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
     }
@@ -1579,17 +1679,16 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         );
       const escalation = policyDecision.escalation;
       // Commit the Goal-scoped gap and its wake marker together before notifying the owner.
-      input.workspaceDb.sqlite
-        .transaction(() => {
-          finishCapabilityCall({
-            callId: call.id,
-            errorCode: 'policy_requires_escalation',
-            status: 'denied',
-            workspaceDb: input.workspaceDb,
-          });
-          advanceGoalRevision(input.workspaceDb, escalation.goalId);
-        })
-        .immediate();
+      await finishMcpToolCall(
+        call,
+        input.workspaceDb,
+        {
+          status: 'denied',
+          errorCode: 'policy_requires_escalation',
+          goalEscalationId: escalation.goalId,
+        },
+        false
+      );
       terminalCommitted = true;
       status = 'declined';
       input.input.goalWake?.(
@@ -1610,25 +1709,43 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       policyDecision.result === 'require_escalation' ||
       policyDecision.result === 'require_approval'
     ) {
+      const assertReviewCurrent = () => {
+        if (
+          !policyInput!.stillCurrent() ||
+          !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage) ||
+          !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+        )
+          throw new WorkerControlGatewayError(
+            'mcp-policy-stale',
+            'MCP Policy changed before human review capture.',
+            409
+          );
+      };
       const snapshot = await currentMcpEscalationSnapshot(input);
-      if (!policyInput.stillCurrent())
-        throw new WorkerControlGatewayError(
-          'mcp-policy-stale',
-          'MCP Policy changed before human review capture.',
-          409
-        );
+      assertReviewCurrent();
       assertValidMcpToolArguments(snapshot.tools, input.toolName, input.arguments);
       await stampCapabilityCallSchemaSnapshot({
         callId: call.id,
         schemaSnapshotId: snapshot.schemaSnapshotId,
         workspaceDb: input.workspaceDb,
       });
+      assertReviewCurrent();
       const capture = capturedInput(snapshot, policyDecision.decisionId);
       const duplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, capture);
       if (duplicate?.policyDecisionId) {
-        const oldRow = input.workspaceDb.sqlite
-          .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-          .get(duplicate.policyDecisionId);
+        const reader = openWorkspaceReadDb(
+          input.workspaceDb.dataRoot,
+          input.workspaceDb.workspaceId
+        );
+        const oldRow = (() => {
+          try {
+            return reader.sqlite
+              .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
+              .get(duplicate.policyDecisionId);
+          } finally {
+            reader.sqlite.close();
+          }
+        })();
         const previousRecord = oldRow ? readPermissionDecisionRowV1(oldRow) : undefined;
         const previous = previousRecord?.mediation;
         if (
@@ -1646,6 +1763,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       const raised =
         duplicate ??
         (await raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, capture));
+      assertReviewCurrent();
       if (!input.input.store.listAllItems().some((item) => item.id === raised.requestItemId))
         await input.input.store.createItem({
           id: raised.requestItemId,
@@ -1673,6 +1791,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       });
       terminalCommitted = true;
       status = 'declined';
+      assertReviewCurrent();
       return pendingToolResult('pending-approval', raised.requestId);
     }
     if (policyDecision.result !== 'allow') {
@@ -1698,7 +1817,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     observedCredentials = observed.credentials;
     assertValidMcpToolArguments(observed.snapshotTools, input.toolName, input.arguments);
     if (!hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true)) {
-      recordMcpToolUseDecision(input, call, 'deny', null);
+      await recordMcpToolUseDecision(input, call, 'deny', null);
       publishTerminalItem = false;
       if (observed.credentials) {
         try {
@@ -1717,7 +1836,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
     }
     if (!hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)) {
-      recordMcpToolUseDecision(input, call, 'deny', null);
+      await recordMcpToolUseDecision(input, call, 'deny', null);
       publishTerminalItem = false;
       throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
     }
@@ -1760,34 +1879,16 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     upstreamEffect = 'contacted';
     usageAttempted = true;
     try {
-      input.workspaceDb.sqlite
-        .transaction(() => {
-          try {
-            recordMcpToolCallUsage(call, input.workspaceDb);
-          } catch (error) {
-            usageRecoveryRequired = true;
-            throw error;
-          }
-          finishCapabilityCall({
-            callId: call.id,
-            status: 'succeeded',
-            workspaceDb: input.workspaceDb,
-          });
-        })
-        .immediate();
+      await finishMcpToolCall(call, input.workspaceDb, { status: 'succeeded' });
     } catch (error) {
-      if (usageRecoveryRequired) {
-        // The failed grouped transaction rolled back the recorder's diagnostic as well.
-        try {
-          finishCapabilityCall({
-            callId: call.id,
-            status: 'failed',
-            errorCode: 'usage_record_failed',
-            workspaceDb: input.workspaceDb,
-          });
-        } catch {}
+      if (error instanceof ControlStoreWorkerError && error.commit === 'unknown') {
+        usageRecoveryRequired = true;
         throw error;
       }
+      usageRecoveryRequired =
+        (error instanceof OperationError && error.code === 'usage_record_failed') ||
+        (error instanceof TypeError && error.message === 'Unsupported retained record format.');
+      if (usageRecoveryRequired) throw error;
       // Existing failure accounting must inspect/reuse usage, not trust a rolled-back INSERT.
       usageAttempted = false;
       upstreamEffect = 'unknown';
@@ -1795,18 +1896,27 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     terminalCommitted = true;
     status = 'completed';
-    let resultCurrent = false;
-    try {
-      resultCurrent = policyInput.stillCurrent();
-    } catch {
-      // Unavailable current authority withholds content without rewriting a settled effect.
-    }
-    if (!resultCurrent)
-      throw new ProtocolError(
-        ProtocolErrorCode.InvalidRequest,
-        'MCP call completed; current authority does not permit result delivery.',
-        { code: 'mcp-policy-stale' }
-      );
+    const assertResultCurrent = () => {
+      let current = false;
+      try {
+        current =
+          policyInput!.stillCurrent() &&
+          hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) &&
+          hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage);
+        if (observed.credentials || input.resolved.scope === 'server')
+          assertCurrentMcpVaultBindings(input, observed.injections);
+      } catch {
+        // Unavailable current authority withholds content without rewriting a settled effect.
+        current = false;
+      }
+      if (!current)
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
+          'MCP call completed; current authority does not permit result delivery.',
+          { code: 'mcp-policy-stale' }
+        );
+    };
+    assertResultCurrent();
     if (policyInput) {
       // A failed completed observation must not rewrite the settled upstream call.
       try {
@@ -1819,6 +1929,8 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         );
       }
     }
+    if (publishTerminalItem) await publishTerminal(call);
+    assertResultCurrent();
     return result;
   } catch (error) {
     // A completed Tool effect stays completed when later observation evidence fails.
@@ -1855,20 +1967,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       upstreamEffect = failure.upstreamEffect;
       cancelled = failure.cancelled;
     }
-    if (upstreamEffect !== 'not-contacted' && !usageAttempted) {
-      usageAttempted = true;
-      try {
-        recordMcpToolCallUsage(call, input.workspaceDb);
-      } catch {
-        throw new ProtocolError(
-          ProtocolErrorCode.InternalError,
-          'MCP tool call recovery is required.',
-          {
-            code: 'recovery_required',
-          }
-        );
-      }
-    }
     const normalized = normalizeWorkerMcpRouteError(failure);
     errorCode = normalized.code;
     const terminalStatus = cancelled
@@ -1881,28 +1979,18 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             ? 'denied'
             : 'failed';
     try {
-      if (!publishTerminalItem) {
-        const retainedCall = input.workspaceDb.sqlite
-          .prepare(
-            "SELECT schema_version FROM capability_calls WHERE call_id = ? AND status = 'running'"
-          )
-          .get(call.id) as { schema_version: number } | undefined;
-        if (retainedCall)
-          readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
-        input.workspaceDb.sqlite
-          .prepare(
-            `UPDATE capability_calls
-             SET item_id = NULL
-             WHERE call_id = ? AND status = 'running'`
-          )
-          .run(call.id);
-      }
-      await finishCapabilityCall({
-        callId: call.id,
-        errorCode: normalized.code,
-        status: terminalStatus,
-        workspaceDb: input.workspaceDb,
-      });
+      const contacted = upstreamEffect !== 'not-contacted' && !usageAttempted;
+      usageAttempted ||= contacted;
+      await finishMcpToolCall(
+        call,
+        input.workspaceDb,
+        {
+          status: terminalStatus,
+          errorCode: normalized.code,
+          ...(!publishTerminalItem ? { clearItem: true } : {}),
+        },
+        contacted
+      );
     } catch {
       throw new ProtocolError(
         ProtocolErrorCode.InternalError,
@@ -1920,22 +2008,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       projectOperationError(normalized) ?? { code: normalized.code }
     );
   } finally {
-    if (terminalCommitted && publishTerminalItem) {
-      try {
-        await publishWorkerMcpItem({
-          call,
-          durationMs: Date.now() - startedAt,
-          environmentPackage: input.environmentPackage,
-          errorCode,
-          itemId,
-          serverId: input.serverId,
-          status,
-          store: input.input.store,
-          toolName: input.toolName,
-          workspaceDb: input.workspaceDb,
-        });
-      } catch {}
-    }
+    if (terminalCommitted && publishTerminalItem) await publishTerminal(call);
   }
 }
 
@@ -1948,7 +2021,7 @@ async function currentMcpEscalationSnapshot(input: WorkerMcpToolCallInput) {
     !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
   )
     throw mcpDeniedError();
-  const discovery = startMcpCapabilityCall({
+  const discovery = await startMcpCapabilityCall({
     capabilityId: 'mcp.list-tools',
     environmentPackage: input.environmentPackage,
     itemId: null,
@@ -1984,7 +2057,7 @@ async function currentMcpEscalationSnapshot(input: WorkerMcpToolCallInput) {
     });
     return { schemaSnapshotId: observed.snapshotId, tools: observed.snapshotTools };
   } catch (error) {
-    throw finishMcpHandlerFailure(error, discovery, input.workspaceDb);
+    throw await finishMcpHandlerFailure(error, discovery, input.workspaceDb);
   }
 }
 
@@ -2008,9 +2081,16 @@ export async function reviewCapturedMcpPolicy(input: {
     !input.catalog
   )
     return null;
-  const row = workspaceDb.sqlite
-    .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-    .get(record.policyDecisionId);
+  const reader = openWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+  const row = (() => {
+    try {
+      return reader.sqlite
+        .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
+        .get(record.policyDecisionId);
+    } finally {
+      reader.sqlite.close();
+    }
+  })();
   if (!row) return null;
   const source = readPermissionDecisionRowV1(row);
   if (
@@ -2438,20 +2518,25 @@ function mcpInterceptionInput(
   };
 }
 
-/** Records the one tool-call quantity after the upstream effect boundary is crossed. */
-function recordMcpToolCallUsage(call: StartedCapabilityCall, workspaceDb: WorkspaceDb): void {
-  recordUsage({
-    call,
-    records: [
-      {
-        category: 'tool',
-        quantity: 1,
-        source: 'mcp-gateway-request-dispatched',
-        unit: 'tool_calls',
-      },
-    ],
-    workspaceDb,
-  });
+/** Selects the existing closed AEP frame for warm binding and discovered-schema capture. */
+function mcpCapabilityFrame(input: {
+  readonly environmentPackage: AgentEnvironmentPackage;
+  readonly selected: AgentEnvironmentPackage['supply']['mcpServers'][number];
+}) {
+  const { snapshotId, scope, agent } = input.environmentPackage;
+  const { id, schemaPolicy, pinnedSchemaSnapshotId } = input.selected;
+  return {
+    snapshotId,
+    scope: {
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      agentSessionId: scope.agentSessionId,
+      triggerActor: scope.triggerActor,
+    },
+    agent: { agentId: agent.agentId },
+    supply: { mcpServers: [{ id, schemaPolicy, pinnedSchemaSnapshotId }] },
+  };
 }
 
 /** Creates the AgentSession-independent exact effect used by one MCP Approval. */
@@ -2487,13 +2572,13 @@ function mcpApprovalEffect(
 }
 
 /** Records the current tool.use decision, with prior Approval lineage only in context. */
-function recordMcpToolUseDecision(
+async function recordMcpToolUseDecision(
   input: WorkerMcpToolCallInput,
   call: StartedCapabilityCall,
   result: 'allow' | 'deny',
   grantedApproval: GrantedMcpApproval | null
-): void {
-  recordProductPermissionDecision({
+): Promise<void> {
+  await recordProductPermissionDecision({
     action: 'tool.use',
     auditActor: input.environmentPackage.scope.triggerActor,
     contextSummary: {
@@ -2574,7 +2659,12 @@ async function observeWorkerMcpTools(input: {
   snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
 }> {
   const resolvedCredentials = await resolveWorkerMcpCredentials(input);
-  if (input.current?.() === false && !input.signal.aborted)
+  if (
+    !input.signal.aborted &&
+    (input.current?.() === false ||
+      !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
+      !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage))
+  )
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   const gatewayInput = {
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
@@ -2641,44 +2731,49 @@ async function observeWorkerMcpTools(input: {
     );
   }
   const snapshotDigest = mcpToolSchemaContentDigest(snapshotTools);
-  // Keep selection and stamping synchronous: concurrent discoveries must reuse the first binding.
-  const bound = readTurnMcpToolSchemaSnapshot(input);
-  // Approval re-evaluation needs the latest live observation even when the Worker stays on its Turn schema.
-  const liveSnapshotId = recordMcpToolSchemaSnapshot({
-    capabilityCallId: input.call.id,
-    environmentPackage: input.environmentPackage,
-    schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
-    serverId: input.serverId,
-    serverVersion: live.serverVersion,
-    source: 'live',
-    tools: snapshotTools,
-    workspaceDb: input.workspaceDb,
-    workspaceId: input.environmentPackage.scope.workspaceId,
-    onRecorded: (liveId) => {
-      if (
-        input.selected.schemaPolicy === 'pinned' &&
-        input.selected.pinnedSchemaSnapshotId !== liveId
-      )
-        return;
-      stampCapabilityCallSchemaSnapshot({
-        callId: input.call.id,
-        schemaSnapshotId: bound?.schemaSnapshotId ?? liveId,
-        workspaceDb: input.workspaceDb,
-      });
-    },
-  });
-  const snapshotId = bound?.schemaSnapshotId ?? liveSnapshotId;
+  const captured = await getControlStoreWorkerClient().workspaceCapability(
+    input.workspaceDb,
+    ControlCapabilityCommandInputSchema.parse({
+      kind: 'mcp-schema',
+      workspaceId: input.environmentPackage.scope.workspaceId,
+      callId: input.call.id,
+      environmentPackage: mcpCapabilityFrame(input),
+      schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
+      serverVersion: live.serverVersion,
+      tools: snapshotTools,
+    })
+  );
+  if (
+    !captured ||
+    typeof captured !== 'object' ||
+    !('schemaSnapshotId' in captured) ||
+    !('liveSnapshotId' in captured)
+  )
+    throw new TypeError('Invalid native MCP schema result.');
   if (
     input.selected.schemaPolicy === 'pinned' &&
-    input.selected.pinnedSchemaSnapshotId !== liveSnapshotId
-  ) {
+    input.selected.pinnedSchemaSnapshotId !== captured.liveSnapshotId
+  )
     throw new WorkerControlGatewayError(
       'mcp-schema-drift',
       'MCP tool schema changed from its pinned snapshot.',
       409
     );
-  }
+  const snapshotId = captured.schemaSnapshotId;
+  const bound = readTurnMcpToolSchemaSnapshot(input);
   snapshotTools = bound?.tools ?? snapshotTools;
+  if (resolvedCredentials.credentials) {
+    try {
+      // Native schema publication can outlive the credential session's idle tick.
+      await input.input.workerMcpGateway.closeServerIfIdle(gatewayInput);
+    } catch {
+      throw new WorkerControlGatewayError(
+        'recovery_required',
+        'MCP credential cleanup recovery is required.',
+        409
+      );
+    }
+  }
   return {
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
     injections: resolvedCredentials.injections,
@@ -2993,12 +3088,12 @@ function mcpVaultRecordId(
 }
 
 /** Finishes one list handler failure and returns its bounded SDK error. */
-function finishMcpHandlerFailure(
+async function finishMcpHandlerFailure(
   error: unknown,
   call: StartedCapabilityCall,
   workspaceDb: WorkspaceDb
-): ProtocolError {
-  const normalized = finishMcpCallFailure(error, call, workspaceDb);
+): Promise<ProtocolError> {
+  const normalized = await finishMcpCallFailure(error, call, workspaceDb);
   return new ProtocolError(
     ProtocolErrorCode.InvalidRequest,
     normalized.message,
@@ -3007,14 +3102,20 @@ function finishMcpHandlerFailure(
 }
 
 /** Safely terminalizes one MCP handler failure or returns a recovery-required result. */
-function finishMcpCallFailure(
+async function finishMcpCallFailure(
   error: unknown,
   call: StartedCapabilityCall,
   workspaceDb: WorkspaceDb
-): WorkerControlGatewayError | OperationError {
+): Promise<WorkerControlGatewayError | OperationError> {
+  if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+    return new WorkerControlGatewayError(
+      'recovery_required',
+      'MCP capability recovery is required.',
+      409
+    );
   const normalized = normalizeWorkerMcpRouteError(error);
   try {
-    finishCapabilityCall({
+    await finishCapabilityCall({
       callId: call.id,
       errorCode: normalized.code,
       status:
@@ -3038,10 +3139,12 @@ function finishMcpCallFailure(
 }
 
 /** Starts the shared ledger call and projects storage refusal before SDK handling. */
-function startMcpCapabilityCall(input: {
+async function startMcpCapabilityCall(input: {
   readonly callId?: string;
-  /** Composes synchronous local facts inside the original admission and error boundary. */
-  readonly onStarted?: (call: StartedCapabilityCall) => void;
+  /** Prepared facts only; native SQL retains the original admission failure boundary. */
+  readonly decision?: ReturnType<typeof prepareControlPermissionDecision>;
+  readonly warmMcpSchema?: ReturnType<typeof mcpCapabilityFrame>;
+  readonly retainMcpAdmissionFailure?: boolean;
   readonly capabilityId: string;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly itemId: string | null;
@@ -3051,7 +3154,9 @@ function startMcpCapabilityCall(input: {
   readonly summary?: string;
   readonly toolName?: string;
   readonly workspaceDb: WorkspaceDb;
-}): StartedCapabilityCall {
+}): Promise<
+  StartedCapabilityCall & { readonly admissionFailure?: ControlCapabilityAdmissionFailure }
+> {
   const name = mcpRequestName(
     input.environmentPackage,
     input.serverId,
@@ -3080,14 +3185,12 @@ function startMcpCapabilityCall(input: {
     workspaceId: input.environmentPackage.scope.workspaceId,
   };
   try {
-    if (!input.onStarted) return startCapabilityCall(callInput);
-    return input.workspaceDb.sqlite
-      .transaction(() => {
-        const call = startCapabilityCall(callInput);
-        input.onStarted?.(call);
-        return call;
-      })
-      .immediate();
+    return await startCapabilityCall({
+      ...callInput,
+      ...(input.decision ? { decision: input.decision } : {}),
+      ...(input.warmMcpSchema ? { warmMcpSchema: input.warmMcpSchema } : {}),
+      ...(input.retainMcpAdmissionFailure ? { retainMcpAdmissionFailure: true } : {}),
+    });
   } catch (error) {
     const classified = projectOperationError(error);
     if (!classified) throw error;
@@ -3127,13 +3230,20 @@ async function publishWorkerMcpItem(input: {
   readonly toolName: string;
   readonly workspaceDb: WorkspaceDb;
 }): Promise<void> {
-  const ledger = input.workspaceDb.sqlite
-    .prepare(
-      `SELECT schema_version, started_at, completed_at FROM capability_calls WHERE call_id = ?`
-    )
-    .get(input.call.id) as
-    | { schema_version: number; completed_at: string | null; started_at: string | null }
-    | undefined;
+  const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  const ledger = (() => {
+    try {
+      return reader.sqlite
+        .prepare(
+          `SELECT schema_version, started_at, completed_at FROM capability_calls WHERE call_id = ?`
+        )
+        .get(input.call.id) as
+        | { schema_version: number; completed_at: string | null; started_at: string | null }
+        | undefined;
+    } finally {
+      reader.sqlite.close();
+    }
+  })();
   if (ledger) readRetainedV1({ schemaVersion: ledger.schema_version }, () => undefined);
   const completedAt = ledger?.completed_at ?? new Date().toISOString();
   const durationMs = ledger?.started_at
@@ -3246,8 +3356,9 @@ function requireRawOutputCapabilityAdmission(
   workspaceDb: WorkspaceDb,
   environmentPackage: AgentEnvironmentPackage
 ): void {
+  const reader = openWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
   try {
-    requireWorkerRawOutputAvailable(workspaceDb, environmentPackage.scope);
+    requireWorkerRawOutputAvailable(reader, environmentPackage.scope);
   } catch (error) {
     if (
       error instanceof WorkerRawOutputBudgetExceededError ||
@@ -3259,6 +3370,8 @@ function requireRawOutputCapabilityAdmission(
         503
       );
     throw error;
+  } finally {
+    reader.sqlite.close();
   }
 }
 

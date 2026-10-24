@@ -46,6 +46,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   recordAgentEnvironmentPackageSnapshot,
@@ -577,7 +578,7 @@ async function createCheckpointCloseoutFixture(
     workspaceId,
     snapshotId
   ).snapshot;
-  const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+  const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
     workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
@@ -656,7 +657,8 @@ async function createCheckpointCloseoutFixture(
     retainedTerminal,
     closeoutEvents: (reader = store) =>
       reader.getTurnEvents(turn.id).filter((event) => event.sequence >= publicationStart),
-    close: () => {
+    close: async () => {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     },
@@ -702,12 +704,13 @@ async function verifyCloseoutConversationReceipt(
 /**
  * Opens a migrated workspace database for worker recovery tests.
  *
- * @returns Migrated workspace database handle.
+ * @returns Migrated workspace database handle after native scope acknowledgement.
  */
-function createWorkspaceDb(): WorkspaceDb {
+async function createWorkspaceDb(): Promise<WorkspaceDb> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-'));
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
+  await openTestNativeWorkspace(workspaceDb);
   return workspaceDb;
 }
 
@@ -1007,7 +1010,7 @@ describe('worker recovery materialization', () => {
         )
       ).toEqual(f.checkpoint);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1023,7 +1026,7 @@ describe('worker recovery materialization', () => {
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toBe('error');
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1042,7 +1045,7 @@ describe('worker recovery materialization', () => {
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toBe('completed');
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1075,7 +1078,7 @@ describe('worker recovery materialization', () => {
       expect(descriptors.all(f.checkpoint.turnId)).toEqual(retainedDescriptors);
       expect(readFileSync(f.retainedTerminal!.path).equals(f.retainedTerminal!.bytes)).toBe(true);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1167,7 +1170,7 @@ describe('worker recovery materialization', () => {
         checkpoint,
       });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1198,7 +1201,7 @@ describe('worker recovery materialization', () => {
         'completed'
       );
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1254,7 +1257,7 @@ describe('worker recovery materialization', () => {
       ).toThrow('Worker AgentSession publication contradicts its checkpoint lineage.');
     } finally {
       vi.restoreAllMocks();
-      f.close();
+      await f.close();
     }
   });
 
@@ -1290,7 +1293,7 @@ describe('worker recovery materialization', () => {
       ).toEqual(f.checkpoint);
     } finally {
       vi.restoreAllMocks();
-      f.close();
+      await f.close();
     }
   }, 60_000);
 
@@ -1309,7 +1312,7 @@ describe('worker recovery materialization', () => {
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toBe(outcome === 'failed' ? 'error' : 'completed');
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1328,7 +1331,7 @@ describe('worker recovery materialization', () => {
       ).toBe('completed');
     } finally {
       vi.restoreAllMocks();
-      f.close();
+      await f.close();
     }
   });
 
@@ -1345,7 +1348,7 @@ describe('worker recovery materialization', () => {
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toBe(stopReason);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1401,7 +1404,7 @@ describe('worker recovery materialization', () => {
         })
       ).toBe(before);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1540,7 +1543,7 @@ describe('worker recovery materialization', () => {
       ).toEqual(f.checkpoint);
     } finally {
       vi.restoreAllMocks();
-      f.close();
+      await f.close();
     }
   });
 
@@ -1668,10 +1671,10 @@ describe('worker recovery materialization', () => {
   });
 
   it('cleans checkpoints only after terminal worker state is durably saved', async () => {
-    const workspaceDb = createWorkspaceDb();
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-76bd-938b-691bf839bfd7',
@@ -1681,7 +1684,7 @@ describe('worker recovery materialization', () => {
         iteration: 4,
         now: () => '2026-05-31T00:00:00.000Z',
       });
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-79b8-b38a-2e414f9643c2',
@@ -1723,12 +1726,13 @@ describe('worker recovery materialization', () => {
         )
       ).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
   it('refuses to clear a matching session when required provenance was never retained', async () => {
-    const workspaceDb = createWorkspaceDb();
+    const workspaceDb = await createWorkspaceDb();
 
     try {
       const store = await createDemoStore();
@@ -1764,7 +1768,7 @@ describe('worker recovery materialization', () => {
         createdAt: '2026-07-13T00:00:01.000Z',
         environmentPackage,
       });
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 1,
         now: () => '2026-07-13T00:00:03.000Z',
         requestId: `req_${turn.id}`,
@@ -1799,12 +1803,13 @@ describe('worker recovery materialization', () => {
         )
       ).toEqual(checkpoint);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
   it('re-verifies retained required provenance before clearing a terminal checkpoint', async () => {
-    const workspaceDb = createWorkspaceDb();
+    const workspaceDb = await createWorkspaceDb();
 
     try {
       const retained = await createRetainedRecoveryProvenance(workspaceDb);
@@ -1827,7 +1832,7 @@ describe('worker recovery materialization', () => {
           turnId: retained.turnId,
         });
 
-      checkpoint();
+      await checkpoint();
       await expect(clear()).resolves.toBe(true);
       expect(
         getWorkerCheckpoint(
@@ -1838,7 +1843,7 @@ describe('worker recovery materialization', () => {
         )
       ).toBeNull();
 
-      checkpoint();
+      await checkpoint();
       writeFileSync(
         retained.stableStreamPath,
         Buffer.concat([retained.stableStreamBytes, Buffer.from('tampered')])
@@ -1859,7 +1864,7 @@ describe('worker recovery materialization', () => {
         )
         .not.toBeNull();
 
-      checkpoint();
+      await checkpoint();
       writeFileSync(retained.stableStreamPath, retained.stableStreamBytes);
       unlinkSync(retained.stableStreamPath);
       await expect.soft(clear()).rejects.toThrow(/provenance/i);
@@ -1878,6 +1883,7 @@ describe('worker recovery materialization', () => {
         )
         .not.toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });

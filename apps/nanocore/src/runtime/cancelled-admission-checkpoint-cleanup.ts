@@ -7,6 +7,7 @@ import {
   type DurableCommandRequestRead,
   readDurableCommandRequestRecords,
 } from '../storage/command-request-records.js';
+import { clearWorkerCheckpointIfUnchanged } from '../storage/control-store-checkpoints.js';
 import {
   type ControlProductOwner,
   openControlStoreProductReadHandle,
@@ -38,7 +39,6 @@ import {
 } from './execution-attempt-records.js';
 import { hasNanoHostAttemptOwnershipEvidence } from './nanohost-attempt-records.js';
 import { getWorkerCheckpoint, type WorkerCheckpointRecord } from './worker-checkpoints.js';
-import { clearWorkerCheckpointAfterTerminalState } from './worker-recovery.js';
 import { isTerminalWorkerTurnStage } from './worker-stage.js';
 
 /** Explicit checkpoint identity selected by the operator. */
@@ -235,11 +235,9 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
         continue;
       }
-      const cleared = await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-        threadId: row.threadId,
-        turnId: row.turnId,
-        workspaceId: row.workspaceId,
-      });
+      // The exclusive stopped phase retains the complete classifier and exact-row guard.
+      const expected = getWorkerCheckpoint(workspaceDb, row.workspaceId, row.threadId, row.turnId);
+      const cleared = expected && clearWorkerCheckpointIfUnchanged(workspaceDb, expected);
       if (!cleared) {
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
         continue;

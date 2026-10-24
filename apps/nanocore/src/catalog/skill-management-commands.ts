@@ -7,6 +7,7 @@ import { type AdmittedOperationContext, publicOperationActor } from '../operatio
 import { OperationError } from '../operation-error.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { CatalogOperationHooks } from './catalog-operations.js';
 import {
@@ -114,8 +115,9 @@ export function createSkillManagementCommands(
     const workspaceDb = dependencies.repositoryWorkspaceDb(input.workspaceId);
     let published = false;
     let executing = false;
+    let response: T;
     try {
-      return await runIdempotentCommand({
+      response = await runIdempotentCommand({
         store: dependencies.store,
         inflightCommands: dependencies.inflightCommands,
         workspaceDb,
@@ -177,6 +179,8 @@ export function createSkillManagementCommands(
     } finally {
       workspaceDb.sqlite.close();
     }
+    authorize(operation, input, context);
+    return response;
   };
   return {
     /** Acquisition runs only for a fresh admitted command, never while replaying retained bytes. */
@@ -203,25 +207,32 @@ export function createSkillManagementCommands(
           const acquired = await acquire();
           const { tree } = acquired;
           const digest = validateCatalogTree(tree).digest;
-          authorize('catalog.skill-import', input, context);
-          if (
-            loadWorkspaceResourceCatalog(root(), input.workspaceId).revision !==
-            input.expectedRevision
-          )
-            throw new CatalogConflictError();
           const previous =
             catalog.skills.entries.find((item) => item.id === input.id)?.currentDigest ?? null;
           const summary = `Skill import from ${previous ?? 'none'} to ${digest}.`;
-          audit(
-            workspaceDb,
-            'catalog.skill-import',
-            input,
-            context,
-            `skill:${digest}`,
-            catalog.revision,
-            summary,
-            true
+          const resumeAdmission = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${workspaceDb.sqlite.name}`
           );
+          try {
+            authorize('catalog.skill-import', input, context);
+            if (
+              loadWorkspaceResourceCatalog(root(), input.workspaceId).revision !==
+              input.expectedRevision
+            )
+              throw new CatalogConflictError();
+            audit(
+              workspaceDb,
+              'catalog.skill-import',
+              input,
+              context,
+              `skill:${digest}`,
+              catalog.revision,
+              summary,
+              true
+            );
+          } finally {
+            resumeAdmission();
+          }
           const result = importWorkspaceSkill({
             activate: input.activate,
             createdAt: new Date().toISOString(),
@@ -241,15 +252,22 @@ export function createSkillManagementCommands(
             tree,
             workspaceId: input.workspaceId,
           });
-          audit(
-            workspaceDb,
-            'catalog.skill-import',
-            input,
-            context,
-            `skill:${result.version.entryId}@${digest}`,
-            result.catalog.revision,
-            summary
+          const resumeCompletion = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${workspaceDb.sqlite.name}`
           );
+          try {
+            audit(
+              workspaceDb,
+              'catalog.skill-import',
+              input,
+              context,
+              `skill:${result.version.entryId}@${digest}`,
+              result.catalog.revision,
+              summary
+            );
+          } finally {
+            resumeCompletion();
+          }
           return result;
         },
       });
@@ -271,69 +289,94 @@ export function createSkillManagementCommands(
             throw new CatalogIntegrityError('Skill command receipt has a different Workspace.');
           return { revision: catalog.revision };
         },
-        execute: (workspaceDb, catalog) => {
-          const version = 'digest' in input ? input.digest : null;
-          const previous =
-            operation === 'catalog.skill-pin'
-              ? (catalog.skills.pins.find((item) => item.entryId === input.skillId)?.digest ?? null)
-              : (catalog.skills.entries.find((item) => item.id === input.skillId)?.currentDigest ??
-                null);
-          const summary = `Skill command from ${previous ?? 'none'} to ${version ?? 'none'}.`;
-          const resource = `skill:${input.skillId}${version ? `@${version}` : ''}`;
-          const base = {
-            dataRoot: root(),
-            workspaceId: input.workspaceId,
-            entryId: input.skillId,
-            expectedRevision: input.expectedRevision,
-          };
-          const admit = () =>
-            audit(
-              workspaceDb,
-              operation,
-              input,
-              context,
-              resource,
-              catalog.revision,
-              summary,
-              true
-            );
-          const admission = operation === 'catalog.skill-purge' ? undefined : admit();
+        execute: async (workspaceDb) => {
+          const resumeAdmission = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${workspaceDb.sqlite.name}`
+          );
           let next: ResourceCatalogDocument;
-          if (operation === 'catalog.skill-select' && 'expectedCurrentDigest' in input) {
-            next = selectWorkspaceSkillDefault({
-              ...base,
-              digest: input.digest,
-              expectedCurrentDigest: input.expectedCurrentDigest,
-            });
-          } else if (operation === 'catalog.skill-pin' && 'expectedPinDigest' in input) {
-            next = setWorkspaceSkillPin({
-              ...base,
-              digest: input.digest,
-              expectedPinDigest: input.expectedPinDigest,
-              pinAuditRef: admission!.id,
-            });
-          } else if (operation === 'catalog.skill-remove') {
-            next = removeWorkspaceSkill(base);
-          } else if (
-            operation === 'catalog.skill-purge' &&
-            'digest' in input &&
-            input.digest !== null
-          ) {
-            const selected = {
+          let resource: string;
+          let summary: string;
+          try {
+            authorize(operation, input, context);
+            const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
+            if (catalog.revision !== input.expectedRevision) throw new CatalogConflictError();
+            const version = 'digest' in input ? input.digest : null;
+            const previous =
+              operation === 'catalog.skill-pin'
+                ? (catalog.skills.pins.find((item) => item.entryId === input.skillId)?.digest ??
+                  null)
+                : (catalog.skills.entries.find((item) => item.id === input.skillId)
+                    ?.currentDigest ?? null);
+            summary = `Skill command from ${previous ?? 'none'} to ${version ?? 'none'}.`;
+            resource = `skill:${input.skillId}${version ? `@${version}` : ''}`;
+            const base = {
+              dataRoot: root(),
               workspaceId: input.workspaceId,
               entryId: input.skillId,
-              digest: input.digest,
+              expectedRevision: input.expectedRevision,
             };
-            next = purgeWorkspaceSkillVersion({
-              ...base,
-              digest: input.digest,
-              retainedReferences: hooks.retainedSkillReferences?.(selected) ?? null,
-              admitDeletion: admit,
-            });
-          } else {
-            throw new CatalogIntegrityError('Skill command input does not match its operation.');
+            const admit = () => {
+              try {
+                return audit(
+                  workspaceDb,
+                  operation,
+                  input,
+                  context,
+                  resource,
+                  catalog.revision,
+                  summary,
+                  true
+                );
+              } finally {
+                resumeAdmission();
+              }
+            };
+            const admission = operation === 'catalog.skill-purge' ? undefined : admit();
+            if (operation === 'catalog.skill-select' && 'expectedCurrentDigest' in input) {
+              next = selectWorkspaceSkillDefault({
+                ...base,
+                digest: input.digest,
+                expectedCurrentDigest: input.expectedCurrentDigest,
+              });
+            } else if (operation === 'catalog.skill-pin' && 'expectedPinDigest' in input) {
+              next = setWorkspaceSkillPin({
+                ...base,
+                digest: input.digest,
+                expectedPinDigest: input.expectedPinDigest,
+                pinAuditRef: admission!.id,
+              });
+            } else if (operation === 'catalog.skill-remove') {
+              next = removeWorkspaceSkill(base);
+            } else if (
+              operation === 'catalog.skill-purge' &&
+              'digest' in input &&
+              input.digest !== null
+            ) {
+              const selected = {
+                workspaceId: input.workspaceId,
+                entryId: input.skillId,
+                digest: input.digest,
+              };
+              next = purgeWorkspaceSkillVersion({
+                ...base,
+                digest: input.digest,
+                retainedReferences: hooks.retainedSkillReferences?.(selected) ?? null,
+                admitDeletion: admit,
+              });
+            } else {
+              throw new CatalogIntegrityError('Skill command input does not match its operation.');
+            }
+          } finally {
+            resumeAdmission();
           }
-          audit(workspaceDb, operation, input, context, resource, next.revision, summary);
+          const resumeCompletion = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${workspaceDb.sqlite.name}`
+          );
+          try {
+            audit(workspaceDb, operation, input, context, resource, next.revision, summary);
+          } finally {
+            resumeCompletion();
+          }
           return { revision: next.revision };
         },
       });

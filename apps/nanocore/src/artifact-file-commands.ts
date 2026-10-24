@@ -184,6 +184,7 @@ export async function importArtifactFile(input: {
   if (failures.length > 1) throw new ArtifactPayloadCleanupError(failures);
   if (!response)
     throw new OperationError('recovery_required', 'Artifact acknowledgement is unavailable.', 503);
+  input.assertAuthorized();
   return response;
 }
 

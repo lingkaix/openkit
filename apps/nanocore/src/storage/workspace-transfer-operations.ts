@@ -7,7 +7,6 @@ import type {
   OperationInvocationContext,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
 import { dryRunWorkspaceImport, verifyWorkspaceExportTree } from './workspace-export.js';
 import {
   assertRequestedExportHandles,
@@ -27,7 +26,7 @@ export function createWorkspaceTransferOperationImplementations(
 ) {
   const { coreDb, repositoryWorkspaceDb, store, fileAdmission } = dependencies;
   return {
-    'workspace.export': (input, context) => {
+    'workspace.export': async (input, context) => {
       // Definition credential admission proves public context before this native join.
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
@@ -37,23 +36,20 @@ export function createWorkspaceTransferOperationImplementations(
           'Workspace export is unavailable.',
           503
         );
-      return withCanonicalFileWriteAdmission(
-        fileAdmission,
-        () =>
-          createVerifiedWorkspaceExport({
-            authorityActor: context.actorRef,
-            authorityUserId: actor.userId,
-            administratorEligible: Boolean(
-              coreDb && isCurrentDeploymentAdministrator(coreDb, actor)
-            ),
-            coreDb,
-            dataRoot,
-            repositoryWorkspaceDb: repositoryWorkspaceDb!,
-            requestActor: actor,
-            store: store!,
-            workspaceId: input.workspaceId,
-          }).response
-      );
+      return (
+        await createVerifiedWorkspaceExport({
+          fileAdmission,
+          authorityActor: context.actorRef,
+          authorityUserId: actor.userId,
+          administratorEligible: Boolean(coreDb && isCurrentDeploymentAdministrator(coreDb, actor)),
+          coreDb,
+          dataRoot,
+          repositoryWorkspaceDb: repositoryWorkspaceDb!,
+          requestActor: actor,
+          store: store!,
+          workspaceId: input.workspaceId,
+        })
+      ).response;
     },
     'workspace.import-dry-run': (input, context) => {
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;

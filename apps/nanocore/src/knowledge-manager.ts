@@ -12,6 +12,7 @@ import { parseOkfDocument, stringFrontmatterField } from './knowledge/okf.js';
 import type { KnowledgeProposalRecord } from './lib/store.js';
 import {
   type KnowledgeRetrievalAccess,
+  type RetrieveWorkspaceKnowledgeInput,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 
@@ -29,6 +30,8 @@ export interface PrepareKnowledgeContextInput {
   access: KnowledgeRetrievalAccess;
   /** Coordinator query used to select material. */
   query: string;
+  /** Forwards accounting before retrieval's existing final disclosure checks. */
+  beforeDisclosure?: RetrieveWorkspaceKnowledgeInput['beforeDisclosure'];
   /** Maximum number of source entries to include. */
   limit?: number | undefined;
 }
@@ -106,6 +109,7 @@ export async function prepareKnowledgeContext(
 ): Promise<KnowledgeManagerPrepareContextResponse> {
   const retrieval = await retrieveWorkspaceKnowledge({
     access: input.access,
+    beforeDisclosure: input.beforeDisclosure,
     dataRoot: input.dataRoot,
     workspaceId: input.workspaceId,
     caller: 'app-api',

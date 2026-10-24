@@ -12,6 +12,7 @@ import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environ
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
@@ -144,7 +145,8 @@ it('accepts the original Core final under a Workspace write lock without claimin
     expect(
       requireCompleteBackendWorkspaceHandleHandoff(workspaceDb, environmentPackage, backendIdentity)
     ).toHaveLength(1);
-    const call = startCapabilityCall({
+    await openTestNativeWorkspace(workspaceDb);
+    const call = await startCapabilityCall({
       workspaceDb,
       workspaceId,
       threadId: lineage.threadId,
@@ -167,7 +169,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
       bytePosition: 41,
     });
     settleWorkerRawOutput(workspaceDb, lineage, call.id, true);
-    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+    await finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
     const before = handoffBytes(workspaceDb);
     const notifications: unknown[] = [];
     const gateway = createDefaultWorkerControlGateway(coreDb, (notification) => {
@@ -227,6 +229,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
       expect.objectContaining({ cleanupStatus: 'pending', updatedAt: timestamp }),
     ]);
     competingWriter.sqlite.exec('ROLLBACK');
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     workspaceDb = openWorkspaceDb(dataRoot, workspaceId);

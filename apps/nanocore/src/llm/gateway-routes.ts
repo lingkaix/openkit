@@ -27,7 +27,6 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import {
   finishCapabilityCall,
   type GatewayCallLedgerBinding,
-  hasCapabilityCallRequestId,
   recordUsage,
   type StartedCapabilityCall,
   startCapabilityCall,
@@ -50,22 +49,16 @@ import {
   WorkerControlGatewayError,
 } from '../runtime/worker-control-gateway.js';
 import {
-  initializeWorkerRawOutput,
-  invalidateWorkerRawOutputProof,
-  observeWorkerRawOutput,
+  createWorkerRawOutputCoalescer,
+  readWorkerRawOutput,
   requireWorkerRawOutputAvailable,
-  settleWorkerRawOutput,
   WorkerRawOutputAuthorityError,
   WorkerRawOutputBudgetExceededError,
+  type WorkerRawOutputTurnWatermark,
 } from '../runtime/worker-raw-output.js';
 import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenance.js';
-import {
-  type CoreDb,
-  openBootVerifiedWorkspaceDb,
-  openWorkspaceDb,
-  type WorkspaceDb,
-} from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { type CoreDb, openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
   executeGatewayPlan,
@@ -178,7 +171,9 @@ interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
   /** Releases process-local inference cancellation ownership after the durable call settles. */
   onFinished?: () => void;
   /** Seals exact native observation before terminal status becomes visible. */
-  beforeFinished?: (status: 'succeeded' | 'failed' | 'aborted' | 'timed-out') => void;
+  beforeFinished?: (status: 'succeeded' | 'failed' | 'aborted' | 'timed-out') => Promise<void>;
+  /** Rechecks live authority after every storage wait and before Provider contact or disclosure. */
+  assertAuthority?: () => void;
 }
 
 /**
@@ -187,7 +182,7 @@ interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
  * @param input Provider, request, and storage context.
  * @returns Started call or null when durable attribution is unavailable.
  */
-function startPublicLlmGatewayCall(input: {
+async function startPublicLlmGatewayCall(input: {
   /** Exact authenticated actor that authorized the workspace call. */
   authorityActor: ActorRef;
   /** Non-secret credential identity from the same authenticated request. */
@@ -200,7 +195,7 @@ function startPublicLlmGatewayCall(input: {
   metadata: unknown;
   /** Pre-adapter Chat Completions or Responses request. */
   request: unknown;
-}): DurableLlmGatewayCall | null {
+}): Promise<DurableLlmGatewayCall | null> {
   if (!input.coreDb) {
     return null;
   }
@@ -208,13 +203,11 @@ function startPublicLlmGatewayCall(input: {
   const lineage = readPublicLlmGatewayLineage(input.metadata);
 
   const workspaceDb = lineage
-    ? openWorkspaceDb(input.coreDb.dataRoot, lineage.workspaceId)
+    ? openWorkspaceReadDb(input.coreDb.dataRoot, lineage.workspaceId)
     : input.coreDb;
 
   try {
-    if (workspaceDb.scope === 'workspace') applyScopedMigrations(workspaceDb);
-
-    const call = startPublicLlmGatewayCallInDb(workspaceDb, { ...input, lineage });
+    const call = await startPublicLlmGatewayCallOnOwner(workspaceDb, { ...input, lineage });
 
     return {
       call,
@@ -227,8 +220,8 @@ function startPublicLlmGatewayCall(input: {
   }
 }
 
-/** Complete public gateway SQL admission on the selected owner; open/migration/close and live coverage callbacks stay outside SQL. */
-export function startPublicLlmGatewayCallInDb(
+/** Admits the complete public Gateway tuple through its existing database owner. */
+async function startPublicLlmGatewayCallOnOwner(
   workspaceDb: CoreDb | WorkspaceDb,
   input: Pick<
     Parameters<typeof startPublicLlmGatewayCall>[0],
@@ -236,15 +229,8 @@ export function startPublicLlmGatewayCallInDb(
   > & {
     readonly lineage: ReturnType<typeof readPublicLlmGatewayLineage>;
   }
-): DurableLlmGatewayCall['call'] {
+): Promise<DurableLlmGatewayCall['call']> {
   const { lineage } = input;
-  if (
-    lineage?.requestId &&
-    workspaceDb.scope === 'workspace' &&
-    hasCapabilityCallRequestId(workspaceDb, lineage.workspaceId, lineage.requestId)
-  ) {
-    throw new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
-  }
   const callInput = {
     agentId: lineage?.agentId ?? null,
     agentSessionId: lineage?.agentSessionId ?? null,
@@ -266,28 +252,27 @@ export function startPublicLlmGatewayCallInDb(
     threadId: lineage?.threadId ?? null,
     turnId: lineage?.turnId ?? null,
   };
-  const call =
-    workspaceDb.scope === 'core'
-      ? startCapabilityCall({
-          ...callInput,
-          family: 'llm',
-          workspaceDb,
-          owner: { kind: 'server' },
-        })
-      : startCapabilityCall({
-          ...callInput,
-          family: 'llm',
-          workspaceDb,
-          workspaceId: workspaceDb.workspaceId,
-        });
-  persistLlmCapabilityCallSystemPromptDigest({
-    callId: call.id,
-    systemPromptDigest: digestLlmSystemPrompt({
-      endpoint: input.endpoint,
-      request: input.request,
-    }),
-    workspaceDb,
+  const systemPromptDigest = digestLlmSystemPrompt({
+    endpoint: input.endpoint,
+    request: input.request,
   });
+  if (workspaceDb.scope === 'workspace') {
+    return startCapabilityCall({
+      ...callInput,
+      family: 'llm',
+      workspaceDb,
+      workspaceId: workspaceDb.workspaceId,
+      freshSystemPromptDigest: systemPromptDigest,
+      singleUseRequestId: true,
+    });
+  }
+  const call = startCapabilityCall({
+    ...callInput,
+    family: 'llm',
+    workspaceDb,
+    owner: { kind: 'server' },
+  });
+  persistLlmCapabilityCallSystemPromptDigest({ workspaceDb, callId: call.id, systemPromptDigest });
   return call;
 }
 
@@ -394,7 +379,7 @@ function fitGatewayEffort(
  *
  * @param input Started call and response usage.
  */
-function recordLlmGatewayUsage(input: {
+async function recordLlmGatewayUsage(input: {
   /** Started durable call. */
   durableCall: DurableLlmGatewayCall | null;
   /** Provider selected for the call. */
@@ -403,7 +388,7 @@ function recordLlmGatewayUsage(input: {
   model: string;
   /** Provider usage payload. */
   usage: unknown;
-}): string[] {
+}): Promise<string[]> {
   if (!input.durableCall || input.durableCall.finished) {
     return [];
   }
@@ -482,20 +467,20 @@ function recordLlmGatewayUsage(input: {
  * @param status Terminal status.
  * @param errorCode Stable error code for non-success calls.
  */
-function finishDurableLlmGatewayCall(
+async function finishDurableLlmGatewayCall(
   durableCall: DurableLlmGatewayCall | null,
   status: 'succeeded' | 'failed' | 'aborted' | 'timed-out',
   errorCode?: string
-): void {
+): Promise<void> {
   if (!durableCall || durableCall.finished) {
     return;
   }
-  durableCall.beforeFinished?.(status);
+  await durableCall.beforeFinished?.(status);
   durableCall.finished = true;
   const failureCode = durableCall.rawOutputFailureCode ?? errorCode;
 
   try {
-    finishCapabilityCall({
+    await finishCapabilityCall({
       callId: durableCall.call.id,
       ...(failureCode ? { errorCode: failureCode } : {}),
       status: durableCall.rawOutputFailureCode && status === 'succeeded' ? 'failed' : status,
@@ -524,13 +509,13 @@ function finishDurableLlmGatewayCall(
  * @param status Terminal capability status.
  * @param errorCode Optional stable failure or cancellation code.
  */
-function finishDurableLlmGatewayStreamCall(
+async function finishDurableLlmGatewayStreamCall(
   durableCall: DurableLlmGatewayCall | null,
   status: 'succeeded' | 'failed' | 'aborted' | 'timed-out',
   errorCode?: string
-): void {
+): Promise<void> {
   try {
-    finishDurableLlmGatewayCall(durableCall, status, errorCode);
+    await finishDurableLlmGatewayCall(durableCall, status, errorCode);
   } catch {
     // Response framing owns the post-header boundary and must remain product-safe.
   }
@@ -863,7 +848,7 @@ function workerInferencePayloadTooLarge(): WorkerInferenceRouteError {
  * @returns Started durable capability call.
  * @throws WorkerInferenceRouteError when durable attribution cannot be established.
  */
-function startWorkerInferenceCall(input: {
+async function startWorkerInferenceCall(input: {
   /** Optional Core database used to locate workspace storage. */
   readonly coreDb?: CoreDb;
   /** Authenticated Agent Environment Package. */
@@ -880,7 +865,7 @@ function startWorkerInferenceCall(input: {
   readonly cacheDegraded: boolean;
   /** Pre-adapter Chat Completions or Responses request. */
   readonly request: unknown;
-}): DurableLlmGatewayCall & { workspaceDb: WorkspaceDb; call: StartedCapabilityCall } {
+}): Promise<DurableLlmGatewayCall & { workspaceDb: WorkspaceDb; call: StartedCapabilityCall }> {
   if (!input.coreDb) {
     throw new WorkerInferenceRouteError(
       'worker_inference_unavailable',
@@ -895,10 +880,13 @@ function startWorkerInferenceCall(input: {
   let workspaceDb: WorkspaceDb | null = null;
 
   try {
-    workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, scope.workspaceId);
-    applyScopedMigrations(workspaceDb);
+    workspaceDb = openWorkspaceReadDb(input.coreDb.dataRoot, scope.workspaceId);
 
-    const call = startCapabilityCall({
+    const call = await startCapabilityCall({
+      workspaceDb,
+      workspaceId: scope.workspaceId,
+      initializeRaw: true,
+
       agentId: environmentPackage.agent.agentId,
       agentSessionId: scope.agentSessionId,
       authorityActor: scope.triggerActor,
@@ -919,17 +907,13 @@ function startWorkerInferenceCall(input: {
         : `Worker ${input.endpoint} inference gateway call.`,
       threadId: scope.threadId,
       turnId: scope.turnId,
-      workspaceDb,
-      workspaceId: scope.workspaceId,
-    });
-    persistLlmCapabilityCallSystemPromptDigest({
-      callId: call.id,
-      systemPromptDigest: digestLlmSystemPrompt({
+
+      freshSystemPromptDigest: digestLlmSystemPrompt({
         endpoint: input.endpoint,
         request: input.request,
       }),
-      workspaceDb,
     });
+    if (!call.inserted) throw new WorkerRawOutputAuthorityError();
 
     return {
       call,
@@ -1494,6 +1478,7 @@ function normalizeGatewayTerminalStream(
               }),
             ])
           : await pendingRead;
+        if (result && !result.done) options.durableCall?.assertAuthority?.();
       } catch (error) {
         if (terminal) {
           return;
@@ -1595,15 +1580,15 @@ function isGatewayCancellation(error: unknown, signal?: AbortSignal): boolean {
  * @param cancellationCode Stable cancellation code.
  * @returns True when cancellation caused the failure.
  */
-function finishDurableLlmGatewayFailure(
+async function finishDurableLlmGatewayFailure(
   durableCall: DurableLlmGatewayCall | null,
   error: unknown,
   signal: AbortSignal,
   failureCode: string,
   cancellationCode: string
-): boolean {
+): Promise<boolean> {
   const cancelled = isGatewayCancellation(error, signal);
-  finishDurableLlmGatewayCall(
+  await finishDurableLlmGatewayCall(
     durableCall,
     cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
     cancelled
@@ -1844,8 +1829,19 @@ export function registerWorkerInferenceRoutes({
   const activeRawCalls = new Map<
     string,
     {
-      calls: Map<string, { controller: AbortController; call: DurableLlmGatewayCall }>;
+      calls: Map<
+        string,
+        {
+          controller: AbortController;
+          call: DurableLlmGatewayCall;
+          cover?: (force?: boolean) => Promise<void>;
+        }
+      >;
       stopRequested: boolean;
+      watermark?: WorkerRawOutputTurnWatermark;
+      inFlight?: Promise<void>;
+      crossing?: Promise<void>;
+      failure?: { error: unknown };
     }
   >();
   /**
@@ -1895,28 +1891,35 @@ export function registerWorkerInferenceRoutes({
       const runtimeOriginRef = runtimeHint
         ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
         : null;
-      if (
-        !coreDb ||
-        !currentWorkerLineageWorkspaceAuthority(
-          coreDb,
-          {
-            workspaceId: environmentPackage.scope.workspaceId,
-            threadId: environmentPackage.scope.threadId,
-            turnId: environmentPackage.scope.turnId,
-            agentSessionId: environmentPackage.scope.agentSessionId,
-            packageSnapshotId: environmentPackage.snapshotId,
-            triggerActor: environmentPackage.scope.triggerActor,
-          },
-          'llm.gateway.use',
-          true
-        )
-      ) {
-        throw new WorkerInferenceRouteError(
-          'worker_inference_unavailable',
-          'Worker inference durable attribution is unavailable.',
-          503
+      const assertAuthority = () => {
+        workerControlGateway.authenticatePackageToken(
+          c.req.header('authorization') ?? null,
+          workerInferenceTokenHashAuthentication
         );
-      }
+        if (
+          !coreDb ||
+          !currentWorkerLineageWorkspaceAuthority(
+            coreDb,
+            {
+              workspaceId: environmentPackage.scope.workspaceId,
+              threadId: environmentPackage.scope.threadId,
+              turnId: environmentPackage.scope.turnId,
+              agentSessionId: environmentPackage.scope.agentSessionId,
+              packageSnapshotId: environmentPackage.snapshotId,
+              triggerActor: environmentPackage.scope.triggerActor,
+            },
+            'llm.gateway.use',
+            true
+          )
+        ) {
+          throw new WorkerInferenceRouteError(
+            'worker_inference_unavailable',
+            'Worker inference durable attribution is unavailable.',
+            503
+          );
+        }
+      };
+      assertAuthority();
       let logicalModel: ResolvedLogicalModel | null = null;
       try {
         const snapshot = runtimeConfig();
@@ -1930,7 +1933,7 @@ export function registerWorkerInferenceRoutes({
       } catch {
         logicalModel = null;
       }
-      const durableCall = startWorkerInferenceCall({
+      const durableCall = await startWorkerInferenceCall({
         ...(coreDb ? { coreDb } : {}),
         cacheDegraded: false,
         endpoint,
@@ -1940,9 +1943,12 @@ export function registerWorkerInferenceRoutes({
         runtimeCacheLineageRef: null,
         runtimeOriginRef,
       });
+      durableCall.assertAuthority = assertAuthority;
       const scope = environmentPackage.scope;
       const rawKey = JSON.stringify([scope.workspaceId, scope.threadId, scope.turnId]);
-      const rawGroup = activeRawCalls.get(rawKey) ?? { calls: new Map(), stopRequested: false };
+      const rawGroup: NonNullable<ReturnType<typeof activeRawCalls.get>> = activeRawCalls.get(
+        rawKey
+      ) ?? { calls: new Map(), stopRequested: false };
       activeRawCalls.set(rawKey, rawGroup);
       const rawController = new AbortController();
       rawGroup.calls.set(durableCall.call.id, { controller: rawController, call: durableCall });
@@ -1951,27 +1957,31 @@ export function registerWorkerInferenceRoutes({
         rawGroup.calls.delete(durableCall.call.id);
         if (!rawGroup.calls.size) activeRawCalls.delete(rawKey);
       };
-      const withRawDb = <T>(operation: (workspaceDb: WorkspaceDb) => T): T => {
-        if (durableCall.workspaceDb.sqlite.open) return operation(durableCall.workspaceDb);
-        // A cancelled stock iterator can settle after public delivery. Its last observed fields
-        // still belong to this attempt; never recreate a deleted Workspace to account for them.
-        const workspaceDb = openBootVerifiedWorkspaceDb(coreDb.dataRoot, scope.workspaceId);
-        try {
-          return operation(workspaceDb);
-        } finally {
-          workspaceDb.sqlite.close();
-        }
+      let rawCoalescer: ReturnType<typeof createWorkerRawOutputCoalescer> | undefined;
+      const rawAcknowledgements = new WeakMap<Uint8Array, Promise<void>>();
+      const beforeRawChunk = async (chunk: Uint8Array) => {
+        const covering = rawAcknowledgements.get(chunk);
+        if (!covering) throw new WorkerRawOutputAuthorityError();
+        await covering;
+        durableCall.assertAuthority?.();
       };
       let rawPersistenceFailure: unknown;
-      const failRaw = (
+      const failRaw = async (
         error: Error,
         stage: 'admission' | 'source' | 'stream-prepare' | 'settlement' = 'source',
         causeCode:
           | 'raw_authority_unavailable'
           | 'raw_source_incomplete'
           | 'raw_persistence_failed' = 'raw_authority_unavailable'
-      ): never => {
-        const exhausted = error instanceof WorkerRawOutputBudgetExceededError;
+      ): Promise<never> => {
+        let exhausted = error instanceof WorkerRawOutputBudgetExceededError;
+        try {
+          await rawGroup.crossing;
+          await rawCoalescer?.cover(exhausted);
+        } catch (persistenceError) {
+          rawPersistenceFailure = persistenceError;
+          exhausted = false;
+        }
         const firstStop = !rawGroup.stopRequested;
         if (firstStop) {
           rawGroup.stopRequested = true;
@@ -1994,7 +2004,13 @@ export function registerWorkerInferenceRoutes({
         }
         if (!exhausted) {
           try {
-            withRawDb((db) => invalidateWorkerRawOutputProof(db, scope, durableCall.call.id));
+            await getControlStoreWorkerClient().workspaceCapability(durableCall.workspaceDb, {
+              kind: 'raw-invalidate',
+              workspaceId: scope.workspaceId,
+              threadId: scope.threadId,
+              turnId: scope.turnId,
+              callId: durableCall.call.id,
+            });
           } catch {
             /* The existing native stop and session fence retain unknown persistence. */
           }
@@ -2015,15 +2031,13 @@ export function registerWorkerInferenceRoutes({
         }
         throw error;
       };
-      let rawInitialized = false;
       const rawObservers: Array<{
         pending: number;
         started: number;
         events: number;
         locallyRefused: boolean;
       }> = [];
-      durableCall.beforeFinished = (status) => {
-        if (!rawInitialized) return;
+      durableCall.beforeFinished = async (status) => {
         const complete =
           (status !== 'succeeded' || rawObservers.length > 0) &&
           rawObservers.every(
@@ -2038,7 +2052,16 @@ export function registerWorkerInferenceRoutes({
           );
         let persisted = false;
         try {
-          withRawDb((db) => settleWorkerRawOutput(db, scope, durableCall.call.id, complete));
+          await rawGroup.crossing;
+          await rawCoalescer?.cover();
+          await getControlStoreWorkerClient().workspaceCapability(durableCall.workspaceDb, {
+            kind: 'raw-settle',
+            workspaceId: scope.workspaceId,
+            threadId: scope.threadId,
+            turnId: scope.turnId,
+            callId: durableCall.call.id,
+            complete,
+          });
           persisted = true;
         } catch (error) {
           rawPersistenceFailure = error;
@@ -2046,7 +2069,7 @@ export function registerWorkerInferenceRoutes({
         }
         if (!complete || !persisted) {
           try {
-            failRaw(
+            await failRaw(
               new WorkerRawOutputAuthorityError(),
               'settlement',
               complete ? 'raw_persistence_failed' : 'raw_source_incomplete'
@@ -2113,9 +2136,44 @@ export function registerWorkerInferenceRoutes({
             503
           );
         try {
-          initializeWorkerRawOutput(durableCall.workspaceDb, durableCall.call, scope);
-          rawInitialized = true;
           requireWorkerRawOutputAvailable(durableCall.workspaceDb, scope);
+          rawGroup.watermark ??= readWorkerRawOutput(durableCall.workspaceDb, scope);
+          rawCoalescer = createWorkerRawOutputCoalescer(
+            { byteLength: 0, coverage: 'pending', positions: {} },
+            rawGroup.watermark,
+            async (positions, immediate) => {
+              while (rawGroup.inFlight) await rawGroup.inFlight;
+              if (rawGroup.failure) throw rawGroup.failure.error;
+              const sending = getControlStoreWorkerClient()
+                .workspaceCapability(
+                  durableCall.workspaceDb,
+                  {
+                    kind: 'raw-observe',
+                    workspaceId: scope.workspaceId,
+                    threadId: scope.threadId,
+                    turnId: scope.turnId,
+                    callId: durableCall.call.id,
+                    positions: [...positions],
+                  },
+                  { immediate }
+                )
+                .then(() => {});
+              rawGroup.inFlight = sending;
+              try {
+                await sending;
+              } catch (error) {
+                rawGroup.failure = { error };
+                rawPersistenceFailure = error;
+                queueMicrotask(() => {
+                  void failRaw(new WorkerRawOutputAuthorityError()).catch(() => {});
+                });
+                throw error;
+              } finally {
+                delete rawGroup.inFlight;
+              }
+            }
+          );
+          rawGroup.calls.get(durableCall.call.id)!.cover = (force) => rawCoalescer!.cover(force);
           const previous = durableCall.workspaceDb.sqlite
             .prepare(
               "SELECT schema_version, call_id, status, error_code FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND service_ref = 'worker-inference-gateway' AND call_id <> ? AND (status IN ('running', 'unknown') OR error_code = 'worker_raw_output_unavailable')"
@@ -2134,7 +2192,7 @@ export function registerWorkerInferenceRoutes({
           )
             throw new WorkerRawOutputAuthorityError();
         } catch (error) {
-          failRaw(
+          await failRaw(
             error instanceof Error ? error : new WorkerRawOutputAuthorityError(),
             'admission'
           );
@@ -2209,31 +2267,30 @@ export function registerWorkerInferenceRoutes({
                 endpoint,
                 effectiveEffort
               );
-              const retainedCall = durableCall.workspaceDb.sqlite
-                .prepare('SELECT schema_version FROM capability_calls WHERE call_id = ?')
-                .get(durableCall.call.id) as { schema_version: number } | undefined;
-              if (retainedCall)
-                readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
-              durableCall.workspaceDb.sqlite
-                .prepare(
-                  'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
-                )
-                .run(
-                  cache.runtimeCacheLineageRef,
-                  cache.degraded
+              await getControlStoreWorkerClient().workspaceCapability(durableCall.workspaceDb, {
+                kind: 'attribution',
+                workspaceId: scope.workspaceId,
+                callId: durableCall.call.id,
+                workerCache: {
+                  runtimeCacheLineageRef: cache.runtimeCacheLineageRef,
+                  summary: cache.degraded
                     ? `Worker ${endpoint} inference gateway call with request-scoped cache isolation.`
                     : `Worker ${endpoint} inference gateway call.`,
-                  durableCall.call.id
-                );
+                },
+              });
               let responseTurnState: string | undefined;
               const requestTurnState = c.req.header('x-codex-turn-state');
               const rawObserver = { pending: 0, started: 0, events: 0, locallyRefused: false };
               rawObservers.push(rawObserver);
+              durableCall.assertAuthority = () => {
+                execution.assertAuthority?.();
+                assertAuthority();
+              };
               const dispatchContext: LLMGatewayDispatchContext = {
                 capture: captureForCall(durableCall, corr, attempt),
-                onUsage: (usage: unknown) =>
+                onUsage: async (usage: unknown) =>
                   execution.addUsageRecordIds(
-                    recordLlmGatewayUsage({
+                    await recordLlmGatewayUsage({
                       durableCall,
                       model: logicalModel.id,
                       provider,
@@ -2254,6 +2311,8 @@ export function registerWorkerInferenceRoutes({
                         ),
                         outputReserveTokens: final.outputReserveTokens,
                       });
+                      execution.assertAuthority?.();
+                      assertAuthority();
                     } catch (error) {
                       if (error instanceof ModelRequestAdmissionError) {
                         admissionFailure = error;
@@ -2282,15 +2341,31 @@ export function registerWorkerInferenceRoutes({
                     observe: (
                       position: import('./raw-provider-output.js').RawModelOutputPosition
                     ) => {
-                      const result = withRawDb((db) =>
-                        observeWorkerRawOutput(db, {
-                          ...scope,
-                          ...position,
-                          callId: durableCall.call.id,
-                          attemptId: JSON.stringify([corr, attempt]),
-                        })
-                      );
-                      if (result.exhausted) throw new WorkerRawOutputBudgetExceededError();
+                      if (!rawCoalescer || rawGroup.failure)
+                        throw new WorkerRawOutputAuthorityError();
+                      if (rawGroup.watermark?.exhausted)
+                        throw new WorkerRawOutputBudgetExceededError();
+                      const result = rawCoalescer.observe({
+                        ...position,
+                        attemptId: JSON.stringify([corr, attempt]),
+                      });
+                      if (result.exhausted) {
+                        rawGroup.crossing = Promise.all(
+                          [...rawGroup.calls.values()].map((entry) => entry.cover?.(true))
+                        ).then(() => {});
+                        void rawGroup.crossing.catch(() => {});
+                        throw new WorkerRawOutputBudgetExceededError();
+                      }
+                    },
+                    coverAcknowledgement: () => {
+                      const coalescer = rawCoalescer;
+                      if (!coalescer) throw new WorkerRawOutputAuthorityError();
+                      return (chunk) => {
+                        // Bind this immutable event's frontier, not the stream's initial position.
+                        const covering = coalescer.cover();
+                        void covering.catch(() => {});
+                        rawAcknowledgements.set(chunk, covering);
+                      };
                     },
                     fail: failRaw,
                   },
@@ -2342,10 +2417,10 @@ export function registerWorkerInferenceRoutes({
                   const prepared = await execution.prepareStream(stream);
                   if (!rawObserver.started || !rawObserver.events) {
                     void prepared.cancel().catch(() => undefined);
-                    failRaw(new WorkerRawOutputAuthorityError(), 'stream-prepare');
+                    await failRaw(new WorkerRawOutputAuthorityError(), 'stream-prepare');
                   }
                   return workerInferenceStreamResponse(
-                    rewriteGatewayStreamModel(prepared, logicalModel.id),
+                    rewriteGatewayStreamModel(prepared, logicalModel.id, beforeRawChunk),
                     durableCall,
                     endpoint,
                     c.req.raw.signal,
@@ -2384,10 +2459,10 @@ export function registerWorkerInferenceRoutes({
                 const prepared = await execution.prepareStream(stream);
                 if (!rawObserver.started || !rawObserver.events) {
                   void prepared.cancel().catch(() => undefined);
-                  failRaw(new WorkerRawOutputAuthorityError(), 'stream-prepare');
+                  await failRaw(new WorkerRawOutputAuthorityError(), 'stream-prepare');
                 }
                 return workerInferenceStreamResponse(
-                  rewriteGatewayStreamModel(prepared, logicalModel.id),
+                  rewriteGatewayStreamModel(prepared, logicalModel.id, beforeRawChunk),
                   durableCall,
                   endpoint,
                   c.req.raw.signal,
@@ -2428,7 +2503,10 @@ export function registerWorkerInferenceRoutes({
             }
           },
         });
-        if (!input.stream) await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        if (!input.stream) {
+          await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+          durableCall?.assertAuthority?.();
+        }
         return result;
       } catch (error) {
         // The native stop signal can wrap the private authority failure as cancellation.
@@ -2439,7 +2517,7 @@ export function registerWorkerInferenceRoutes({
             : new WorkerRawOutputAuthorityError()
           : error;
         if (!isGatewayCancellation(failure, c.req.raw.signal)) reportFailure(failure);
-        const cancelled = finishDurableLlmGatewayFailure(
+        const cancelled = await finishDurableLlmGatewayFailure(
           durableCall,
           failure,
           c.req.raw.signal,
@@ -2552,7 +2630,8 @@ function rewriteGatewaySseEventModel(event: string, logicalModelId: string): str
 /** Hides provider-native model fields in an OpenAI-compatible SSE stream. */
 function rewriteGatewayStreamModel(
   stream: ReadableStream<Uint8Array>,
-  logicalModelId: string
+  logicalModelId: string,
+  beforeChunk?: (chunk: Uint8Array) => void | Promise<void>
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -2560,7 +2639,8 @@ function rewriteGatewayStreamModel(
 
   return stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
+      async transform(chunk, controller) {
+        await beforeChunk?.(chunk);
         buffer += decoder.decode(chunk, { stream: true });
         let boundary = /\r?\n\r?\n/.exec(buffer);
         while (boundary?.index !== undefined) {
@@ -2721,7 +2801,7 @@ export async function dispatchLogicalModel<T>(input: {
       : undefined;
   for (const selection of selections) {
     if (!selection.selected)
-      writeEntry({
+      await writeEntry({
         kind: 'unavailable',
         routeMemberId: selection.route.id,
         ...(providers.get(selection.route.id)
@@ -2878,7 +2958,7 @@ export async function dispatchLogicalModel<T>(input: {
           'reference-revoked',
           'version-expired',
         ].includes(code);
-        writeEntry({
+        await writeEntry({
           kind: 'unavailable',
           routeMemberId: route.id,
           ...(providers.get(route.id)
@@ -2936,17 +3016,36 @@ export async function dispatchLogicalModel<T>(input: {
           ? {}
           : { requestedEffort: effort.requestedEffort }),
       };
-      const entryIndex = writeEntry(entry);
-      const retain = () => {
+      const entryIndex = await writeEntry(entry);
+      const retain = async () => {
         entry.outputBegan = execution.outputBegan;
-        writeEntry(entry, entryIndex);
+        await writeEntry(entry, entryIndex);
       };
       const observedExecution: GatewayAttemptContext = {
         ...execution,
-        onProviderHandoff: () => {
+        assertAuthority: () => {
+          const current = input.resolveGatewayProvider(
+            route.providerProfileId,
+            route.providerModel,
+            credentialUseContext
+          );
+          assertGatewayModelAuthorized(current, route.providerModel);
+          if (
+            current.apiKey !== provider.apiKey ||
+            current.baseUrl !== provider.baseUrl ||
+            current.subscriptionProviderId !== provider.subscriptionProviderId ||
+            current.accountSlotId !== provider.accountSlotId
+          )
+            throw new GatewayAttemptFailure(
+              { kind: 'auth_rejected', settled: true },
+              undefined,
+              true
+            );
+        },
+        onProviderHandoff: async () => {
           if (!input.reasoningEffort) return;
           Object.assign(entry, effort);
-          retain();
+          await retain();
         },
         get outputBegan() {
           return execution.outputBegan;
@@ -2954,13 +3053,13 @@ export async function dispatchLogicalModel<T>(input: {
         get streamPrepared() {
           return execution.streamPrepared;
         },
-        addUsageRecordIds: (ids) => {
+        addUsageRecordIds: async (ids) => {
           if (!ids.length) return;
           entry.usageRecordIds = [...new Set([...(entry.usageRecordIds ?? []), ...ids])];
-          retain();
+          await retain();
         },
         prepareStream: (stream) =>
-          execution.prepareStream(stream, (state, error) => {
+          execution.prepareStream(stream, async (state, error) => {
             if (state === 'completed' && entry.terminalResult === 'unknown')
               entry.terminalResult = 'succeeded';
             else if (state === 'incomplete') entry.terminalResult = 'incomplete';
@@ -2969,7 +3068,7 @@ export async function dispatchLogicalModel<T>(input: {
               entry.failureKind =
                 (error as { failure?: PiAiFailure } | null)?.failure?.kind ?? 'unknown';
             } else if (state === 'unknown' || state === 'interrupted') entry.terminalResult = state;
-            retain();
+            await retain();
           }),
       };
       try {
@@ -2987,7 +3086,7 @@ export async function dispatchLogicalModel<T>(input: {
         if (!execution.streamPrepared) {
           execution.commit();
           entry.terminalResult = 'succeeded';
-          retain();
+          await retain();
         }
         return result;
       } catch (original) {
@@ -3000,7 +3099,7 @@ export async function dispatchLogicalModel<T>(input: {
           failure?.kind ??
           (input.signal.aborted && error === input.signal.reason ? 'cancelled' : 'unknown');
         entry.terminalResult = 'failed';
-        retain();
+        await retain();
         throw error;
       }
     },
@@ -3043,6 +3142,29 @@ export function registerLlmGatewayRoutes({
    */
   function isGatewayEnabled(): boolean {
     return runtimeConfig().gatewayConfig.enabled;
+  }
+
+  /** Rechecks current public Workspace authority at each effect or disclosure boundary. */
+  function assertPublicAuthority(
+    context: Context<{ Variables: AuthVariables }>,
+    actor: ActorRef,
+    metadata: unknown
+  ): void {
+    if (
+      !isGatewayEnabled() ||
+      publicGatewayAuthorityDenied({
+        actor,
+        ...(coreDb ? { coreDb } : {}),
+        metadata,
+        ...(requestStore ? { store: requestStore(context) } : {}),
+      })
+    )
+      throw new OpenAICompatibleProviderError({
+        code: 'workspace_access_denied',
+        message: 'Workspace access denied.',
+        status: 403,
+        type: 'invalid_request_error',
+      });
   }
 
   /**
@@ -3185,6 +3307,8 @@ export function registerLlmGatewayRoutes({
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
       }
 
+      const assertAuthority = () =>
+        assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
       const logicalModel = requireLogicalModel(input.model);
 
       const request = {
@@ -3203,6 +3327,7 @@ export function registerLlmGatewayRoutes({
         metadata: (request as { metadata?: unknown }).metadata,
         request,
       });
+      if (durableCall) durableCall.assertAuthority = assertAuthority;
       try {
         recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.chat_completions',
@@ -3233,6 +3358,11 @@ export function registerLlmGatewayRoutes({
             execution,
             effectiveEffort,
           }) => {
+            const assertAttemptAuthority = () => {
+              execution.assertAuthority?.();
+              assertAuthority();
+            };
+            if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
             const fittedRequest = withGatewayEffort(request, 'chat_completions', effectiveEffort);
             if (input.stream) {
               const stream = await llmGatewayDispatcher.createChatCompletionStream(
@@ -3240,9 +3370,9 @@ export function registerLlmGatewayRoutes({
                 { ...fittedRequest, model: providerModel, stream: true },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: (usage) =>
+                  onUsage: async (usage) =>
                     execution.addUsageRecordIds(
-                      recordLlmGatewayUsage({
+                      await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
                         provider,
@@ -3251,6 +3381,7 @@ export function registerLlmGatewayRoutes({
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
                   transport: {
+                    finalRequestAdmission: assertAttemptAuthority,
                     signal: c.req.raw.signal,
                     deadline: execution.deadline,
                     ...(execution.onProviderHandoff
@@ -3281,9 +3412,9 @@ export function registerLlmGatewayRoutes({
                 { ...fittedRequest, model: providerModel, stream: false },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: (usage) =>
+                  onUsage: async (usage) =>
                     execution.addUsageRecordIds(
-                      recordLlmGatewayUsage({
+                      await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
                         provider,
@@ -3292,6 +3423,7 @@ export function registerLlmGatewayRoutes({
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
                   transport: {
+                    finalRequestAdmission: assertAttemptAuthority,
                     signal: c.req.raw.signal,
                     deadline: execution.deadline,
                     ...(execution.onProviderHandoff
@@ -3303,10 +3435,13 @@ export function registerLlmGatewayRoutes({
             return c.json({ ...completion, model: logicalModel.id });
           },
         });
-        if (!input.stream) await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        if (!input.stream) {
+          await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+          durableCall?.assertAuthority?.();
+        }
         return result;
       } catch (error) {
-        const cancelled = finishDurableLlmGatewayFailure(
+        const cancelled = await finishDurableLlmGatewayFailure(
           durableCall,
           error,
           c.req.raw.signal,
@@ -3357,6 +3492,8 @@ export function registerLlmGatewayRoutes({
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
       }
 
+      const assertAuthority = () =>
+        assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
       const logicalModel = requireLogicalModel(input.model);
 
       const request = {
@@ -3372,6 +3509,7 @@ export function registerLlmGatewayRoutes({
         metadata: (request as { metadata?: unknown }).metadata,
         request,
       });
+      if (durableCall) durableCall.assertAuthority = assertAuthority;
       try {
         recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.responses',
@@ -3404,6 +3542,11 @@ export function registerLlmGatewayRoutes({
             execution,
             effectiveEffort,
           }) => {
+            const assertAttemptAuthority = () => {
+              execution.assertAuthority?.();
+              assertAuthority();
+            };
+            if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
             const fittedRequest = withGatewayEffort(request, 'responses', effectiveEffort);
             if (input.stream) {
               const stream = await llmGatewayDispatcher.createResponsesStream(
@@ -3411,9 +3554,9 @@ export function registerLlmGatewayRoutes({
                 { ...fittedRequest, model: providerModel, stream: true },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: (usage) =>
+                  onUsage: async (usage) =>
                     execution.addUsageRecordIds(
-                      recordLlmGatewayUsage({
+                      await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
                         provider,
@@ -3422,6 +3565,7 @@ export function registerLlmGatewayRoutes({
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
                   transport: {
+                    finalRequestAdmission: assertAttemptAuthority,
                     signal: c.req.raw.signal,
                     deadline: execution.deadline,
                     ...(execution.onProviderHandoff
@@ -3452,9 +3596,9 @@ export function registerLlmGatewayRoutes({
                 { ...fittedRequest, model: providerModel },
                 {
                   capture: captureForCall(durableCall, corr, attempt),
-                  onUsage: (usage) =>
+                  onUsage: async (usage) =>
                     execution.addUsageRecordIds(
-                      recordLlmGatewayUsage({
+                      await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
                         provider,
@@ -3463,6 +3607,7 @@ export function registerLlmGatewayRoutes({
                     ),
                   ...(subscriptionModels ? { models: subscriptionModels } : {}),
                   transport: {
+                    finalRequestAdmission: assertAttemptAuthority,
                     signal: c.req.raw.signal,
                     deadline: execution.deadline,
                     ...(execution.onProviderHandoff
@@ -3474,10 +3619,13 @@ export function registerLlmGatewayRoutes({
             return c.json({ ...response, model: logicalModel.id });
           },
         });
-        if (!input.stream) await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        if (!input.stream) {
+          await finishDurableLlmGatewayCall(durableCall, 'succeeded');
+          durableCall?.assertAuthority?.();
+        }
         return result;
       } catch (error) {
-        const cancelled = finishDurableLlmGatewayFailure(
+        const cancelled = await finishDurableLlmGatewayFailure(
           durableCall,
           error,
           c.req.raw.signal,

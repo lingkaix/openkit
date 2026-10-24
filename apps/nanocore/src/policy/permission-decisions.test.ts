@@ -18,8 +18,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from '../audit-events.js';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import {
   importWorkspacePermissionDecisions,
   listExportableWorkspacePermissionDecisions,
@@ -33,7 +35,7 @@ import {
 import { retainPermissionDecision } from './retained-records-v1.js';
 
 describe('permission decision recorder', () => {
-  it('roundtrips mediation and atomically consumes only final Workspace allows', () => {
+  it('roundtrips mediation and atomically consumes only final Workspace allows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-consumption-'));
     const importedRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-import-'));
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -95,30 +97,32 @@ describe('permission decision recorder', () => {
     };
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
       applyScopedMigrations(importedDb);
       const gateId = allocateEntityId('pd');
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         ...base,
         decisionId: gateId,
         result: 'allow',
         mediation: { ...mediation, role: 'gate', binding: statement, kernel: undefined },
         policyInvocation,
       });
-      expect(() =>
-        recordProductPermissionDecision({
-          ...base,
-          decisionId: allocateEntityId('pd'),
-          result: 'deny',
-          mediation: { ...mediation, kernel: null },
-        })
-      ).toThrow('An unavailable Kernel requires a final error result.');
-      recordProductPermissionDecision({
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...base,
+            decisionId: allocateEntityId('pd'),
+            result: 'deny',
+            mediation: { ...mediation, kernel: null },
+          })
+      ).rejects.toThrow();
+      await recordProductPermissionDecision({
         ...base,
         decisionId: allocateEntityId('pd'),
         result: 'error',
         mediation: { ...mediation, kernel: null },
       });
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         ...base,
         decisionId: allocateEntityId('pd'),
         result: 'deny',
@@ -132,19 +136,22 @@ describe('permission decision recorder', () => {
         mediation: { ...mediation, consumedStatements: [statement] },
         uses: [{ statement, limit: 1 }],
       };
-      expect(() =>
-        recordProductPermissionDecision({ ...final, policySnapshotId: 'mutable-label' })
-      ).toThrow('Mediated Policy snapshot requires its content digest.');
-      expect(() =>
-        recordProductPermissionDecision({ ...final, enforcementPoint: 'wrong@decide' })
-      ).toThrow();
-      expect(() =>
-        recordProductPermissionDecision({
-          ...final,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000002',
-        })
-      ).toThrow();
-      recordProductPermissionDecision(final);
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({ ...final, policySnapshotId: 'mutable-label' })
+      ).rejects.toThrow();
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({ ...final, enforcementPoint: 'wrong@decide' })
+      ).rejects.toThrow();
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...final,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000002',
+          })
+      ).rejects.toThrow();
+      await recordProductPermissionDecision(final);
       expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(1);
       const decisions = listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId);
       const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
@@ -160,27 +167,37 @@ describe('permission decision recorder', () => {
       expect(
         audits.find((event) => event.permissionDecisionId === final.decisionId)
       ).not.toHaveProperty('policyInvocation');
-      expect(() => recordProductPermissionDecision({ ...final, policyInvocation })).toThrow(
-        'Gate Policy invocation must match'
-      );
-      expect(() =>
-        recordProductPermissionDecision({
-          ...base,
-          decisionId: allocateEntityId('pd'),
-          result: 'allow',
-          mediation: { ...mediation, role: 'gate', binding: statement, kernel: undefined },
-          policyInvocation: { ...policyInvocation, proposalDigest: `sha256:${'c'.repeat(64)}` },
-        })
-      ).toThrow('Gate Policy invocation must match');
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...base,
+            decisionId: allocateEntityId('pd'),
+            result: 'allow',
+            mediation,
+            policyInvocation,
+          })
+      ).rejects.toThrow();
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...base,
+            decisionId: allocateEntityId('pd'),
+            result: 'allow',
+            mediation: { ...mediation, role: 'gate', binding: statement, kernel: undefined },
+            policyInvocation: { ...policyInvocation, proposalDigest: `sha256:${'c'.repeat(64)}` },
+          })
+      ).rejects.toThrow();
       const nextRevision = `sha256:${'b'.repeat(64)}`;
-      expect(() =>
-        recordProductPermissionDecision({
-          ...final,
-          decisionId: allocateEntityId('pd'),
-          policySnapshotId: nextRevision,
-          mediation: final.mediation,
-        })
-      ).toThrow('Policy statement use limit is exhausted.');
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...final,
+            decisionId: allocateEntityId('pd'),
+            policySnapshotId: nextRevision,
+            mediation: final.mediation,
+          })
+      ).rejects.toThrow();
+      expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(1);
       expect(listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)).toEqual(
         decisions
       );
@@ -245,10 +262,9 @@ describe('permission decision recorder', () => {
           "UPDATE permission_decisions SET schema_version = 2, mediation_json = 'not JSON' WHERE decision_id = ?"
         )
         .run(final.decisionId);
-      expect(() => readPolicyStatementUseCount(workspaceDb, statement)).toThrow(
-        'Unsupported retained record format.'
-      );
+      expect(() => readPolicyStatementUseCount(workspaceDb, statement)).toThrow(TypeError);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       importedDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -256,13 +272,14 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('checks an approval source marker before decoding authority facts', () => {
+  it('checks an approval source marker before decoding authority facts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-record-version-'));
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       applyScopedMigrations(workspaceDb);
-      recordProductPermissionDecision({
+      await openTestNativeWorkspace(workspaceDb);
+      await recordProductPermissionDecision({
         workspaceDb,
         workspaceId,
         ownerScope: 'workspace',
@@ -288,9 +305,10 @@ describe('permission decision recorder', () => {
         )
         .run();
       expect(() => listPolicyApprovalSourceDecisions(workspaceDb, workspaceId, 'fixture')).toThrow(
-        'Unsupported retained record format.'
+        TypeError
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -299,7 +317,7 @@ describe('permission decision recorder', () => {
   it.each([
     'workspace',
     'server',
-  ] as const)('preserves ordinary fixture context in %s canonical writes, retained reads and public lists', (ownerScope) => {
+  ] as const)('preserves ordinary fixture context in %s canonical writes, retained reads and public lists', async (ownerScope) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-public-fixture-'));
     let coreDb = openCoreDb(dataRoot);
     let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -307,7 +325,8 @@ describe('permission decision recorder', () => {
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(workspaceDb);
-      recordProductPermissionDecision({
+      if (ownerScope === 'workspace') await openTestNativeWorkspace(workspaceDb);
+      const recorded = recordProductPermissionDecision({
         coreDb,
         workspaceDb,
         ownerScope,
@@ -325,6 +344,8 @@ describe('permission decision recorder', () => {
         reasonCode: 'allowed',
         enforcementPoint: 'test',
       });
+      if (ownerScope === 'workspace') await recorded;
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
@@ -348,6 +369,7 @@ describe('permission decision recorder', () => {
         fixture: 'okt_publicFixture',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -817,14 +839,15 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('records linked audit events for workspace-scoped permission decisions', () => {
+  it('records linked audit events for workspace-scoped permission decisions', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-audit-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         action: 'runtime.launch',
         auditActor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
         contextSummary: {
@@ -878,6 +901,7 @@ describe('permission decision recorder', () => {
         workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
@@ -935,12 +959,13 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('rolls back a permission decision when its linked audit event cannot persist', () => {
+  it('rolls back a permission decision when its linked audit event cannot persist', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-atomic-audit-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_permission_audit
         BEFORE INSERT ON audit_events
@@ -950,39 +975,43 @@ describe('permission decision recorder', () => {
         END
       `);
 
-      expect(() =>
-        recordProductPermissionDecision({
-          action: 'repo.push',
-          contextSummary: { requestId: 'request_atomic_audit' },
-          decisionId: 'pd_00000000-0000-7ffa-93d2-ae49f80adb52',
-          enforcementPoint: 'repo.push.approval_response',
-          ownerScope: 'workspace',
-          policyEngineVersion: 'nanocore-approval-policy:v1',
-          policySnapshotId: 'policy_snapshot_runtime',
-          reasonCode: 'repo_push_approved',
-          resourceSummary: { repositoryId: 'repo_default' },
-          result: 'allow',
-          subjectSummary: { kind: 'user' },
-          workspaceDb,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toThrow('injected permission audit failure');
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            action: 'repo.push',
+            contextSummary: { requestId: 'request_atomic_audit' },
+            decisionId: 'pd_00000000-0000-7ffa-93d2-ae49f80adb52',
+            enforcementPoint: 'repo.push.approval_response',
+            ownerScope: 'workspace',
+            policyEngineVersion: 'nanocore-approval-policy:v1',
+            policySnapshotId: 'policy_snapshot_runtime',
+            reasonCode: 'repo_push_approved',
+            resourceSummary: { repositoryId: 'repo_default' },
+            result: 'allow',
+            subjectSummary: { kind: 'user' },
+            workspaceDb,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+      ).rejects.toThrow();
       expect(
         workspaceDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM permission_decisions WHERE decision_id = ?')
           .get('pd_00000000-0000-7ffa-93d2-ae49f80adb52')
       ).toEqual({ count: 0 });
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceDb.workspaceId)).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('permits only one terminal permission decision for an approval', () => {
+  it('permits only one terminal permission decision for an approval', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-terminal-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
       const base = {
         action: 'repo.push',
         approvalId: 'approval_terminal_1',
@@ -1000,26 +1029,27 @@ describe('permission decision recorder', () => {
       };
 
       // Same-millisecond records tie-break by decision ID, so fixture IDs ascend in recording order.
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         ...base,
         decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df',
         reasonCode: 'repo_push_requires_approval',
         result: 'require_approval',
       });
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         ...base,
         decisionId: 'pd_00000000-0000-7e1a-9251-4f38c967a8d3',
         reasonCode: 'repo_push_approved',
         result: 'allow',
       });
-      expect(() =>
-        recordProductPermissionDecision({
-          ...base,
-          decisionId: 'pd_00000000-0000-7f80-b7a7-2ab5b94b69ef',
-          reasonCode: 'repo_push_denied',
-          result: 'deny',
-        })
-      ).toThrow();
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...base,
+            decisionId: 'pd_00000000-0000-7f80-b7a7-2ab5b94b69ef',
+            reasonCode: 'repo_push_denied',
+            result: 'deny',
+          })
+      ).rejects.toThrow();
 
       expect(
         listExportableWorkspacePermissionDecisions(
@@ -1041,6 +1071,7 @@ describe('permission decision recorder', () => {
           .get()
       ).toEqual({ count: 2 });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });

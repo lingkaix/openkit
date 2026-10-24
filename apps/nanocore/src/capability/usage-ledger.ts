@@ -19,9 +19,21 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { OperationError } from '../operation-error.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
+import {
+  type ControlCapabilityAdmissionFailure,
+  type ControlCapabilityCommandInput,
+  ControlCapabilityCommandInputSchema,
+  type ControlCapabilityCommandResult,
+} from '../storage/control-store-capability.js';
+import { presentControlFacts } from '../storage/control-store-input.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
 
@@ -222,7 +234,7 @@ export interface FinishCapabilityCallInput {
 /** Input for binding a running call to its observed schema snapshot. */
 export interface StampCapabilityCallSchemaSnapshotInput {
   /** Database handle for the immutable call owner. */
-  readonly workspaceDb: Pick<WorkspaceDb, 'sqlite'>;
+  readonly workspaceDb: WorkspaceDb | CoreDb;
   /** Durable running capability call id. */
   readonly callId: string;
   /** Stable schema snapshot id used for validation. */
@@ -247,6 +259,77 @@ export function normalizeCapabilityRequestId(requestId: string | null | undefine
   const parsed = RequestIdSchema.safeParse(requestId);
 
   return parsed.success ? parsed.data : null;
+}
+
+/** Existing native admission constituents; no extra command or durable fact is introduced. */
+type NativeCapabilityAdmissionFacts = Pick<
+  Extract<ControlCapabilityCommandInput, { kind: 'admit' }>,
+  | 'initializeRaw'
+  | 'freshSystemPromptDigest'
+  | 'singleUseRequestId'
+  | 'decision'
+  | 'warmMcpSchema'
+  | 'retainMcpAdmissionFailure'
+>;
+/** Starts a Workspace call through its admitted native owner; Core admission stays synchronous. */
+export function startCapabilityCall(
+  input: StartServerCapabilityCallInput
+): StartedCapabilityCall<ServerGatewayCallContext>;
+export function startCapabilityCall(
+  input: StartCapabilityCallInput & NativeCapabilityAdmissionFacts
+): Promise<
+  StartedCapabilityCall & { readonly admissionFailure?: ControlCapabilityAdmissionFailure }
+>;
+export function startCapabilityCall(
+  input:
+    | (StartCapabilityCallInput & NativeCapabilityAdmissionFacts)
+    | StartServerCapabilityCallInput
+):
+  | StartedCapabilityCall<ServerGatewayCallContext>
+  | Promise<
+      StartedCapabilityCall & { readonly admissionFailure?: ControlCapabilityAdmissionFailure }
+    > {
+  if (input.workspaceDb.scope === 'core')
+    return startCapabilityCallInDb(input as StartServerCapabilityCallInput);
+  const {
+    workspaceDb,
+    workspaceId,
+    callId,
+    auditLineage,
+    now,
+    initializeRaw,
+    freshSystemPromptDigest,
+    singleUseRequestId,
+    decision,
+    warmMcpSchema,
+    retainMcpAdmissionFailure,
+    ...context
+  } = input as StartCapabilityCallInput & NativeCapabilityAdmissionFacts;
+  if (workspaceId !== workspaceDb.workspaceId)
+    throw new Error('Capability call database owner mismatch.');
+  return getControlStoreWorkerClient()
+    .workspaceCapability(
+      workspaceDb,
+      ControlCapabilityCommandInputSchema.parse({
+        kind: 'admit',
+        workspaceId,
+        context: { ...context, authorityActor: context.authorityActor ?? null },
+        callId,
+        auditLineage,
+        initializeRaw,
+        freshSystemPromptDigest,
+        singleUseRequestId,
+        decision,
+        warmMcpSchema,
+        retainMcpAdmissionFailure,
+        now: (now ?? new Date()).toISOString(),
+      })
+    )
+    .then((result) => {
+      if (result === null || typeof result !== 'object' || !('inserted' in result))
+        throw new TypeError('Invalid native capability admission result.');
+      return presentControlFacts({ ...result, context: presentControlFacts(result.context) });
+    });
 }
 
 /**
@@ -454,6 +537,118 @@ function readCapabilityAdmissionAttribution(
 }
 
 /**
+ * Settles one MCP call with contacted usage and its complete terminal mutation in one native transaction.
+ * A definite usage refusal needs a separate best-effort diagnostic because its savepoint rolled back.
+ * @param call Original admitted call and immutable attribution.
+ * @param workspaceDb Existing Workspace owner.
+ * @param finish Original terminal outcome, optional Item clear and Goal escalation.
+ * @param contacted Whether contact is not disproved and this invocation still needs usage accounting.
+ */
+export async function finishMcpToolCall(
+  call: StartedCapabilityCall,
+  workspaceDb: WorkspaceDb,
+  finish: Pick<FinishCapabilityCallInput, 'status' | 'errorCode'> & {
+    readonly clearItem?: boolean;
+    readonly goalEscalationId?: string;
+  },
+  contacted = true
+): Promise<void> {
+  const now = new Date().toISOString();
+  try {
+    await getControlStoreWorkerClient().workspaceCapability(workspaceDb, {
+      kind: 'usage-finish',
+      workspaceId: workspaceDb.workspaceId,
+      call: { id: call.id, inserted: call.inserted, context: call.context },
+      ...(contacted
+        ? {
+            usage: {
+              now,
+              records: [
+                {
+                  category: 'tool' as const,
+                  quantity: 1,
+                  source: 'mcp-gateway-request-dispatched',
+                  unit: 'tool_calls' as const,
+                },
+              ],
+            },
+          }
+        : {}),
+      finish: presentControlFacts({ ...finish, clearItem: finish.clearItem || undefined, now }),
+    });
+  } catch (error) {
+    if (error instanceof ControlStoreWorkerError && error.commit === 'unknown') throw error;
+    if (
+      contacted &&
+      ((error instanceof OperationError && error.code === 'usage_record_failed') ||
+        (error instanceof TypeError && error.message === 'Unsupported retained record format.'))
+    ) {
+      try {
+        await finishCapabilityCall({
+          workspaceDb,
+          callId: call.id,
+          status: 'failed',
+          errorCode: 'usage_record_failed',
+        });
+      } catch {}
+    }
+    throw error;
+  }
+}
+
+/** Records Workspace measurements through the native owner; Core measurement stays synchronous. */
+export function recordUsage(input: RecordUsageInput & { workspaceDb: CoreDb }): string[];
+export function recordUsage(
+  input: RecordUsageInput & { workspaceDb: WorkspaceDb }
+): Promise<string[]>;
+export function recordUsage(input: RecordUsageInput): string[] | Promise<string[]>;
+export function recordUsage(input: RecordUsageInput): string[] | Promise<string[]> {
+  const db = input.workspaceDb;
+  if (db.scope === 'core') return recordUsageInDb(input);
+  return (async () => {
+    if (input.call.context.workspaceId !== db.workspaceId)
+      throw new Error('Usage record database owner mismatch.');
+    const callId = input.call.id;
+    const auditLineage = input.auditLineage && {
+      commandRequestId: input.auditLineage.commandRequestId,
+    };
+    const recordedAt = (input.now ?? new Date()).toISOString();
+    let result: ControlCapabilityCommandResult;
+    try {
+      result = await getControlStoreWorkerClient().workspaceCapability(
+        db,
+        ControlCapabilityCommandInputSchema.parse({
+          kind: 'usage-finish',
+          workspaceId: db.workspaceId,
+          call: input.call,
+          usage: {
+            records: input.records,
+            auditLineage,
+            now: recordedAt,
+          },
+        })
+      );
+    } catch (error) {
+      // A lost ACK cannot authorize a new failure diagnosis for the original command.
+      if (!(error instanceof ControlStoreWorkerError && error.commit === 'unknown')) {
+        try {
+          await finishCapabilityCall({
+            workspaceDb: db,
+            callId,
+            auditLineage,
+            status: 'failed',
+            errorCode: 'usage_record_failed',
+          });
+        } catch {}
+      }
+      throw error;
+    }
+    if (!Array.isArray(result)) throw new TypeError('Invalid native usage result.');
+    return result;
+  })();
+}
+
+/**
  * Records measured usage linked to a started capability call.
  *
  * @param input Usage rows, durable call summary and optional command audit lineage.
@@ -607,6 +802,32 @@ function hasEquivalentUsageRecord(
   return row?.usage_id;
 }
 
+/** Finishes an actual Workspace call by ID after native ACK; Core finish stays synchronous. */
+export function finishCapabilityCall(
+  input: FinishCapabilityCallInput & { workspaceDb: CoreDb }
+): void;
+export function finishCapabilityCall(
+  input: FinishCapabilityCallInput & { workspaceDb: WorkspaceDb }
+): Promise<void>;
+export function finishCapabilityCall(input: FinishCapabilityCallInput): void | Promise<void>;
+export function finishCapabilityCall(input: FinishCapabilityCallInput): void | Promise<void> {
+  if (input.workspaceDb.scope === 'core') return finishCapabilityCallInDb(input);
+  const { workspaceDb, now, callId, ...finish } = input;
+  return getControlStoreWorkerClient()
+    .workspaceCapability(
+      workspaceDb,
+      ControlCapabilityCommandInputSchema.parse({
+        kind: 'finish',
+        workspaceId: workspaceDb.workspaceId,
+        callId,
+        finish: { ...finish, now: (now ?? new Date()).toISOString() },
+      })
+    )
+    .then((result) => {
+      if (result !== null) throw new TypeError('Invalid native capability finish result.');
+    });
+}
+
 /**
  * Marks one capability call terminal.
  *
@@ -693,9 +914,28 @@ export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void
     .immediate();
 }
 
+/** Workspace stamping awaits its original native owner; Core keeps its synchronous body. */
+export function stampCapabilityCallSchemaSnapshot(
+  input: StampCapabilityCallSchemaSnapshotInput
+): void | Promise<void> {
+  if (input.workspaceDb.scope === 'core') return stampCapabilityCallSchemaSnapshotInDb(input);
+  return getControlStoreWorkerClient()
+    .workspaceCapability(input.workspaceDb, {
+      kind: 'attribution',
+      workspaceId: input.workspaceDb.workspaceId,
+      callId: input.callId,
+      schemaSnapshotId: input.schemaSnapshotId,
+    })
+    .then((result) => {
+      if (result !== null) throw new TypeError('Invalid native schema stamp result.');
+    });
+}
+
 /** Binds one running call to exactly one schema snapshot before its effect. */
 export function stampCapabilityCallSchemaSnapshotInDb(
-  input: StampCapabilityCallSchemaSnapshotInput
+  input: Omit<StampCapabilityCallSchemaSnapshotInput, 'workspaceDb'> & {
+    workspaceDb: Pick<WorkspaceDb, 'sqlite'>;
+  }
 ): void {
   const call = findCapabilityCallById(input.workspaceDb, input.callId);
   const parsed = CapabilityCallSchema.shape.schemaSnapshotId.unwrap().parse(input.schemaSnapshotId);
@@ -1346,6 +1586,35 @@ export interface GatewayCallLedgerBinding {
 }
 
 /** Appends or settles one entry atomically; the open logical call remains the sole owner. */
+/** Records lineage through the Workspace writer while preserving synchronous Core lineage. */
+export function writeGatewayRouteLineage(
+  input: GatewayCallLedgerBinding & {
+    readonly logicalModelId: string;
+    readonly entry: GatewayRouteLineageEntry;
+    readonly entryIndex?: number;
+  }
+): number | Promise<number> {
+  if (input.workspaceDb.scope === 'core') return writeGatewayRouteLineageInDb(input);
+  return getControlStoreWorkerClient()
+    .workspaceCapability(
+      input.workspaceDb,
+      ControlCapabilityCommandInputSchema.parse({
+        kind: 'attribution',
+        workspaceId: input.workspaceDb.workspaceId,
+        callId: input.call.id,
+        routeLineage: {
+          logicalModelId: input.logicalModelId,
+          entry: input.entry,
+          entryIndex: input.entryIndex,
+        },
+      })
+    )
+    .then((result) => {
+      if (typeof result !== 'number') throw new TypeError('Invalid native lineage result.');
+      return result;
+    });
+}
+
 export function writeGatewayRouteLineageInDb(
   input: Omit<GatewayCallLedgerBinding, 'call'> & {
     readonly call: Pick<StartedCapabilityCall, 'id'>;
@@ -1393,15 +1662,6 @@ export function hasCapabilityCallRequestId(
   if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return row !== undefined;
 }
-
-/** Dormant preparation keeps public calls synchronous through their unchanged deciding bodies. */
-export {
-  finishCapabilityCallInDb as finishCapabilityCall,
-  recordUsageInDb as recordUsage,
-  stampCapabilityCallSchemaSnapshotInDb as stampCapabilityCallSchemaSnapshot,
-  startCapabilityCallInDb as startCapabilityCall,
-  writeGatewayRouteLineageInDb as writeGatewayRouteLineage,
-};
 
 /** Updates the original worker cache fields on the same retained Call. */
 export function writeCapabilityCallCacheInDb(input: {

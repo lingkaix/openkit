@@ -39,7 +39,7 @@ import {
   writeCapabilityCallCacheInDb,
   writeGatewayRouteLineageInDb,
 } from '../capability/usage-ledger.js';
-import { persistLlmCapabilityCallSystemPromptDigest as persistLlmCapabilityCallSystemPromptDigestInDb } from '../llm/system-prompt-digest.js';
+import { persistLlmCapabilityCallSystemPromptDigestInDb } from '../llm/system-prompt-digest.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   prepareCapturedCapabilityAdmission,
@@ -50,7 +50,6 @@ import {
   prepareMcpToolSchemaSnapshot,
   readTurnMcpToolSchemaSnapshot,
   recordMcpToolSchemaSnapshotInDb,
-  WorkerCapabilityMcpToolSchema,
 } from '../runtime/mcp-tool-schema-snapshots.js';
 import {
   initializeWorkerRawOutput,
@@ -69,6 +68,7 @@ import {
   frameControlScalarText,
   presentControlFacts,
   readControlScalarText,
+  WorkerCapabilityMcpToolSchema,
 } from './control-store-input.js';
 import type { WorkspaceDb } from './db.js';
 
@@ -281,11 +281,12 @@ const mcpCaptureCommand = z
   .object({
     kind: z.literal('mcp-schema'),
     workspaceId: WorkspaceIdSchema,
-    callId: CapabilityCallIdSchema,
+    callId: CapabilityCallIdSchema.optional(),
     environmentPackage: mcpFrame,
     schemaSnapshotId: z.string().min(1),
     serverVersion: z.string().nullable().optional(),
-    tools: z.array(WorkerCapabilityMcpToolSchema),
+    // The public schema facade imports the client; defer this schema read across that module cycle.
+    tools: z.array(z.lazy(() => WorkerCapabilityMcpToolSchema)),
   })
   .strict();
 
@@ -366,7 +367,7 @@ const rawSettleCommand = z
   .strict();
 const rawInvalidateCommand = z.object({ kind: z.literal('raw-invalidate'), ...scope }).strict();
 
-/** Dormant native commands; all prepared facts share the existing native savepoint. */
+/** Native commands; all prepared facts share the existing native savepoint. */
 export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', [
   checkpointCommand,
   admitCommand,
@@ -509,15 +510,16 @@ function recordControlPermissionDecision(
   );
 }
 
-/** One actual Call/frame predicate for W1 binding, C2 capture and native no-write reuse. */
+/** One Workspace/frame predicate, plus actual Call authority when the observation binds a Call. */
 function readControlMcpContext(
   db: WorkspaceDb,
-  callId: string,
+  callId: string | undefined,
   environmentPackage: z.infer<typeof mcpFrame>
 ) {
   if (environmentPackage.scope.workspaceId !== db.workspaceId)
     throw new WorkerRawOutputAuthorityError();
   const selected = environmentPackage.supply.mcpServers[0]!;
+  if (callId === undefined) return { actual: undefined, selected, bound: null };
   const frame = environmentPackage;
   const actual = db.sqlite
     .prepare(`SELECT schema_version, workspace_id, thread_id, turn_id,
@@ -570,7 +572,7 @@ export function tryControlCapabilityReuse(
   });
   if (reusedSnapshotId === null) return undefined;
   const schemaSnapshotId = bound?.schemaSnapshotId ?? reusedSnapshotId;
-  if (actual.schema_snapshot_id !== schemaSnapshotId) return undefined;
+  if (actual && actual.schema_snapshot_id !== schemaSnapshotId) return undefined;
   return { schemaSnapshotId, liveSnapshotId: reusedSnapshotId };
 }
 
@@ -588,22 +590,27 @@ export function applyControlCapabilityCommand(
   if (db.scope !== 'workspace' || db.workspaceId !== input.workspaceId || !db.sqlite.inTransaction)
     throw new WorkerRawOutputAuthorityError();
   if (input.kind === 'mcp-schema') {
-    const { selected, bound } = readControlMcpContext(db, input.callId, input.environmentPackage);
+    const callId = input.callId;
+    const { selected, bound } = readControlMcpContext(db, callId, input.environmentPackage);
     const liveSnapshotId = recordMcpToolSchemaSnapshotInDb({
       ...input,
-      capabilityCallId: input.callId,
+      capabilityCallId: callId,
       serverId: selected.id,
       source: 'live',
       workspaceDb: db,
-      onRecorded: (liveId) => {
-        if (selected.schemaPolicy === 'pinned' && selected.pinnedSchemaSnapshotId !== liveId)
-          return;
-        stampCapabilityCallSchemaSnapshotInDb({
-          callId: input.callId,
-          schemaSnapshotId: bound?.schemaSnapshotId ?? liveId,
-          workspaceDb: db,
-        });
-      },
+      ...(callId === undefined
+        ? {}
+        : {
+            onRecorded: (liveId: string) => {
+              if (selected.schemaPolicy === 'pinned' && selected.pinnedSchemaSnapshotId !== liveId)
+                return;
+              stampCapabilityCallSchemaSnapshotInDb({
+                callId,
+                schemaSnapshotId: bound?.schemaSnapshotId ?? liveId,
+                workspaceDb: db,
+              });
+            },
+          }),
     });
     return { schemaSnapshotId: bound?.schemaSnapshotId ?? liveSnapshotId, liveSnapshotId };
   }
@@ -616,9 +623,11 @@ export function applyControlCapabilityCommand(
         input.context.requestId,
         new Date(input.now)
       );
+    // Apply the wire defaults to retained facts before comparing the complete context.
     if (
       captured &&
-      (input.callId !== captured.callId || !isDeepStrictEqual(input.context, captured.context))
+      (input.callId !== captured.callId ||
+        !isDeepStrictEqual(input.context, admitCommand.shape.context.parse(captured.context)))
     )
       throw new WorkerRawOutputAuthorityError();
     const requestId = normalizeCapabilityRequestId(input.context.requestId);

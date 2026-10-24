@@ -183,46 +183,12 @@ function knowledgeProposalDraftFailure(error: unknown): never {
   );
 }
 
-/** Complete Knowledge Usage chain on its supplied owner; scope lifetime and migration stay with the caller. */
-export function recordKnowledgeGatewayUsageInDb(
-  writer: ReturnType<typeof openWorkspaceDb>,
-  input: Omit<Parameters<typeof recordKnowledgeGatewayUsage>[0], 'coreDb'>
-): void {
-  const call = startCapabilityCall({
-    authorityActor: input.authorityActor,
-    capabilityId: input.capabilityId,
-    family: 'knowledge',
-    operation: input.operation,
-    providerRef: 'nanocore-knowledge',
-    redactionClass: 'metadata-only',
-    requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
-    serviceRef: input.serviceRef,
-    summary: input.summary,
-    workspaceDb: writer,
-    workspaceId: input.workspaceId,
-  });
-  recordUsage({
-    call,
-    records: [
-      {
-        category: 'tool',
-        providerRef: 'nanocore-knowledge',
-        quantity: 1,
-        source: input.usageSource,
-        unit: 'capability_calls',
-      },
-    ],
-    workspaceDb: writer,
-  });
-  finishCapabilityCall({ workspaceDb: writer, callId: call.id, status: 'succeeded' });
-}
-
 /**
  * Records durable usage for one successful Knowledge Store gateway operation.
  *
  * @param input Knowledge operation attribution and usage source.
  */
-function recordKnowledgeGatewayUsage(input: {
+async function recordKnowledgeGatewayUsage(input: {
   /** Exact actor that authorized the workspace effect. */
   authorityActor: ActorRef;
   /** Optional Core database handle for durable workspace storage. */
@@ -241,7 +207,7 @@ function recordKnowledgeGatewayUsage(input: {
   summary: string;
   /** Request id used by the originating caller. */
   requestId?: string | null;
-}): void {
+}): Promise<void> {
   if (!input.coreDb) {
     return;
   }
@@ -250,7 +216,33 @@ function recordKnowledgeGatewayUsage(input: {
 
   try {
     applyScopedMigrations(workspaceDb);
-    recordKnowledgeGatewayUsageInDb(workspaceDb, input);
+    const call = await startCapabilityCall({
+      authorityActor: input.authorityActor,
+      capabilityId: input.capabilityId,
+      family: 'knowledge',
+      operation: input.operation,
+      providerRef: 'nanocore-knowledge',
+      redactionClass: 'metadata-only',
+      requestId: normalizeCapabilityRequestId(input.requestId) ?? randomUUID(),
+      serviceRef: input.serviceRef,
+      summary: input.summary,
+      workspaceDb,
+      workspaceId: input.workspaceId,
+    });
+    await recordUsage({
+      call,
+      records: [
+        {
+          category: 'tool',
+          providerRef: 'nanocore-knowledge',
+          quantity: 1,
+          source: input.usageSource,
+          unit: 'capability_calls',
+        },
+      ],
+      workspaceDb,
+    });
+    await finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
   } finally {
     workspaceDb.sqlite.close();
   }
@@ -607,7 +599,7 @@ export function createKnowledgeOperationImplementations(
           },
           input
         );
-        recordKnowledgeGatewayUsage({
+        await recordKnowledgeGatewayUsage({
           authorityActor: context.actorRef,
           capabilityId: 'knowledge.notebook.update',
           operation: 'knowledge.notebook.update',
@@ -857,7 +849,7 @@ export function createKnowledgeOperationImplementations(
           responseId: (result) => result.id,
         });
         requireSourceAudience(workspaceId, source.id, context);
-        recordKnowledgeGatewayUsage({
+        await recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.source.register',
           operation: 'knowledge.source.register',
@@ -894,7 +886,7 @@ export function createKnowledgeOperationImplementations(
           source,
           derivedRepresentations: [],
         });
-        recordKnowledgeGatewayUsage({
+        await recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.source.read',
           operation: 'knowledge.source.read',
@@ -975,18 +967,19 @@ export function createKnowledgeOperationImplementations(
               outputTurnId: context.queryContext?.turnId,
             },
             traceId: allocateEntityId('krt'),
+            beforeDisclosure: (response) =>
+              recordKnowledgeGatewayUsage({
+                authorityActor: actor,
+                capabilityId: 'knowledge.retrieval',
+                operation: 'knowledge.retrieval',
+                serviceRef: 'knowledge-store',
+                summary: `Knowledge retrieval selected ${response.selected.length} candidates.`,
+                usageSource: 'knowledge-retrieval',
+                workspaceId,
+                ...(coreDb ? { coreDb: coreDb } : {}),
+              }),
           })
         );
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.retrieval',
-          operation: 'knowledge.retrieval',
-          serviceRef: 'knowledge-store',
-          summary: `Knowledge retrieval selected ${response.selected.length} candidates.`,
-          usageSource: 'knowledge-retrieval',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
-        });
 
         return response;
       } catch (error) {
@@ -1012,6 +1005,17 @@ export function createKnowledgeOperationImplementations(
           caller: 'app-api',
           query: commandInput.query,
           limit: commandInput.limit,
+          beforeDisclosure: (response) =>
+            recordKnowledgeGatewayUsage({
+              authorityActor: actor,
+              capabilityId: 'knowledge.context.prepare',
+              operation: 'knowledge.context.prepare',
+              serviceRef: 'knowledge-manager',
+              summary: `Knowledge context selected ${response.selected.length} knowledge entries.`,
+              usageSource: 'knowledge-context-prepare',
+              workspaceId,
+              ...(coreDb ? { coreDb: coreDb } : {}),
+            }),
           access: {
             store,
             coreDb,
@@ -1020,16 +1024,6 @@ export function createKnowledgeOperationImplementations(
             outputThreadId: context.queryContext?.threadId,
             outputTurnId: context.queryContext?.turnId,
           },
-        });
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.context.prepare',
-          operation: 'knowledge.context.prepare',
-          serviceRef: 'knowledge-manager',
-          summary: `Knowledge context selected ${response.selected.length} knowledge entries.`,
-          usageSource: 'knowledge-context-prepare',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
         return KnowledgeManagerPrepareContextResponseSchema.parse(response);
@@ -1148,7 +1142,18 @@ export function createKnowledgeOperationImplementations(
               summary: proposal.rationale,
             },
             context,
-            (owner) => {
+            async (owner) => {
+              await recordKnowledgeGatewayUsage({
+                authorityActor: actor,
+                capabilityId: 'knowledge.proposal.draft',
+                operation: 'knowledge.proposal.draft',
+                requestId: commandInput.requestId,
+                serviceRef: 'knowledge-manager',
+                summary: `Knowledge proposal ${proposal.id} drafted.`,
+                usageSource: 'knowledge-proposal-draft',
+                workspaceId,
+                ...(coreDb ? { coreDb: coreDb } : {}),
+              });
               owner.revalidate();
             }
           );
@@ -1172,17 +1177,6 @@ export function createKnowledgeOperationImplementations(
           proposal,
           generatedFromCompletedWorkHistory,
         });
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.proposal.draft',
-          operation: 'knowledge.proposal.draft',
-          requestId: commandInput.requestId,
-          serviceRef: 'knowledge-manager',
-          summary: `Knowledge proposal ${proposal.id} drafted.`,
-          usageSource: 'knowledge-proposal-draft',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
-        });
 
         return KnowledgeManagerDraftProposalResponseSchema.parse(response);
       } catch (error) {
@@ -1201,7 +1195,7 @@ export function createKnowledgeOperationImplementations(
           entries: store.listKnowledge(workspaceId),
           limit: commandInput.limit,
         });
-        recordKnowledgeGatewayUsage({
+        await recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.repair.suggest',
           operation: 'knowledge.repair.suggest',
@@ -1212,6 +1206,7 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
+        admitKnowledgeRetrieval(sourceReadInput(workspaceId, context));
         return KnowledgeManagerSuggestRepairResponseSchema.parse(response);
       } catch {
         throw new OperationError(
@@ -1233,7 +1228,7 @@ export function createKnowledgeOperationImplementations(
           entries: store.listKnowledge(workspaceId),
           limit: commandInput.limit,
         });
-        recordKnowledgeGatewayUsage({
+        await recordKnowledgeGatewayUsage({
           authorityActor: actor,
           capabilityId: 'knowledge.health.check',
           operation: 'knowledge.health.check',
@@ -1244,6 +1239,7 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
+        admitKnowledgeRetrieval(sourceReadInput(workspaceId, context));
         return KnowledgeManagerHealthCheckResponseSchema.parse(response);
       } catch {
         throw new OperationError(
@@ -1352,7 +1348,7 @@ export function createKnowledgeOperationImplementations(
           );
           return store.projectKnowledgeProposalDecision(workspaceId, reviewId);
         }
-        return runIdempotentCommand({
+        const response = await runIdempotentCommand({
           store,
           workspaceDb: owner.workspaceDb,
           inflightCommands,
@@ -1394,6 +1390,8 @@ export function createKnowledgeOperationImplementations(
             return store.projectKnowledgeProposalDecision(workspaceId, reviewId);
           },
         });
+        current();
+        return response;
       });
     },
     'knowledge.proposal.reverse': async (input, context) => {
@@ -1528,7 +1526,7 @@ export function createKnowledgeOperationImplementations(
           request
         );
       });
-      recordKnowledgeGatewayUsage({
+      await recordKnowledgeGatewayUsage({
         authorityActor: context.actorRef,
         capabilityId: 'knowledge.notebook.create',
         operation: 'knowledge.notebook.create',
@@ -1577,7 +1575,7 @@ export function createKnowledgeOperationImplementations(
           request
         );
       });
-      recordKnowledgeGatewayUsage({
+      await recordKnowledgeGatewayUsage({
         authorityActor: context.actorRef,
         capabilityId: 'knowledge.notebook.delete',
         operation: 'knowledge.notebook.delete',

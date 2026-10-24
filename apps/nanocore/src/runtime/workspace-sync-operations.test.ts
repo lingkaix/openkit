@@ -1,4 +1,7 @@
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -776,6 +779,98 @@ describe('Workspace synchronization native projections', () => {
     expect(owner).toHaveBeenCalledOnce();
     expect(f.observedFilesystem()).toEqual(before);
     expect(workspaceOwnership(f)).toEqual(ownership);
+  });
+
+  it('refuses a non-accepted review decision when its credential is revoked during the scoped SQL hold', async () => {
+    const f = await fixture();
+    const before = structuredClone(f.observed());
+    const ownership = workspaceOwnership(f);
+    expect(before.review?.review.status).toBe('pending');
+    const writer = getControlStoreWorkerClient();
+    const database = `workspace:${f.db.sqlite.name}`;
+    const resume = await writer.pauseForDataRootBackup(database);
+    const pause = writer.pauseForDataRootBackup.bind(writer);
+    const entered = Promise.withResolvers<void>();
+    const observation = vi
+      .spyOn(writer, 'pauseForDataRootBackup')
+      .mockImplementation((requestedDatabase) => {
+        const pending = pause(requestedDatabase);
+        if (requestedDatabase === database) entered.resolve();
+        return pending;
+      });
+    let delivered = false;
+    const response = f
+      .http('sync.review-decide', {
+        ...inputs()['sync.review-decide']!,
+        requestId: 'post-hold-review-revocation',
+      })
+      .then((result) => {
+        delivered = true;
+        return result;
+      });
+    try {
+      // Observe the command's real queued hold after initial admission; no ACK is fabricated.
+      await entered.promise;
+      expect(delivered).toBe(false);
+      expect(f.observed()).toEqual(before);
+      revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
+      resume();
+      const refused = await response;
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ code: 'workspace_access_denied' });
+      expect(f.observed()).toEqual(before);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+    } finally {
+      resume();
+      await Promise.allSettled([response]);
+      observation.mockRestore();
+    }
+  });
+
+  it('refuses a recovery decision when its credential is revoked during the scoped SQL hold', async () => {
+    const f = await fixture();
+    const before = structuredClone(f.observed());
+    const ownership = workspaceOwnership(f);
+    expect(before.recovery).toMatchObject([{ id: 'wrr_projection', stateAfter: 'requires-human' }]);
+    const writer = getControlStoreWorkerClient();
+    const database = `workspace:${f.db.sqlite.name}`;
+    const resume = await writer.pauseForDataRootBackup(database);
+    const pause = writer.pauseForDataRootBackup.bind(writer);
+    const entered = Promise.withResolvers<void>();
+    const observation = vi
+      .spyOn(writer, 'pauseForDataRootBackup')
+      .mockImplementation((requestedDatabase) => {
+        const pending = pause(requestedDatabase);
+        if (requestedDatabase === database) entered.resolve();
+        return pending;
+      });
+    let delivered = false;
+    const response = f
+      .http('sync.recovery-decide', {
+        ...inputs()['sync.recovery-decide']!,
+        requestId: 'post-hold-recovery-revocation',
+      })
+      .then((result) => {
+        delivered = true;
+        return result;
+      });
+    try {
+      // Observe the command's real queued hold after initial admission; no ACK is fabricated.
+      await entered.promise;
+      expect(delivered).toBe(false);
+      expect(f.observed()).toEqual(before);
+      revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
+      resume();
+      const refused = await response;
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ code: 'workspace_access_denied' });
+      expect(f.observed()).toEqual(before);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+    } finally {
+      resume();
+      await Promise.allSettled([response]);
+      observation.mockRestore();
+    }
   });
 
   it('reaches all fifteen owner outcomes through HTTP, Core Client, CLI and remote MCP with exact replay', async () => {

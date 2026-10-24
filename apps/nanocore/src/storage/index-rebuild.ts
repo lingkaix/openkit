@@ -249,6 +249,8 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   sourceScope?: 'workspace' | 'server' | undefined;
   /** Optional trace id for deterministic tests and route ownership. */
   traceId?: string | undefined;
+  /** Awaits caller accounting before the original final authority and eligibility checks. */
+  beforeDisclosure?: ((result: KnowledgeRetrievalResponse) => void | Promise<void>) | undefined;
   /** Optional timestamp source for deterministic tests. */
   now?: (() => string) | undefined;
 }
@@ -1174,6 +1176,7 @@ async function retrieveNotebookSelection(
     })),
   });
 
+  await input.beforeDisclosure?.(result);
   admit();
   if (canonicalJson(before.view) !== canonicalJson((await collect()).view))
     throw new OperationError(

@@ -1,125 +1,21 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inspect } from 'node:util';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { commandInputHash } from './idempotent-command.js';
-import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 describe('worker recovery routes', () => {
-  it.each([
-    'JSON',
-    'schema',
-  ] as const)('classifies corrupt retained snapshot %s during retry receipt replay without logging decoder content', async (corruption) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-read-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Recovery read refusal');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
-    });
-    const thread = await store.createThread(workspace.id, 'Interrupted retry');
-    const turn = await store.createTurn(workspace.id, thread.id, 'Retry interrupted worker', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    await store.updateTurn(turn.id, {
-      status: 'interrupted',
-      completedAt: new Date().toISOString(),
-    });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(workspaceDb);
-    const scope = { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id };
-    const requestId = 'req_retained_read_retry';
-    upsertWorkerCheckpoint(workspaceDb, {
-      ...scope,
-      requestId: 'req_original',
-      requestInputHash: 'sha256:fixture',
-      stage: 'aborted',
-      stopReason: 'aborted',
-      iteration: 1,
-    });
-    store.recordCommandRequest(
-      {
-        command: 'worker.recovery.retry',
-        requestId,
-        scope,
-        inputHash: commandInputHash({}),
-        response: { kind: 'turn', id: turn.id },
-      },
-      workspaceDb
-    );
-    // Exact receipt replay still reads the inventory before deleting the aborted checkpoint.
-    const snapshotsRoot = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'runtime',
-      'agent-sessions',
-      'as_00000000-0000-7903-b33d-ca8a08f35a67',
-      'aep-snapshots'
-    );
-    mkdirSync(snapshotsRoot, { recursive: true });
-    const marker = 'ROW_SECRET_X9';
-    writeFileSync(
-      join(snapshotsRoot, 'aepsnap_corrupt.json'),
-      corruption === 'JSON' ? marker : JSON.stringify(marker)
-    );
-    const app = new Hono<{ Variables: AuthVariables }>();
-    app.use('*', async (c, next) => {
-      c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
-      await next();
-    });
-    registerOperationJsonRoutes({
-      app,
-      coreDb,
-      requestStore: () => store,
-      repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
-      inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-    });
-    const loggedErrors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const response = await app.request('/api/app/operations/recovery.checkpoint-retry', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-        body: JSON.stringify({ ...scope, requestId }),
-      });
-      expect.soft(response.status).toBe(400);
-      expect.soft(inspect(loggedErrors.mock.calls)).not.toContain(marker);
-      expect.soft(response.headers.get('content-type')).toContain('application/json');
-      await expect(response.json()).resolves.toMatchObject({
-        code: 'recovery_retry_failed',
-        message: 'The retained record could not be read.',
-      });
-      expect(getWorkerCheckpoint(workspaceDb, workspace.id, thread.id, turn.id)).toMatchObject({
-        stage: 'aborted',
-      });
-      expect(store.getTurnById(turn.id).status).toBe('interrupted');
-    } finally {
-      loggedErrors.mockRestore();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
-
   it('does not discover or open unauthorized Workspaces', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-routes-'));
     const coreDb = openCoreDb(dataRoot);

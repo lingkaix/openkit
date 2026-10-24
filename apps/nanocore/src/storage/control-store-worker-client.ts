@@ -122,6 +122,12 @@ interface Opening {
   readonly promise: Promise<void>;
 }
 
+/** The existing posting hold and its FIFO release boundary, without another request queue. */
+interface PostingHold {
+  released: Promise<void>;
+  drain: (() => void) | undefined;
+}
+
 /** One immutable transport frame shared by its existing pending request slots. */
 interface PendingCohort {
   readonly frame: ControlProductCohort;
@@ -196,8 +202,8 @@ class ControlStoreWorkerClient {
   private stopping = false;
   private closed = false;
   private shutdownPromise: Promise<void> | undefined;
-  private backupPaused = false;
-  private backupDrain: (() => void) | undefined;
+  private backupHold: PostingHold | undefined;
+  private readonly databaseHolds = new Map<string, PostingHold>();
 
   /** Starts the native host on first command; retaining a shutdown owner alone needs no thread. */
   private startWorker(host: WriterHost): Worker {
@@ -546,7 +552,7 @@ class ControlStoreWorkerClient {
         remaining: admitted.length,
       };
       for (const entry of admitted) entry.cohort = cohort;
-      if (!this.backupPaused) this.post(admitted[0]!);
+      this.post(admitted[0]!);
     }
     return Promise.allSettled(results);
   }
@@ -602,7 +608,7 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'journal' }>).resultJson;
   }
 
-  /** Uses only the exact Workspace scope already admitted by its existing product owner. */
+  /** Opens or reuses the exact retained Workspace scope through its existing native owner. */
   async workspaceCapability(
     db: WorkspaceDb,
     input: ControlCapabilityCommandInput,
@@ -614,8 +620,24 @@ class ControlStoreWorkerClient {
     });
     const database = `workspace:${scope.path}`;
     const admitted = this.openings.get(database);
+    if (!admitted) {
+      // Reserve the request before awaiting this exact cold scope's original opening ACK.
+      return (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'workspace',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.capability(database, input, options),
+        ])
+      )[1];
+    }
     if (
-      !admitted ||
       admitted.command.path !== scope.path ||
       admitted.command.dataRoot !== db.dataRoot ||
       !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
@@ -781,40 +803,60 @@ class ControlStoreWorkerClient {
   }
 
   /**
-   * Holds native posting for the existing synchronous data-root capture after every posted acknowledgement settles.
+   * Holds native posting for synchronous Main SQL or data-root capture after posted acknowledgements settle.
    *
    * New requests keep the same finite admission slots and byte budget while waiting. The caller must resume in finally; this hold neither closes scopes nor replays commands. A failed channel refuses capture because its outstanding commits are unknown.
    *
-   * @returns An idempotent release for this one backup hold.
+   * Database holds run FIFO and leave siblings live. Global capture waits for earlier database holds;
+   * later database holds wait for its release. The synchronous body must not await native work.
+   *
+   * @param database Exact database key, or all databases for the existing backup capture.
+   * @returns An idempotent release, which the caller must invoke in finally.
    */
-  async pauseForDataRootBackup(): Promise<() => void> {
+  async pauseForDataRootBackup(database?: string): Promise<() => void> {
     this.assertAccepting();
-    if (this.hosts.some((host) => host.failed))
-      throw new ControlStoreWorkerError('unavailable', 'not-committed');
-    if (this.backupPaused) throw new ControlStoreWorkerError('busy', 'not-committed');
-    this.backupPaused = true;
+    const failed = () =>
+      database === undefined
+        ? this.hosts.some((host) => host.failed)
+        : this.openings.get(database)?.host.failed === true;
+    if (failed()) throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    if (database === undefined && this.backupHold)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    const previous = database === undefined ? undefined : this.databaseHolds.get(database);
+    const dependencies =
+      database === undefined
+        ? [...this.databaseHolds.values()].map((hold) => hold.released)
+        : [previous?.released, this.backupHold?.released];
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hold = previous ?? { released, drain: undefined };
+    hold.released = released;
+    if (database === undefined) this.backupHold = hold;
+    else this.databaseHolds.set(database, hold);
     const resume = () => {
-      if (!this.backupPaused) return;
-      this.backupPaused = false;
-      this.backupDrain = undefined;
+      if (database === undefined) this.backupHold = undefined;
+      else if (hold.released === released) this.databaseHolds.delete(database);
+      release();
       for (const entry of this.pending.values()) if (!entry.posted) this.post(entry);
     };
-    await new Promise<void>((resolve) => {
-      this.backupDrain = resolve;
-      this.completeBackupDrain();
-    });
     try {
+      await Promise.all(dependencies);
+      await new Promise<void>((resolve) => {
+        hold.drain = resolve;
+        this.completeBackupDrain();
+      });
       this.assertAccepting();
-      if (this.hosts.some((host) => host.failed))
-        throw new ControlStoreWorkerError('unavailable', 'not-committed');
+      if (failed()) throw new ControlStoreWorkerError('unavailable', 'not-committed');
     } catch (error) {
       resume();
       throw error;
     }
-    let released = false;
+    let resumed = false;
     return () => {
-      if (released) return;
-      released = true;
+      if (resumed) return;
+      resumed = true;
       resume();
     };
   }
@@ -963,7 +1005,12 @@ class ControlStoreWorkerClient {
     // Posting normally transfers ownership immediately. A capture hold must take the same
     // immutable input now, so its caller cannot change a bounded envelope before resume.
     let admittedRequest = request;
-    if (this.backupPaused || deferPost || ready !== undefined) {
+    if (
+      this.backupHold ||
+      (database !== undefined && this.databaseHolds.has(database)) ||
+      deferPost ||
+      ready !== undefined
+    ) {
       try {
         admittedRequest = structuredClone(request, {
           transfer: 'content' in request && request.content ? [request.content] : [],
@@ -1007,7 +1054,7 @@ class ControlStoreWorkerClient {
           () => {
             if (this.pending.get(id) !== entry) return;
             entry.ready = true;
-            if (!this.backupPaused && (!deferPost || entry.cohort)) this.post(entry);
+            if (!deferPost || entry.cohort) this.post(entry);
           },
           (error: unknown) => {
             this.complete(
@@ -1020,7 +1067,7 @@ class ControlStoreWorkerClient {
             );
           }
         );
-      } else if (!this.backupPaused && !deferPost) this.post(entry);
+      } else if (!deferPost) this.post(entry);
     });
     if (ready !== undefined) {
       // Shutdown drains the original admitted request, including its unposted open wait.
@@ -1033,7 +1080,13 @@ class ControlStoreWorkerClient {
 
   /** Posts an admitted message once, after its scope ACK and any data-root capture hold. */
   private post(entry: Pending): void {
-    if (entry.posted || !entry.ready) return;
+    if (
+      entry.posted ||
+      !entry.ready ||
+      this.backupHold ||
+      ('database' in entry.command && this.databaseHolds.has(entry.command.database))
+    )
+      return;
     const members = entry.cohort?.frame.requests.map(
       (request) => this.pending.get(request.id)!
     ) ?? [entry];
@@ -1059,10 +1112,21 @@ class ControlStoreWorkerClient {
 
   /** A held capture can start only after every previously posted message has settled. */
   private completeBackupDrain(): void {
-    if (!this.backupDrain || [...this.pending.values()].some((entry) => entry.posted)) return;
-    const complete = this.backupDrain;
-    this.backupDrain = undefined;
-    complete();
+    for (const [database, hold] of [[undefined, this.backupHold], ...this.databaseHolds] as const) {
+      if (
+        !hold?.drain ||
+        [...this.pending.values()].some(
+          (entry) =>
+            entry.posted &&
+            (database === undefined ||
+              ('database' in entry.command && entry.command.database === database))
+        )
+      )
+        continue;
+      const complete = hold.drain;
+      hold.drain = undefined;
+      complete();
+    }
   }
 
   /** Completes correlation once and releases the pre-post admission slot. */

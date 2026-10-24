@@ -13,6 +13,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -265,17 +266,25 @@ export async function runNanoHostAttemptRecoveryMaintenance(
             .run(native.attemptId);
           continue;
         }
-        if (
-          !materializationNotPublished &&
-          recordWorkspaceRecoveryEvaluation(
-            workspace.db,
-            native,
-            workspace.environmentPackage,
-            timestamp,
-            ['physical-cleaned', 'cleaned'].includes(session.state)
-          )
-        )
-          continue;
+        if (!materializationNotPublished) {
+          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${workspace.db.sqlite.name}`
+          );
+          try {
+            if (
+              recordWorkspaceRecoveryEvaluation(
+                workspace.db,
+                native,
+                workspace.environmentPackage,
+                timestamp,
+                ['physical-cleaned', 'cleaned'].includes(session.state)
+              )
+            )
+              continue;
+          } finally {
+            resume();
+          }
+        }
         session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
         const projection = await projectCleanup(
           workspace.db,

@@ -6,15 +6,16 @@ import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
 } from './runtime-evidence.js';
 import {
-  clearWorkerCheckpoint,
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
   parseWorkerCheckpointContextAssembly,
@@ -25,12 +26,13 @@ import {
 /**
  * Opens a migrated workspace database for worker checkpoint tests.
  *
- * @returns Migrated workspace database handle.
+ * @returns Migrated workspace database handle with its existing native scope open.
  */
-function createWorkspaceDb(): WorkspaceDb {
+async function createWorkspaceDb(): Promise<WorkspaceDb> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-checkpoints-'));
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
+  await openTestNativeWorkspace(workspaceDb);
   return workspaceDb;
 }
 
@@ -56,11 +58,11 @@ describe('worker checkpoint storage', () => {
     );
   });
 
-  it('stores only the closed checkpoint context fields', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('stores only the closed checkpoint context fields', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-739f-8055-882b863ee48c',
@@ -93,12 +95,13 @@ describe('worker checkpoint storage', () => {
       expect(checkpoint.diagnosticsSummary).not.toContain('live_secret');
       expect(checkpoint.diagnosticsSummary).not.toContain('native_secret');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('reads, rewrites and reopens annotated checkpoint selection summaries', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('reads, rewrites and reopens annotated checkpoint selection summaries', async () => {
+    const workspaceDb = await createWorkspaceDb();
     try {
       const diagnostics = JSON.stringify({
         annotation: 'outer',
@@ -148,7 +151,7 @@ describe('worker checkpoint storage', () => {
           })
         )
       ).toBeNull();
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-74a3-a7a1-0220eb37b036',
@@ -172,18 +175,20 @@ describe('worker checkpoint storage', () => {
           )
         ).toEqual(expected);
       } finally {
+        await shutdownControlStoreWorkerClient();
         reopened.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('creates and reads request-bound worker checkpoints without replay instructions', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('creates and reads request-bound worker checkpoints without replay instructions', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
@@ -227,15 +232,16 @@ describe('worker checkpoint storage', () => {
         )
       ).toEqual(checkpoint);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('updates and clears worker checkpoints', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('updates worker checkpoints', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
@@ -246,7 +252,7 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      const updated = updateWorkerCheckpoint(workspaceDb, {
+      const updated = await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -274,31 +280,24 @@ describe('worker checkpoint storage', () => {
         },
       ]);
       expect(
-        clearWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001',
-          'tu_00000000-0000-77e3-bfde-66477d556f64'
-        )
-      ).toBe(true);
-      expect(
         getWorkerCheckpoint(
           workspaceDb,
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001',
           'tu_00000000-0000-77e3-bfde-66477d556f64'
         )
-      ).toBeNull();
+      ).toEqual(updated);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('records one audit event when a checkpoint first transitions to a terminal stage', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('records one audit event when a checkpoint first transitions to a terminal stage', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7506-bfe1-961aaf316353',
@@ -309,7 +308,7 @@ describe('worker checkpoint storage', () => {
         stopReason: 'completed',
         now: () => '2026-05-31T00:00:00.000Z',
       });
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-70de-9845-2fece35e232a',
@@ -325,7 +324,7 @@ describe('worker checkpoint storage', () => {
         workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
       ).toEqual({ count: 0 });
 
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: {
           kind: 'agent',
           id: 'agent_runtime_demo',
@@ -338,7 +337,7 @@ describe('worker checkpoint storage', () => {
         stopReason: 'completed',
         now: () => '2026-05-31T00:10:00.000Z',
       });
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: {
           kind: 'agent',
           id: 'agent_runtime_demo',
@@ -382,15 +381,16 @@ describe('worker checkpoint storage', () => {
         },
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('records one runtime evidence row when a checkpoint first transitions to a terminal stage', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('records one runtime evidence row when a checkpoint first transitions to a terminal stage', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-784a-b5cd-eb5f8f622c05',
@@ -409,7 +409,7 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: {
           kind: 'agent',
           id: 'agent_runtime_demo',
@@ -423,7 +423,7 @@ describe('worker checkpoint storage', () => {
         diagnosticsSummary: 'Authorization: Bearer live_secret',
         now: () => '2026-05-31T00:10:00.000Z',
       });
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: {
           kind: 'agent',
           id: 'agent_runtime_demo',
@@ -499,15 +499,16 @@ describe('worker checkpoint storage', () => {
         },
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('records checkpoint evidence separately from authoritative backend teardown', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('records checkpoint evidence separately from authoritative backend teardown', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-7a0d-b527-6df9c8763406',
@@ -534,7 +535,7 @@ describe('worker checkpoint storage', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -566,15 +567,16 @@ describe('worker checkpoint storage', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('records failed checkpoint evidence without fabricating backend teardown', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('records failed checkpoint evidence without fabricating backend teardown', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-763f-87d2-81e8d9727aa6',
@@ -586,7 +588,7 @@ describe('worker checkpoint storage', () => {
         iteration: 1,
         now: () => '2026-05-31T00:00:00.000Z',
       });
-      updateWorkerCheckpoint(workspaceDb, {
+      await updateWorkerCheckpoint(workspaceDb, {
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -627,15 +629,16 @@ describe('worker checkpoint storage', () => {
         )
       ).not.toContain('live_secret');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('redacts checkpoint diagnostics and stores no secret columns', () => {
-    const workspaceDb = createWorkspaceDb();
+  it('redacts checkpoint diagnostics and stores no secret columns', async () => {
+    const workspaceDb = await createWorkspaceDb();
 
     try {
-      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-766a-959c-b6b802aab0e0',
@@ -660,6 +663,7 @@ describe('worker checkpoint storage', () => {
         columns.some((column) => /secret|token|credential|password|env/i.test(column.name))
       ).toBe(false);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });

@@ -203,6 +203,7 @@ export async function commitArtifactVersionCommand(
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new ArtifactPayloadCleanupError(failures);
   if (!response) throw recovery('The Artifact version acknowledgement is unavailable.');
+  input.assertAuthorized();
   return response;
 }
 

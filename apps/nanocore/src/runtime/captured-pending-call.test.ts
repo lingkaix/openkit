@@ -39,6 +39,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import * as workerMcpRoutes from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -127,6 +128,7 @@ async function fixture(
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
+  await openTestNativeWorkspace(db);
   const setup = createTestAgentSetup({ agentId: 'agent_demo', mcpIds: ['echo-server'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);
   let manifest: typeof setup.manifest | null = setup.manifest;
@@ -175,8 +177,8 @@ async function fixture(
     workspaceMcpServerCatalog: catalog,
     workspaceRoots: [],
   });
-  const retain = (nextTools: Tool[], schemaSnapshotId = 'schema_current') =>
-    recordMcpToolSchemaSnapshot({
+  const retain = async (nextTools: Tool[], schemaSnapshotId = 'schema_current') =>
+    await recordMcpToolSchemaSnapshot({
       environmentPackage,
       schemaSnapshotId,
       serverId: 'echo-server',
@@ -185,7 +187,7 @@ async function fixture(
       workspaceDb: db,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-  const capturedId = retain(tools(), 'schema_captured');
+  const capturedId = await retain(tools(), 'schema_captured');
   const resolved = resolveWorkspaceMcpServer({ catalog, serverId: 'echo-server' });
   await store.createItem({
     id: 'it_00000000-0000-74e7-bec8-70d5a20db395',
@@ -243,7 +245,7 @@ async function fixture(
     auditActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
   };
   if (sourceDecisionId)
-    recordProductPermissionDecision({
+    await recordProductPermissionDecision({
       ...decisionBase,
       decisionId: sourceDecisionId,
       result: sourceResult,
@@ -306,7 +308,7 @@ async function fixture(
     async () => {
       const decisionId = allocateEntityId('pd');
       const mediation = { ...sourceMediation, ...changes };
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         ...decisionBase,
         policySnapshotId: digest,
         decisionId,
@@ -332,7 +334,7 @@ async function fixture(
     reviewPolicy?: Parameters<typeof prepareCapturedPendingCall>[0]['reviewPolicy']
   ) => {
     let prepared: PreparedCapturedPendingCall | undefined;
-    let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+    let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
     return respondRecordedApproval({
       store,
       sqlite: db.sqlite,
@@ -370,8 +372,8 @@ async function fixture(
           sqlite: db.sqlite,
           prepared,
         }),
-      admitExecution: (failure) => {
-        const admitted = admitCapturedPendingCall(
+      admitExecution: async (failure) => {
+        const admitted = await admitCapturedPendingCall(
           record,
           db,
           '00000000-0000-4000-8000-000000000117',
@@ -700,7 +702,7 @@ describe('captured pending MCP schema identity at grant', () => {
       ).toMatchObject({ toolInSupply: true, schemaCurrent: true });
       const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
       let prepared: PreparedCapturedPendingCall | undefined;
-      let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+      let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
       const result = await respondRecordedApproval({
         store: f.store,
         sqlite: f.db.sqlite,
@@ -741,8 +743,8 @@ describe('captured pending MCP schema identity at grant', () => {
             sqlite: f.db.sqlite,
             prepared,
           }),
-        admitExecution: (failure) => {
-          const admitted = admitCapturedPendingCall(
+        admitExecution: async (failure) => {
+          const admitted = await admitCapturedPendingCall(
             record,
             f.db,
             '00000000-0000-4000-8000-000000000118',
@@ -971,7 +973,7 @@ describe('captured pending MCP schema identity at grant', () => {
         },
         type: 'object',
       };
-    f.retain(current);
+    await f.retain(current);
     expect(await f.grant()).toMatchObject({
       resolution: 'granted',
       claim: 'finished',
@@ -1014,7 +1016,7 @@ describe('captured pending MCP schema identity at grant', () => {
     if (change === 'array-order') property.examples = ['second', 'approved'];
     if (change === 'renamed') current[0]!.name = 'renamed-echo';
     if (change === 'removed') current.shift();
-    f.retain(current);
+    await f.retain(current);
     expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
     expectNoContactAfterClaim(f);
   });
@@ -1024,7 +1026,7 @@ describe('captured pending MCP schema identity at grant', () => {
     f.db.sqlite
       .prepare('DELETE FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?')
       .run(f.record.schemaSnapshotId);
-    f.retain(tools());
+    await f.retain(tools());
     expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
     expectNoContactAfterClaim(f);
   });
@@ -1039,7 +1041,7 @@ describe('captured pending MCP schema identity at grant', () => {
     importMcpToolSchemaSnapshots(f.db, captured);
     const current = tools();
     current[1]!.inputSchema = { type: 'object', description: 'Unrelated drift.' };
-    f.retain(current);
+    await f.retain(current);
     expect(await f.grant()).toMatchObject({ disposition: 'approved-executed', claim: 'finished' });
     expect(f.callTool).toHaveBeenCalledTimes(1);
   });
@@ -1087,7 +1089,7 @@ describe('captured pending MCP schema identity at grant', () => {
     const f = await fixture('pinned');
     const current = tools();
     current.find((tool) => tool.name === name)!.inputSchema.description = 'Unrelated drift.';
-    f.retain(current);
+    await f.retain(current);
     expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
     expectNoContactAfterClaim(f);
   });

@@ -214,7 +214,7 @@ export function createWorkerEnvironmentOperations(
 
     async purge(context, input) {
       requireOperationAuthority(dependencies.coreDb, context, true);
-      return runIdempotentCommand({
+      const response = await runIdempotentCommand({
         command: 'worker_environment.purge',
         execute: async () => {
           const binding = requireAuthorizedBinding(
@@ -292,6 +292,15 @@ export function createWorkerEnvironmentOperations(
         },
         store: dependencies.store,
       });
+      requireOperationAuthority(dependencies.coreDb, context, true);
+      if (response.environment !== null)
+        requireAuthorizedBinding(
+          dependencies.coreDb,
+          context.workspaceId,
+          response.storageRef,
+          contributorAuthorizer(dependencies.store, context)
+        );
+      return response;
     },
   };
 }

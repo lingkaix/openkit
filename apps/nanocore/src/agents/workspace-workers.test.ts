@@ -15,7 +15,7 @@ import * as usageLedger from '../capability/usage-ledger.js';
 import { recordUsage, startCapabilityCall } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
+import { upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -238,7 +238,7 @@ function recordWorkerPackage(
  * @param workspaceDb Workspace database that owns the ledger.
  * @param input Session, Turn, and model attribution.
  */
-function recordSessionLlmUsage(
+async function recordSessionLlmUsage(
   workspaceDb: WorkspaceDb,
   input: {
     readonly agentId: string;
@@ -252,8 +252,8 @@ function recordSessionLlmUsage(
     readonly turnId: string;
     readonly usageId: string;
   }
-): void {
-  const call = startCapabilityCall({
+): Promise<void> {
+  const call = await startCapabilityCall({
     agentId: input.agentId,
     agentSessionId: input.sessionId,
     authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -269,7 +269,7 @@ function recordSessionLlmUsage(
     workspaceDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  recordUsage({
+  await recordUsage({
     call,
     now: new Date(input.recordedAt),
     records: [
@@ -333,6 +333,7 @@ describe('worker.list operation', () => {
       });
       expect(resources.agents.map((agent) => agent.id)).toContain('agent_codex_host');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -407,7 +408,7 @@ describe('worker.list operation', () => {
         turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
       });
       await store.updateAgentSession(liveSession.id, { environmentPackageSnapshotId: snapshotId });
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         goalId: 'goal_removed',
         iteration: 1,
         now: () => timestamp,
@@ -420,7 +421,7 @@ describe('worker.list operation', () => {
         workerSessionId: liveSession.id,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         goalId: 'goal_prelaunch',
         iteration: 1,
         now: () => timestamp,
@@ -433,7 +434,7 @@ describe('worker.list operation', () => {
         workerSessionId: null,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      upsertWorkerCheckpoint(workspaceDb, {
+      await upsertWorkerCheckpoint(workspaceDb, {
         goalId: 'goal_half',
         iteration: 1,
         now: () => timestamp,
@@ -455,6 +456,7 @@ describe('worker.list operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     coreDb = openCoreDb(coreDb.dataRoot);
     store = new FsStore({ dataRoot: coreDb.dataRoot });
@@ -510,31 +512,32 @@ describe('worker.list operation', () => {
       expect(idleSession.id).toBe('as_00000000-0000-780a-a435-d0f1f7a9c9b2');
       expect(prelaunchSession.id).toBe('as_00000000-0000-70f1-aa0b-7c49c5a815d5');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
   it('reports missing Turns and conflicting checkpoint session lineage as unavailable', async () => {
-    const coreDb = createCoreDb();
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Incomplete worker'
-    );
-    const session = await createCurrentWorkerSession(store, {
-      agentId: 'agent_codex_host',
-      sessionId: 'as_00000000-0000-70c0-addb-3f25fbfb971f',
-      threadId: thread.id,
-      turnId: 'tu_00000000-0000-7ac3-97b3-02904dd64098',
-    });
-    const app = createAuthorizedApp(coreDb, store);
-    const workspaceDb = openTestWorkspaceDb(coreDb);
-    try {
-      for (const [turnId, workerSessionId] of [
-        ['tu_00000000-0000-76d4-be96-fe2dccab50f4', session.id],
-        ['tu_00000000-0000-7ac3-97b3-02904dd64098', 'as_00000000-0000-7436-9246-ac6dd3ca3fe4'],
-      ]) {
-        upsertWorkerCheckpoint(workspaceDb, {
+    for (const [turnId, workerSessionId] of [
+      ['tu_00000000-0000-76d4-be96-fe2dccab50f4', 'as_00000000-0000-70c0-addb-3f25fbfb971f'],
+      ['tu_00000000-0000-7ac3-97b3-02904dd64098', 'as_00000000-0000-7436-9246-ac6dd3ca3fe4'],
+    ]) {
+      const coreDb = createCoreDb();
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const thread = await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Incomplete worker'
+      );
+      await createCurrentWorkerSession(store, {
+        agentId: 'agent_codex_host',
+        sessionId: 'as_00000000-0000-70c0-addb-3f25fbfb971f',
+        threadId: thread.id,
+        turnId: 'tu_00000000-0000-7ac3-97b3-02904dd64098',
+      });
+      const app = createAuthorizedApp(coreDb, store);
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      try {
+        await upsertWorkerCheckpoint(workspaceDb, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: thread.id,
           turnId: turnId!,
@@ -562,16 +565,11 @@ describe('worker.list operation', () => {
         expect(body.items.find((item) => item.threadId === thread.id)?.work).toEqual({
           kind: 'unavailable',
         });
-        clearWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
-          thread.id,
-          turnId!
-        );
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
       }
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
     }
   });
 
@@ -618,7 +616,7 @@ describe('worker.list operation', () => {
         turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
       });
       await store.updateAgentSession(session.id, { environmentPackageSnapshotId: snapshotId });
-      recordSessionLlmUsage(workspaceDb, {
+      await recordSessionLlmUsage(workspaceDb, {
         agentId: 'agent_codex_host',
         callId: 'cap_00000000-0000-7682-9329-8d28c3eddeef',
         modelId: 'openai/gpt-last-used',
@@ -629,7 +627,7 @@ describe('worker.list operation', () => {
         turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
         usageId: 'use_00000000-0000-720e-a059-ea2496d083a3',
       });
-      recordSessionLlmUsage(workspaceDb, {
+      await recordSessionLlmUsage(workspaceDb, {
         agentId: 'agent_codex_host',
         callId: 'cap_00000000-0000-70c7-8f0b-db044f2644fa',
         modelId: 'openai/gpt-predecessor',
@@ -792,6 +790,7 @@ describe('worker.list operation', () => {
       expect(usageSpy).not.toHaveBeenCalled();
     } finally {
       usageSpy.mockRestore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -899,6 +898,7 @@ it('admits current administrators to foreign private Threads under the accepted 
     expect(body.result.isError).not.toBe(true);
     expect(JSON.parse(body.result.content[0].text)).toEqual(expected);
   } finally {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
   }
 });

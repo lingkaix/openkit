@@ -66,6 +66,7 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'material.exclude',
   'material.restore',
   'material.range-correct',
+  'worker.recovery.retry',
 ] as const satisfies readonly CommandRequestName[];
 
 /** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */

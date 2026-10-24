@@ -71,14 +71,16 @@ export interface LLMGatewayTransportContext {
     /** Confirms the stock source invokes its native pre-conversion observation hook. */
     readonly sourceEvent: () => void;
     readonly observe: (position: RawModelOutputPosition) => void;
-    readonly fail: (error: Error) => never;
+    /** Captures one sufficient source prefix and binds encoded chunks without waiting in the Provider hook. */
+    readonly coverAcknowledgement?: () => (chunk: Uint8Array) => void;
+    readonly fail: (error: Error) => never | Promise<never>;
   };
   /** Absolute Gateway deadline in milliseconds on the executor clock (production Date.now); never reset per attempt. */
   readonly deadline?: number;
   /** Private observer for admitted semantic events, before public response conversion. */
   readonly onModelEvent?: (event: ModelSemanticEvent) => void | Promise<void>;
   /** Private observer after OpenKit admission/options, immediately before handing the attempt to stock pi-ai. */
-  readonly onProviderHandoff?: () => void;
+  readonly onProviderHandoff?: () => void | Promise<void>;
   /** Synchronous observer for selected Provider HTTP 400-599 rejections; supplies no routing evidence. */
   readonly onProviderHttpRejection?: (
     status: number,
@@ -372,8 +374,8 @@ export class LLMGatewayProviderDispatcher {
     endpoint: GatewayUsageEndpoint,
     usage: unknown,
     onUsage?: GatewayUsageRecordInput['onUsage']
-  ): void {
-    this.usageTracker.recordUsage({
+  ): void | Promise<void> {
+    return this.usageTracker.recordUsage({
       endpoint,
       model,
       ...(onUsage ? { onUsage } : {}),

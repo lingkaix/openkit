@@ -55,11 +55,14 @@ import { isThreadVisible } from '../auth/thread-visibility.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
   finishCapabilityCall,
+  finishCapabilityCallInDb,
   importWorkspaceCapabilityUsageLedger,
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
   recordUsage,
+  recordUsageInDb,
   startCapabilityCall,
+  startCapabilityCallInDb,
 } from '../capability/usage-ledger.js';
 import {
   projectWorkspaceCatalogExport,
@@ -154,7 +157,10 @@ import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import type { FileStorageAdmission } from './artifacts/file-admission.js';
-import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import {
+  reserveCanonicalFileWrite,
+  withCanonicalFileWriteAdmission,
+} from './canonical-write-capacity.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -879,7 +885,7 @@ function importWorkspaceDatabaseRows({
       summary: `Workspace import created ${importedWorkspaceId} from ${report.exportedWorkspaceId}.`,
     });
     const now = new Date();
-    const call = startCapabilityCall({
+    const call = startCapabilityCallInDb({
       authorityActor: { kind: 'user', id: authorityUserId },
       workspaceDb,
       workspaceId: importedWorkspaceId,
@@ -893,7 +899,7 @@ function importWorkspaceDatabaseRows({
       summary: `Workspace import ${importedWorkspaceId}`,
       now,
     });
-    recordUsage({
+    recordUsageInDb({
       workspaceDb,
       call,
       records: [
@@ -914,7 +920,7 @@ function importWorkspaceDatabaseRows({
       ],
       now,
     });
-    finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded', now });
+    finishCapabilityCallInDb({ workspaceDb, callId: call.id, status: 'succeeded', now });
   } finally {
     workspaceDb.sqlite.close();
   }
@@ -1359,7 +1365,7 @@ export function workspaceDeletionRecoveryExportId(requestId: string): string {
 }
 
 /** Complete export Usage decision; verified file publication and database lifetime remain outside this supplied-handle body. */
-export function recordVerifiedWorkspaceExportUsage(
+export async function recordVerifiedWorkspaceExportUsage(
   writer: WorkspaceDb,
   input: {
     readonly authorityActor: ActorRef;
@@ -1369,8 +1375,8 @@ export function recordVerifiedWorkspaceExportUsage(
     readonly totalBytes: number;
     readonly now: Date;
   }
-): void {
-  const call = startCapabilityCall({
+): Promise<void> {
+  const call = await startCapabilityCall({
     authorityActor: input.authorityActor,
     workspaceDb: writer,
     callId: deriveEntityId('cap', ['storage_export', input.exportId]),
@@ -1384,7 +1390,7 @@ export function recordVerifiedWorkspaceExportUsage(
     summary: `Workspace export ${input.exportId}`,
     now: input.now,
   });
-  recordUsage({
+  await recordUsage({
     workspaceDb: writer,
     call,
     records: [
@@ -1405,7 +1411,7 @@ export function recordVerifiedWorkspaceExportUsage(
     ],
     now: input.now,
   });
-  finishCapabilityCall({
+  await finishCapabilityCall({
     workspaceDb: writer,
     callId: call.id,
     status: 'succeeded',
@@ -1413,8 +1419,8 @@ export function recordVerifiedWorkspaceExportUsage(
   });
 }
 
-/** Creates and verifies one server-managed portable Workspace export. */
-export function createVerifiedWorkspaceExport({
+/** Publishes and verifies export bytes inside the existing synchronous capacity section. */
+function createVerifiedWorkspaceExportFiles({
   authorityActor,
   authorityUserId,
   administratorEligible = false,
@@ -1864,24 +1870,6 @@ export function createVerifiedWorkspaceExport({
     0
   );
 
-  if (coreDb) {
-    const workspaceDb = repositoryWorkspaceDb(workspaceId);
-    const now = new Date();
-
-    try {
-      recordVerifiedWorkspaceExportUsage(workspaceDb, {
-        authorityActor: authorityActor ?? { kind: 'user', id: authorityUserId },
-        workspaceId,
-        exportId,
-        fileCount,
-        totalBytes,
-        now,
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  }
-
   return {
     response: WorkspaceExportResponseSchema.parse({
       exportId: exported.manifest.id,
@@ -1893,6 +1881,33 @@ export function createVerifiedWorkspaceExport({
     }),
     verified: exported,
   };
+}
+
+/** Keeps export file publication synchronous, then awaits its native usage before exposing success. */
+export async function createVerifiedWorkspaceExport(
+  input: Parameters<typeof createVerifiedWorkspaceExportFiles>[0] & {
+    readonly fileAdmission: FileStorageAdmission;
+  }
+) {
+  const exported = withCanonicalFileWriteAdmission(input.fileAdmission, () =>
+    createVerifiedWorkspaceExportFiles(input)
+  );
+  if (input.coreDb) {
+    const workspaceDb = input.repositoryWorkspaceDb(input.workspaceId);
+    try {
+      await recordVerifiedWorkspaceExportUsage(workspaceDb, {
+        authorityActor: input.authorityActor ?? { kind: 'user', id: input.authorityUserId },
+        workspaceId: input.workspaceId,
+        exportId: exported.response.exportId,
+        fileCount: exported.response.fileCount,
+        totalBytes: exported.response.totalBytes,
+        now: new Date(),
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  }
+  return exported;
 }
 
 /**

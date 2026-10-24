@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
+import { inspect, isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   type ActorRef,
@@ -72,6 +72,7 @@ import { admitTestNativeEnvironment } from '../test-support/native-environment.j
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
@@ -1225,7 +1226,7 @@ describe('terminal failed-start product recovery', () => {
           'ws_00000000-0000-7000-8000-000000000001',
           `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
         ).snapshot;
-        startCapabilityCall({
+        await startCapabilityCall({
           workspaceDb: db,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: f.threadId,
@@ -1244,7 +1245,7 @@ describe('terminal failed-start product recovery', () => {
           redactionClass: 'metadata-only',
           now: new Date(Date.parse(completedAt) - 200),
         });
-        finishCapabilityCall({
+        await finishCapabilityCall({
           workspaceDb: db,
           callId,
           status: 'denied',
@@ -1274,6 +1275,7 @@ describe('terminal failed-start product recovery', () => {
       const eventsSource = f;
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
       const eventsBefore = readNativeEventBytes(eventsSource);
+      await shutdownControlStoreWorkerClient();
       verifyAndMigrateExistingScopedDatabases(f.dataRoot);
       const store = new FsStore({ dataRoot: f.dataRoot });
       expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(1);
@@ -1288,6 +1290,7 @@ describe('terminal failed-start product recovery', () => {
         result: null,
         error: 'mcp-denied',
       });
+      await shutdownControlStoreWorkerClient();
       const changed = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         if (proof === 'missing-call')
@@ -5978,14 +5981,17 @@ describe('minimal scheduler reconnect contract', () => {
       );
       if (!receipt) throw new Error('Original Worker admission receipt is missing.');
       expect(receipt.requestId).toBe(original.requestId);
-      const checkpoint = upsertWorkerCheckpoint(db, {
-        ...original,
+      const checkpoint = await upsertWorkerCheckpoint(db, {
+        workspaceId: original.workspaceId,
+        threadId: original.threadId,
+        turnId: original.turnId,
         requestId: receipt.requestId,
         requestInputHash: receipt.inputHash,
         workerSessionId: f.agentSessionId,
         stage: 'running_worker',
         iteration: 0,
       });
+      await shutdownControlStoreWorkerClient();
       await recoverTestStartup(f.coreDb, f.input);
       const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
       if (!armed.inputRef || !armed.bindingRef) throw new Error('Native binding is missing.');
@@ -6029,6 +6035,9 @@ describe('minimal scheduler reconnect contract', () => {
       const turnsBefore = f.store.listThreadTurns(scope.workspaceId, scope.threadId);
       const queueBefore = listQueuedSchedulerAdmissionEntries(f.coreDb);
       const checkpointBefore = getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, f.turnId);
+      // Keep the real native command and its seven-day receipt on the fixture clock.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(f.clock.now));
       const executor = new RejectRecoveredTurnExecutor();
       const app = createApp({
         coreDb: f.coreDb,
@@ -6090,7 +6099,153 @@ describe('minimal scheduler reconnect contract', () => {
       expect(await afterRelease.json()).toEqual({ items: [] });
       await assertRecoveryClosedAndNextTurnAdmitted(f);
     } finally {
+      vi.useRealTimers();
       db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'JSON',
+    'schema',
+  ] as const)('classifies corrupt retained snapshot %s during retry receipt replay without logging decoder content', async (corruption) => {
+    const f = await createFinalReviewRecoveryFixture(`corrupt_retry_${corruption}`, 'running');
+    const original = requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, f.attemptId);
+    const db = openWorkspaceDb(f.coreDb.dataRoot, original.workspaceId);
+    const loggedErrors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const admission = readCommandRequestRecordsFromSqlite(db.sqlite).find(
+        (record) => record.command === 'turn.start' && record.response.id === f.turnId
+      );
+      if (!admission) throw new Error('Original Worker admission receipt is missing.');
+      expect(admission.requestId).toBe(original.requestId);
+      const checkpoint = await upsertWorkerCheckpoint(db, {
+        workspaceId: original.workspaceId,
+        threadId: original.threadId,
+        turnId: original.turnId,
+        requestId: admission.requestId,
+        requestInputHash: admission.inputHash,
+        workerSessionId: f.agentSessionId,
+        stage: 'running_worker',
+        iteration: 0,
+      });
+      await shutdownControlStoreWorkerClient();
+      await recoverTestStartup(f.coreDb, f.input);
+      const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
+      if (!armed.inputRef || !armed.bindingRef || !armed.recoveryDeadline)
+        throw new Error('Restart did not retain the exact native reconnect boundary.');
+      expect(armed.recoveryState).toBe('awaiting-reconnect');
+      f.clock.now = armed.recoveryDeadline;
+      await drainTestRecovery(f.coreDb, f.input);
+      expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('interrupted');
+      expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+        phase: 'closed',
+        fenceRef: expect.any(String),
+        inputRef: armed.inputRef,
+      });
+      expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+        state: 'cleaned',
+        physicalCleanedAt: expect.any(String),
+        workspaceHandoffState: 'complete',
+      });
+      expect(resolveInterruptedWorkerRetryDecision(f.coreDb, f.store, db, checkpoint).status).toBe(
+        'eligible'
+      );
+      const scope = { workspaceId: original.workspaceId, threadId: f.threadId, turnId: f.turnId };
+      const turnBefore = f.store.getTurnById(f.turnId);
+      const sessionBefore = f.store.getAgentSession(f.agentSessionId);
+      const attemptsBefore = attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope);
+      const backendBefore = getWorkerBackendSession(f.coreDb, f.attemptId);
+      const turnsBefore = f.store.listThreadTurns(scope.workspaceId, scope.threadId);
+      const queueBefore = listQueuedSchedulerAdmissionEntries(f.coreDb);
+      // Keep the real native command and its seven-day receipt on the fixture clock.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(f.clock.now));
+      const executor = new RejectRecoveredTurnExecutor();
+      const app = createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.coreDb.dataRoot,
+        store: f.store,
+        turnExecutor: executor,
+      });
+      const requestId = fixtureRequestId(`corrupt-retry:${corruption}`);
+      const request = () =>
+        app.request('/api/app/operations/recovery.checkpoint-retry', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+          body: JSON.stringify({ ...scope, requestId }),
+        });
+
+      // Reliability: the real retry receipt commits before terminal checkpoint cleanup.
+      // Fault only that cleanup, so the aborted checkpoint and receipt are produced by their owner.
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.exec(`CREATE TRIGGER retain_retry_checkpoint BEFORE DELETE ON worker_turn_checkpoints
+        BEGIN SELECT RAISE(ABORT, 'Controlled retry cleanup refusal'); END`);
+      await openTestNativeWorkspace(db);
+      const first = await request();
+      expect(first.status).toBeGreaterThanOrEqual(400);
+      const receipt = f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db);
+      expect(receipt).toMatchObject({
+        command: 'worker.recovery.retry',
+        requestId,
+        scope,
+        response: { kind: 'turn', id: f.turnId },
+      });
+      const aborted = getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId);
+      expect(aborted).toMatchObject({ stage: 'aborted', stopReason: 'aborted' });
+      expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
+      expect(executor.calls).toEqual([]);
+
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.exec('DROP TRIGGER retain_retry_checkpoint');
+      await openTestNativeWorkspace(db);
+      // Corrupt the actual retained package only after the original public retry wrote its receipt.
+      const marker = 'ROW_SECRET_X9';
+      const snapshot = join(
+        f.coreDb.dataRoot,
+        'workspaces',
+        scope.workspaceId,
+        'runtime',
+        'agent-sessions',
+        f.agentSessionId,
+        'aep-snapshots',
+        `${armed.inputRef}.json`
+      );
+      expect(readFileSync(snapshot, 'utf8')).toContain(armed.inputRef);
+      writeFileSync(snapshot, corruption === 'JSON' ? marker : JSON.stringify(marker));
+      const response = await request();
+      expect.soft(response.status).toBe(400);
+      expect.soft(inspect(loggedErrors.mock.calls)).not.toContain(marker);
+      expect.soft(response.headers.get('content-type')).toContain('application/json');
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'recovery_retry_failed',
+        message: 'The retained record could not be read.',
+      });
+      expect(getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId)).toEqual(
+        aborted
+      );
+      expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
+      expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
+      expect(f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db)).toEqual(
+        receipt
+      );
+      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(sessionBefore);
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope)).toEqual(
+        attemptsBefore
+      );
+      expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backendBefore);
+      expect(f.store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turnsBefore);
+      expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toEqual(queueBefore);
+      expect(executor.calls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      loggedErrors.mockRestore();
+      await shutdownControlStoreWorkerClient();
+      if (db.sqlite.open) {
+        db.sqlite.exec('DROP TRIGGER IF EXISTS retain_retry_checkpoint');
+        db.sqlite.close();
+      }
       f.coreDb.sqlite.close();
     }
   });
@@ -6173,8 +6328,10 @@ describe('minimal scheduler reconnect contract', () => {
         if (!receipt) throw new Error('Original Worker admission receipt is missing.');
         expect(receipt.scope.threadId).toBe(origin.threadId);
         expect(receipt.requestId).toBe(original.requestId);
-        const checkpoint = upsertWorkerCheckpoint(db, {
-          ...original,
+        const checkpoint = await upsertWorkerCheckpoint(db, {
+          workspaceId: original.workspaceId,
+          threadId: original.threadId,
+          turnId: original.turnId,
           requestId: receipt.requestId,
           requestInputHash: receipt.inputHash,
           workerSessionId: f.agentSessionId,
@@ -6182,6 +6339,7 @@ describe('minimal scheduler reconnect contract', () => {
           iteration: 0,
           diagnosticsSummary: origin.marker,
         });
+        await shutdownControlStoreWorkerClient();
         await recoverTestStartup(coreDb, f.input);
         const armed = requireNanoHostExecutionAttempt(coreDb, f.attemptId);
         if (!armed.recoveryDeadline) throw new Error('Restart did not arm exact reconnect.');
@@ -6225,7 +6383,24 @@ describe('minimal scheduler reconnect contract', () => {
           'eligible'
         );
         // Interrupted Retry Eligibility permits inspection of contradictory non-Goal lineage.
-        if (index < 2) upsertWorkerCheckpoint(db, { ...checkpoint, goalId: f.threadId });
+        if (index < 2) {
+          await openTestNativeWorkspace(db);
+          await upsertWorkerCheckpoint(db, {
+            workspaceId: checkpoint.workspaceId,
+            threadId: checkpoint.threadId,
+            turnId: checkpoint.turnId,
+            goalId: f.threadId,
+            taskId: checkpoint.taskId,
+            requestId: checkpoint.requestId,
+            requestInputHash: checkpoint.requestInputHash,
+            stage: checkpoint.stage,
+            iteration: checkpoint.iteration,
+            workerSessionId: checkpoint.workerSessionId,
+            contextDigest: checkpoint.contextDigest,
+            stopReason: checkpoint.stopReason,
+            diagnosticsSummary: checkpoint.diagnosticsSummary,
+          });
+        }
         subjects.push(f);
       }
       const tokens = [LOCAL_USER_ID, otherUserId].map((ownerUserId) =>

@@ -15,6 +15,7 @@ import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   applyStagedFilesystemChanges,
@@ -243,7 +244,34 @@ async function executeWorkspaceSyncReviewDecision(
         });
       })();
     };
-    persistDecision();
+    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+      `workspace:${workspaceDb.sqlite.name}`
+    );
+    try {
+      const currentAuthority = input.requestActor
+        ? input.authorityActor.kind === 'user' &&
+          input.authorityActor.id === input.requestActor.userId &&
+          authorizeWorkspace(input.coreDb, input.requestActor, workspaceId, {
+            mutating: true,
+            policyOperation: 'review.apply',
+          })
+        : currentWorkspaceAuthority(
+            input.coreDb,
+            workspaceId,
+            input.authorityActor,
+            'review.apply',
+            true
+          );
+      if (!currentAuthority)
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      persistDecision();
+    } finally {
+      resume();
+    }
 
     return {
       review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
@@ -258,31 +286,50 @@ async function executeWorkspaceSyncReviewDecision(
       404
     );
   const staging = requireFilesystemWorkspaceStaging(workspaceDb, review);
-  // The existing authorizer supplies administrator eligibility and current credential limits at this effect check too.
-  const effectAuthority = input.requestActor
-    ? input.authorityActor.kind === 'user' &&
-      input.authorityActor.id === input.requestActor.userId &&
-      authorizeWorkspace(input.coreDb, input.requestActor, workspaceId, {
-        mutating: true,
-        policyOperation: 'review.apply',
-      })
-    : currentWorkspaceAuthority(
-        input.coreDb,
-        workspaceId,
-        input.authorityActor,
-        'review.apply',
-        true
+  const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+    `workspace:${workspaceDb.sqlite.name}`
+  );
+  let plan: ReturnType<typeof recordWorkspaceApplyPlanForReview>;
+  try {
+    // The existing authorizer supplies administrator eligibility and current credential limits at this effect check too.
+    const effectAuthority = input.requestActor
+      ? input.authorityActor.kind === 'user' &&
+        input.authorityActor.id === input.requestActor.userId &&
+        authorizeWorkspace(input.coreDb, input.requestActor, workspaceId, {
+          mutating: true,
+          policyOperation: 'review.apply',
+        })
+      : currentWorkspaceAuthority(
+          input.coreDb,
+          workspaceId,
+          input.authorityActor,
+          'review.apply',
+          true
+        );
+    if (!effectAuthority) {
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
       );
-  if (!effectAuthority) {
-    throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
+    }
+    plan = recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);
+  } finally {
+    resume();
   }
-  const plan = recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);
   await applyWorkspaceSyncReviewFilesystem({
     appliedAt: plan.createdAt,
-    persistResult: (appliedResult) => {
-      workspaceDb.sqlite.transaction(() => {
-        recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
-      })();
+    persistResult: async (appliedResult) => {
+      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+        `workspace:${workspaceDb.sqlite.name}`
+      );
+      try {
+        workspaceDb.sqlite.transaction(() => {
+          recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
+        })();
+      } finally {
+        resume();
+      }
     },
     review,
     staging,
@@ -347,7 +394,7 @@ function recordAcceptedWorkspaceReview(
  */
 async function applyWorkspaceSyncReviewFilesystem(input: {
   readonly appliedAt: string;
-  readonly persistResult: (result: WorkspaceApplyResult) => void;
+  readonly persistResult: (result: WorkspaceApplyResult) => void | Promise<void>;
   readonly review: WorkspaceSyncReviewItem;
   readonly staging: FilesystemWorkspaceStagingRootRecord;
 }): Promise<WorkspaceApplyResult> {

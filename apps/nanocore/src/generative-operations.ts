@@ -3,7 +3,10 @@ import type {
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import {
   batchRecords,
   createLightApp,
@@ -273,9 +276,30 @@ export function createGenerativeUiOperationImplementations(
   return {
     'generative-ui.publish': (input, context) => {
       const actor = context.actorRef;
-      return execute(input, actor, context, (c) => {
+      return execute(input, actor, context, async (c) => {
         const { workspaceId: _workspaceId, requestId: _requestId, ...body } = input;
-        return publishGenerativePresentation(c, body);
+        const result = await publishGenerativePresentation(c, body);
+        if (context.kind !== 'worker') {
+          if (
+            !dependencies.coreDb ||
+            !isWorkspaceOperationAuthorized(dependencies.coreDb, context.actor, input.workspaceId, {
+              mutating: true,
+              policyOperation: 'workspace.write',
+            })
+          )
+            throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+          return getGenerativePresentation(
+            {
+              ...c,
+              administratorEligible: isCurrentDeploymentAdministrator(
+                dependencies.coreDb,
+                context.actor
+              ),
+            },
+            result.id
+          );
+        }
+        return result;
       });
     },
     'generative-ui.get': (input, context) => {

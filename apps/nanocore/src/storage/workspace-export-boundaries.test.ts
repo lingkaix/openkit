@@ -175,7 +175,8 @@ async function createBoundaryStore(dataRoot: string): Promise<FsStore> {
 }
 
 const boundaryDatabases: Array<ReturnType<typeof openCoreDb>> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const db of boundaryDatabases.splice(0)) if (db.sqlite.open) db.sqlite.close();
 });
 
@@ -913,9 +914,9 @@ describe('workspace import route handles', () => {
         beforeDecisions
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -962,7 +963,7 @@ describe('workspace import route handles', () => {
     try {
       applyScopedMigrations(workspaceDb);
       // This intentionally index-less portable tree still belongs to an explicitly recorded creator.
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         workspaceDb,
         callId: deriveEntityId('cap', ['storage_export', exportId]),
@@ -974,7 +975,7 @@ describe('workspace import route handles', () => {
         serviceRef: 'workspace-export',
         redactionClass: 'metadata-only',
       });
-      recordUsage({
+      await recordUsage({
         workspaceDb,
         call,
         records: [
@@ -999,8 +1000,9 @@ describe('workspace import route handles', () => {
           },
         ],
       });
-      finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
+      await finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
 

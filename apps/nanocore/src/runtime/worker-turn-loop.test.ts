@@ -11,7 +11,10 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -25,6 +28,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import * as attempts from './execution-attempt-records.js';
@@ -42,11 +46,7 @@ import {
   transitionWorkerBackendSessionState,
   workerBackendLineageFromRuntimeImage,
 } from './worker-backend-sessions.js';
-import {
-  clearWorkerCheckpoint,
-  getWorkerCheckpoint,
-  updateWorkerCheckpoint,
-} from './worker-checkpoints.js';
+import { getWorkerCheckpoint, updateWorkerCheckpoint } from './worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import {
   endWorkerTurnJournalRelease,
@@ -190,6 +190,7 @@ describe('worker turn loop', () => {
         result: 'allow',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -238,6 +239,7 @@ describe('worker turn loop', () => {
         diagnosticsSummary: 'Worker failed Authorization: Bearer [redacted]',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -289,6 +291,7 @@ describe('worker turn loop', () => {
         stopReason: null,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -365,6 +368,7 @@ describe('worker turn loop', () => {
         ).count
       ).toBe(0);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -441,6 +445,7 @@ describe('worker turn loop', () => {
       expect(reserveCalls).toBe(1);
       expect(workerCalls).toBe(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -516,6 +521,7 @@ it('bounds quoting worker errors in the loop checkpoint before rethrowing', asyn
     });
     expect(JSON.stringify(checkpoint)).not.toContain('ROW_SECRET_X9');
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -585,8 +591,8 @@ function admittedWorker(
       null,
       { turnId, agentId: manifest.id, agentSessionId }
     );
-    onAdmitted(admitted, agentSessionId);
-    hooks.observe?.(admitted, agentSessionId);
+    await onAdmitted(admitted, agentSessionId);
+    await hooks.observe?.(admitted, agentSessionId);
     if (hooks.interruptedRecovery) {
       const setup = createTestAgentSetup();
       admitTestNativeEnvironment(coreDb, manifest);
@@ -762,6 +768,7 @@ it.each([
   } finally {
     release.resolve();
     await running.catch(() => {});
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -893,6 +900,7 @@ it.each([
       coreDb.dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
     );
+    await openTestNativeWorkspace(reopenedWorkspace);
     try {
       const reopenedStore = await createDemoStore({ dataRoot: coreDb.dataRoot });
       expect(
@@ -935,6 +943,7 @@ it.each([
       ).toEqual(checkpoint);
       expect(launches).toBe(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       reopenedWorkspace.sqlite.close();
       reopenedCore.sqlite.close();
     }
@@ -1004,12 +1013,13 @@ it('refuses mismatched callback lineage before acknowledgement or executor effec
       stopReason: null,
     });
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
 });
 
-it('late admission callbacks cannot erase or recreate a terminal checkpoint binding', async () => {
+it('late admission callbacks preserve a terminal binding and cannot recreate a lost checkpoint', async () => {
   const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -1050,12 +1060,12 @@ it('late admission callbacks cannot erase or recreate a terminal checkpoint bind
       stopReason: 'completed',
       workerSessionId: 'as_00000000-0000-74d5-8679-7772bcbbc47b',
     });
-    expect(() =>
+    await expect(
       callback(
         store.getTurnById('tu_00000000-0000-7b56-819e-feee751c1be8'),
         'as_00000000-0000-74d5-8679-7772bcbbc47b'
       )
-    ).toThrow(TurnStartValidationError);
+    ).rejects.toThrow(TurnStartValidationError);
     expect(
       getWorkerCheckpoint(
         workspaceDb,
@@ -1064,18 +1074,25 @@ it('late admission callbacks cannot erase or recreate a terminal checkpoint bind
         'tu_00000000-0000-7b56-819e-feee751c1be8'
       )
     ).toEqual(before);
-    clearWorkerCheckpoint(
-      workspaceDb,
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'tu_00000000-0000-7b56-819e-feee751c1be8'
-    );
-    expect(() =>
+    await shutdownControlStoreWorkerClient();
+    // Fault injection loses the exact checkpoint; the loop fixture has no terminal release proof.
+    expect(
+      workspaceDb.sqlite
+        .prepare(
+          'DELETE FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
+        )
+        .run(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7b56-819e-feee751c1be8'
+        ).changes
+    ).toBe(1);
+    await expect(
       callback(
         store.getTurnById('tu_00000000-0000-7b56-819e-feee751c1be8'),
         'as_00000000-0000-74d5-8679-7772bcbbc47b'
       )
-    ).toThrow(TurnStartValidationError);
+    ).rejects.toThrow(TurnStartValidationError);
     expect(
       getWorkerCheckpoint(
         workspaceDb,
@@ -1085,6 +1102,7 @@ it('late admission callbacks cannot erase or recreate a terminal checkpoint bind
       )
     ).toBeNull();
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -1117,8 +1135,8 @@ it('a late completion error preserves an already terminal checkpoint and its exa
           'req_terminal',
           'as_00000000-0000-7fc9-a4b3-5d9a4fa54ed7'
         ),
-        awaitWorker: () => {
-          terminal = updateWorkerCheckpoint(workspaceDb, {
+        awaitWorker: async () => {
+          terminal = await updateWorkerCheckpoint(workspaceDb, {
             authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1144,6 +1162,7 @@ it('a late completion error preserves an already terminal checkpoint and its exa
       workerSessionId: 'as_00000000-0000-7fc9-a4b3-5d9a4fa54ed7',
     });
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -1238,6 +1257,7 @@ it('removes only its live never-leased cancelled preparation and retains cancell
     ).toEqual({ count: 2 });
     expect(store.listCommandRequests()).toEqual([]);
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -1420,21 +1440,27 @@ it.each([
         outcome, evidence_bundle_ids_json, content_digests_json, required_features_json, created_at
         ) VALUES ('rte_refusal', 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'local', 'checkpoint', 'Contradiction', '[]', '[]', 'unknown', '[]', '[]', '[]', ?)`)
         .run(at);
-    if (kind === 'changed-checkpoint')
+    if (kind === 'changed-checkpoint') {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite
         .prepare(
           "UPDATE worker_turn_checkpoints SET request_input_hash='sha256:changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
         )
         .run();
+      await openTestNativeWorkspace(workspaceDb);
+    }
     if (kind === 'changed-admission')
       coreDb.sqlite
         .prepare(
           "UPDATE scheduler_admission_entries SET turn_input='changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
         )
         .run();
-    if (kind === 'rollback')
+    if (kind === 'rollback') {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_removal
         BEFORE DELETE ON worker_turn_checkpoints BEGIN SELECT RAISE(ABORT, 'Workspace removal failure'); END`);
+      await openTestNativeWorkspace(workspaceDb);
+    }
     before = getWorkerCheckpoint(
       workspaceDb,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1443,9 +1469,11 @@ it.each([
     );
   });
   try {
-    if (kind === 'rollback')
-      await expect(runWorkerTurnLoop(input)).rejects.toThrow('Workspace removal failure');
-    else await expect(runWorkerTurnLoop(input)).rejects.toThrow();
+    if (kind === 'rollback') {
+      const refusal = runWorkerTurnLoop(input);
+      await expect(refusal).rejects.toBeInstanceOf(ControlStoreWorkerError);
+      await expect(refusal).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+    } else await expect(runWorkerTurnLoop(input)).rejects.toThrow();
     if (kind === 'lease') {
       // Retained execution contradicts the cancelled admission's no-execution claim.
       // Placement plans have no successor relation; keep the exact attempt/admission link.
@@ -1481,6 +1509,7 @@ it.each([
         coreDb.dataRoot,
         'ws_00000000-0000-7000-8000-000000000001'
       );
+      await openTestNativeWorkspace(reopenedWorkspace);
       try {
         const residual = getWorkerCheckpoint(
           reopenedWorkspace,
@@ -1529,6 +1558,7 @@ it.each([
       ).toEqual(before!);
     }
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -1539,6 +1569,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
   const workspaceDb = createWorkspaceDb(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   await expect(runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))).rejects.toThrow();
+  await shutdownControlStoreWorkerClient();
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
   const reopenedCore = openCoreDb(coreDb.dataRoot);
@@ -1546,6 +1577,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
     coreDb.dataRoot,
     'ws_00000000-0000-7000-8000-000000000001'
   );
+  await openTestNativeWorkspace(reopenedWorkspace);
   try {
     const replay = cancelledLoopInput(
       reopenedCore,
@@ -1571,6 +1603,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
       reopenedCore.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
     ).toEqual({ count: 1 });
   } finally {
+    await shutdownControlStoreWorkerClient();
     reopenedWorkspace.sqlite.close();
     reopenedCore.sqlite.close();
   }
@@ -1632,6 +1665,7 @@ it.each([
       coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
     ).toEqual({ count: 2 });
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
@@ -1673,6 +1707,7 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
       )
       .get()
   ).toEqual({ status: 'cancelled' });
+  await shutdownControlStoreWorkerClient();
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
   const reopenedCore = openCoreDb(coreDb.dataRoot);
@@ -1680,6 +1715,7 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
     coreDb.dataRoot,
     'ws_00000000-0000-7000-8000-000000000001'
   );
+  await openTestNativeWorkspace(reopenedWorkspace);
   try {
     await expect(
       classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -1705,6 +1741,7 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
       )
     ).toEqual([]);
   } finally {
+    await shutdownControlStoreWorkerClient();
     reopenedWorkspace.sqlite.close();
     reopenedCore.sqlite.close();
   }
@@ -1732,6 +1769,7 @@ it('a changed reservation cannot overwrite the declared command Turn identity', 
       coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
     ).toEqual({ count: 0 });
   } finally {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }

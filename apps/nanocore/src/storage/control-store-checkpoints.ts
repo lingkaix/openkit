@@ -25,10 +25,10 @@ import {
 } from '../runtime/goal-retained-v1.js';
 import { reserveGoalTask } from '../runtime/goal-task-admission.js';
 import {
-  clearWorkerCheckpoint,
+  clearWorkerCheckpointInDb as clearWorkerCheckpoint,
   getWorkerCheckpoint,
-  updateWorkerCheckpoint,
-  upsertWorkerCheckpoint,
+  updateWorkerCheckpointInDb as updateWorkerCheckpoint,
+  upsertWorkerCheckpointInDb as upsertWorkerCheckpoint,
   type WorkerCheckpointRecord,
 } from '../runtime/worker-checkpoints.js';
 import { isTerminalWorkerTurnStage, WORKER_TURN_STAGES } from '../runtime/worker-stage.js';
@@ -36,7 +36,7 @@ import {
   commandRequestExpiresAt,
   commandRequestKey,
   getCommandRequestRecordFromDb,
-  recordCommandRequestRecordInDb,
+  recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { commandInputHash, presentControlFacts } from './control-store-input.js';
 import { ControlProductPreconditionError, readProduct } from './control-store-products.js';
@@ -84,7 +84,7 @@ const checkpointRecord = checkpoint.required().extend({
   updatedAt: TimestampSchema,
 });
 
-/** Dormant checkpoint facts; timestamp strings replace caller-owned clock callbacks. */
+/** Native checkpoint facts; timestamp strings replace caller-owned clock callbacks. */
 export const ControlCheckpointCommandInputSchema = z.discriminatedUnion('kind', [
   checkpoint.extend({ kind: z.literal('upsert'), now: TimestampSchema }),
   z
@@ -114,14 +114,7 @@ export const ControlCheckpointCommandInputSchema = z.discriminatedUnion('kind', 
       kind: z.literal('retry'),
       ...scope,
       requestId: z.string().min(1),
-      now: TimestampSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('retry-replay'),
-      ...scope,
-      requestId: z.string().min(1),
+      replayOnly: z.boolean(),
       now: TimestampSchema,
     })
     .strict(),
@@ -170,7 +163,7 @@ export function applyControlCheckpointCommand(
       return false;
     return clearCancelledWorkerPreparation(db, expected);
   }
-  if (input.kind === 'bind' || input.kind === 'retry' || input.kind === 'retry-replay') {
+  if (input.kind === 'bind' || input.kind === 'retry') {
     const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
     const getTurn = (workspaceId: string, threadId: string, turnId: string) => {
       const row = readProduct(db.sqlite, owner, 'turn', turnId);
@@ -205,21 +198,26 @@ export function applyControlCheckpointCommand(
         return AgentSessionRecordSchema.parse(row.record);
       },
     };
+    const receipt = getCommandRequestRecordFromDb(
+      db,
+      commandRequestKey('worker.recovery.retry', input.requestId, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+      }),
+      input.now
+    );
+    if (input.replayOnly && !receipt) return false;
     return runInterruptedWorkerRetryWorkspaceCommand({
       ...input,
       workspaceDb: db,
       authorityActor: getTurn(input.workspaceId, input.threadId, input.turnId).triggerActor,
-      replayOnly: input.kind === 'retry-replay',
+      replayOnly: input.replayOnly,
       now: () => input.now,
       resolveDecision: () => resolveInterruptedWorkerRetryWorkspaceDecision(products, db, input),
       store: {
         getTurn,
-        getCommandRequest: (command, requestId, scope) =>
-          getCommandRequestRecordFromDb(
-            db,
-            commandRequestKey(command, requestId, scope),
-            new Date().toISOString()
-          ),
+        getCommandRequest: () => receipt,
         recordCommandRequest: (record) => {
           const receipt = {
             ...record,
@@ -227,7 +225,7 @@ export function applyControlCheckpointCommand(
             createdAt: input.now,
             expiresAt: commandRequestExpiresAt(input.now),
           };
-          recordCommandRequestRecordInDb(db, receipt);
+          recordControlCommandRequestRecordInDb(db, receipt);
           return receipt;
         },
       },
@@ -406,7 +404,7 @@ export function runInterruptedWorkerRetryWorkspaceCommand(input: {
     ): ReturnType<typeof getCommandRequestRecordFromDb>;
     recordCommandRequest(
       record: Omit<
-        Parameters<typeof recordCommandRequestRecordInDb>[1],
+        Parameters<typeof recordControlCommandRequestRecordInDb>[1],
         'key' | 'createdAt' | 'expiresAt'
       >,
       db: WorkspaceDb

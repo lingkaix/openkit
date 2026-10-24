@@ -276,7 +276,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       'configuration_result',
       { userId: actor.userId, request },
     ]);
-    return runIdempotentCommand({
+    const response = await runIdempotentCommand({
       store,
       inflightCommands: options.inflightCommands,
       command: 'administration.configuration.apply',
@@ -528,6 +528,8 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         return result;
       },
     });
+    requireHome(threadId, turnId);
+    return response;
   }
 
   return {

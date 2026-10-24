@@ -1,16 +1,19 @@
-import { isDeepStrictEqual } from 'node:util';
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
-import { deriveEntityId } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
-import {
-  finishCapabilityCall,
-  recordUsage,
-  type StartedCapabilityCall,
-  startCapabilityCall,
-} from '../capability/usage-ledger.js';
+import { finishMcpToolCall, type StartedCapabilityCall } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
-import { readAuditEventRowV1, readPermissionDecisionRowV1 } from '../policy/retained-records-v1.js';
+import { OperationError } from '../operation-error.js';
+import {
+  readCapturedMediationAllowInDb,
+  readCapturedMediationSource,
+} from '../policy/permission-decisions.js';
+import type { readPermissionDecisionRowV1 } from '../policy/retained-records-v1.js';
+import { ControlCapabilityCommandInputSchema } from '../storage/control-store-capability.js';
+import { presentControlFacts } from '../storage/control-store-input.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { isCurrentServerMcpMaterial } from '../vault/server-mcp-authority.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
@@ -153,14 +156,14 @@ export interface CapturedPendingCallExecution {
   readonly result: unknown;
 }
 
-/** Records execution admission in the synchronous Main submission step after native claim acknowledgement. */
-export function admitCapturedPendingCall(
+/** Admits the existing Call, decision and any no-contact refusal after the original native claim ACK. */
+export async function admitCapturedPendingCall(
   record: PendingRequestRecord,
   workspaceDb: WorkspaceDb,
   commandRequestId: string,
   prepared?: PreparedCapturedPendingCall,
   failure?: string
-): StartedCapabilityCall & { readonly refusal?: string } {
+): Promise<StartedCapabilityCall & { readonly refusal?: string }> {
   const source = readCapturedMediationSource(record, workspaceDb.sqlite);
   const reviewed =
     source && !failure && !prepared?.failed && workspaceDb.workspaceId === record.workspaceId
@@ -168,10 +171,8 @@ export function admitCapturedPendingCall(
       : null;
   // A current submission refusal still owns the already-acknowledged reservation's truthful finish.
   if (source && !reviewed && !failure) failure = 'policy-changed';
-  const call = startCapabilityCall({
-    workspaceDb,
-    callId: executionCallIdForRequest(record.requestId),
-    workspaceId: record.workspaceId,
+  const callId = executionCallIdForRequest(record.requestId);
+  const context = {
     threadId: record.threadId,
     turnId: record.raisingTurnId,
     agentId: record.agentId,
@@ -188,44 +189,41 @@ export function admitCapturedPendingCall(
     serviceRef: `mcp-tool:${record.toolName}`,
     redactionClass: 'metadata-only',
     summary: 'Captured pending call execution.',
-  });
-  if (!call.inserted)
+  };
+  const admitted = await getControlStoreWorkerClient().workspaceCapability(
+    workspaceDb,
+    ControlCapabilityCommandInputSchema.parse({
+      kind: 'admit',
+      workspaceId: record.workspaceId,
+      callId,
+      context,
+      now: new Date().toISOString(),
+      capturedSource: {
+        requestId: record.requestId,
+        sourceDecisionId: record.policyDecisionId,
+        reviewedDecisionId: reviewed?.decision.decisionId ?? null,
+        ...(failure ? { failure } : {}),
+      },
+      ...(failure
+        ? {
+            finish: {
+              status: 'failed',
+              errorCode: failure,
+              now: new Date().toISOString(),
+            },
+          }
+        : {}),
+    })
+  );
+  if (!admitted || typeof admitted !== 'object' || !('inserted' in admitted))
+    throw new TypeError('Invalid native captured admission result.');
+  if (!admitted.inserted)
     throw new PendingRequestCommandError(
       'recovery_required',
       'The captured execution call already exists.',
       409
     );
-  recordProductPermissionDecision({
-    workspaceDb,
-    workspaceId: record.workspaceId,
-    ownerScope: 'workspace',
-    decisionId: deriveEntityId('pd', ['pending_execution', record.requestId]),
-    action: 'tool.use',
-    approvalId: record.requestId,
-    auditActor: reviewed?.actor ?? { kind: 'user', id: record.responsibleUserId },
-    subjectSummary: reviewed?.decision.subjectSummary ?? {
-      responsibleUserId: record.responsibleUserId,
-      agentId: record.agentId,
-    },
-    resourceSummary: { serverId: record.serverId, toolName: record.toolName },
-    contextSummary: {
-      capabilityCallId: call.id,
-      threadId: record.threadId,
-      turnId: record.raisingTurnId,
-      packageSnapshotId: record.packageDigest,
-      ...(failure ? { upstreamContacted: false, refusalReason: failure } : {}),
-      ...(reviewed ? { originEvaluationDecisionId: reviewed.decision.decisionId } : {}),
-    },
-    ...(reviewed ? { mediation: { ...reviewed.decision.mediation!, consumedStatements: [] } } : {}),
-    enforcementPoint: reviewed?.decision.enforcementPoint ?? 'approval.respond',
-    policyEngineVersion:
-      reviewed?.decision.policyEngineVersion ?? 'nanocore-workspace-role-policy:v1',
-    policySnapshotId: reviewed?.decision.policySnapshotId ?? 'policy_snapshot_runtime',
-    reasonCode: failure ? 'mcp_approval_submission_refused' : 'mcp_approval_grant_reauthorized',
-    result: failure ? 'deny' : 'allow',
-  });
-  if (failure) recordCapturedExecution(call, workspaceDb, 'failed', failure, false);
-  return { ...call, ...(failure ? { refusal: failure } : {}) };
+  return presentControlFacts({ ...admitted, context: presentControlFacts(admitted.context) });
 }
 
 /**
@@ -307,53 +305,7 @@ export function evaluateCapturedPendingCall(input: {
   };
 }
 
-/** Resolves the existing source pointer without treating missing or corrupt evidence as catalog approval. */
-function readCapturedMediationSource(
-  record: PendingRequestRecord,
-  sqlite: WorkspaceDb['sqlite']
-): ReturnType<typeof readPermissionDecisionRowV1> | null {
-  if (record.policyDecisionId === null) return null;
-  const row = sqlite
-    .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-    .get(record.policyDecisionId);
-  if (!row)
-    throw new PendingRequestCommandError(
-      'recovery_required',
-      'Captured Policy source is missing.',
-      409
-    );
-  const source = readPermissionDecisionRowV1(row);
-  if (!source.mediation) return null;
-  const target = source.resourceSummary as Record<string, unknown> | null;
-  const context = source.contextSummary as Record<string, unknown> | null;
-  const process = source.mediation.subject.process;
-  if (
-    source.ownerScope !== 'workspace' ||
-    source.workspaceId !== record.workspaceId ||
-    source.action !== 'tool.use' ||
-    !['require_escalation', 'require_approval'].includes(source.result) ||
-    source.mediation.role !== 'final' ||
-    source.mediation.operation !== 'mcp.call-tool' ||
-    source.mediation.stage !== 'decide' ||
-    source.mediation.kernel?.effect !== 'allow' ||
-    target?.serverId !== record.serverId ||
-    target?.toolName !== record.toolName ||
-    context?.threadId !== record.threadId ||
-    context?.turnId !== record.raisingTurnId ||
-    process?.workspaceId !== record.workspaceId ||
-    process.threadId !== record.threadId ||
-    process.turnId !== record.raisingTurnId ||
-    source.mediation.subject.responsibleHumanId !== record.responsibleUserId
-  )
-    throw new PendingRequestCommandError(
-      'recovery_required',
-      'Captured Policy source does not match the request.',
-      409
-    );
-  return source;
-}
-
-/** Rechecks current facts and exact independent evaluation/Audit evidence; storage failures propagate. */
+/** Checks current Main authority before the shared exact retained-decision/Audit reader. */
 function readCapturedMediationAllow(
   record: PendingRequestRecord,
   sqlite: WorkspaceDb['sqlite'],
@@ -361,59 +313,7 @@ function readCapturedMediationAllow(
   reviewed: PreparedCapturedPendingCall['mediation']
 ) {
   if (!reviewed || !reviewed.current()) return null;
-  const row = sqlite
-    .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-    .get(reviewed.decisionId);
-  if (!row) return null;
-  const decision = readPermissionDecisionRowV1(row);
-  const mediation = decision.mediation;
-  const original = source.mediation!;
-  const target = decision.resourceSummary as Record<string, unknown> | null;
-  const context = decision.contextSummary as Record<string, unknown> | null;
-  const capabilityCallId = executionCallIdForRequest(record.requestId);
-  if (
-    decision.ownerScope !== 'workspace' ||
-    decision.workspaceId !== record.workspaceId ||
-    decision.action !== 'tool.use' ||
-    decision.result !== 'allow' ||
-    decision.approvalId !== null ||
-    mediation?.role !== 'final' ||
-    mediation.kernel?.effect !== 'allow' ||
-    mediation.operation !== original.operation ||
-    mediation.stage !== original.stage ||
-    decision.policySnapshotId !== source.policySnapshotId ||
-    mediation.authorizationRevision !== original.authorizationRevision ||
-    mediation.proposalDigest !== original.proposalDigest ||
-    !isDeepStrictEqual(mediation.subject, original.subject) ||
-    target?.serverId !== record.serverId ||
-    target?.toolName !== record.toolName ||
-    context?.humanApprovalRequestId !== record.requestId ||
-    context?.approvalSourceDecisionId !== record.policyDecisionId ||
-    context?.capabilityCallId !== capabilityCallId ||
-    context?.threadId !== record.threadId ||
-    context?.turnId !== record.raisingTurnId ||
-    !decision.auditEventId
-  )
-    return null;
-  const auditRow = sqlite
-    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
-    .get(decision.auditEventId);
-  if (!auditRow) return null;
-  const audit = readAuditEventRowV1(auditRow);
-  if (
-    audit.actor?.kind !== 'user' ||
-    context.humanApprovalDeciderId !== audit.actor.id ||
-    audit.permissionDecisionId !== decision.decisionId ||
-    audit.workspaceId !== record.workspaceId ||
-    audit.capabilityCallId !== capabilityCallId ||
-    audit.threadId !== record.threadId ||
-    audit.turnId !== record.raisingTurnId ||
-    audit.action !== 'permission.decision' ||
-    audit.resource !== 'permission:tool.use' ||
-    audit.outcome !== 'succeeded'
-  )
-    return null;
-  return { decision, actor: audit.actor };
+  return readCapturedMediationAllowInDb(record, sqlite, source, reviewed);
 }
 
 /**
@@ -434,6 +334,8 @@ export async function executeCapturedPendingCall(input: {
   readonly workspaceDb: WorkspaceDb;
   readonly prepared?: PreparedCapturedPendingCall | undefined;
   readonly executionCall?: StartedCapabilityCall | undefined;
+  /** Current Main scope/supply/Policy/credential checks, evaluated at the actual contact and disclosure boundaries. */
+  readonly current?: (() => string | undefined) | undefined;
 }): Promise<CapturedPendingCallExecution> {
   const { record } = input;
   if (!input.executionCall)
@@ -455,16 +357,26 @@ export async function executeCapturedPendingCall(input: {
     try {
       await input.prepared?.mediation?.observe?.();
     } catch {
-      return { ...outcome, reason: outcome.reason ?? 'policy-observation-unavailable' };
+      outcome = { ...outcome, reason: outcome.reason ?? 'policy-observation-unavailable' };
+    }
+    if (outcome.result !== null) {
+      let refusal: string | undefined;
+      try {
+        refusal = input.current?.();
+        if (input.prepared?.mediation && !input.prepared.mediation.current())
+          refusal = 'authority-changed-after-execution';
+      } catch {
+        refusal = 'authority-changed-after-execution';
+      }
+      if (refusal) return { ...outcome, reason: refusal, result: null };
     }
     return outcome;
   };
   if (!record.serverId || !record.toolName || !record.canonicalArgumentsJson || !input.catalog) {
-    await recordCapturedExecution(
+    await finishMcpToolCall(
       input.executionCall,
       input.workspaceDb,
-      'failed',
-      'binding-missing',
+      { status: 'failed', errorCode: 'binding-missing' },
       false
     );
     return observeOutcome({
@@ -477,11 +389,10 @@ export async function executeCapturedPendingCall(input: {
   try {
     resolved = resolveWorkspaceMcpServer({ catalog: input.catalog, serverId: record.serverId });
   } catch {
-    await recordCapturedExecution(
+    await finishMcpToolCall(
       input.executionCall,
       input.workspaceDb,
-      'failed',
-      'tool-left-supply',
+      { status: 'failed', errorCode: 'tool-left-supply' },
       false
     );
     return observeOutcome({
@@ -494,11 +405,10 @@ export async function executeCapturedPendingCall(input: {
   try {
     const parsed = JSON.parse(record.canonicalArgumentsJson) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      await recordCapturedExecution(
+      await finishMcpToolCall(
         input.executionCall,
         input.workspaceDb,
-        'failed',
-        'arguments-invalid',
+        { status: 'failed', errorCode: 'arguments-invalid' },
         false
       );
       return observeOutcome({
@@ -509,11 +419,10 @@ export async function executeCapturedPendingCall(input: {
     }
     args = parsed as Record<string, unknown>;
   } catch {
-    await recordCapturedExecution(
+    await finishMcpToolCall(
       input.executionCall,
       input.workspaceDb,
-      'failed',
-      'arguments-invalid',
+      { status: 'failed', errorCode: 'arguments-invalid' },
       false
     );
     return observeOutcome({
@@ -538,11 +447,10 @@ export async function executeCapturedPendingCall(input: {
         }
       }))
   ) {
-    await recordCapturedExecution(
+    await finishMcpToolCall(
       input.executionCall,
       input.workspaceDb,
-      'failed',
-      'credentials-invalid',
+      { status: 'failed', errorCode: 'credentials-invalid' },
       false
     );
     return observeOutcome({
@@ -550,6 +458,20 @@ export async function executeCapturedPendingCall(input: {
       reason: 'credentials-invalid',
       result: null,
     });
+  }
+  const refusal =
+    input.current?.() ??
+    (input.prepared?.mediation && !input.prepared.mediation.current()
+      ? 'policy-changed'
+      : undefined);
+  if (refusal) {
+    await finishMcpToolCall(
+      input.executionCall,
+      input.workspaceDb,
+      { status: 'failed', errorCode: refusal },
+      false
+    );
+    return observeOutcome({ disposition: 'execution-error', reason: refusal, result: null });
   }
   let outcome: CapturedPendingCallExecution;
   try {
@@ -563,16 +485,31 @@ export async function executeCapturedPendingCall(input: {
     });
     if (input.coreDb && input.prepared?.injections)
       completeMcpVaultInjections(input.coreDb, input.executionCall, input.prepared.injections);
-    await recordCapturedExecution(input.executionCall, input.workspaceDb, 'succeeded', null, true);
+    await finishMcpToolCall(
+      input.executionCall,
+      input.workspaceDb,
+      { status: 'succeeded', errorCode: null },
+      true
+    );
     outcome = { disposition: 'approved-executed', reason: null, result };
   } catch (error) {
     const known = error instanceof WorkerMcpGatewayCallError && error.upstreamEffect !== 'unknown';
-    if (input.executionCall)
-      await recordCapturedExecution(
+    if (
+      input.executionCall &&
+      !(error instanceof ControlStoreWorkerError && error.commit === 'unknown') &&
+      // The shared composer already attempted the separate finish-only diagnostic.
+      !(
+        (error instanceof OperationError && error.code === 'usage_record_failed') ||
+        (error instanceof TypeError && error.message === 'Unsupported retained record format.')
+      )
+    )
+      await finishMcpToolCall(
         input.executionCall,
         input.workspaceDb,
-        known ? 'failed' : 'unknown',
-        error instanceof WorkerMcpGatewayCallError ? error.code : 'execution-unproven',
+        {
+          status: known ? 'failed' : 'unknown',
+          errorCode: error instanceof WorkerMcpGatewayCallError ? error.code : 'execution-unproven',
+        },
         !(error instanceof WorkerMcpGatewayCallError && error.upstreamEffect === 'not-contacted')
       );
     outcome = known
@@ -580,32 +517,6 @@ export async function executeCapturedPendingCall(input: {
       : { disposition: 'outcome-unknown', reason: 'execution-unproven', result: null };
   }
   return observeOutcome(outcome);
-}
-
-/** Settles one admitted captured call and records usage only when contact is not disproved. */
-function recordCapturedExecution(
-  call: StartedCapabilityCall,
-  workspaceDb: WorkspaceDb,
-  status: 'succeeded' | 'failed' | 'unknown',
-  errorCode: string | null,
-  contacted: boolean
-): void {
-  workspaceDb.sqlite.transaction(() => {
-    if (contacted)
-      recordUsage({
-        workspaceDb,
-        call,
-        records: [
-          {
-            category: 'tool',
-            quantity: 1,
-            source: 'mcp-gateway-request-dispatched',
-            unit: 'tool_calls',
-          },
-        ],
-      });
-    finishCapabilityCall({ workspaceDb, callId: call.id, status, errorCode });
-  })();
 }
 
 function credentialsStillValid(

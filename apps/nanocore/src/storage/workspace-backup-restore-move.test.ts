@@ -114,7 +114,7 @@ async function fixture(history = false, withPending = true) {
           now: new Date().toISOString(),
         });
       }
-      startCapabilityCall({
+      await startCapabilityCall({
         workspaceDb: db,
         workspaceId,
         threadId: DEMO_THREAD_ID,
@@ -128,6 +128,7 @@ async function fixture(history = false, withPending = true) {
         redactionClass: 'metadata-only',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       db.sqlite.close();
     }
     const queueDb = openCoreDb(dataRoot);

@@ -880,27 +880,30 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         const policyDecisionId = allocateEntityId('pd');
         let coreAttempted = false;
         try {
-          // The claim is a reservation; current authority is decided at this synchronous effect boundary.
-          checkVaultGrantCommandIntent(dependencies, record, actor);
-          if (
-            !record.decidingActorContext ||
-            record.decidingActor?.id !== record.decidingActorContext.userId
-          )
-            throw new PendingRequestCommandError(
-              'recovery_required',
-              'The deciding credential lineage is unavailable.',
-              409
+          const assertCurrentGrantAuthority = () => {
+            // The claim is a reservation; current authority is decided at this synchronous effect boundary.
+            checkVaultGrantCommandIntent(dependencies, record, actor);
+            if (
+              !record.decidingActorContext ||
+              record.decidingActor?.id !== record.decidingActorContext.userId
+            )
+              throw new PendingRequestCommandError(
+                'recovery_required',
+                'The deciding credential lineage is unavailable.',
+                409
+              );
+            checkVaultGrantCommandIntent(dependencies, record, record.decidingActorContext);
+            const access = authorizeWorkspace(
+              coreDb!,
+              record.decidingActorContext!,
+              input.workspaceId,
+              { policyOperation: 'vault.admin', mutating: true }
             );
-          checkVaultGrantCommandIntent(dependencies, record, record.decidingActorContext);
-          const access = authorizeWorkspace(
-            coreDb!,
-            record.decidingActorContext!,
-            input.workspaceId,
-            { policyOperation: 'vault.admin', mutating: true }
-          );
-          if (!access) throw new Error('Current Policy refusal.');
+            if (!access) throw new Error('Current Policy refusal.');
+          };
+          assertCurrentGrantAuthority();
           // Administrator eligibility does not create a Workspace membership fact.
-          recordProductPermissionDecision({
+          await recordProductPermissionDecision({
             workspaceDb: db,
             ownerScope: 'workspace',
             workspaceId: input.workspaceId,
@@ -928,6 +931,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             approvalId: record.requestId,
             auditActor: { kind: 'user', id: actor.userId },
           });
+          assertCurrentGrantAuthority();
           coreAttempted = true;
           coreDb!.sqlite.transaction(() => {
             createVaultGrant(coreDb!, {

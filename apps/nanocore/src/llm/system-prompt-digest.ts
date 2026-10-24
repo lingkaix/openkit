@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { readRetainedV1, SystemPromptDigestSchema } from '@openkit/protocol';
-
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
 /** Gateway endpoint family that carries a pre-adapter system prompt. */
@@ -117,13 +117,29 @@ export function digestLlmSystemPrompt(input: {
   );
 }
 
+/** Writes Workspace attribution through the native owner; Core attribution keeps its existing SQL owner. */
+export function persistLlmCapabilityCallSystemPromptDigest(
+  input: Parameters<typeof persistLlmCapabilityCallSystemPromptDigestInDb>[0]
+): void | Promise<void> {
+  if (input.workspaceDb.scope === 'core')
+    return persistLlmCapabilityCallSystemPromptDigestInDb(input);
+  return getControlStoreWorkerClient()
+    .workspaceCapability(input.workspaceDb, {
+      kind: 'attribution',
+      workspaceId: input.workspaceDb.workspaceId,
+      callId: input.callId,
+      systemPromptDigest: SystemPromptDigestSchema.parse(input.systemPromptDigest),
+    })
+    .then(() => {});
+}
+
 /**
  * Records the system-prompt digest on an already-opened gateway-entry family llm CapabilityCall row.
  *
  * @param input Owning database, durable call id, and digest.
  * @throws When the row is missing, is not a gateway-entry llm call, or the digest is not recorded.
  */
-export function persistLlmCapabilityCallSystemPromptDigest(input: {
+export function persistLlmCapabilityCallSystemPromptDigestInDb(input: {
   /** Workspace database that owns the opened CapabilityCall. */
   readonly workspaceDb: WorkspaceDb | CoreDb;
   /** Durable capability call id. */

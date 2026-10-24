@@ -23,7 +23,7 @@ export interface GatewayUsageRecordInput {
   /** Provider-native usage payload. */
   readonly usage?: unknown;
   /** Optional side-effect observer for each adapter-reported usage payload. */
-  readonly onUsage?: (usage: unknown) => void;
+  readonly onUsage?: (usage: unknown) => void | Promise<void>;
 }
 
 /**
@@ -89,7 +89,7 @@ export class GatewayUsageTracker {
    *
    * @param input Usage payload and routing metadata.
    */
-  public recordUsage(input: GatewayUsageRecordInput): void {
+  public recordUsage(input: GatewayUsageRecordInput): void | Promise<void> {
     const parsed = parseUsage(input.usage);
     const rawInputTokens = readNumber(readRecord(input.usage).input);
     const trackedInputTokens =
@@ -127,7 +127,7 @@ export class GatewayUsageTracker {
 
     this.buckets.set(key, next);
     if (input.usage !== undefined) {
-      input.onUsage?.(input.usage);
+      return input.onUsage?.(input.usage);
     }
   }
 
@@ -155,7 +155,7 @@ export class GatewayUsageTracker {
 
           if (result.done) {
             if (!cancelled && buffer.trim()) {
-              this.recordSseEventUsage(buffer, input);
+              await this.recordSseEventUsage(buffer, input);
             }
             if (!readerReleased) {
               readerReleased = true;
@@ -172,7 +172,7 @@ export class GatewayUsageTracker {
           buffer = events.pop() ?? '';
 
           for (const event of events) {
-            this.recordSseEventUsage(event, input);
+            await this.recordSseEventUsage(event, input);
           }
 
           controller.enqueue(result.value);
@@ -226,11 +226,14 @@ export class GatewayUsageTracker {
     };
   }
 
-  private recordSseEventUsage(event: string, input: Omit<GatewayUsageRecordInput, 'usage'>): void {
+  private recordSseEventUsage(
+    event: string,
+    input: Omit<GatewayUsageRecordInput, 'usage'>
+  ): void | Promise<void> {
     const usage = usageFromSseEvent(event);
 
     if (usage) {
-      this.recordUsage({ ...input, usage });
+      return this.recordUsage({ ...input, usage });
     }
   }
 }
@@ -336,7 +339,7 @@ function readNumber(value: unknown): number | undefined {
 }
 
 /** Retains internal reported consumption; a successful unmetered call keeps its existing observed-request measurement. */
-export function recordInternalLlmGatewayUsage(
+export async function recordInternalLlmGatewayUsage(
   input: GatewayCallLedgerBinding & {
     /** Trusted command lineage for audit if usage recording fails; never a call start key. */
     readonly auditLineage?: CapabilityAuditLineage;
@@ -345,7 +348,7 @@ export function recordInternalLlmGatewayUsage(
     readonly usage?: unknown;
     readonly succeeded: boolean;
   }
-): string[] {
+): Promise<string[]> {
   const parsed = parseUsage(input.usage);
   const records = [
     {

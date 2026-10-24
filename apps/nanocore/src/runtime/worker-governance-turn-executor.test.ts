@@ -192,7 +192,6 @@ import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import {
-  clearWorkerCheckpoint,
   createWorkerCheckpointContextDiagnostics,
   getWorkerCheckpoint,
   upsertWorkerCheckpoint,
@@ -551,6 +550,8 @@ async function createWorkerContextExecutorFixture(
     /** Publishes the preceding question through its native owner before this receiving Turn exists. */
     readonly prepareThread?: (store: FsStore, threadId: string) => Promise<void>;
     readonly captureValue?: 'on' | 'off';
+    /** Native outcome and turn.start delivery have no Task checkpoint to prepare. */
+    readonly prepareTaskCheckpoint?: boolean;
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
@@ -706,26 +707,27 @@ async function createWorkerContextExecutorFixture(
     });
   }
   const workspaceDb = openTestWorkspaceDb(coreDb);
-  upsertWorkerCheckpoint(workspaceDb, {
-    goalId: null,
-    taskId: null,
-    iteration: 0,
-    requestId,
-    requestInputHash: commandInputHash({}),
-    stage: 'preparing',
-    threadId: turn.threadId,
-    turnId: turn.id,
-    workspaceId: workspaceIdForOwner(turn.owner),
-    diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
-      contextDigest: commandInputHash(workerRequest),
-      contextRefs: [{ kind: 'item', id: contextItemId }],
-      knowledgeSelectionInput:
-        options.workerRequest || options.skipInitialKnowledgeSelection
-          ? null
-          : { retrievalTraceRef },
-      repositoryResourceId: 'repo_default',
-    }),
-  });
+  if (options.prepareTaskCheckpoint !== false)
+    await upsertWorkerCheckpoint(workspaceDb, {
+      goalId: null,
+      taskId: null,
+      iteration: 0,
+      requestId,
+      requestInputHash: commandInputHash({}),
+      stage: 'preparing',
+      threadId: turn.threadId,
+      turnId: turn.id,
+      workspaceId: workspaceIdForOwner(turn.owner),
+      diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+        contextDigest: commandInputHash(workerRequest),
+        contextRefs: [{ kind: 'item', id: contextItemId }],
+        knowledgeSelectionInput:
+          options.workerRequest || options.skipInitialKnowledgeSelection
+            ? null
+            : { retrievalTraceRef },
+        repositoryResourceId: 'repo_default',
+      }),
+    });
   const materialContent = options.materialContent ?? '# Exact queued context\n';
   const materialContentDigest = turnRuntimeSha256(Buffer.from(materialContent, 'utf8'));
   const material = createWorkspaceMaterial(workspaceDb, {
@@ -802,7 +804,7 @@ async function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
     fixture.turn.threadId,
     fixture.turn.id
   )!;
-  upsertWorkerCheckpoint(workspaceDb, {
+  await upsertWorkerCheckpoint(workspaceDb, {
     diagnosticsSummary: null,
     goalId: null,
     iteration: checkpoint.iteration,
@@ -4449,7 +4451,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ) {
           const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
           try {
-            const call = startCapabilityCall({
+            const call = await startCapabilityCall({
               callId: 'cap_00000000-0000-7f2b-b135-926773b575d9',
               workspaceDb,
               workspaceId: workspaceIdForOwner(turn.owner),
@@ -4468,7 +4470,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
               redactionClass: 'metadata-only',
               now: new Date('2026-07-15T00:00:01Z'),
             });
-            finishCapabilityCall({
+            await finishCapabilityCall({
               workspaceDb,
               callId: call.id,
               status: 'failed',
@@ -4483,13 +4485,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
                       : 'worker_inference_stream_failed',
             });
             if (inference === 'later-success' || inference === 'unsupported-later-success') {
-              const retry = startCapabilityCall({
+              const retry = await startCapabilityCall({
                 ...call.context,
                 callId: 'cap_00000000-0000-7158-864b-fa1dd313e4c0',
                 workspaceDb,
                 now: new Date('2026-07-15T00:00:02Z'),
               });
-              finishCapabilityCall({ workspaceDb, callId: retry.id, status: 'succeeded' });
+              await finishCapabilityCall({ workspaceDb, callId: retry.id, status: 'succeeded' });
             }
           } finally {
             workspaceDb.sqlite.close();
@@ -9304,6 +9306,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     ];
     const fixture = await createWorkerContextExecutorFixture(`pending-${cause}`, {
+      prepareTaskCheckpoint: false,
       workerRequest: triggerInput,
       ...(cause === 'carried'
         ? { turnStartReceipt: { input: triggerInput, profileId: 'profile_worker' } }
@@ -9358,12 +9361,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       },
     });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
-    clearWorkerCheckpoint(
-      workspaceDb,
-      workspaceIdForOwner(fixture.turn.owner),
-      fixture.turn.threadId,
-      fixture.turn.id
-    );
     await fixture.store.applyPendingRequestCommand(workspaceIdForOwner(fixture.turn.owner), {
       action: 'answer',
       workspaceId: workspaceIdForOwner(fixture.turn.owner),
@@ -9956,25 +9953,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fixture.turn.threadId,
       fixture.turn.id
     )!;
-    workspaceDb.sqlite.transaction(() => {
-      upsertWorkerCheckpoint(workspaceDb, {
-        diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
-          contextDigest: commandInputHash(fixture.workerRequest),
-          contextRefs: [],
-          knowledgeSelectionInput: { retrievalTraceRef },
-          repositoryResourceId: 'repo_default',
-        }),
-        goalId: null,
-        iteration: checkpoint.iteration,
-        requestId: checkpoint.requestId,
-        requestInputHash: checkpoint.requestInputHash,
-        stage: 'preparing',
-        taskId: null,
-        threadId: fixture.turn.threadId,
-        turnId: fixture.turn.id,
-        workspaceId: workspaceIdForOwner(fixture.turn.owner),
-      });
-    })();
+    await upsertWorkerCheckpoint(workspaceDb, {
+      diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+        contextDigest: commandInputHash(fixture.workerRequest),
+        contextRefs: [],
+        knowledgeSelectionInput: { retrievalTraceRef },
+        repositoryResourceId: 'repo_default',
+      }),
+      goalId: null,
+      iteration: checkpoint.iteration,
+      requestId: checkpoint.requestId,
+      requestInputHash: checkpoint.requestInputHash,
+      stage: 'preparing',
+      taskId: null,
+      threadId: fixture.turn.threadId,
+      turnId: fixture.turn.id,
+      workspaceId: workspaceIdForOwner(fixture.turn.owner),
+    });
     workspaceDb.sqlite.close();
 
     const backend = new FakeWorkerGovernanceBackend();
@@ -10332,7 +10327,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fixture.turn.threadId,
       fixture.turn.id
     )!;
-    upsertWorkerCheckpoint(workspaceDb, {
+    await upsertWorkerCheckpoint(workspaceDb, {
       diagnosticsSummary: null,
       goalId: null,
       iteration: checkpoint.iteration,

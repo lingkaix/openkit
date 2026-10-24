@@ -23,6 +23,7 @@ import {
 } from '@openkit/worker-protocol';
 import { stageWorkObservationChunk, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -616,23 +617,32 @@ async function recordWorkerObservation(
     const bytes = Buffer.from(chunk.data, 'base64');
     if (bytes.toString('base64') !== chunk.data)
       throw new Error('Observation chunk encoding is not canonical');
-    const staged = stageWorkObservationChunk(workspaceDb, {
-      ...owner,
-      bundleId: workObservationBodyBundleId(
-        lineage.workspaceId,
-        owner.threadId,
-        owner.turnId,
-        id,
-        'content'
-      ),
-      createdAt: initial.ts,
-      sha256: expected.sha256.replace(/^sha256:/, ''),
-      totalBytes: expected.bytes,
-      chunkCount: expected.chunkCount,
-      chunkIndex: chunk.chunkIndex,
-      byteOffset: chunk.byteOffset,
-      bytes,
-    });
+    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+      `workspace:${workspaceDb.sqlite.name}`
+    );
+    let staged: ReturnType<typeof stageWorkObservationChunk>;
+    try {
+      staged = stageWorkObservationChunk(workspaceDb, {
+        ...owner,
+        bundleId: workObservationBodyBundleId(
+          lineage.workspaceId,
+          owner.threadId,
+          owner.turnId,
+          id,
+          'content'
+        ),
+        createdAt: initial.ts,
+        sha256: expected.sha256.replace(/^sha256:/, ''),
+        totalBytes: expected.bytes,
+        chunkCount: expected.chunkCount,
+        chunkIndex: chunk.chunkIndex,
+        byteOffset: chunk.byteOffset,
+        bytes,
+      });
+    } finally {
+      resume();
+    }
+
     if (staged.state === 'expired' && !replay)
       throw new Error('Expired observation evidence cannot accept new content');
     if (staged.state === 'complete') {

@@ -2015,6 +2015,17 @@ export class FsStore {
       };
       if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, publishFiles);
       else publishFiles();
+      // Publication makes this exact, verified final scope eligible for native family admission.
+      const native = this.nativeScope({ kind: 'workspace', workspaceId });
+      await getControlStoreWorkerClient().open({
+        database: `workspace:${native.path}`,
+        path: native.path,
+        dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: native.owner,
+        contentMount: native.contentMount,
+      });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
       throw error;

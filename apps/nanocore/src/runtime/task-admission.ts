@@ -17,7 +17,6 @@ import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { GoalCommandError, goalActor, readGoalView } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import {
   commandInputHash,
   type IdempotentCommandReceipt,
@@ -47,7 +46,7 @@ export type TaskWorkerStarter = (input: {
   onTurnCreated: (
     turn: Awaited<ReturnType<FsStore['createTurn']>>,
     agentSessionId: string | null
-  ) => void;
+  ) => void | Promise<void>;
 }) => Promise<Awaited<ReturnType<FsStore['createTurn']>>>;
 /** Task inputs contain current read citations, never a second per-Task proposal. */
 const CoordinatorTaskInputSchema = z
@@ -221,14 +220,18 @@ export function createCoordinatorTaskTool(options: {
                 };
               },
               reservedTurnId: turnId,
+              goalTaskAdmission: {
+                goalId: goal.goalId,
+                cardId: input.cardId,
+                planVersionId: input.planVersionId,
+                cardRevision: input.cardRevision,
+                intentRevision: input.intentRevision,
+                withinCurrentIntent: input.withinCurrentIntent,
+                withinPermittedAdjustments: input.withinPermittedAdjustments,
+                rationale: input.rationale,
+              },
               reserveTurn: () => {
                 assertGoalTaskAdmission();
-                reserveGoalTask(
-                  options.store,
-                  workerDb,
-                  { ...input, goalId: goal.goalId },
-                  threadId
-                );
                 return { turnId };
               },
               startWorker: async ({ onAdmitted }) => {
@@ -245,8 +248,8 @@ export function createCoordinatorTaskTool(options: {
                   requestId,
                   requestedAgentId: input.agentId,
                   reservedTurnId: turnId,
-                  onTurnCreated: (created, agentSessionId) => {
-                    onAdmitted(created, agentSessionId);
+                  onTurnCreated: async (created, agentSessionId) => {
+                    await onAdmitted(created, agentSessionId);
                     resolveAccepted(created);
                   },
                 });

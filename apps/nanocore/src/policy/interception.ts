@@ -9,7 +9,8 @@ import {
   type PolicyInvocationV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { prepareAuditEvent } from '../audit-events.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import type { GoalTaskAccessResult } from './goal-task-access.js';
@@ -188,21 +189,26 @@ export class PolicyInterception {
           });
       }
     }
-    return this.finishDecision(input, prepared);
+    const preparedDecision = this.prepareFinalDecision(input, prepared);
+    await recordProductPermissionDecision(preparedDecision.record);
+    return preparedDecision.decision;
   }
 
-  /** Joins native call admission only when no pre-decision participant needs external work. */
-  tryDecideSynchronously(input: InterceptionInput): InterceptionDecision | undefined {
+  /** Prepares a participant-free decision for the native admission tuple without writing. */
+  prepareSynchronousDecision(input: InterceptionInput) {
     const prepared = this.prepareDecision(input);
     if (prepared.bindings.some((binding) => binding.mode !== 'observe')) return undefined;
-    return this.finishDecision(input, prepared);
+    return this.prepareFinalDecision(input, prepared);
   }
 
-  /** Keeps current Kernel evaluation, finite-use consumption and linked Audit in one transaction. */
-  private finishDecision(
+  /** Prepares current Kernel facts; the native owner decides finite-use consumption and Audit. */
+  private prepareFinalDecision(
     input: InterceptionInput,
     prepared: ReturnType<PolicyInterception['prepareDecision']>
-  ): InterceptionDecision {
+  ): {
+    readonly record: RecordProductPermissionDecisionInput;
+    readonly decision: InterceptionDecision;
+  } {
     const { results, used, advice, policyRevision, proposalDigest, invocations } = prepared;
     let current = false;
     try {
@@ -280,7 +286,7 @@ export class PolicyInterception {
           ]
         : [];
     const finalInput = decisionInput(input, policyRevision);
-    recordProductPermissionDecision({
+    const record: RecordProductPermissionDecisionInput = {
       ...finalInput,
       contextSummary: {
         ...finalInput.contextSummary,
@@ -324,14 +330,17 @@ export class PolicyInterception {
             uses: consumed,
           }
         : {}),
-    });
+    };
     return {
-      result,
-      decisionId,
-      proposalDigest,
-      policyRevision,
-      authorizationRevision: input.authorizationRevision,
-      ...(result === 'require_escalation' && escalation ? { escalation } : {}),
+      record,
+      decision: {
+        result,
+        decisionId,
+        proposalDigest,
+        policyRevision,
+        authorizationRevision: input.authorizationRevision,
+        ...(result === 'require_escalation' && escalation ? { escalation } : {}),
+      },
     };
   }
 
@@ -515,7 +524,7 @@ export class PolicyInterception {
     };
     if (binding.mode === 'gate') {
       const decisionId = allocateEntityId('pd');
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         ...decisionInput(input, policyRevision),
         ...(agent
           ? {
@@ -552,23 +561,29 @@ export class PolicyInterception {
       return { reference: { kind: 'decision', id: decisionId }, result };
     }
     const auditEventId = allocateEntityId('aud');
-    recordWorkspaceAuditEvent({
-      workspaceDb: input.workspaceDb,
+    await getControlStoreWorkerClient().workspaceCapability(input.workspaceDb, {
+      kind: 'participant-audit',
       workspaceId: input.proposal.workspaceId,
-      auditEventId,
-      actor: input.proposal.subject.actor,
-      category: 'system',
-      action: 'policy.participant',
-      capabilityCallId: input.proposal.capabilityCallId,
-      ...(input.proposal.subject.process
-        ? {
-            threadId: input.proposal.subject.process.threadId,
-            turnId: input.proposal.subject.process.turnId,
-          }
-        : {}),
-      policyInvocation: invocation,
-      outcome: outcome === 'completed' ? 'succeeded' : 'failed',
-      summary: `Policy participant ${binding.id}: ${outcome}.`,
+      event: {
+        ...prepareAuditEvent({
+          workspaceId: input.proposal.workspaceId,
+          auditEventId,
+          actor: input.proposal.subject.actor,
+          category: 'system',
+          action: 'policy.participant',
+          capabilityCallId: input.proposal.capabilityCallId,
+          ...(input.proposal.subject.process
+            ? {
+                threadId: input.proposal.subject.process.threadId,
+                turnId: input.proposal.subject.process.turnId,
+              }
+            : {}),
+          policyInvocation: invocation,
+          outcome: outcome === 'completed' ? 'succeeded' : 'failed',
+          summary: `Policy participant ${binding.id}: ${outcome}.`,
+        }),
+        action: 'policy.participant',
+      },
     });
     return {
       reference: { kind: 'audit', id: auditEventId },

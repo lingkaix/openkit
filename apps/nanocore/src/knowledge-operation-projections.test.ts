@@ -6,7 +6,11 @@ import * as schemas from '@openkit/app-api-schemas';
 import { formatReferenceUri, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
+import * as capabilityUsage from './capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
@@ -831,6 +835,102 @@ describe('Knowledge operation definition cutover', () => {
       await f.close();
     }
   }, 120_000);
+
+  it('withholds threadless retrieval metadata when its credential is revoked before usage completion delivery', async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const finish = capabilityUsage.finishCapabilityCall;
+    const finishObservation = vi.spyOn(capabilityUsage, 'finishCapabilityCall');
+    let pending: Promise<Response> | undefined;
+    try {
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'workspace',
+        workspaceIds: [DEMO_WORKSPACE_ID],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const headers = {
+        authorization: `Bearer ${issued.secret}`,
+        'content-type': 'application/json',
+      };
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers,
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      await client.operations['knowledge.notebook.update']({
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId: randomUUID(),
+        baseRevision: notebook(f).publishedRevision(),
+        changes: [
+          {
+            path: 'ack-private.md',
+            content: authoredPage('ACK private title marker', 'ack-private-body-marker'),
+          },
+        ],
+        summary: 'Create the disclosure-race evidence page.',
+      });
+      const input = { workspaceId: DEMO_WORKSPACE_ID, query: 'ack private' };
+      const before = await client.operations['knowledge.retrieval'](input);
+      expect(before.selected).toEqual([
+        expect.objectContaining({
+          reference: expect.objectContaining({ objectId: 'ack-private' }),
+        }),
+      ]);
+      // Keep the real native commit; hold only its completion delivery to the consumer.
+      finishObservation.mockClear().mockImplementation(async (args) => {
+        try {
+          await finish(args);
+        } catch (error) {
+          entered.reject(error);
+          throw error;
+        }
+        entered.resolve();
+        await release.promise;
+      });
+      let delivered = false;
+      pending = app
+        .request('http://127.0.0.1/api/app/operations/knowledge.retrieval', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(input),
+        })
+        .then((response) => {
+          delivered = true;
+          return response;
+        });
+      await entered.promise;
+      expect(delivered).toBe(false);
+      revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+      release.resolve();
+      const response = await pending;
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body).toMatchObject({ code: 'workspace_access_denied' });
+      expect(finishObservation).toHaveBeenCalledTimes(1);
+      for (const protectedValue of [
+        'ack-private',
+        'ACK private title marker',
+        'ack-private-body-marker',
+        before.notebookRevision,
+        before.selected[0]!.contentDigest,
+      ]) {
+        expect(JSON.stringify(body)).not.toContain(protectedValue);
+      }
+    } finally {
+      release.resolve();
+      if (pending) await pending;
+      finishObservation.mockRestore();
+      await f.close();
+    }
+  });
 
   it('returns distinct public and trusted Task preparation views from exactly one governed retrieval each', async () => {
     const f = await fixture();

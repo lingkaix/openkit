@@ -46,15 +46,13 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
 import { readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
-import {
-  RuntimeConfigFileService,
-  type RuntimeConfigFileServiceError,
-} from './runtime-config-files.js';
+import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
@@ -147,6 +145,7 @@ async function fixture(withWorkspaceSchemas = false) {
   if (workspaceDb) {
     applyScopedMigrations(workspaceDb);
     cleanup.unshift(() => workspaceDb.sqlite.close());
+    await openTestNativeWorkspace(workspaceDb);
   }
   const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
   const inflightCommands = new WeakMap();
@@ -238,8 +237,8 @@ async function mcpPolicyFixture(observed = true) {
     workspaceMcpServerCatalog: catalog,
     workspaceRoots: [],
   });
-  const observe = (tools: Array<{ name: string; inputSchema: Record<string, unknown> }>) =>
-    recordMcpToolSchemaSnapshot({
+  const observe = async (tools: Array<{ name: string; inputSchema: Record<string, unknown> }>) =>
+    await recordMcpToolSchemaSnapshot({
       environmentPackage,
       schemaSnapshotId: `schema_${randomUUID()}`,
       serverId: 'issues',
@@ -248,7 +247,7 @@ async function mcpPolicyFixture(observed = true) {
       workspaceDb: f.repositoryWorkspaceDb(),
       workspaceId: f.workspaceId,
     });
-  if (observed) observe([{ name: 'read', inputSchema: { type: 'object' } }]);
+  if (observed) await observe([{ name: 'read', inputSchema: { type: 'object' } }]);
   const policyRequest = (
     toolName = 'read',
     effect: 'prohibit' | 'require_approval' = 'require_approval'
@@ -692,7 +691,7 @@ describe('administration catalog configuration', () => {
       }),
     ]);
     // Schema validation is current-name validation, not a retained argument-schema pin.
-    f.observe([
+    await f.observe([
       { name: 'read', inputSchema: { type: 'object', properties: { count: { type: 'number' } } } },
     ]);
     const confirmed = f.confirm(proposal);
@@ -741,7 +740,7 @@ describe('administration catalog configuration', () => {
       f.coreDb,
       f.manager.current().openKitConfig.policy?.mediation
     );
-    f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
+    await f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
     const select = (toolName: string) =>
       selectMcpToolPermissions({
         document,
@@ -803,7 +802,7 @@ describe('administration catalog configuration', () => {
     const before = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (before.content.format !== 'json') throw new Error('Expected candidate JSON.');
     expect(JSON.parse(before.content.body).warnings).toHaveLength(1);
-    f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
+    await f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
     expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
       persisted: true,
       reload: 'applied',
@@ -814,7 +813,7 @@ describe('administration catalog configuration', () => {
   it('does not turn an observation loss into rejection of a confirmed restriction', async () => {
     const f = await mcpPolicyFixture();
     const proposal = await f.service.propose(f.policyRequest(), f.home);
-    f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
+    await f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
     expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
       persisted: true,
       reload: 'applied',

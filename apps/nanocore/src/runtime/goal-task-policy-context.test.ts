@@ -48,7 +48,7 @@ import {
   readPendingRequest,
 } from './pending-requests.js';
 import { recordTaskTerminalFact } from './task-terminal-fact.js';
-import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
+import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 /** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */
 async function retainCompletedTaskFixture(
@@ -391,7 +391,7 @@ async function fixture(typed = true, linked = true) {
     sessionCompatibilityKey: 'task-context',
     now: () => new Date().toISOString(),
   });
-  upsertWorkerCheckpoint(db, {
+  await upsertWorkerCheckpoint(db, {
     workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
@@ -620,7 +620,8 @@ async function fixture(typed = true, linked = true) {
         packageSnapshotId: 'outcome-package',
       };
     },
-    reopen: () => {
+    reopen: async () => {
+      await shutdownControlStoreWorkerClient();
       db.sqlite.close();
       coreDb.sqlite.close();
       store = new FsStore({ dataRoot: root });
@@ -632,7 +633,7 @@ async function fixture(typed = true, linked = true) {
 
 it('reads only typed resources from exact retained Task lineage after database reopen', async () => {
   const f = await fixture();
-  f.reopen();
+  await f.reopen();
   expect(f.read()).toEqual({
     workspaceId: f.lineage.workspaceId,
     goalId: f.scope.goalId,
@@ -654,9 +655,8 @@ it.each([
   const original = f.read()!;
   const captured = await f.capture();
   await f.closeSource();
-  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   const lineage = await f.outcome(captured.requestId, administrator);
-  f.reopen();
+  await f.reopen();
   expect(
     readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage })
   ).toEqual({
@@ -669,7 +669,6 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
   const f = await fixture();
   const original = f.read()!;
   await f.closeSource();
-  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   const agentId = 'followup-worker';
   const agentSessionId = testEntityId('as', 'ordinary-followup');
   const input = 'Review the next result.';
@@ -737,7 +736,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
     agentSessionId,
     packageSnapshotId: 'followup-package',
   };
-  f.reopen();
+  await f.reopen();
   const read = () =>
     readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage });
   expect(read()).toEqual({ ...original, turnId: turn.id, agentId });
@@ -758,7 +757,6 @@ it.each([
   const f = await fixture();
   const captured = await f.capture();
   await f.closeSource();
-  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   const lineage = await f.outcome(captured.requestId, true);
   if (corruption === 'changed-original-input')
     f.coreDb.sqlite
@@ -804,16 +802,13 @@ it.each([
   ).toThrow();
 });
 
-it('keeps identical retained context for a real captured request after source closure and cleanup', async () => {
+it('keeps identical retained context for a real captured request after source closure', async () => {
   const f = await fixture();
   const original = f.read();
   const captured = await f.capture();
   await f.closeSource();
   expect(f.read()).toEqual(original);
-  expect(
-    clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId)
-  ).toBe(true);
-  f.reopen();
+  await f.reopen();
   const retained = readPendingRequest(f.db.sqlite, captured.requestId)!;
   expect(retained.state).toBe('pending');
   expect(retained.canonicalArgumentsJson).toBe(captured.canonicalArgumentsJson);
@@ -844,7 +839,17 @@ it.each([
   if (corruption === 'missing-close-proof') {
     await retainCompletedTaskFixture(f.store, f.db, f.lineage.turnId, false);
   } else await f.closeSource();
-  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
+  if (corruption === 'missing-close-proof') {
+    await shutdownControlStoreWorkerClient();
+    // Deliberate loss tests refusal without cleanup authority; it does not prove cleanup.
+    expect(
+      f.db.sqlite
+        .prepare(
+          'DELETE FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
+        )
+        .run(f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId).changes
+    ).toBe(1);
+  }
   if (corruption === 'missing-attempt')
     f.coreDb.sqlite
       .prepare('DELETE FROM scheduler_execution_attempts WHERE turn_id=?')

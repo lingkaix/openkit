@@ -28,6 +28,7 @@ import {
   SkillCandidateArtifactError,
   type SkillCandidateArtifactSelection,
 } from '../skill-candidate-artifact.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   CatalogConflictError,
@@ -333,8 +334,9 @@ export function createCatalogOperationImplementations(
       }
       return { catalog, candidate };
     };
+    let response: { revision: number };
     try {
-      return await runIdempotentCommand({
+      response = await runIdempotentCommand({
         ...owners,
         command: operation,
         requestId: input.requestId,
@@ -358,31 +360,40 @@ export function createCatalogOperationImplementations(
             throw new CatalogIntegrityError('Skill decision receipt does not match its candidate.');
           return { revision: catalog.revision };
         },
-        execute: () => {
-          const { catalog: current, candidate } = currentCandidate();
-          refuseInterrupted(owners.workspaceDb, operation, input, context);
-          if (candidate.disposition !== 'proposed')
-            throw new CatalogNotFoundError('Skill candidate is not proposed.');
-          const currentDigest = current.skills.entries.find(
-            (entry) => entry.id === candidate.entryId
-          )?.currentDigest;
-          if (
-            ('expectedCurrentDigest' in input && input.expectedCurrentDigest !== currentDigest) ||
-            (selectedDecision === 'promoted' && candidate.baseDigest !== currentDigest)
-          )
-            throw new CatalogConflictError(
-              'Skill candidate base no longer matches current selection.'
+        execute: async () => {
+          const resumeAdmission = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${owners.workspaceDb.sqlite.name}`
+          );
+          let decisionContext: SkillCandidateDecisionContext;
+          try {
+            const { catalog: current, candidate } = currentCandidate();
+            refuseInterrupted(owners.workspaceDb, operation, input, context);
+            if (candidate.disposition !== 'proposed')
+              throw new CatalogNotFoundError('Skill candidate is not proposed.');
+            const currentDigest = current.skills.entries.find(
+              (entry) => entry.id === candidate.entryId
+            )?.currentDigest;
+            if (
+              ('expectedCurrentDigest' in input && input.expectedCurrentDigest !== currentDigest) ||
+              (selectedDecision === 'promoted' && candidate.baseDigest !== currentDigest)
+            )
+              throw new CatalogConflictError(
+                'Skill candidate base no longer matches current selection.'
+              );
+            if (!hooks.prepareSkillDecision)
+              throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
+            decisionContext = hooks.prepareSkillDecision(
+              { ...input, operation, decision: selectedDecision },
+              context
             );
-          if (!hooks.prepareSkillDecision)
-            throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
+          } finally {
+            resumeAdmission();
+          }
           const catalog = decideWorkspaceSkillCandidate({
             candidateId: input.candidateId,
             dataRoot: root(),
             decision: selectedDecision,
-            decisionContext: hooks.prepareSkillDecision(
-              { ...input, operation, decision: selectedDecision },
-              context
-            ),
+            decisionContext,
             configurationOwner:
               operation === 'catalog.skill-candidate-decide' ||
               Boolean(
@@ -401,14 +412,21 @@ export function createCatalogOperationImplementations(
             workspaceId: input.workspaceId,
           });
           published = true;
-          auditResult(
-            owners.workspaceDb,
-            operation,
-            input,
-            context,
-            input.candidateId,
-            catalog.revision
+          const resumeCompletion = await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${owners.workspaceDb.sqlite.name}`
           );
+          try {
+            auditResult(
+              owners.workspaceDb,
+              operation,
+              input,
+              context,
+              input.candidateId,
+              catalog.revision
+            );
+          } finally {
+            resumeCompletion();
+          }
           afterMutation(input.workspaceId);
           return { revision: catalog.revision };
         },
@@ -422,6 +440,8 @@ export function createCatalogOperationImplementations(
     } finally {
       owners.workspaceDb.sqlite.close();
     }
+    currentCandidate();
+    return response;
   };
   return {
     'catalog.read': (input) => {
@@ -586,8 +606,12 @@ export function createCatalogOperationImplementations(
           admitted: null,
         };
       };
+      let response: {
+        candidate: ReturnType<typeof publicSkillCandidate>;
+        revision: number;
+      };
       try {
-        return await runIdempotentCommand({
+        response = await runIdempotentCommand({
           ...owners,
           command: 'catalog.skill-candidate-submit',
           requestId: input.requestId,
@@ -622,27 +646,40 @@ export function createCatalogOperationImplementations(
               );
             return { candidate: publicSkillCandidate(candidate), revision: catalog.revision };
           },
-          execute: () => {
-            const admitted = source();
-            refuseInterrupted(owners.workspaceDb, 'catalog.skill-candidate-submit', input, context);
-            recordWorkspaceAuditEvent({
-              workspaceDb: owners.workspaceDb,
-              workspaceId: input.workspaceId,
-              requestId: input.requestId,
-              actor: context.actorRef,
-              ...(admitted.admitted?.producingTurn
-                ? {
-                    threadId: admitted.admitted.producingTurn.threadId,
-                    turnId: admitted.admitted.producingTurn.turnId,
-                    agentId: admitted.admitted.producingTurn.agentId,
-                  }
-                : {}),
-              action: 'catalog.skill-candidate-submit.admit',
-              resource: `skill:${input.skillId}@${admitted.digest}`,
-              resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
-              outcome: 'succeeded',
-              summary: `Skill candidate admission from ${input.baseDigest ?? 'none'} to ${admitted.digest}.`,
-            });
+          execute: async () => {
+            const resumeAdmission = await getControlStoreWorkerClient().pauseForDataRootBackup(
+              `workspace:${owners.workspaceDb.sqlite.name}`
+            );
+            let admitted: ReturnType<typeof source>;
+            try {
+              admitted = source();
+              refuseInterrupted(
+                owners.workspaceDb,
+                'catalog.skill-candidate-submit',
+                input,
+                context
+              );
+              recordWorkspaceAuditEvent({
+                workspaceDb: owners.workspaceDb,
+                workspaceId: input.workspaceId,
+                requestId: input.requestId,
+                actor: context.actorRef,
+                ...(admitted.admitted?.producingTurn
+                  ? {
+                      threadId: admitted.admitted.producingTurn.threadId,
+                      turnId: admitted.admitted.producingTurn.turnId,
+                      agentId: admitted.admitted.producingTurn.agentId,
+                    }
+                  : {}),
+                action: 'catalog.skill-candidate-submit.admit',
+                resource: `skill:${input.skillId}@${admitted.digest}`,
+                resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
+                outcome: 'succeeded',
+                summary: `Skill candidate admission from ${input.baseDigest ?? 'none'} to ${admitted.digest}.`,
+              });
+            } finally {
+              resumeAdmission();
+            }
             const result = submitWorkspaceSkillCandidate({
               baseDigest: input.baseDigest,
               createdAt: new Date().toISOString(),
@@ -658,14 +695,21 @@ export function createCatalogOperationImplementations(
               workspaceId: input.workspaceId,
             });
             published = true;
-            auditResult(
-              owners.workspaceDb,
-              'catalog.skill-candidate-submit',
-              input,
-              context,
-              result.candidate.id,
-              result.catalog.revision
+            const resumeCompletion = await getControlStoreWorkerClient().pauseForDataRootBackup(
+              `workspace:${owners.workspaceDb.sqlite.name}`
             );
+            try {
+              auditResult(
+                owners.workspaceDb,
+                'catalog.skill-candidate-submit',
+                input,
+                context,
+                result.candidate.id,
+                result.catalog.revision
+              );
+            } finally {
+              resumeCompletion();
+            }
             afterMutation(input.workspaceId);
             return {
               candidate: publicSkillCandidate(result.candidate),
@@ -685,6 +729,10 @@ export function createCatalogOperationImplementations(
       } finally {
         owners.workspaceDb.sqlite.close();
       }
+      revalidate(input.workspaceId, 'catalog.skill-candidate-submit', context);
+      if (input.artifact !== undefined)
+        requireArtifactAccess({ workspaceId: input.workspaceId, ...input.artifact }, context);
+      return response;
     },
     'catalog.skill-candidate-decide': async (input, context) => {
       try {

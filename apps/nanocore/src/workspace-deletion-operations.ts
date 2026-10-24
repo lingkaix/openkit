@@ -37,7 +37,6 @@ import { commandInputHash } from './runtime/idempotent-command.js';
 import { hasUnprovedNanoHostWorkspaceCleanup } from './runtime/nanohost-attempt-records.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
@@ -365,21 +364,20 @@ async function advanceWorkspaceDeletion(input: {
       ? verifyWorkspaceExportTree({
           exportRoot: existingWorkspaceExportRoot(input.dataRoot, input.workspaceId, exportId),
         })
-      : withCanonicalFileWriteAdmission(
-          input.fileAdmission,
-          () =>
-            createVerifiedWorkspaceExport({
-              authorityUserId: request.originalOwnerUserId,
-              authorityActor: { kind: 'user', id: input.actorId },
-              coreDb: input.coreDb,
-              dataRoot: input.dataRoot,
-              deletionRecoveryRequestId: request.requestId,
-              exportId,
-              repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-              store: input.store,
-              workspaceId: input.workspaceId,
-            }).verified
-        );
+      : (
+          await createVerifiedWorkspaceExport({
+            fileAdmission: input.fileAdmission,
+            authorityUserId: request.originalOwnerUserId,
+            authorityActor: { kind: 'user', id: input.actorId },
+            coreDb: input.coreDb,
+            dataRoot: input.dataRoot,
+            deletionRecoveryRequestId: request.requestId,
+            exportId,
+            repositoryWorkspaceDb: input.repositoryWorkspaceDb,
+            store: input.store,
+            workspaceId: input.workspaceId,
+          })
+        ).verified;
     if (exported.manifest.id !== exportId || exported.manifest.workspaceId !== input.workspaceId) {
       throw recoveryRequired();
     }

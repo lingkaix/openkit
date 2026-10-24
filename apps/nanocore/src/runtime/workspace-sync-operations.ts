@@ -22,12 +22,14 @@ import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import { listArtifactReviews } from '../artifact-reviews.js';
 import type { Actor } from '../auth/identity.js';
+import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { KnowledgePageValidationError } from '../knowledge/okf.js';
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { OperationImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   IdempotencyKeyConflictError,
@@ -236,6 +238,16 @@ export function createWorkspaceSyncOperationImplementations({
           responseId: (result) => result.review.id,
         });
 
+        const currentAuthority =
+          coreDb &&
+          (context.kind === 'worker'
+            ? currentWorkspaceAuthority(coreDb, workspaceId, context.actorRef, 'review.apply', true)
+            : authorizeWorkspace(coreDb, context.actor, workspaceId, {
+                mutating: true,
+                policyOperation: 'review.apply',
+              }));
+        if (!currentAuthority)
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
         return SubmitWorkspaceSyncReviewDecisionResponseSchema.parse(response);
       } catch (error) {
         if (error instanceof OperationError) throw error;
@@ -379,7 +391,7 @@ export function createWorkspaceSyncOperationImplementations({
         throw commandFailure(error, 'not_found');
       }
     },
-    'sync.recovery-decide': async (logicalInput) => {
+    'sync.recovery-decide': async (logicalInput, context) => {
       try {
         const { workspaceId, reconciliationRecordId, ...input } = logicalInput;
 
@@ -401,10 +413,34 @@ export function createWorkspaceSyncOperationImplementations({
           scope: { reconciliationRecordId, workspaceId },
           input,
           responseKind: 'workspace_sync_review',
-          execute: () => {
+          execute: async () => {
             const decidedAt = new Date().toISOString();
             const workspaceDb = repositoryWorkspaceDb(workspaceId);
+            let resume: (() => void) | undefined;
             try {
+              resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+                `workspace:${workspaceDb.sqlite.name}`
+              );
+              const currentAuthority =
+                coreDb &&
+                (context.kind === 'worker'
+                  ? currentWorkspaceAuthority(
+                      coreDb,
+                      workspaceId,
+                      context.actorRef,
+                      'review.apply',
+                      true
+                    )
+                  : authorizeWorkspace(coreDb, context.actor, workspaceId, {
+                      mutating: true,
+                      policyOperation: 'review.apply',
+                    }));
+              if (!currentAuthority)
+                throw new OperationError(
+                  'workspace_access_denied',
+                  'Workspace access denied.',
+                  403
+                );
               return {
                 reconciliationRecord: resolveWorkspaceReconciliationRecord({
                   workspaceDb,
@@ -416,6 +452,7 @@ export function createWorkspaceSyncOperationImplementations({
                 }),
               };
             } finally {
+              resume?.();
               workspaceDb.sqlite.close();
             }
           },
@@ -441,6 +478,16 @@ export function createWorkspaceSyncOperationImplementations({
           responseId: (result) => result.reconciliationRecord.id,
         });
 
+        const currentAuthority =
+          coreDb &&
+          (context.kind === 'worker'
+            ? currentWorkspaceAuthority(coreDb, workspaceId, context.actorRef, 'review.apply', true)
+            : authorizeWorkspace(coreDb, context.actor, workspaceId, {
+                mutating: true,
+                policyOperation: 'review.apply',
+              }));
+        if (!currentAuthority)
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
         return SubmitWorkspaceRecoveryDecisionResponseSchema.parse(response);
       } catch (error) {
         if (error instanceof OperationError) throw error;

@@ -658,10 +658,13 @@ export async function respondRecordedApproval(input: {
   readonly requestActor: Actor | undefined;
   readonly dependencies: PendingAdmissionDependencies;
   readonly prepare?: () => Promise<void>;
-  /** Records Main submission and returns any final local refusal for the existing native finish. */
-  readonly admitExecution?: (failure?: string) => string | undefined;
+  /** Awaits native Call/decision admission after current Main evaluation. */
+  readonly admitExecution?: (failure?: string) => string | undefined | Promise<string | undefined>;
   readonly receipt?: ControlPendingTransition['receipt'];
-  readonly execute?: (record: PendingRequestRecord) => Promise<{
+  readonly execute?: (
+    record: PendingRequestRecord,
+    current: () => string | undefined
+  ) => Promise<{
     readonly disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown';
     readonly reason: string | null;
     readonly result: unknown;
@@ -812,8 +815,8 @@ export async function respondRecordedApproval(input: {
     return record;
   }
   let failure: string | undefined;
-  // This is the existing Main effect-submission step. Its call/decision/Audit rows precede contact.
-  input.sqlite.transaction(() => {
+  // Core, credentials and callbacks stay on Main; native SQL decides its own mutable facts.
+  const submissionFailure = () => {
     const currentMembership = authorityAllows(
       input.coreDb,
       input.store,
@@ -825,7 +828,7 @@ export async function respondRecordedApproval(input: {
     const supplied = currentMembership && currentAgent ? input.evaluate?.() : undefined;
     const membership = currentMembership && supplied?.membership !== false;
     const agent = currentAgent && supplied?.agentAuthority !== false;
-    failure = !membership
+    let currentFailure = !membership
       ? 'membership-revoked'
       : !agent
         ? 'agent-authority-revoked'
@@ -838,16 +841,18 @@ export async function respondRecordedApproval(input: {
               : supplied?.credentialsValid === false
                 ? 'credential-changed'
                 : undefined;
-    if (!failure) {
+    if (!currentFailure) {
       try {
         assertDisclosure();
       } catch {
-        failure = 'approval_preview_unavailable';
+        currentFailure = 'approval_preview_unavailable';
       }
     }
-    const submissionRefusal = input.admitExecution?.(failure);
-    if (typeof submissionRefusal === 'string') failure = submissionRefusal;
-  })();
+    return currentFailure;
+  };
+  failure = submissionFailure();
+  const submissionRefusal = await input.admitExecution?.(failure);
+  if (typeof submissionRefusal === 'string') failure = submissionRefusal;
   let disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown' = failure
     ? 'execution-error'
     : 'outcome-unknown';
@@ -855,7 +860,7 @@ export async function respondRecordedApproval(input: {
   let result: unknown = null;
   if (!failure && input.execute) {
     try {
-      const executed = await input.execute(record);
+      const executed = await input.execute(record, submissionFailure);
       disposition = executed.disposition;
       reason = executed.reason;
       result = executed.result;

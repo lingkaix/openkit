@@ -1,19 +1,22 @@
-import type { RECOVERY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   ListInterruptedWorkerStatesResponseSchema,
+  RECOVERY_OPERATION_DEFINITIONS,
   type RetryInterruptedWorkerCheckpointResponse,
 } from '@openkit/app-api-schemas';
-import type { ActorRef } from '@openkit/protocol';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
-import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import {
+  authorizeWorkspaceEligibility,
+  isCurrentDeploymentAdministrator,
+} from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { OperationImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { runInterruptedWorkerRetryWorkspaceCommand } from '../storage/control-store-checkpoints.js';
+import { resolveTarget } from '../operation-resolvers.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { AgentEnvironmentSnapshotReadError } from './aep-snapshot-ledger.js';
 import { IdempotencyKeyConflictError } from './idempotent-command.js';
@@ -25,7 +28,10 @@ import {
 } from './worker-recovery.js';
 /** Joins recovery listing and release to the unchanged checkpoint, receipt and cleanup owners. */
 export function createRecoveryOperationImplementations(
-  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'workspaceMutationAdmission'
+  >
 ) {
   const { repositoryWorkspaceDb } = dependencies;
   // Native invocation admits Core storage before entering this family.
@@ -68,21 +74,39 @@ export function createRecoveryOperationImplementations(
         throw error;
       }
     },
-    'recovery.checkpoint-retry': async (input) => {
+    'recovery.checkpoint-retry': async (input, context) => {
+      const assertCurrentHumanAuthority = () => {
+        const definition = RECOVERY_OPERATION_DEFINITIONS['recovery.checkpoint-retry'];
+        if (
+          context.kind !== 'public' ||
+          !authorizeWorkspaceEligibility(coreDb, context.actor, input.workspaceId, definition) ||
+          dependencies.workspaceMutationAdmission?.isClosed(input.workspaceId)
+        )
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        resolveTarget(
+          definition.target,
+          input,
+          dependencies,
+          context,
+          input.workspaceId,
+          definition.policyOperation
+        );
+      };
       try {
-        const turn = store.getTurnById(input.turnId);
+        store.getTurnById(input.turnId);
         store.getWorkspace(input.workspaceId);
         store.getThread(input.workspaceId, input.threadId);
         const workspaceDb = repositoryWorkspaceDb!(input.workspaceId);
         try {
-          const response = runInterruptedWorkerRetryCommand({
+          const response = await runInterruptedWorkerRetryCommand({
             ...input,
-            authorityActor: turn.triggerActor,
+            assertCurrentHumanAuthority,
             coreDb,
             store,
             workspaceDb,
           });
           await clearWorkerCheckpointAfterTerminalState(workspaceDb, input);
+          assertCurrentHumanAuthority();
           return response;
         } finally {
           workspaceDb.sqlite.close();
@@ -116,8 +140,8 @@ export function createRecoveryOperationImplementations(
  * @throws IdempotencyKeyConflictError when the request identity conflicts.
  * @throws TurnStartValidationError when reconnect or recovery authority forbids retry.
  */
-function runInterruptedWorkerRetryCommand(input: {
-  readonly authorityActor: ActorRef;
+async function runInterruptedWorkerRetryCommand(input: {
+  readonly assertCurrentHumanAuthority: () => void;
   readonly coreDb: CoreDb;
   readonly requestId: string;
   readonly store: FsStore;
@@ -125,12 +149,53 @@ function runInterruptedWorkerRetryCommand(input: {
   readonly turnId: string;
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
-}): RetryInterruptedWorkerCheckpointResponse {
-  return runInterruptedWorkerRetryWorkspaceCommand({
-    ...input,
-    resolveDecision: () =>
-      resolveInterruptedWorkerRetryDecision(input.coreDb, input.store, input.workspaceDb, input),
+}): Promise<RetryInterruptedWorkerCheckpointResponse> {
+  const scope = {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    requestId: input.requestId,
+  };
+  input.assertCurrentHumanAuthority();
+  let response = await getControlStoreWorkerClient().workspaceCapability(input.workspaceDb, {
+    kind: 'checkpoint',
+    input: { kind: 'retry', replayOnly: true, ...scope, now: new Date().toISOString() },
   });
+  input.assertCurrentHumanAuthority();
+  if (response === false) {
+    const decision = resolveInterruptedWorkerRetryDecision(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      scope
+    );
+    if (decision.status === 'reconnect-pending')
+      throw new TurnStartValidationError(
+        'worker_reconnect_pending',
+        'The original worker still owns an active reconnect window.',
+        409
+      );
+    if (decision.status === 'stale')
+      throw new TurnStartValidationError(
+        'worker_recovery_stale',
+        'The original worker attempt is no longer eligible for retry.',
+        409
+      );
+    if (decision.status !== 'eligible' || !decision.checkpoint)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Interrupted-worker cleanup or continuation authority is incomplete.',
+        409
+      );
+    response = await getControlStoreWorkerClient().workspaceCapability(input.workspaceDb, {
+      kind: 'checkpoint',
+      input: { kind: 'retry', replayOnly: false, ...scope, now: new Date().toISOString() },
+    });
+    input.assertCurrentHumanAuthority();
+  }
+  if (!response || typeof response !== 'object' || !('outcome' in response))
+    throw new TypeError('Invalid native checkpoint retry result.');
+  return response;
 }
 
 /** Recovery owns its original Turn lineage and missing-checkpoint refusal, independent of operation spelling. */

@@ -43,7 +43,8 @@ export type CapturedPendingCallExecutor = (
   actor: Actor,
   workspaceDb: WorkspaceDb,
   prepared?: PreparedCapturedPendingCall,
-  executionCall?: StartedCapabilityCall
+  executionCall?: StartedCapabilityCall,
+  current?: () => string | undefined
 ) => Promise<{
   readonly disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown';
   readonly reason: string | null;
@@ -177,8 +178,8 @@ export function createPendingRequestOperationImplementations({
                   input,
                   responseId: current.requestId,
                 },
-                admitExecution: (failure?: string) => {
-                  const admitted = admitCapturedPendingCall(
+                admitExecution: async (failure?: string) => {
+                  const admitted = await admitCapturedPendingCall(
                     current,
                     workspaceDb,
                     input.requestId,
@@ -197,8 +198,15 @@ export function createPendingRequestOperationImplementations({
                   : {}),
                 ...(executeCapturedCall
                   ? {
-                      execute: (record: PendingRequestRecord) =>
-                        executeCapturedCall(record, actor, workspaceDb, prepared, executionCall),
+                      execute: (record: PendingRequestRecord, current: () => string | undefined) =>
+                        executeCapturedCall(
+                          record,
+                          actor,
+                          workspaceDb,
+                          prepared,
+                          executionCall,
+                          current
+                        ),
                     }
                   : {}),
                 ...(evaluateCapturedCall

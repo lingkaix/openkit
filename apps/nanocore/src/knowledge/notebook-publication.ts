@@ -325,6 +325,7 @@ export async function publishWorkspaceNotebook(
     },
     request
   );
+  dependencies.revalidate();
   return { ...publication, ownerScope, receiptRef: { ...publication.receiptRef, ownerScope } };
 }
 

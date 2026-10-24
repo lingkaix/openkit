@@ -171,7 +171,7 @@ export function createWorkerEnvironmentActivation(
       const home = { threadId: candidate.threadId, workspaceId: candidate.workspaceId };
       requireCurrentCandidateAudiences(dependencies, context.actor, request);
 
-      return runIdempotentCommand({
+      const response = await runIdempotentCommand({
         command: 'worker_environment.activate',
         execute: async () => {
           const turnIdentity = activationTurnIdentity(context.actor, home, request);
@@ -382,6 +382,10 @@ export function createWorkerEnvironmentActivation(
         },
         store: dependencies.store,
       });
+      dependencies.requireCurrentAdministrator(context.actor);
+      requireExactResolvedCandidate(dependencies, context.actor, request);
+      requireCurrentCandidateAudiences(dependencies, context.actor, request);
+      return response;
     },
   };
 }

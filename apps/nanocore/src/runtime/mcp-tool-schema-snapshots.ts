@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { WorkerControlGatewayError } from '../operation-error.js';
+import type { WorkerCapabilityMcpToolSchema } from '../storage/control-store-input.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 
 const TRACKING_SNAPSHOT_RETENTION = 8;
@@ -27,10 +28,7 @@ export interface McpToolSchemaEnvironment {
   };
 }
 
-export const WorkerCapabilityMcpToolSchema = z.object({
-  name: WorkspaceMcpToolNameSchema,
-  inputSchema: z.record(z.string(), z.unknown()),
-});
+export { WorkerCapabilityMcpToolSchema } from '../storage/control-store-input.js';
 
 /** Frozen v1 retained Tool meaning; current catalog admission cannot reinterpret captured input schemas. */
 const StoredMcpToolV1Schema = z.object({
@@ -89,23 +87,48 @@ export type RecordMcpToolSchemaSnapshotInput = {
   tools: z.infer<typeof WorkerCapabilityMcpToolSchema>[];
   workspaceDb: WorkspaceDb;
   workspaceId: string;
-  /** Synchronous local binding only: before capture commit, or immediately on durable reuse. */
-  onRecorded?: (schemaSnapshotId: string) => void;
 };
 
-/** Keeps Main capture synchronous and unchanged observations outside a write transaction until the whole writer switch. */
-export function recordMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotInput): string {
-  const prepared = prepareMcpToolSchemaSnapshot(input);
-  return prepared.reusedSnapshotId !== null
-    ? recordMcpToolSchemaSnapshotInDb(input, prepared)
-    : input.workspaceDb.sqlite
-        .transaction(() => recordMcpToolSchemaSnapshotInDb(input, prepared))
-        .immediate();
+/** Publishes an exact selected-server observation through its existing admitted native Workspace. */
+export async function recordMcpToolSchemaSnapshot(
+  input: RecordMcpToolSchemaSnapshotInput
+): Promise<string> {
+  const server = selectMcpToolSchemaServer(input);
+  const { workspaceId, threadId, turnId, agentSessionId, triggerActor } =
+    input.environmentPackage.scope;
+  const result = await getControlStoreWorkerClient().workspaceCapability(input.workspaceDb, {
+    kind: 'mcp-schema',
+    workspaceId: input.workspaceId,
+    callId: input.capabilityCallId,
+    schemaSnapshotId: input.schemaSnapshotId,
+    serverVersion: input.serverVersion,
+    tools: input.tools,
+    environmentPackage: {
+      snapshotId: input.environmentPackage.snapshotId,
+      scope: { workspaceId, threadId, turnId, agentSessionId, triggerActor },
+      agent: { agentId: input.environmentPackage.agent.agentId },
+      supply: {
+        mcpServers: [
+          {
+            id: server.id,
+            schemaPolicy: server.schemaPolicy,
+            pinnedSchemaSnapshotId: server.pinnedSchemaSnapshotId,
+          },
+        ],
+      },
+    },
+  });
+  if (!result || typeof result !== 'object' || !('liveSnapshotId' in result))
+    throw new TypeError('Invalid native MCP schema snapshot result.');
+  return result.liveSnapshotId;
 }
 
-/** Applies the original complete capture/bind body on the caller's native savepoint or Main transaction. */
+/** Applies the original capture body and fixed native Call binding on the caller's savepoint. */
 export function recordMcpToolSchemaSnapshotInDb(
-  input: RecordMcpToolSchemaSnapshotInput,
+  input: RecordMcpToolSchemaSnapshotInput & {
+    /** Fixed native binding only; no caller callback crosses the wire. */
+    onRecorded?: (schemaSnapshotId: string) => void;
+  },
   prepared = prepareMcpToolSchemaSnapshot(input)
 ): string {
   const { server, toolsJson, contentDigest, previous, reusedSnapshotId } = prepared;
@@ -517,8 +540,10 @@ export function readTurnMcpToolSchemaSnapshot(input: {
   return snapshot;
 }
 
-/** The original latest-observation/collision decision, shared by capture and native no-write prefix. */
-export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotInput) {
+/** Selects the original enabled server before projecting its exact native frame. */
+function selectMcpToolSchemaServer(
+  input: Pick<RecordMcpToolSchemaSnapshotInput, 'environmentPackage' | 'serverId'>
+) {
   const server = input.environmentPackage.supply.mcpServers.find(
     (candidate) => candidate.id === input.serverId
   );
@@ -530,6 +555,12 @@ export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotI
       404
     );
   }
+  return server;
+}
+
+/** The original latest-observation/collision decision, shared by capture and native no-write prefix. */
+export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotInput) {
+  const server = selectMcpToolSchemaServer(input);
 
   const tools = canonicalMcpToolSchemas(input.tools);
   const toolsJson = JSON.stringify(tools);

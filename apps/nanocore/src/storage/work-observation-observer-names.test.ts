@@ -18,6 +18,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -405,7 +406,8 @@ describe('retained observer names', () => {
     const f = await fixture();
     await captureModel(f);
     const sourceLedger = nativeBytes(f.db, f.turn.id);
-    const exported = createVerifiedWorkspaceExport({
+    const exported = await createVerifiedWorkspaceExport({
+      fileAdmission: new FileStorageAdmission(f.dataRoot, () => 0n),
       requestActor: { kind: 'local', userId },
       authorityUserId: userId,
       coreDb: f.coreDb,

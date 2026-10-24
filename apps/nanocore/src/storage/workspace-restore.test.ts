@@ -40,6 +40,7 @@ import {
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -463,7 +464,8 @@ describe('D0-2 same-deployment restore', () => {
         ...identity,
       });
       cancelSchedulerAdmissionEntry(core, { queueEntryId, workspaceId: sibling.id });
-      upsertWorkerCheckpoint(siblingDb, {
+      await openTestNativeWorkspace(siblingDb);
+      await upsertWorkerCheckpoint(siblingDb, {
         ...identity,
         requestId,
         requestInputHash: `sha256:${requestId}`,
@@ -476,6 +478,7 @@ describe('D0-2 same-deployment restore', () => {
         contextDigest: null,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       siblingDb.sqlite.close();
       core.sqlite.close();
     }

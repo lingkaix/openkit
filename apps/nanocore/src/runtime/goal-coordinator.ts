@@ -619,28 +619,35 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       const view = readGoalView(store, db, goalId);
       const goal = view.goal!;
       const actor: Actor = goalActor(goal);
-      if (
-        !options.coreDb ||
-        !authorizeWorkspace(options.coreDb, actor, goal.workspaceId, {
-          policyOperation: 'workspace.write',
-          mutating: true,
-        })
-      )
-        throw new Error('Coordinator current authority is unavailable.');
-      db.sqlite.transaction(() => {
-        const currentRow = db.sqlite
-          .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id=?')
-          .get(goal.goalId) as { schemaVersion: unknown; payload_json: string } | undefined;
-        if (!currentRow) throw new Error('Coordinator Goal is unavailable.');
-        const current = readRetainedV1(currentRow, () =>
-          StoredGoalV1Schema.parse(JSON.parse(currentRow.payload_json))
-        );
-        db.sqlite
-          .prepare(
-            "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
-          )
-          .run(current.changeRevision, writeRetainedV1({}).schemaVersion, goal.goalId);
-      })();
+      const resume = await client.pauseForDataRootBackup(`workspace:${db.sqlite.name}`);
+      try {
+        if (
+          !options.coreDb ||
+          !authorizeWorkspace(options.coreDb, actor, goal.workspaceId, {
+            policyOperation: 'workspace.write',
+            mutating: true,
+          })
+        )
+          throw new Error('Coordinator current authority is unavailable.');
+        db.sqlite.transaction(() => {
+          const currentRow = db.sqlite
+            .prepare(
+              'SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id=?'
+            )
+            .get(goal.goalId) as { schemaVersion: unknown; payload_json: string } | undefined;
+          if (!currentRow) throw new Error('Coordinator Goal is unavailable.');
+          const current = readRetainedV1(currentRow, () =>
+            StoredGoalV1Schema.parse(JSON.parse(currentRow.payload_json))
+          );
+          db.sqlite
+            .prepare(
+              "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
+            )
+            .run(current.changeRevision, writeRetainedV1({}).schemaVersion, goal.goalId);
+        })();
+      } finally {
+        resume();
+      }
       const snapshot = options.runtimeConfig();
       const workspaceConfig = findWorkspaceConfig(snapshot, goal.workspaceId)?.config;
       const userConfig = snapshot.userConfigs.find(

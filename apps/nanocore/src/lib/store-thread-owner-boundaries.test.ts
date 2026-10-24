@@ -16,6 +16,7 @@ import {
   listWorkspaceCapabilityCalls,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -30,9 +31,9 @@ const roots: string[] = [];
 const databases: Array<{ sqlite: { open: boolean; close(): void } }> = [];
 
 afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const database of databases.splice(0))
     if (database.sqlite.open) await database.sqlite.close();
-  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -258,7 +259,7 @@ describe('canonical work owner and retained storage boundaries', () => {
       providerRef: 'owner-boundary-fixture',
       redactionClass: 'metadata-only',
     };
-    const workspaceCall = startCapabilityCall({
+    const workspaceCall = await startCapabilityCall({
       ...callInput,
       workspaceDb,
       workspaceId: f.workspace.id,
@@ -272,8 +273,9 @@ describe('canonical work owner and retained storage boundaries', () => {
       threadId: f.serverThread.id,
       turnId: f.serverTurn.id,
     });
-    finishCapabilityCall({ workspaceDb, callId: workspaceCall.id, status: 'succeeded' });
+    await finishCapabilityCall({ workspaceDb, callId: workspaceCall.id, status: 'succeeded' });
     finishCapabilityCall({ workspaceDb: coreDb, callId: serverCall.id, status: 'succeeded' });
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
@@ -286,7 +288,8 @@ describe('canonical work owner and retained storage boundaries', () => {
     // Audit Usage Evidence Records: CapabilityCall has one home in its admitted scope.
     expect(workspaceCalls.map(({ id }) => id)).toEqual([workspaceCall.id]);
     expect(serverCalls.map(({ id }) => id)).toEqual([serverCall.id]);
-    const exported = createVerifiedWorkspaceExport({
+    const exported = await createVerifiedWorkspaceExport({
+      fileAdmission: new FileStorageAdmission(f.dataRoot, () => 0n),
       authorityUserId: actor.id,
       authorityActor: actor,
       requestActor: { kind: 'local', userId: actor.id },

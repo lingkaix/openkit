@@ -701,7 +701,8 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
     o.migrate.applyScopedMigrations(db);
     return db;
   };
-  const exported = o.transfer.createVerifiedWorkspaceExport({
+  const exported = await o.transfer.createVerifiedWorkspaceExport({
+    fileAdmission: new o.fileAdmission.FileStorageAdmission(r.data, () => 0n),
     authorityUserId: selectors.userId,
     requestActor: ctx.actor,
     authorityActor: producer,

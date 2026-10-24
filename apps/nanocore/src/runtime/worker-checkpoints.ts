@@ -5,14 +5,16 @@ import {
   RetrievalTraceReferenceSchema,
   type StopReason,
 } from '@openkit/protocol';
-
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
-  finishCapabilityCall,
-  recordUsage,
-  startCapabilityCall,
+  finishCapabilityCallInDb as finishCapabilityCall,
+  recordUsageInDb as recordUsage,
+  startCapabilityCallInDb as startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import type { ControlCheckpointCommandInput } from '../storage/control-store-checkpoints.js';
+import { presentControlFacts } from '../storage/control-store-input.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordWorkerCheckpointRuntimeEvidence } from './runtime-evidence.js';
 import { isTerminalWorkerTurnStage, type WorkerTurnStage } from './worker-stage.js';
@@ -309,7 +311,7 @@ export function parseWorkerCheckpointEvidence(
  * @param input Worker checkpoint input.
  * @returns Stored worker checkpoint record.
  */
-export function upsertWorkerCheckpoint(
+export function upsertWorkerCheckpointInDb(
   workspaceDb: WorkspaceDb,
   input: UpsertWorkerCheckpointInput
 ): WorkerCheckpointRecord {
@@ -386,7 +388,7 @@ export function upsertWorkerCheckpoint(
  * @returns Updated worker checkpoint record.
  * @throws Error when the checkpoint does not exist.
  */
-export function updateWorkerCheckpoint(
+export function updateWorkerCheckpointInDb(
   workspaceDb: WorkspaceDb,
   input: UpdateWorkerCheckpointInput
 ): WorkerCheckpointRecord {
@@ -487,7 +489,7 @@ export function listThreadWorkerCheckpoints(
  * @param turnId Turn id.
  * @returns True when a checkpoint row was deleted.
  */
-export function clearWorkerCheckpoint(
+export function clearWorkerCheckpointInDb(
   workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   threadId: string,
@@ -807,4 +809,40 @@ function mapWorkerCheckpointRow(row: WorkerCheckpointRow): WorkerCheckpointRecor
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/** Submits only the owned checkpoint mutation and checks its acknowledged record shape. */
+async function writeCheckpointMutation(
+  db: WorkspaceDb,
+  input: Extract<ControlCheckpointCommandInput, { kind: 'upsert' | 'update' }>
+): Promise<WorkerCheckpointRecord> {
+  const result = await getControlStoreWorkerClient().workspaceCapability(db, {
+    kind: 'checkpoint',
+    input,
+  });
+  if (!result || typeof result !== 'object' || !('checkpointId' in result))
+    throw new TypeError('Invalid native checkpoint result.');
+  return result;
+}
+/** Publishes a checkpoint through the owning native transaction before returning its record. */
+export function upsertWorkerCheckpoint(
+  db: WorkspaceDb,
+  input: UpsertWorkerCheckpointInput
+): Promise<WorkerCheckpointRecord> {
+  const { now, ...facts } = input;
+  return writeCheckpointMutation(
+    db,
+    presentControlFacts({ kind: 'upsert', ...facts, now: now?.() ?? new Date().toISOString() })
+  );
+}
+/** Publishes a checkpoint transition with its original terminal evidence and usage tuple. */
+export function updateWorkerCheckpoint(
+  db: WorkspaceDb,
+  input: UpdateWorkerCheckpointInput
+): Promise<WorkerCheckpointRecord> {
+  const { now, ...facts } = input;
+  return writeCheckpointMutation(
+    db,
+    presentControlFacts({ kind: 'update', ...facts, now: now?.() ?? new Date().toISOString() })
+  );
 }

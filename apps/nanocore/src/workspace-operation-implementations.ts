@@ -8,7 +8,10 @@ import type { z } from 'zod';
 import { readWorkspaceDashboard } from './app-dashboard.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { Actor } from './auth/identity.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import {
+  authorizeWorkspace,
+  isCurrentDeploymentAdministrator,
+} from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -163,15 +166,31 @@ async function updateWorkspace(
       scope: { workspaceId },
       input: { ...body, workspaceId },
       responseKind: 'workspace',
-      execute: async () =>
-        WorkspaceRecordSchema.parse(await store.updateWorkspace(workspaceId, body)),
+      execute: async () => {
+        if (
+          store.getDataRoot() !== null &&
+          (!coreDb ||
+            !authorizeWorkspace(coreDb, actor, workspaceId, {
+              policyOperation: 'workspace.lifecycle',
+              mutating: true,
+            }))
+        )
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        return WorkspaceRecordSchema.parse(await store.updateWorkspace(workspaceId, body));
+      },
       replay: (record) => WorkspaceRecordSchema.parse(store.getWorkspace(record.response.id)),
       responseId: (result) => result.id,
     });
 
     // The receipt is already owned by the command; a failed viewer projection does not undo it.
     try {
-      return projectWorkspace(store, coreDb, workspace.id, actor, administratorEligible);
+      return projectWorkspace(
+        store,
+        coreDb,
+        workspace.id,
+        actor,
+        coreDb ? isCurrentDeploymentAdministrator(coreDb, actor) : administratorEligible
+      );
     } catch (error) {
       throw new OperationError('workspace_update_failed', 'Count projection unavailable.', 404, {
         cause: error,

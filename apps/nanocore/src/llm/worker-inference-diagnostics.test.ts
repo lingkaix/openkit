@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
@@ -37,9 +38,84 @@ vi.mock('../auth/operation-authorizer.js', async (importOriginal) => ({
   currentWorkerLineageWorkspaceAuthority: () => true,
 }));
 
+const streamWriter = vi.hoisted(() => ({
+  commits: undefined as SharedArrayBuffer | undefined,
+  holdReply: undefined as ((value: unknown, release: () => void) => boolean) | undefined,
+}));
+
+// Count actual outer COMMITs that change raw proof; attribution commits are not raw batches.
+// Delay actual replies independently; never manufacture a writer result.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (streamWriter.commits === undefined) {
+          super(filename, options);
+          return;
+        }
+        const prelude = `
+          const {workerData} = require('node:worker_threads');
+          const Database = require(workerData.r1856DatabaseModule);
+          const exec = Database.prototype.exec;
+          const committedRawProof = new WeakMap();
+          const rawProof = (database) => {
+            if (!database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'capability_calls'").get())
+              return '[]';
+            return JSON.stringify(database
+              .prepare('SELECT call_id, extensions_json FROM capability_calls ORDER BY call_id')
+              .all()
+              .flatMap((row) => {
+                const proof = JSON.parse(row.extensions_json ?? '{}')?.['openkit.worker/rawOutput'];
+                return proof === undefined ? [] : [[row.call_id, proof]];
+              }));
+          };
+          Database.prototype.exec = function(sql) {
+            const result = exec.call(this, sql);
+            if (/^COMMIT$/i.test(sql)) {
+              const proof = rawProof(this);
+              const previous = committedRawProof.get(this) ?? '[]';
+              committedRawProof.set(this, proof);
+              if (proof !== previous && Atomics.load(workerData.r1856Commits, 0) === 1)
+                Atomics.add(workerData.r1856Commits, 1, 1);
+            }
+            return result;
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            r1856DatabaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+            r1856Commits: new Int32Array(streamWriter.commits),
+          },
+        });
+      }
+
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          super.emit(event, ...args);
+        };
+        if (event === 'message' && streamWriter.holdReply?.(args[0], release)) return true;
+        return super.emit(event, ...args);
+      }
+    },
+  };
+});
+
 const roots: string[] = [];
 const databases: CoreDb[] = [];
 afterEach(async () => {
+  streamWriter.holdReply = undefined;
+  streamWriter.commits = undefined;
   vi.useRealTimers();
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
@@ -116,13 +192,24 @@ async function fixture(
   );
   // Existing cases know the complete source before delivery. Fault cases own source lifetime.
   const observedDispatch = (...args: unknown[]) => {
-    if (rawSource === 'complete') {
-      const boundary = (args[2] as LLMGatewayDispatchContext | undefined)?.transport?.rawOutput;
-      const settle = boundary?.sourceStarted();
-      boundary?.sourceEvent();
-      settle?.();
-    }
-    return dispatch(...args);
+    if (rawSource !== 'complete') return dispatch(...args);
+    const boundary = (args[2] as LLMGatewayDispatchContext | undefined)?.transport?.rawOutput;
+    const settle = boundary?.sourceStarted();
+    boundary?.sourceEvent();
+    settle?.();
+    return Promise.resolve(dispatch(...args)).then((result) => {
+      if (!(result instanceof ReadableStream)) return result;
+      return result.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            // Bind the original encoded chunk at delivery; the real Gateway awaits its ACK.
+            const bind = boundary?.coverAcknowledgement?.();
+            bind?.(chunk);
+            controller.enqueue(chunk);
+          },
+        })
+      );
+    });
   };
   const onRawOutputStop = vi.fn(async () => {});
   const app = new Hono<{ Variables: AuthVariables }>();
@@ -165,6 +252,7 @@ async function fixture(
     environmentPackage,
     onRawOutputStop,
     turn,
+    openWorkspace: () => openWorkspaceDb(dataRoot, workspace.id),
     ledgerCalls: () => {
       const db = openWorkspaceDb(dataRoot, workspace.id);
       try {
@@ -236,6 +324,136 @@ function failedStream(error: unknown, endpoint = 'responses') {
     },
   });
 }
+
+it('withholds a native stream delta until its raw position commits after Workspace contention', async () => {
+  const f = await fixture(true, undefined, true, 'controlled');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
+  f.resolveGatewayProvider.mockReturnValue({
+    id: 'provider',
+    displayName: 'Provider',
+    adapterId: 'contention-fixture',
+    apiKey: 'synthetic',
+    baseUrl: 'https://provider.invalid/v1',
+    models: ['native-model'],
+    requiresApiKey: true,
+    gatewayCapabilities: { responses: 'bridged', chatCompletions: 'native' },
+    modelMetadata: { 'native-model': { limit: { context: 400_000, output: 32_000 } } },
+  });
+  let inferenceSignal: AbortSignal | undefined;
+  f.dispatch.mockImplementation((provider, request, context: LLMGatewayDispatchContext) => {
+    inferenceSignal = context.transport?.signal;
+    return dispatcher.createChatCompletionStream(provider, request, context);
+  });
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  let sourceCancelled = false;
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          source = controller;
+        },
+        cancel: () => {
+          sourceCancelled = true;
+        },
+      }),
+      {
+        headers: { 'content-type': 'text/event-stream' },
+      }
+    )
+  );
+  const emit = (content: string, finishReason: string | null = null) =>
+    source.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({
+          id: 'chat_contention',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'native-model',
+          choices: [{ index: 0, delta: { content }, finish_reason: finishReason }],
+        })}\n\n`
+      )
+    );
+  const prefix = 'before-lock';
+  const suffix = 'after-lock-\u03bb';
+  const firstDelivery = Promise.withResolvers<void>();
+  let body = '';
+  let durableAtDelivery: unknown;
+  emit(prefix);
+  const response = await f.post(true, 'chat/completions');
+  const reading = (async () => {
+    const reader = response.body!.getReader();
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      body += new TextDecoder().decode(next.value);
+      if (body.includes(prefix)) firstDelivery.resolve();
+      if (body.includes(suffix) && durableAtDelivery === undefined)
+        durableAtDelivery = f.rawOutput();
+    }
+  })().then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  await firstDelivery.promise;
+  expect(f.rawOutput()).toEqual({ rawOutputBytes: Buffer.byteLength(prefix), exhausted: false });
+  const blocker = f.openWorkspace();
+  let deliveredWhileLocked = false;
+  let proofWhileLocked: unknown;
+  let heldMs = 0;
+  // Fault injection only: valid state was created through owners; this connection changes no records.
+  blocker.sqlite.exec('BEGIN IMMEDIATE');
+  const lockStart = performance.now();
+  const released = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      deliveredWhileLocked = body.includes(suffix);
+      proofWhileLocked = f.ledgerCalls()[0]?.extensions?.['openkit.worker/rawOutput'];
+      heldMs = performance.now() - lockStart;
+      blocker.sqlite.exec('ROLLBACK');
+      resolve();
+    }, 50);
+  });
+  try {
+    emit(suffix);
+    await released;
+    if (!sourceCancelled) {
+      emit('', 'stop');
+      source.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+      source.close();
+    }
+    const readFailure = await reading;
+    // Reliability Raw-Output Accounting: commit before delivery, without losing or double-counting bytes.
+    expect.soft(heldMs).toBeGreaterThan(5);
+    expect.soft(deliveredWhileLocked).toBe(false);
+    expect.soft(proofWhileLocked).toMatchObject({ byteLength: Buffer.byteLength(prefix) });
+    expect.soft(readFailure).toBeUndefined();
+    expect.soft(body).toContain(suffix);
+    expect.soft(durableAtDelivery).toEqual({
+      rawOutputBytes: Buffer.byteLength(prefix + suffix),
+      exhausted: false,
+    });
+    expect.soft(inferenceSignal?.aborted).toBe(false);
+    expect.soft(f.onRawOutputStop).not.toHaveBeenCalled();
+    expect.soft(f.ledgerCalls()[0]).toMatchObject({
+      status: 'succeeded',
+      extensions: {
+        'openkit.worker/rawOutput': {
+          byteLength: Buffer.byteLength(prefix + suffix),
+          coverage: 'complete',
+        },
+      },
+    });
+    expect
+      .soft(warn.mock.calls.map(([message]) => JSON.parse(message)))
+      .not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'worker_raw_output_stopped' })])
+      );
+  } finally {
+    await released;
+    if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
+    blocker.sqlite.close();
+  }
+});
 
 it('measures stock source progression while Worker response consumption is paused', async () => {
   const f = await fixture(true, undefined, true, 'controlled');
@@ -324,6 +542,245 @@ it('measures stock source progression while Worker response consumption is pause
       }) + '\n'
     );
   }
+});
+
+it('coalesces a pending same-call burst and releases only each immutable covered prefix', async () => {
+  streamWriter.commits = new SharedArrayBuffer(8);
+  const commits = new Int32Array(streamWriter.commits);
+  const f = await fixture(true, undefined, true, 'controlled');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
+  f.resolveGatewayProvider.mockReturnValue({
+    id: 'provider',
+    displayName: 'Provider',
+    adapterId: 'covering-ack-fixture',
+    apiKey: 'synthetic',
+    baseUrl: 'https://provider.invalid/v1',
+    models: ['native-model'],
+    requiresApiKey: true,
+    gatewayCapabilities: { responses: 'bridged', chatCompletions: 'native' },
+    modelMetadata: { 'native-model': { limit: { context: 400_000, output: 32_000 } } },
+  });
+  const observed: number[] = [];
+  let firstChunkBound = false;
+  f.dispatch.mockImplementation((provider, request, context: LLMGatewayDispatchContext) => {
+    const raw = context.transport!.rawOutput!;
+    const coverAcknowledgement = raw.coverAcknowledgement!.bind(raw);
+    vi.spyOn(raw, 'coverAcknowledgement').mockImplementation(() => {
+      const bind = coverAcknowledgement();
+      return (chunk) => {
+        bind(chunk);
+        if (new TextDecoder().decode(chunk).includes(first)) firstChunkBound = true;
+      };
+    });
+    const observe = raw.observe;
+    vi.spyOn(raw, 'observe').mockImplementation((position) => {
+      Atomics.store(commits, 0, 1);
+      observed.push(position.bytePosition);
+      return observe(position);
+    });
+    return dispatcher.createChatCompletionStream(provider, request, context);
+  });
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          source = controller;
+        },
+      }),
+      { headers: { 'content-type': 'text/event-stream' } }
+    )
+  );
+  const emit = (content: string, finishReason: string | null = null) =>
+    source.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({
+          id: 'chat_covering_ack',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'native-model',
+          choices: [{ index: 0, delta: { content }, finish_reason: finishReason }],
+        })}\n\n`
+      )
+    );
+  const first = 'first-λ';
+  const burst = Array.from({ length: 8 }, (_, index) => `burst-${index}-λ;`);
+  const firstBytes = Buffer.byteLength(first);
+  const allText = first + burst.join('');
+  const finalBytes = Buffer.byteLength(allText);
+  const held: { frontier: number; release: () => void }[] = [];
+  streamWriter.holdReply = (value, release) => {
+    const reply = value as { status?: unknown; operation?: unknown };
+    if (reply.status !== 'ok' || reply.operation !== 'capability') return false;
+    const frontier = f.rawOutput().rawOutputBytes;
+    if (frontier <= (held.at(-1)?.frontier ?? 0)) return false;
+    held.push({ frontier, release });
+    return true;
+  };
+  let body = '';
+  const delivered: string[] = [];
+  const reading = f.post(true, 'chat/completions').then(async (response) => {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        const chunk = decoder.decode(next.value, { stream: true });
+        body += chunk;
+        pending += chunk;
+        for (;;) {
+          const end = pending.indexOf('\n\n');
+          if (end < 0) break;
+          const frame = pending.slice(0, end);
+          pending = pending.slice(end + 2);
+          if (!frame.startsWith('data: {')) continue;
+          const content = JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content;
+          if (typeof content === 'string' && content) delivered.push(content);
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  });
+  const settled = reading.then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  try {
+    emit(first);
+    // Raw COMMIT precedes stock conversion; wait for the real first encoded chunk binding too.
+    await vi.waitFor(() => {
+      expect(held).toHaveLength(1);
+      expect(firstChunkBound).toBe(true);
+    });
+    // Reliability Raw-Output Accounting and R1842: a native commit alone is no delivered ACK.
+    expect(held[0]!.frontier).toBe(firstBytes);
+    expect(Atomics.load(commits, 1)).toBe(1);
+    expect(delivered).toEqual([]);
+    for (const content of burst) emit(content);
+    await vi.waitFor(() => expect(observed.at(-1)).toBe(finalBytes));
+    // COORD07:3x/R1842: native hooks can advance while the first same-call ACK is held.
+    expect(observed).toHaveLength(1 + burst.length);
+    expect(held).toHaveLength(1);
+    expect(f.rawOutput().rawOutputBytes).toBe(firstBytes);
+    held[0]!.release();
+    await vi.waitFor(() => expect(held).toHaveLength(2));
+    expect(held[1]!.frontier).toBe(finalBytes);
+    // All eight pending same-part observations share one maximum, after the first isolated commit.
+    expect(Atomics.load(commits, 1)).toBe(2);
+    await vi.waitFor(() => expect(delivered).toEqual([first]));
+    // R1842: new arrivals cannot move the first captured target or mutate its encoded content.
+    expect(body).not.toContain(burst[0]!);
+    expect(f.rawOutput()).toEqual({ rawOutputBytes: finalBytes, exhausted: false });
+    held[1]!.release();
+    await vi.waitFor(() => expect(delivered.join('')).toBe(allText));
+  } finally {
+    streamWriter.holdReply = undefined;
+    for (const reply of held) reply.release();
+    Atomics.store(commits, 0, 0);
+    emit('', 'stop');
+    source.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+    source.close();
+    await settled;
+  }
+  expect(await settled).toBeUndefined();
+  expect(delivered.join('')).toBe(allText);
+  expect(f.rawOutput()).toEqual({ rawOutputBytes: finalBytes, exhausted: false });
+  expect(f.ledgerCalls()[0]).toMatchObject({
+    status: 'succeeded',
+    extensions: { 'openkit.worker/rawOutput': { byteLength: finalBytes, coverage: 'complete' } },
+  });
+  expect(f.onRawOutputStop).not.toHaveBeenCalled();
+});
+
+it('flushes the exact crossing prefix before native stop and rejects the next source field', async () => {
+  streamWriter.commits = new SharedArrayBuffer(8);
+  const commits = new Int32Array(streamWriter.commits);
+  const f = await fixture(true, undefined, true, 'controlled');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
+  f.resolveGatewayProvider.mockReturnValue({
+    id: 'provider',
+    displayName: 'Provider',
+    adapterId: 'crossing-ack-fixture',
+    apiKey: 'synthetic',
+    baseUrl: 'https://provider.invalid/v1',
+    models: ['native-model'],
+    requiresApiKey: true,
+    gatewayCapabilities: { responses: 'bridged', chatCompletions: 'native' },
+    modelMetadata: { 'native-model': { limit: { context: 400_000, output: 32_000 } } },
+  });
+  const observed: number[] = [];
+  f.dispatch.mockImplementation((provider, request, context: LLMGatewayDispatchContext) => {
+    const raw = context.transport!.rawOutput!;
+    const observe = raw.observe;
+    vi.spyOn(raw, 'observe').mockImplementation((position) => {
+      Atomics.store(commits, 0, 1);
+      observed.push(position.bytePosition);
+      return observe(position);
+    });
+    return dispatcher.createChatCompletionStream(provider, request, context);
+  });
+  // Reliability fixes the ceiling at 16,777,216 UTF-8 bytes; this source emits its first excess byte.
+  const crossingBytes = 16_777_217;
+  const crossing = 'x'.repeat(crossingBytes);
+  const tail = 'must-not-be-accounted-after-crossing';
+  const wire =
+    [crossing, tail]
+      .map(
+        (content) =>
+          `data: ${JSON.stringify({
+            id: 'chat_crossing_ack',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: 'native-model',
+            choices: [{ index: 0, delta: { content }, finish_reason: null }],
+          })}\n\n`
+      )
+      .join('') + 'data: [DONE]\n\n';
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(wire, { headers: { 'content-type': 'text/event-stream' } })
+  );
+  const held: (() => void)[] = [];
+  streamWriter.holdReply = (value, release) => {
+    const reply = value as { status?: unknown; operation?: unknown };
+    if (reply.status !== 'ok' || reply.operation !== 'capability' || held.length) return false;
+    const proof = f.ledgerCalls()[0]?.extensions?.['openkit.worker/rawOutput'] as
+      | { byteLength?: number }
+      | undefined;
+    if (proof?.byteLength !== crossingBytes) return false;
+    held.push(release);
+    return true;
+  };
+  let proofAtStop: unknown;
+  f.onRawOutputStop.mockImplementation(async () => {
+    proofAtStop = structuredClone(f.ledgerCalls()[0]?.extensions?.['openkit.worker/rawOutput']);
+  });
+  const request = f.post(true, 'chat/completions').then((response) => response.text());
+  const settled = request.then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  try {
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    // COORD07:5x: crossing is durable, but a held native ACK cannot authorize dependent stop yet.
+    expect(Atomics.load(commits, 1)).toBeGreaterThan(0);
+    expect(f.onRawOutputStop).not.toHaveBeenCalled();
+    expect(observed).toEqual([crossingBytes]);
+  } finally {
+    streamWriter.holdReply = undefined;
+    for (const release of held) release();
+    Atomics.store(commits, 0, 0);
+    await settled;
+  }
+  expect(await settled).toBeUndefined();
+  expect(f.onRawOutputStop).toHaveBeenCalledTimes(1);
+  expect(proofAtStop).toMatchObject({ byteLength: crossingBytes });
+  expect(observed).toEqual([crossingBytes]);
+  expect(await request).not.toContain(tail);
 });
 
 it('keeps a pending sibling alive when a non-admission failure has no raw source', async () => {
@@ -442,7 +899,7 @@ it.each([
       if (failure === 'explicit raw failure') {
         let rawFailure: unknown;
         try {
-          raw.fail(new WorkerRawOutputAuthorityError());
+          await raw.fail(new WorkerRawOutputAuthorityError());
         } catch (error) {
           rawFailure = error;
         }
@@ -663,7 +1120,6 @@ it('keeps terminal SSE and durable failure when logging throws', async () => {
 it('clears observed rejection before a retry with no HTTP evidence', async () => {
   const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.useFakeTimers();
   f.dispatch
     .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
       context.transport?.onProviderHttpRejection?.(429, {
@@ -679,9 +1135,8 @@ it('clears observed rejection before a retry with no HTTP evidence', async () =>
         failure: { kind: 'unknown', settled: false },
       });
     });
-  const pending = f.post(false);
-  await vi.runAllTimersAsync();
-  const response = await pending;
+  // Real native handoffs and the original retry backoff share the unchanged test deadline.
+  const response = await f.post(false);
   expect(response.status).toBe(400);
   expect(f.dispatch).toHaveBeenCalledTimes(2);
   expect(warn).toHaveBeenCalledTimes(1);
@@ -717,15 +1172,13 @@ it('logs selection failure without inventing an attempt or upstream status', asy
 it('logs only the final exhausted attempt with its observed upstream status', async () => {
   const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.useFakeTimers();
   f.dispatch.mockRejectedValue(
     Object.assign(new Error('exception-canary'), {
       failure: { kind: 'provider_unavailable', settled: true, status: 503 },
     })
   );
-  const pending = f.post(false);
-  await vi.runAllTimersAsync();
-  const response = await pending;
+  // Real native handoffs and the original retry backoffs share the unchanged test deadline.
+  const response = await f.post(false);
   expect(response.status).toBe(503);
   expect(await response.json()).toMatchObject({
     error: { code: 'gateway_logical_model_unavailable', cause: 'provider_unavailable' },
@@ -942,7 +1395,7 @@ it('preserves raw-output exhaustion before native compaction commits', async () 
   const f = await fixture(true, 'compaction');
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-    context.transport!.rawOutput!.fail(new WorkerRawOutputBudgetExceededError());
+    await context.transport!.rawOutput!.fail(new WorkerRawOutputBudgetExceededError());
   });
   const response = await f.post(true);
   expect(response.status, await response.clone().text()).toBe(409);

@@ -102,6 +102,7 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -651,7 +652,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         applyScopedMigrations(workspaceDb);
       }
       if (this.coreDb && workspaceDb && context.attemptId && context.agentSessionId)
-        bindWorkerCheckpointToPreparedSession({
+        await bindWorkerCheckpointToPreparedSession({
           coreDb: this.coreDb,
           workspaceDb,
           store,
@@ -964,7 +965,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           now: () => timestamp,
           toState: 'materialized',
         });
-        recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, materializationRecords);
+        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+          `workspace:${workspaceDb.sqlite.name}`
+        );
+        try {
+          recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, materializationRecords);
+        } finally {
+          resume();
+        }
         markWorkerBackendWorkspaceHandoffComplete(this.coreDb, {
           attemptId: backendSession.attemptId,
           now: () => timestamp,

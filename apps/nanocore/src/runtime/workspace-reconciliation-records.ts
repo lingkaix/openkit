@@ -18,6 +18,7 @@ import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { readProduct } from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -685,10 +686,25 @@ export async function hasPendingWorkspaceCapture(
       prior &&
       (prior.stateAfter === 'requires-human' || prior.stateAfter === 'recovered')
     ) {
-      completeWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+        `workspace:${db.sqlite.name}`
+      );
+      try {
+        completeWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+      } finally {
+        resume();
+      }
       continue;
     }
-    const record = recordWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+      `workspace:${db.sqlite.name}`
+    );
+    let record: WorkspaceReconciliationRecord;
+    try {
+      record = recordWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+    } finally {
+      resume();
+    }
     const digest = record.backendHandleSummary.candidateDigest;
     if (digest !== null) {
       const bundle = listStoredWorkspaceEvidenceBundles(db, db.workspaceId).find(

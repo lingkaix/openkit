@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
@@ -19,11 +21,12 @@ import {
 } from './usage-ledger.js';
 
 describe('capability usage ledger', () => {
-  it('rejects an unknown retained capability format before replay or JSON decode', () => {
+  it('rejects an unknown retained capability format before replay or JSON decode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-format-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
       const input = {
         workspaceDb,
         workspaceId: workspaceDb.workspaceId,
@@ -33,36 +36,39 @@ describe('capability usage ledger', () => {
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000001',
       };
-      const call = startCapabilityCall(input);
+      const call = await startCapabilityCall(input);
       workspaceDb.sqlite
         .prepare(
           "UPDATE capability_calls SET schema_version = 2, extensions_json = 'invalid-json' WHERE call_id = ?"
         )
         .run(call.id);
-      expect(() => startCapabilityCall(input)).toThrow('Unsupported retained record format.');
+      await expect(async () => await startCapabilityCall(input)).rejects.toThrow(TypeError);
       expect(() => listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toThrow(
-        'Unsupported retained record format.'
+        TypeError
       );
-      expect(() =>
-        finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' })
-      ).toThrow('Unsupported retained record format.');
+      await expect(
+        async () =>
+          await finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' })
+      ).rejects.toThrow(TypeError);
       expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
         schema_version: 2,
         status: 'running',
         extensions_json: 'invalid-json',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('rejects an unknown retained usage format before equivalent replay or JSON decode', () => {
+  it('rejects an unknown retained usage format before equivalent replay or JSON decode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-usage-format-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         workspaceDb,
         workspaceId: workspaceDb.workspaceId,
         capabilityId: 'llm.responses',
@@ -75,32 +81,34 @@ describe('capability usage ledger', () => {
         call,
         records: [{ category: 'llm', unit: 'tokens', quantity: 1 }],
       };
-      const [usageId] = recordUsage(input);
+      const [usageId] = await recordUsage(input);
       workspaceDb.sqlite
         .prepare('UPDATE usage_records SET schema_version = 2 WHERE usage_id = ?')
         .run(usageId);
-      expect(() => recordUsage(input)).toThrow('Unsupported retained record format.');
+      await expect(async () => await recordUsage(input)).rejects.toThrow(TypeError);
       workspaceDb.sqlite
         .prepare("UPDATE usage_records SET source_ids_json = 'invalid-json' WHERE usage_id = ?")
         .run(usageId);
       expect(() => listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toThrow(
-        'Unsupported retained record format.'
+        TypeError
       );
       expect(usageRows(workspaceDb, call.id)).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('records a capability call before linked usage and terminal status', () => {
+  it('records a capability call before linked usage and terminal status', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         agentId: 'agent_codex',
         agentSessionId: 'as_00000000-0000-78f3-a236-d324525fc901',
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
@@ -124,7 +132,7 @@ describe('capability usage ledger', () => {
         now: new Date('2026-07-05T00:00:00.000Z'),
       });
 
-      recordUsage({
+      await recordUsage({
         workspaceDb,
         call,
         records: [
@@ -139,7 +147,7 @@ describe('capability usage ledger', () => {
         ],
         now: new Date('2026-07-05T00:00:01.000Z'),
       });
-      finishCapabilityCall({
+      await finishCapabilityCall({
         workspaceDb,
         callId: call.id,
         status: 'succeeded',
@@ -198,23 +206,25 @@ describe('capability usage ledger', () => {
       ]);
       expect(auditRows(workspaceDb, call.id)[0]).not.toHaveProperty('runtime_origin_ref');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('keeps fresh null-request inference calls and usage separate under one command audit lineage', () => {
+  it('keeps fresh null-request inference calls and usage separate under one command audit lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-rounds-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
       const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000401' };
       const calls = [];
       const usageIds = [];
 
       for (let round = 0; round < 2; round += 1) {
-        const call = startCapabilityCall({
+        const call = await startCapabilityCall({
           authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
           capabilityId: 'llm.responses',
           family: 'llm',
@@ -233,14 +243,14 @@ describe('capability usage ledger', () => {
           records: [{ category: 'llm' as const, quantity: 12, unit: 'tokens' as const }],
           workspaceDb,
         };
-        usageIds.push(recordUsage(usageInput));
+        usageIds.push(await recordUsage(usageInput));
         const finishInput = {
           auditLineage,
           callId: call.id,
           status: 'succeeded' as const,
           workspaceDb,
         };
-        finishCapabilityCall(finishInput);
+        await finishCapabilityCall(finishInput);
       }
 
       expect(calls[0].inserted).toBe(true);
@@ -289,6 +299,7 @@ describe('capability usage ledger', () => {
         ]);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -316,13 +327,14 @@ describe('capability usage ledger', () => {
       status: 'succeeded' as const,
       expectedRequestId: '00000000-0000-4000-8000-000000000403',
     },
-  ])('$name', ({ requestId, auditLineage, status, expectedRequestId }) => {
+  ])('$name', async ({ requestId, auditLineage, status, expectedRequestId }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-finish-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -334,7 +346,7 @@ describe('capability usage ledger', () => {
       });
       const errorCode = status === 'failed' ? 'provider_failed' : null;
       const finishInput = { auditLineage, callId: call.id, errorCode, status, workspaceDb };
-      finishCapabilityCall(finishInput);
+      await finishCapabilityCall(finishInput);
 
       expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
         error_code: errorCode,
@@ -351,18 +363,20 @@ describe('capability usage ledger', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('keeps command audit lineage when usage recording fails for a null-request call', () => {
+  it('keeps command audit lineage when usage recording fails for a null-request call', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-usage-failure-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -380,7 +394,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
       };
 
-      expect(() => recordUsage(usageInput)).toThrow();
+      await expect(async () => await recordUsage(usageInput)).rejects.toThrow();
       expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
         error_code: 'usage_record_failed',
         request_id: null,
@@ -399,18 +413,20 @@ describe('capability usage ledger', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('rejects malformed command audit lineage without terminal or audit mutation', () => {
+  it('rejects malformed command audit lineage without terminal or audit mutation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-command-audit-invalid-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -428,21 +444,23 @@ describe('capability usage ledger', () => {
         workspaceDb,
       };
 
-      expect(() => finishCapabilityCall(finishInput)).toThrow();
+      await expect(async () => await finishCapabilityCall(finishInput)).rejects.toThrow();
       expect(capabilityCallRow(workspaceDb, call.id)).toEqual(before);
       expect(auditRows(workspaceDb, call.id)).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('uses the same recorder lifecycle for LLM and MCP usage producers', () => {
+  it('uses the same recorder lifecycle for LLM and MCP usage producers', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-producers-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
       const producers = [
         {
@@ -521,7 +539,7 @@ describe('capability usage ledger', () => {
       ];
 
       for (const producer of producers) {
-        const call = startCapabilityCall({
+        const call = await startCapabilityCall({
           authorityActor: producer.authorityActor,
           capabilityId: producer.capabilityId,
           family: producer.family,
@@ -534,7 +552,7 @@ describe('capability usage ledger', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
 
-        recordUsage({
+        await recordUsage({
           call,
           records: [
             {
@@ -547,7 +565,7 @@ describe('capability usage ledger', () => {
           ],
           workspaceDb,
         });
-        finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
+        await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
 
         expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
           capability_id: producer.capabilityId,
@@ -576,43 +594,51 @@ describe('capability usage ledger', () => {
         ]);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('rejects raw payload fields before they reach ledger rows', () => {
+  it('rejects raw payload fields before they reach ledger rows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-leak-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      expect(() =>
-        startCapabilityCall({
-          authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
-          capabilityId: 'llm.responses',
-          family: 'llm',
-          operation: 'responses.create',
-          redactionClass: 'metadata-only',
-          summary: 'LLM responses call',
-          workspaceDb,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          promptText: 'raw prompt',
-        } as Parameters<typeof startCapabilityCall>[0] & { promptText: string })
-      ).toThrow('Capability usage ledger values must be redacted before recording.');
+      await expect(
+        async () =>
+          await startCapabilityCall({
+            authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
+            capabilityId: 'llm.responses',
+            family: 'llm',
+            operation: 'responses.create',
+            redactionClass: 'metadata-only',
+            summary: 'LLM responses call',
+            workspaceDb,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            promptText: 'raw prompt',
+          } as Parameters<typeof startCapabilityCall>[0] & { promptText: string })
+      ).rejects.toThrow();
+      expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toEqual([]);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([]);
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('returns the existing call for the same request, family, and operation', () => {
+  it('returns the existing call for the same request, family, and operation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-idem-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      const first = startCapabilityCall({
+      const first = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         callId: 'cap_00000000-0000-75dc-aab7-3ea61262bb7c',
         capabilityId: 'llm.responses',
@@ -624,7 +650,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const second = startCapabilityCall({
+      const second = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         callId: 'cap_00000000-0000-782e-9bd8-eead654ad5df',
         capabilityId: 'llm.responses',
@@ -645,18 +671,20 @@ describe('capability usage ledger', () => {
       expect(second.id).toBe(first.id);
       expect(count.count).toBe(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('does not collapse explicit call ids when request id is absent', () => {
+  it('does not collapse explicit call ids when request id is absent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-null-request-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      const first = startCapabilityCall({
+      const first = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         callId: 'cap_00000000-0000-7967-bbe1-240c056d5680',
         capabilityId: 'runtime.worker_turn',
@@ -666,7 +694,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const second = startCapabilityCall({
+      const second = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         callId: 'cap_00000000-0000-79e7-a10b-a6c8afb658be',
         capabilityId: 'runtime.worker_turn',
@@ -680,16 +708,18 @@ describe('capability usage ledger', () => {
       expect(first.id).toBe('cap_00000000-0000-7967-bbe1-240c056d5680');
       expect(second.id).toBe('cap_00000000-0000-79e7-a10b-a6c8afb658be');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('rejects contradictory immutable attribution for an existing idempotency key', () => {
+  it('rejects contradictory immutable attribution for an existing idempotency key', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-retry-conflict-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
       const original = {
         agentId: 'agent_original',
@@ -713,7 +743,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       } satisfies Parameters<typeof startCapabilityCall>[0];
-      const first = startCapabilityCall(original);
+      const first = await startCapabilityCall(original);
       const originalRow = capabilityCallRow(workspaceDb, first.id);
       const contradictions = [
         ['capabilityId', { capabilityId: 'llm.chat-completions' }],
@@ -734,33 +764,35 @@ describe('capability usage ledger', () => {
       >;
 
       for (const [field, contradiction] of contradictions) {
-        expect(
-          () =>
-            startCapabilityCall({
+        await expect(
+          async () =>
+            await startCapabilityCall({
               ...original,
               ...contradiction,
               callId: testEntityId('cap', `cap_changed_${field}`),
             }),
           `${field} contradiction must fail closed`
-        ).toThrow();
+        ).rejects.toThrow();
         expect(
           workspaceDb.sqlite.prepare('SELECT * FROM capability_calls ORDER BY call_id').all(),
           `${field} contradiction must not change the ledger`
         ).toEqual([originalRow]);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('marks the capability call failed when usage recording fails', () => {
+  it('marks the capability call failed when usage recording fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-usage-failure-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -771,19 +803,20 @@ describe('capability usage ledger', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
-      expect(() =>
-        recordUsage({
-          call,
-          records: [
-            {
-              category: 'llm',
-              quantity: -1,
-              unit: 'tokens',
-            },
-          ],
-          workspaceDb,
-        })
-      ).toThrow();
+      await expect(
+        async () =>
+          await recordUsage({
+            call,
+            records: [
+              {
+                category: 'llm',
+                quantity: -1,
+                unit: 'tokens',
+              },
+            ],
+            workspaceDb,
+          })
+      ).rejects.toThrow();
       expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
         error_code: 'usage_record_failed',
         status: 'failed',
@@ -802,18 +835,20 @@ describe('capability usage ledger', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('does not duplicate terminal audit events when finish is retried', () => {
+  it('does not duplicate terminal audit events when finish is retried', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-audit-retry-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -825,13 +860,13 @@ describe('capability usage ledger', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
-      finishCapabilityCall({
+      await finishCapabilityCall({
         callId: call.id,
         now: new Date('2026-07-05T00:00:02.000Z'),
         status: 'succeeded',
         workspaceDb,
       });
-      finishCapabilityCall({
+      await finishCapabilityCall({
         callId: call.id,
         now: new Date('2026-07-05T00:00:03.000Z'),
         status: 'succeeded',
@@ -840,17 +875,19 @@ describe('capability usage ledger', () => {
 
       expect(auditRows(workspaceDb, call.id)).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('atomically terminalizes calls and recovers uncertain effects as unknown', () => {
+  it('atomically terminalizes calls and recovers uncertain effects as unknown', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-terminal-truth-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const rejected = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const rejected = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         callId: 'cap_00000000-0000-7e1a-8e69-82f38a3844c2',
         capabilityId: 'llm.responses',
@@ -870,14 +907,15 @@ describe('capability usage ledger', () => {
          END`
       );
 
-      expect(() =>
-        finishCapabilityCall({
-          callId: rejected.id,
-          errorCode: 'provider_failed',
-          status: 'failed',
-          workspaceDb,
-        })
-      ).toThrow('injected audit failure');
+      await expect(
+        async () =>
+          await finishCapabilityCall({
+            callId: rejected.id,
+            errorCode: 'provider_failed',
+            status: 'failed',
+            workspaceDb,
+          })
+      ).rejects.toThrow();
       expect(capabilityCallRow(workspaceDb, rejected.id)).toMatchObject({
         completed_at: null,
         status: 'running',
@@ -885,7 +923,7 @@ describe('capability usage ledger', () => {
       expect(auditRows(workspaceDb, rejected.id)).toEqual([]);
 
       workspaceDb.sqlite.exec('DROP TRIGGER reject_capability_finish_audit');
-      const uncertain = startCapabilityCall({
+      const uncertain = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         callId: 'cap_00000000-0000-7926-b356-5a41d8af7efb',
         capabilityId: 'mcp.probe.echo',
@@ -896,6 +934,7 @@ describe('capability usage ledger', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
+      await shutdownControlStoreWorkerClient();
       expect(recoverRunningCapabilityCalls({ workspaceDb })).toBe(2);
       expect(capabilityCallRow(workspaceDb, uncertain.id)).toMatchObject({
         error_code: 'capability_call_recovered_after_restart',
@@ -905,18 +944,20 @@ describe('capability usage ledger', () => {
         expect.objectContaining({ outcome: 'unknown', severity: 'warning' }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('records terminal audit events when running calls are recovered', () => {
+  it('records terminal audit events when running calls are recovered', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-audit-recovery-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
 
-      const call = startCapabilityCall({
+      const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -928,6 +969,7 @@ describe('capability usage ledger', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 
+      await shutdownControlStoreWorkerClient();
       expect(
         recoverRunningCapabilityCalls({
           now: new Date('2026-07-05T00:00:04.000Z'),
@@ -947,17 +989,19 @@ describe('capability usage ledger', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('reads only current-session category llm usage joined to a family llm call', () => {
+  it('reads only current-session category llm usage joined to a family llm call', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-current-session-llm-usage-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb);
-      const current = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const current = await startCapabilityCall({
         agentId: 'agent_codex',
         agentSessionId: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
@@ -973,7 +1017,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      recordUsage({
+      await recordUsage({
         call: current,
         now: new Date('2026-09-17T02:00:01.000Z'),
         records: [
@@ -987,7 +1031,7 @@ describe('capability usage ledger', () => {
         ],
         workspaceDb,
       });
-      const predecessor = startCapabilityCall({
+      const predecessor = await startCapabilityCall({
         agentId: 'agent_codex',
         agentSessionId: 'as_00000000-0000-7566-bb3c-0c317df86f2e',
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
@@ -1003,7 +1047,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      recordUsage({
+      await recordUsage({
         call: predecessor,
         now: new Date('2026-09-17T02:00:03.000Z'),
         records: [
@@ -1017,7 +1061,7 @@ describe('capability usage ledger', () => {
         ],
         workspaceDb,
       });
-      const mismatchedFamily = startCapabilityCall({
+      const mismatchedFamily = await startCapabilityCall({
         agentId: 'agent_codex',
         agentSessionId: 'as_00000000-0000-777a-9b6e-9393a5c0d8cf',
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
@@ -1033,7 +1077,7 @@ describe('capability usage ledger', () => {
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      recordUsage({
+      await recordUsage({
         call: mismatchedFamily,
         now: new Date('2026-09-17T02:00:05.000Z'),
         records: [
@@ -1061,6 +1105,7 @@ describe('capability usage ledger', () => {
         turnId: 'tu_00000000-0000-7e2b-8908-a810d8216ae9',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
@@ -1117,18 +1162,19 @@ function auditRows(
 }
 
 describe('retained call digest round-trip', () => {
-  it('exports then imports a digest and preserves absence on an old row', () => {
+  it('exports then imports a digest and preserves absence on an old row', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-digest-transfer-'));
     const source = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71b1-9af2-985861a05396');
     const target = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7b16-81e5-c0b623c0c636');
     try {
       applyScopedMigrations(source);
+      await openTestNativeWorkspace(source);
       applyScopedMigrations(target);
       for (const callId of [
         'cap_00000000-0000-7409-878a-46cfc62378f7',
         'cap_00000000-0000-7ff2-b713-d35db1d00ca0',
       ]) {
-        startCapabilityCall({
+        await startCapabilityCall({
           workspaceDb: source,
           workspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
           authorityActor: null,
@@ -1182,6 +1228,7 @@ describe('retained call digest round-trip', () => {
           .get('cap_00000000-0000-7409-878a-46cfc62378f7')
       ).toEqual({ system_prompt_digest: digest });
     } finally {
+      await shutdownControlStoreWorkerClient();
       source.sqlite.close();
       target.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -1190,12 +1237,13 @@ describe('retained call digest round-trip', () => {
 });
 
 describe('Gateway lineage recovery', () => {
-  it('keeps committed unknown attempt evidence when a running call is recovered', () => {
+  it('keeps committed unknown attempt evidence when a running call is recovered', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-lineage-recovery-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7849-b543-b73e540db459');
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7849-b543-b73e540db459',
         authorityActor: null,
@@ -1204,7 +1252,7 @@ describe('Gateway lineage recovery', () => {
         operation: 'responses',
         redactionClass: 'metadata-only',
       });
-      writeGatewayRouteLineage({
+      await writeGatewayRouteLineage({
         workspaceDb,
         call,
         logicalModelId: 'tier',
@@ -1223,6 +1271,7 @@ describe('Gateway lineage recovery', () => {
       const before = workspaceDb.sqlite
         .prepare('SELECT extensions_json FROM capability_calls')
         .get();
+      await shutdownControlStoreWorkerClient();
       expect(recoverRunningCapabilityCalls({ workspaceDb })).toBe(1);
       expect(
         workspaceDb.sqlite.prepare('SELECT extensions_json FROM capability_calls').get()
@@ -1238,6 +1287,7 @@ describe('Gateway lineage recovery', () => {
         },
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -1245,12 +1295,13 @@ describe('Gateway lineage recovery', () => {
 });
 
 describe('slice 1d round 2 canonical extension rewrite', () => {
-  it('keeps another stored namespace while validating and updating its owned namespace', () => {
+  it('keeps another stored namespace while validating and updating its owned namespace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'canonical-extensions-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7993-ac5a-37822c1bf7ab');
     try {
       applyScopedMigrations(workspaceDb);
-      const call = startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7993-ac5a-37822c1bf7ab',
         authorityActor: null,
@@ -1274,7 +1325,7 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
         outputBegan: false,
         terminalResult: 'unknown' as const,
       };
-      writeGatewayRouteLineage({ workspaceDb, call, logicalModelId: 'tier', entry });
+      await writeGatewayRouteLineage({ workspaceDb, call, logicalModelId: 'tier', entry });
       const read = () =>
         JSON.parse(
           (
@@ -1284,17 +1335,19 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
           ).extensions_json
         );
       expect(read()['future.example/evidence']).toEqual(other);
-      expect(() =>
-        writeGatewayRouteLineage({
-          workspaceDb,
-          call,
-          logicalModelId: 'tier',
-          entry: { ...entry, failureKind: 'new_kind' as never },
-        })
-      ).toThrow();
+      await expect(
+        async () =>
+          await writeGatewayRouteLineage({
+            workspaceDb,
+            call,
+            logicalModelId: 'tier',
+            entry: { ...entry, failureKind: 'new_kind' as never },
+          })
+      ).rejects.toThrow();
       expect(read()['future.example/evidence']).toEqual(other);
       expect(read()['openkit.gateway/routeLineage'].entries).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -1304,14 +1357,15 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
 it.each([
   'server',
   'foreign-workspace',
-] as const)('refuses %s call ownership before Workspace ledger import effects', (kind) => {
+] as const)('refuses %s call ownership before Workspace ledger import effects', async (kind) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-owner-import-'));
   const source = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
   const target = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
   try {
     applyScopedMigrations(source);
+    await openTestNativeWorkspace(source);
     applyScopedMigrations(target);
-    startCapabilityCall({
+    await startCapabilityCall({
       workspaceDb: source,
       workspaceId: source.workspaceId,
       authorityActor: { kind: 'user', id: allocateEntityId('usr') },
@@ -1355,6 +1409,7 @@ it.each([
       { id: accepted.id, owner: accepted.owner },
     ]);
   } finally {
+    await shutdownControlStoreWorkerClient();
     source.sqlite.close();
     target.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });

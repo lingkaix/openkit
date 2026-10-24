@@ -602,6 +602,282 @@ describe('control writer parent admission', () => {
     ).toHaveLength(0);
   });
 
+  it('drains only matching posted ACKs and defers matching posts while a sibling progresses', async () => {
+    const f = await poolFixture(2, 'after');
+    const target = f.scope(0);
+    const sibling = f.scope(1);
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const holds: Promise<() => void>[] = [];
+    let acquired = false;
+    Atomics.store(f.gate!, 0, 0);
+    const original = f.client.write(target.database, nativeRequest('before-hold'));
+    const originalSettled = Promise.allSettled([original]);
+    let deferred: Promise<unknown> | undefined;
+    try {
+      await waitForHold(f.gate!);
+      const pause = f.client.pauseForDataRootBackup(target.database).then((resume) => {
+        acquired = true;
+        return resume;
+      });
+      holds.push(pause);
+      deferred = f.client.write(target.database, nativeRequest('during-hold'));
+      void deferred.catch(() => {});
+      await expect(
+        f.client.write(sibling.database, nativeRequest('healthy'))
+      ).resolves.toHaveLength(1);
+      expect(acquired).toBe(false);
+      expect(nativeRequests(target.path)).toEqual(['before-hold']);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.database === target.database && request.operation === 'write'
+        )
+      ).toHaveLength(1);
+      release(f.gate);
+      await original;
+      const resume = await pause;
+      expect(acquired).toBe(true);
+      expect(nativeRequests(target.path)).toEqual(['before-hold']);
+      resume();
+      await deferred;
+
+      // Re-arm the same real ACK gate on the sibling; it must not join the target's drain.
+      Atomics.store(f.gate!, 0, 0);
+      Atomics.store(f.gate!, 1, 0);
+      const siblingWrite = f.client.write(sibling.database, nativeRequest('sibling-held'));
+      void siblingWrite.catch(() => {});
+      try {
+        await waitForHold(f.gate!);
+        const targetPause = f.client.pauseForDataRootBackup(target.database);
+        holds.push(targetPause);
+        await targetPause;
+        expect(Atomics.load(f.gate!, 1)).toBe(0);
+        expect(nativeRequests(sibling.path)).toContain('sibling-held');
+      } finally {
+        release(f.gate);
+        await Promise.allSettled([siblingWrite]);
+      }
+      await expect(siblingWrite).resolves.toHaveLength(1);
+    } finally {
+      release(f.gate);
+      for (const hold of holds) (await hold)();
+      await originalSettled;
+      await Promise.allSettled(deferred === undefined ? [] : [deferred]);
+    }
+  });
+
+  it('reserves held database slots before posting and snapshots their mutable binary input', async () => {
+    const f = await poolFixture(2);
+    const target = f.scope(0);
+    const sibling = f.scope(1);
+    const resume = await f.client.pauseForDataRootBackup(target.database);
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const sql: ControlSqlStatement[] = [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }];
+    const accepted = [
+      f.client.write(target.database, [
+        { mode: 'get', sql: 'SELECT ? AS payload', parameters: [bytes] },
+      ]),
+      ...Array.from({ length: CONTROL_WORKER_LIMITS.pendingTransitions - 1 }, () =>
+        f.client.write(target.database, sql)
+      ),
+    ];
+    const settled = Promise.allSettled(accepted);
+    bytes.fill(9);
+    try {
+      await expect(f.client.write(target.database, sql)).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      await expect(f.client.write(sibling.database, sql)).resolves.toMatchObject([
+        { mode: 'get', row: { value: 1n } },
+      ]);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.database === target.database && request.operation === 'write'
+        )
+      ).toHaveLength(0);
+    } finally {
+      resume();
+      resume();
+      await settled;
+    }
+    await expect(accepted[0]).resolves.toMatchObject([
+      { mode: 'get', row: { payload: new Uint8Array([1, 2, 3, 4]) } },
+    ]);
+    await expect(Promise.all(accepted)).resolves.toHaveLength(
+      CONTROL_WORKER_LIMITS.pendingTransitions
+    );
+    await expect(f.client.write(target.database, sql)).resolves.toHaveLength(1);
+  });
+
+  it('charges deferred database backing to the existing byte budget before posting', async () => {
+    const f = await poolFixture(1);
+    const target = f.scope(0);
+    const resume = await f.client.pauseForDataRootBackup(target.database);
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const bytes = new Uint8Array(256 * 1024);
+    const attempts = Math.floor(CONTROL_WORKER_LIMITS.pendingBytes / bytes.byteLength) + 1;
+    // Exceed backing capacity before the separate per-database slot bound can decide refusal.
+    expect(attempts).toBeLessThan(CONTROL_WORKER_LIMITS.pendingTransitions);
+    const accepted = Array.from({ length: attempts }, () =>
+      f.client
+        .write(target.database, [
+          { mode: 'get', sql: 'SELECT length(?) AS size', parameters: [bytes] },
+        ])
+        .catch((error: unknown) => error)
+    );
+    try {
+      await expect(Promise.race(accepted)).resolves.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(
+        0
+      );
+    } finally {
+      resume();
+      await Promise.all(accepted);
+    }
+    const results = await Promise.all(accepted);
+    const committed = results.filter(Array.isArray);
+    expect(committed.length).toBeGreaterThan(0);
+    for (const result of committed)
+      expect(result).toMatchObject([{ mode: 'get', row: { size: BigInt(bytes.byteLength) } }]);
+    for (const result of results.filter((result) => !Array.isArray(result)))
+      expect(result).toMatchObject({ code: 'busy', commit: 'not-committed' });
+    await expect(
+      f.client.write(target.database, [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }])
+    ).resolves.toHaveLength(1);
+  });
+
+  it('refuses a scoped hold on a failed channel without replaying posted or deferred writes', async () => {
+    const f = await poolFixture(2, 'after');
+    const target = f.scope(0);
+    const sibling = f.scope(1);
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    Atomics.store(f.gate!, 0, 0);
+    const original = f.client
+      .write(target.database, nativeRequest('committed-before-loss'))
+      .catch((error: unknown) => error);
+    let pause: Promise<unknown> | undefined;
+    let deferred: Promise<unknown> | undefined;
+    try {
+      await waitForHold(f.gate!);
+      pause = f.client.pauseForDataRootBackup(target.database).catch((error: unknown) => error);
+      deferred = f.client
+        .write(target.database, nativeRequest('never-posted'))
+        .catch((error: unknown) => error);
+      const call = posted.mock.calls.findIndex(
+        ([request]) => request.database === target.database && request.operation === 'write'
+      );
+      await (posted.mock.contexts[call] as NativeWorker).terminate();
+      expect(await original).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+      expect(await pause).toMatchObject({ code: 'unavailable' });
+      expect(await deferred).toMatchObject({ code: 'unavailable', commit: 'not-committed' });
+      await expect(f.client.pauseForDataRootBackup(target.database)).rejects.toMatchObject({
+        code: 'unavailable',
+      });
+      await expect(
+        f.client.write(sibling.database, nativeRequest('healthy-after-loss'))
+      ).resolves.toHaveLength(1);
+      expect(nativeRequests(target.path)).toEqual(['committed-before-loss']);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.database === target.database && request.operation === 'write'
+        )
+      ).toHaveLength(1);
+      expect(getControlStoreWorkerClient()).toBe(f.client);
+    } finally {
+      release(f.gate);
+      const held = await pause;
+      if (typeof held === 'function') held();
+      await Promise.allSettled(deferred === undefined ? [original] : [original, deferred]);
+    }
+  });
+
+  it('orders same-database holds FIFO and excludes later holds behind the global backup', async () => {
+    const f = await poolFixture(3);
+    const target = f.scope(0);
+    const sibling = f.scope(1);
+    const other = f.scope(2);
+    const holds: Promise<() => void>[] = [];
+    const queued: Promise<unknown>[] = [];
+    const first = f.client.pauseForDataRootBackup(target.database);
+    holds.push(first);
+    const releaseFirst = await first;
+    let secondAcquired = false;
+    let globalAcquired = false;
+    let laterTargetAcquired = false;
+    let laterSiblingAcquired = false;
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    try {
+      const second = f.client.pauseForDataRootBackup(target.database).then((resume) => {
+        secondAcquired = true;
+        return resume;
+      });
+      holds.push(second);
+      const independent = f.client.pauseForDataRootBackup(sibling.database);
+      holds.push(independent);
+      const releaseIndependent = await independent;
+      expect(secondAcquired).toBe(false);
+      const global = f.client.pauseForDataRootBackup().then((resume) => {
+        globalAcquired = true;
+        return resume;
+      });
+      holds.push(global);
+      const laterTarget = f.client.pauseForDataRootBackup(target.database).then((resume) => {
+        laterTargetAcquired = true;
+        return resume;
+      });
+      holds.push(laterTarget);
+      const laterSibling = f.client.pauseForDataRootBackup(sibling.database).then((resume) => {
+        laterSiblingAcquired = true;
+        return resume;
+      });
+      holds.push(laterSibling);
+      const otherWrite = f.client.write(other.database, nativeRequest('after-global'));
+      queued.push(otherWrite);
+      void otherWrite.catch(() => {});
+      releaseFirst();
+      const releaseSecond = await second;
+      expect(globalAcquired).toBe(false);
+      // Calling the old release twice must not release its current same-database successor.
+      releaseFirst();
+      const targetWrite = f.client.write(target.database, nativeRequest('after-local'));
+      queued.push(targetWrite);
+      void targetWrite.catch(() => {});
+      await nextTurn();
+      expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(
+        0
+      );
+      releaseSecond();
+      await nextTurn();
+      expect(globalAcquired).toBe(false);
+      releaseIndependent();
+      const resumeGlobal = await global;
+      expect(laterTargetAcquired).toBe(false);
+      expect(laterSiblingAcquired).toBe(false);
+      expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(
+        0
+      );
+      resumeGlobal();
+      await Promise.all([laterTarget, laterSibling]);
+      await expect(otherWrite).resolves.toHaveLength(1);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.database === target.database && request.operation === 'write'
+        )
+      ).toHaveLength(0);
+    } finally {
+      // Creation order is safe on assertion failure: each release lets its queued successor settle.
+      for (const hold of holds) (await hold)();
+      await Promise.allSettled(queued);
+    }
+    await expect(Promise.all(queued)).resolves.toHaveLength(2);
+    expect(nativeRequests(target.path)).toEqual(['after-local']);
+    expect(nativeRequests(other.path)).toEqual(['after-global']);
+  });
+
   it('pauses every routed Workspace and server host during a global backup capture', async () => {
     const f = await productPoolFixture();
     roots.push(`${f.root}.backups`);

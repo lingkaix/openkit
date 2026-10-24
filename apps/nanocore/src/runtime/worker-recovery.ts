@@ -1,5 +1,4 @@
 import {
-  clearWorkerCheckpointIfUnchanged,
   type InterruptedWorkerRetryDecision,
   resolveInterruptedWorkerRetryWorkspaceDecision,
 } from '../storage/control-store-checkpoints.js';
@@ -27,6 +26,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import {
@@ -1221,7 +1221,12 @@ export async function clearWorkerCheckpointAfterTerminalState(
 
   if (input.coreDb && input.store)
     await cancelNeverAllocatedWorkerJournal(input.coreDb, input.store, workspaceDb, checkpoint);
-  return clearWorkerCheckpointIfUnchanged(workspaceDb, checkpoint);
+  const removed = await getControlStoreWorkerClient().workspaceCapability(workspaceDb, {
+    kind: 'checkpoint',
+    input: { kind: 'clear-terminal', ...checkpoint },
+  });
+  if (typeof removed !== 'boolean') throw new TypeError('Invalid native checkpoint clear result.');
+  return removed;
 }
 
 /**

@@ -16,7 +16,9 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
@@ -913,13 +915,14 @@ process.kill(process.pid, 'SIGKILL');`,
     }
   });
 
-  it('recovers running capability calls during boot workspace scan', () => {
+  it('recovers running capability calls during boot workspace scan', async () => {
     const dataRoot = createDataRoot();
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
       applyScopedMigrations(workspaceDb);
-      startCapabilityCall({
+      await openTestNativeWorkspace(workspaceDb);
+      await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
         callId: 'cap_00000000-0000-7800-b75d-def690d8fb88',
         capabilityId: 'llm.responses',
@@ -931,6 +934,7 @@ process.kill(process.pid, 'SIGKILL');`,
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
 

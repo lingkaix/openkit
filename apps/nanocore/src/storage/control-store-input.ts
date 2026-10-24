@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
+import { WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import { z } from 'zod';
+
+/** Closed MCP Tool input shared without importing its runtime persistence owner. */
+export const WorkerCapabilityMcpToolSchema = z.object({
+  name: WorkspaceMcpToolNameSchema,
+  inputSchema: z.record(z.string(), z.unknown()),
+});
 
 type PresentFacts<T> = {
   [K in keyof T as undefined extends T[K] ? never : K]: T[K];

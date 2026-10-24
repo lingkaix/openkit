@@ -534,7 +534,7 @@ function requireThreadAudience(
 }
 
 /** Static wiring dispatches declared target strategies, including Recovery's distinct missing-lineage outcome. */
-function resolveTarget(
+export function resolveTarget(
   target: OperationTarget,
   input: Record<string, unknown>,
   dependencies: OperationAdmissionDependencies,

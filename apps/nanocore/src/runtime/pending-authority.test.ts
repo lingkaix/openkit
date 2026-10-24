@@ -89,8 +89,12 @@ vi.mock('node:worker_threads', async (load) => {
                 if(first!==0 && first!==threadId) Atomics.store(state,10,1);
                 if(prepare.call(db,"SELECT 1 FROM pending_requests WHERE claim='claimed' AND disposition IS NULL LIMIT 1").get()) claimed=true;
               }
-              if(result.changes && /^(?:INSERT(?: OR \\w+)? INTO|UPDATE|DELETE FROM)\\s+(?:main\\.)?["\\[]?(?:capability_calls|permission_decisions|audit_events)\\b/i.test(sql.trim()))
-                Atomics.add(state,5,result.changes);
+              const family=/^(?:INSERT(?: OR \\w+)? INTO|UPDATE|DELETE FROM)\\s+(?:main\\.)?["\\[]?(capability_calls|permission_decisions|audit_events)\\b/i.exec(sql.trim())?.[1];
+              if(result.changes && family){
+                Atomics.or(state,5,1 << ['capability_calls','permission_decisions','audit_events'].indexOf(family.toLowerCase()));
+                const first=Atomics.compareExchange(state,9,0,threadId);
+                if(first!==0 && first!==threadId) Atomics.store(state,10,1);
+              }
               if(result.changes && /^(?:INSERT(?: OR \\w+)? INTO|UPDATE)\\s+(?:main\\.)?["\\[]?idempotency_requests\\b/i.test(sql.trim()) &&
                 prepare.call(db,"SELECT name FROM sqlite_master WHERE name='pending_requests'").get()){
                 const rows=prepare.call(db,"SELECT p.claim,p.disposition FROM idempotency_requests i LEFT JOIN pending_requests p ON p.request_id=i.response_id WHERE i.command_name='approval.respond'").all();
@@ -765,7 +769,7 @@ async function capturedFixture() {
   };
 }
 
-it('keeps CapabilityCall, PermissionDecision and Audit on Main while completing one captured call', async () => {
+it('keeps CapabilityCall, PermissionDecision and Audit on the native writer while completing one captured call', async () => {
   const f = await capturedFixture();
   Atomics.store(f.state, 5, 0);
   Atomics.store(f.state, 6, 0);
@@ -804,8 +808,12 @@ it('keeps CapabilityCall, PermissionDecision and Audit on Main while completing 
       )
       .all(call!.id)
   ).toEqual([{ action: 'capability.admit' }]);
-  expect(Atomics.load(f.state, 6), 'All three actual Main SQL families must write.').toBe(7);
-  expect(Atomics.load(f.state, 5), 'None of these families may move to the native writer.').toBe(0);
+  expect(Atomics.load(f.state, 6), 'None of these Workspace families may write on Main.').toBe(0);
+  expect(Atomics.load(f.state, 5), 'All three actual native SQL families must write.').toBe(7);
+  expect(
+    Atomics.load(f.state, 10),
+    'The complete Workspace tuple must have one native writer.'
+  ).toBe(0);
   expect(Atomics.load(f.state, 8), 'The real original receipt write must be observed.').toBe(1);
   expect(Atomics.load(f.state, 7), 'No receipt may precede its owned disposition.').toBe(0);
   expect(

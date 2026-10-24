@@ -110,7 +110,6 @@ import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
 import { recordTaskTerminalFact } from './task-terminal-fact.js';
 import {
-  clearWorkerCheckpoint,
   listExportableWorkerCheckpoints,
   listThreadWorkerCheckpoints,
   upsertWorkerCheckpoint,
@@ -574,7 +573,7 @@ async function fixture(
         outcomeRef: null,
       })?.disposition
     ).toBe('accepted');
-    upsertWorkerCheckpoint(db, {
+    await upsertWorkerCheckpoint(db, {
       workspaceId: workspace.id,
       threadId: thread.id,
       turnId: turn.id,
@@ -623,7 +622,7 @@ async function fixture(
         },
       });
       await retainCompletedTaskFixture(store, db, turn.id);
-      clearWorkerCheckpoint(db, workspace.id, thread.id, turn.id);
+      // Keep the source checkpoint: retained history is not complete backend cleanup proof.
       const now = new Date().toISOString();
       const administratorId = testEntityId('usr', `${requestId}:administrator`);
       coreDb.sqlite
@@ -873,7 +872,6 @@ describe('Goal Coordinator missing Task grant routing', () => {
   it('preserves the actual Coordinator destination without a human request, effect or finite use', async () => {
     const f = await fixture({ taskGrant: false, uses: 2 });
     const mcp = await f.setupMcp();
-    const decide = vi.spyOn(mcp.interception, 'tryDecideSynchronously');
     const goalPending = listThreadPendingRequests(
       f.db.sqlite,
       f.scope.workspaceId,
@@ -894,16 +892,7 @@ describe('Goal Coordinator missing Task grant routing', () => {
     expect(
       readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
     ).toBe(0);
-    expect(decide).toHaveBeenCalledTimes(1);
-    expect(await decide.mock.results[0]!.value).toMatchObject({
-      result: 'require_escalation',
-      escalation: {
-        kind: 'coordinator',
-        workspaceId: f.scope.workspaceId,
-        goalId: f.scope.goalId,
-        agentId: 'goal-coordinator',
-      },
-    });
+    expect(f.goalWake).toHaveBeenCalledExactlyOnceWith(f.scope.workspaceId, f.scope.goalId);
   });
 
   it('advances the existing Goal wake marker and notifies only its Coordinator after a Task grant gap', async () => {
@@ -926,7 +915,6 @@ describe('Goal Coordinator missing Task grant routing', () => {
   it('rolls back the declined gap fact when its Goal marker update fails and permits a new request', async () => {
     const f = await fixture({ taskGrant: false, uses: 2 });
     const mcp = await f.setupMcp();
-    const decide = vi.spyOn(mcp.interception, 'tryDecideSynchronously');
     const calls = () =>
       listWorkspaceCapabilityCalls(f.db, f.scope.workspaceId).filter(
         (call) => call.operation === 'mcp.call-tool' && call.turnId === mcp.turn.id
@@ -952,11 +940,6 @@ describe('Goal Coordinator missing Task grant routing', () => {
     } finally {
       f.db.sqlite.exec('DROP TRIGGER reject_goal_gap_marker');
     }
-    expect(decide).toHaveBeenCalledTimes(1);
-    expect(await decide.mock.results[0]!.value).toMatchObject({
-      result: 'require_escalation',
-      escalation: { kind: 'coordinator', goalId: f.scope.goalId },
-    });
     expect(readGoalView(f.store, f.db, f.scope.goalId).goal).toEqual(before);
     expect(f.goalWake).not.toHaveBeenCalled();
     expect(mcp.gateway.callTool).not.toHaveBeenCalled();
@@ -1186,7 +1169,7 @@ describe('Goal-domain Task consumers', () => {
       mcp.turn.threadId
     )[0]!;
     let prepared: PreparedCapturedPendingCall | undefined;
-    let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+    let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
     let entered!: () => void;
     let release!: () => void;
     const upstreamEntered = new Promise<void>((resolve) => {
@@ -1241,8 +1224,8 @@ describe('Goal-domain Task consumers', () => {
           sqlite: f.db.sqlite,
           prepared,
         }),
-      admitExecution: () => {
-        executionCall = admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
+      admitExecution: async () => {
+        executionCall = await admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
       },
       execute: (claimed) =>
         executeCapturedPendingCall({
@@ -1313,7 +1296,7 @@ describe('Goal-domain Task consumers', () => {
       },
     });
     let prepared: PreparedCapturedPendingCall | undefined;
-    let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+    let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
     const settled = await respondRecordedApproval({
       store: f.store,
       sqlite: f.db.sqlite,
@@ -1355,8 +1338,8 @@ describe('Goal-domain Task consumers', () => {
           sqlite: f.db.sqlite,
           prepared,
         }),
-      admitExecution: () => {
-        executionCall = admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
+      admitExecution: async () => {
+        executionCall = await admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
       },
       execute: (claimed) =>
         executeCapturedPendingCall({

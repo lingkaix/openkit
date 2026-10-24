@@ -253,7 +253,7 @@ export function createWorkerEnvironmentPreparation(
       const workspaceId = dependencies.privateWorkspaceIdForUser(context.actor.userId);
       requireAdministrationThread(dependencies.store, workspaceId, request.administrationThreadId);
 
-      return runIdempotentCommand({
+      const response = await runIdempotentCommand({
         command: 'worker_environment.prepare',
         execute: async () => {
           dependencies.requireCurrentAdministrator(context.actor);
@@ -291,6 +291,8 @@ export function createWorkerEnvironmentPreparation(
         },
         store: dependencies.store,
       });
+      readCandidatePair(context.actor, response.resolvedCandidate);
+      return response;
     },
 
     readResolved(context, resolvedCandidate) {

@@ -27,6 +27,7 @@ import {
 } from '../runtime/pending-requests.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import type { ControlCapabilityCommandInput } from '../storage/control-store-capability.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
 import {
@@ -420,8 +421,10 @@ export interface RecordBootPolicySelfCheckDecisionsInput {
  *
  * @param input Permission decision record input.
  */
-export function recordPermissionDecision(input: RecordPermissionDecisionInput): void {
-  recordProductPermissionDecisionInDb({
+export function recordPermissionDecision(
+  input: RecordPermissionDecisionInput
+): void | Promise<void> {
+  return recordProductPermissionDecision({
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     ...(input.workspaceDb ? { workspaceDb: input.workspaceDb } : {}),
     decisionId: input.decisionId,
@@ -450,8 +453,34 @@ export function recordPermissionDecision(input: RecordPermissionDecisionInput): 
   });
 }
 
-/** Public decisions retain their original synchronous owner until the complete family flip. */
-export { recordProductPermissionDecisionInDb as recordProductPermissionDecision };
+/** Publishes Workspace decisions through the native owner; other owners keep their existing body. */
+export function recordProductPermissionDecision(
+  input: RecordProductPermissionDecisionInput & { ownerScope: 'workspace' }
+): Promise<void>;
+export function recordProductPermissionDecision(
+  input: RecordProductPermissionDecisionInput & { ownerScope: 'server' | 'user' }
+): void;
+export function recordProductPermissionDecision(
+  input: RecordProductPermissionDecisionInput
+): void | Promise<void>;
+export function recordProductPermissionDecision(
+  input: RecordProductPermissionDecisionInput
+): void | Promise<void> {
+  if (input.ownerScope !== 'workspace') return recordProductPermissionDecisionInDb(input);
+  if (!input.workspaceDb)
+    throw new Error('Workspace-scoped permission decisions require workspaceDb.');
+  if (input.workspaceId !== input.workspaceDb.workspaceId)
+    throw new Error('Permission decision database owner mismatch.');
+  return getControlStoreWorkerClient()
+    .workspaceCapability(input.workspaceDb, {
+      kind: 'permission',
+      workspaceId: input.workspaceDb.workspaceId,
+      decision: prepareControlPermissionDecision(input),
+    })
+    .then((result) => {
+      if (result !== null) throw new TypeError('Invalid native permission decision result.');
+    });
+}
 
 /** Normalizes descriptive JSON once; the existing native envelope validates the prepared decision. */
 export function prepareControlPermissionDecision(
@@ -1003,7 +1032,7 @@ function mapServerPermissionDecisionRow(
  * @param input Gateway policy decision input.
  */
 export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionInput): void {
-  recordProductPermissionDecisionInDb({
+  recordProductPermissionDecision({
     coreDb: input.coreDb,
     decisionId: allocateEntityId('pd'),
     ownerScope: 'server',

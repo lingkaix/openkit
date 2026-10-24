@@ -242,7 +242,7 @@ it.each([
       queueEntryId: 'queue_cancelled_note',
       workspaceId: workspace.id,
     });
-    upsertWorkerCheckpoint(db, {
+    await upsertWorkerCheckpoint(db, {
       workspaceId: workspace.id,
       threadId: refused.id,
       turnId: reservedTurnId,
@@ -252,13 +252,13 @@ it.each([
       stage: 'preparing',
       iteration: 0,
     });
-    updateWorkerCheckpoint(db, {
+    await updateWorkerCheckpoint(db, {
       authorityActor: { kind: 'user', id: actor.userId },
       workspaceId: workspace.id,
       threadId: refused.id,
       turnId: reservedTurnId,
       stage: 'failed',
-      stopReason: 'failed',
+      stopReason: 'error',
       diagnosticsSummary: refusal,
     });
     const unrelated = await store.createThread(
@@ -353,7 +353,7 @@ it.each([
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
-    upsertWorkerCheckpoint(db, {
+    await upsertWorkerCheckpoint(db, {
       workspaceId: workspace.id,
       threadId: privateThread.id,
       turnId: privateTurn.id,
@@ -362,7 +362,7 @@ it.each([
       stage: 'preparing',
       iteration: 0,
     });
-    updateWorkerCheckpoint(db, {
+    await updateWorkerCheckpoint(db, {
       authorityActor: { kind: 'user', id: privateOwnerUserId },
       workspaceId: workspace.id,
       threadId: privateThread.id,

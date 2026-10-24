@@ -20,7 +20,9 @@ import {
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
 import { CONTROL_NATIVE_RECEIPT_COMMANDS } from '../storage/control-store-admission.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 
 /** Original command facts passed to the existing producer before its single native tuple; the product owner supplies the final response pointer. */
 export type IdempotentCommandReceipt = Readonly<
@@ -229,22 +231,6 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     'receiptDb' in options && options.receiptDb
       ? options.receiptDb
       : (options.coreDb ?? options.workspaceDb ?? options.appDb);
-  const existingRecord = options.store.getCommandRequest(
-    options.command,
-    options.requestId,
-    options.scope,
-    commandDb
-  );
-
-  if (existingRecord) {
-    if (existingRecord.inputHash !== inputHash) {
-      throw new IdempotencyKeyConflictError();
-    }
-
-    return options.replay(existingRecord);
-  }
-
-  const key = commandRequestKey(options.command, options.requestId, options.scope);
   const workerOwned =
     options.store.getDataRoot() !== null &&
     (CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === options.command) ||
@@ -263,6 +249,42 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
     options.scope.userId === undefined &&
     options.scope.appId === undefined;
+  const dataRoot = options.store.getDataRoot();
+  const mainWorkspaceDatabase =
+    !workerOwned &&
+    dataRoot !== null &&
+    options.scope.workspaceId !== undefined &&
+    options.scope.appId === undefined &&
+    options.scope.userId === undefined &&
+    options.scope.coreId === undefined
+      ? `workspace:${workspaceDbPath(dataRoot, options.scope.workspaceId)}`
+      : undefined;
+  // An explicit receipt connection only reads here; path-opening Main lookup also prunes.
+  const resumeLookup =
+    mainWorkspaceDatabase && commandDb === undefined
+      ? await getControlStoreWorkerClient().pauseForDataRootBackup(mainWorkspaceDatabase)
+      : undefined;
+  let existingRecord: CommandRequestRecord | null;
+  try {
+    existingRecord = options.store.getCommandRequest(
+      options.command,
+      options.requestId,
+      options.scope,
+      commandDb
+    );
+  } finally {
+    resumeLookup?.();
+  }
+
+  if (existingRecord) {
+    if (existingRecord.inputHash !== inputHash) {
+      throw new IdempotencyKeyConflictError();
+    }
+
+    return options.replay(existingRecord);
+  }
+
+  const key = commandRequestKey(options.command, options.requestId, options.scope);
   if (workerOwned && transaction) {
     throw new Error(
       'Native product commands must commit their whole tuple in the database worker.'
@@ -352,22 +374,38 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   };
   const promise = (async () => {
     if (transaction) {
-      return transaction.db.sqlite.transaction(() => {
-        const result = transaction.execute();
+      const resume =
+        mainWorkspaceDatabase && transaction.db.scope === 'workspace'
+          ? await getControlStoreWorkerClient().pauseForDataRootBackup(mainWorkspaceDatabase)
+          : undefined;
+      try {
+        return transaction.db.sqlite.transaction(() => {
+          const result = transaction.execute();
 
-        if (
-          result !== null &&
-          (typeof result === 'object' || typeof result === 'function') &&
-          typeof (result as { then?: unknown }).then === 'function'
-        ) {
-          throw new Error('Transactional commands must execute synchronously.');
-        }
+          if (
+            result !== null &&
+            (typeof result === 'object' || typeof result === 'function') &&
+            typeof (result as { then?: unknown }).then === 'function'
+          ) {
+            throw new Error('Transactional commands must execute synchronously.');
+          }
 
-        return recordResult(result as T);
-      })();
+          return recordResult(result as T);
+        })();
+      } finally {
+        resume?.();
+      }
     }
 
-    return recordResult(await options.execute(receipt));
+    const result = await options.execute(receipt);
+    const resume = mainWorkspaceDatabase
+      ? await getControlStoreWorkerClient().pauseForDataRootBackup(mainWorkspaceDatabase)
+      : undefined;
+    try {
+      return recordResult(result);
+    } finally {
+      resume?.();
+    }
   })();
 
   storeInflightCommands.set(key, { inputHash, promise });

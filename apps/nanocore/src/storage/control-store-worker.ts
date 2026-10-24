@@ -1321,9 +1321,7 @@ function schedule(owner: OwnedDatabase): void {
       (request) =>
         request.operation === 'capability' &&
         request.ready &&
-        (request.immediate ||
-          request.input.kind === 'raw-settle' ||
-          request.input.kind === 'raw-invalidate')
+        (request.immediate || request.input.kind !== 'raw-observe')
     ) ||
     owner.pending.some(
       (request) =>

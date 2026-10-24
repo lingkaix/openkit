@@ -73,6 +73,25 @@ import {
   WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
 } from './worker-inference-tool-policy.js';
 
+/** Binds already encoded immutable bytes to the captured source prefix on the existing stream. */
+function coverModelOutputController(
+  output: ReadableStreamDefaultController<Uint8Array>,
+  bind?: (chunk: Uint8Array) => void
+): ReadableStreamDefaultController<Uint8Array> {
+  if (!bind) return output;
+  return {
+    get desiredSize() {
+      return output.desiredSize;
+    },
+    close: () => output.close(),
+    error: (error) => output.error(error),
+    enqueue: (chunk) => {
+      if (chunk !== undefined) bind(chunk);
+      output.enqueue(chunk);
+    },
+  };
+}
+
 /**
  * Error thrown when a Gateway admission cannot preserve requested semantics.
  */
@@ -270,14 +289,14 @@ function prepareSubscriptionInference(
   options: StreamOptions & Record<string, unknown>,
   signal?: AbortSignal,
   absoluteDeadline?: number,
-  onProviderHandoff?: () => void,
+  onProviderHandoff?: () => void | Promise<void>,
   rawOutput?: LLMGatewayTransportContext['rawOutput']
 ) {
   const handle = subscriptionInferenceHandle(models);
   let presented: SubscriptionInferenceAuth | undefined;
   return {
     /** Uses stock lazy setup and transcript normalization, passing resolved auth directly to the selected Provider. */
-    stream(context: Context, streamOptions = options) {
+    async stream(context: Context, streamOptions = options) {
       const simple = usesSimpleEffort(model, streamOptions);
       const { model: entryModel, options: entryOptions } = stockEffortRequest(model, streamOptions);
       const sourceSettled = rawOutput?.sourceStarted();
@@ -287,7 +306,7 @@ function prepareSubscriptionInference(
       };
       if (!handle) {
         try {
-          onProviderHandoff?.();
+          await onProviderHandoff?.();
           return track(
             simple
               ? models.streamSimple(entryModel, context, entryOptions)
@@ -299,7 +318,7 @@ function prepareSubscriptionInference(
         }
       }
       const transcript = normalizeContext(context);
-      onProviderHandoff?.();
+      await onProviderHandoff?.();
       return track(
         lazyStream(entryModel, async () => {
           const resolved = await handle.resolveInferenceAuth(streamOptions.signal);
@@ -433,7 +452,7 @@ async function completeObservedModel(
   context: Context,
   options: StreamOptions & Record<string, unknown>,
   transport: LLMGatewayTransportContext,
-  onTerminal: (message: AssistantMessage, failure: Error | undefined) => void,
+  onTerminal: (message: AssistantMessage, failure: Error | undefined) => void | Promise<void>,
   validateEvent?: (event: AssistantMessageEvent) => void
 ): Promise<AssistantMessage> {
   const inference = prepareSubscriptionInference(
@@ -449,11 +468,11 @@ async function completeObservedModel(
     let response: AssistantMessage;
     try {
       if (subscriptionInferenceHandle(models)) {
-        response = await inference.stream(context).result();
+        response = await (await inference.stream(context)).result();
       } else {
         const simple = usesSimpleEffort(model, options);
         const { model: entryModel, options: entryOptions } = stockEffortRequest(model, options);
-        transport.onProviderHandoff?.();
+        await transport.onProviderHandoff?.();
         const sourceSettled = transport.rawOutput?.sourceStarted();
         try {
           response = simple
@@ -469,7 +488,7 @@ async function completeObservedModel(
       throw failure;
     }
     const failure = terminalPiAiFailure(response);
-    onTerminal(response, failure);
+    await onTerminal(response, failure);
     await inference.observe(failure);
     return response;
   }
@@ -477,7 +496,7 @@ async function completeObservedModel(
   const signal = transport.signal
     ? AbortSignal.any([transport.signal, localAbort.signal])
     : localAbort.signal;
-  const events = inference.stream(context, { ...options, signal });
+  const events = await inference.stream(context, { ...options, signal });
   const iterator = inference.iterator(events[Symbol.asyncIterator]());
   try {
     while (true) {
@@ -493,7 +512,7 @@ async function completeObservedModel(
             ? result.value.error
             : undefined;
       const terminalFailure = terminalMessage ? terminalPiAiFailure(terminalMessage) : undefined;
-      if (terminalMessage) onTerminal(terminalMessage, terminalFailure);
+      if (terminalMessage) await onTerminal(terminalMessage, terminalFailure);
       if (transport.onModelEvent) await observeModelEvent(result.value, transport.onModelEvent);
       validateEvent?.(result.value);
       if (result.value.type === 'done') {
@@ -599,7 +618,7 @@ export class PiAiGatewayClient {
   public async createChatCompletion(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest,
-    onUsage?: (usage: unknown) => void,
+    onUsage?: (usage: unknown) => void | Promise<void>,
     transport: LLMGatewayTransportContext = {},
     models: Models = this.models
   ): Promise<OpenAICompatibleChatCompletionResponse> {
@@ -618,9 +637,9 @@ export class PiAiGatewayClient {
           context,
           this.toStreamOptions(provider, request, transport, model),
           transport,
-          (message, failure) => {
+          async (message, failure) => {
             observedFailure = failure;
-            publishObservedUsage(onUsage, message.usage, model, knownCost);
+            await publishObservedUsage(onUsage, message.usage, model, knownCost);
           },
           createChatToolValidator(declaredTools)
         ),
@@ -646,7 +665,7 @@ export class PiAiGatewayClient {
   public async createChatCompletionStream(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest,
-    onUsage?: (usage: unknown) => void,
+    onUsage?: (usage: unknown) => void | Promise<void>,
     transport: LLMGatewayTransportContext = {},
     models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
@@ -669,7 +688,7 @@ export class PiAiGatewayClient {
     );
     const context = this.toContext(request, model);
     const declaredTools = new Set(context.tools?.map((tool) => tool.name));
-    const events = inference.stream(context);
+    const events = await inference.stream(context);
     const iterator = inference.iterator(events[Symbol.asyncIterator]());
 
     return this.toChatCompletionSseStream(
@@ -682,7 +701,8 @@ export class PiAiGatewayClient {
         localAbortController.abort(reason);
       },
       transport.onModelEvent,
-      (_message, failure) => inference.observe(failure)
+      (_message, failure) => inference.observe(failure),
+      transport.rawOutput
     );
   }
 
@@ -700,7 +720,7 @@ export class PiAiGatewayClient {
   public async createResponses(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
-    onUsage?: (usage: unknown) => void,
+    onUsage?: (usage: unknown) => void | Promise<void>,
     transport: LLMGatewayTransportContext = {},
     models: Models = this.models
   ): Promise<OpenAICompatibleResponsesResponse> {
@@ -756,9 +776,9 @@ export class PiAiGatewayClient {
             bridgeNames
           ),
           transport,
-          (message, failure) => {
+          async (message, failure) => {
             observedFailure = failure;
-            publishObservedUsage(onUsage, message.usage, model, knownCost);
+            await publishObservedUsage(onUsage, message.usage, model, knownCost);
           }
         ),
       transport.signal,
@@ -805,7 +825,7 @@ export class PiAiGatewayClient {
   public async createResponsesStream(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
-    onUsage?: (usage: unknown) => void,
+    onUsage?: (usage: unknown) => void | Promise<void>,
     transport: LLMGatewayTransportContext = {},
     models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
@@ -850,7 +870,7 @@ export class PiAiGatewayClient {
       transport.onProviderHandoff,
       transport.rawOutput
     );
-    const events = inference.stream(
+    const events = await inference.stream(
       toPiResponsesContext(
         request,
         model,
@@ -893,7 +913,8 @@ export class PiAiGatewayClient {
       transport.onModelEvent,
       (item) => recordReturnedReasoning(item, member, this.reasoningAttribution),
       (_message, failure) => inference.observe(failure),
-      envelope
+      envelope,
+      transport.rawOutput
     );
   }
 
@@ -1444,7 +1465,7 @@ export class PiAiGatewayClient {
         observe(event);
         boundary.sourceEvent();
       } catch (error) {
-        boundary.fail(
+        await boundary.fail(
           error instanceof RawOutputObservationUnavailableError
             ? new GatewayUnsupportedFeatureError('Worker raw output observation')
             : error instanceof Error
@@ -1453,7 +1474,7 @@ export class PiAiGatewayClient {
         );
       }
       await previous?.(event, selected);
-      // Accounting commits synchronously before yielding; queued native deltas cannot starve liveness.
+      // Admit this position before yielding; the outward stream waits for its covering native ACK.
       await scheduler.yield();
     };
   }
@@ -1581,11 +1602,12 @@ export class PiAiGatewayClient {
     iterator: AsyncIterator<AssistantMessageEvent>,
     requestModel: string,
     declaredTools: ReadonlySet<string>,
-    onUsage: ((usage: unknown) => void) | undefined,
+    onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
     signal: AbortSignal,
     abortUpstream: (reason?: unknown) => void,
     onModelEvent?: (event: ModelSemanticEvent) => void | Promise<void>,
-    onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>
+    onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>,
+    rawOutput?: LLMGatewayTransportContext['rawOutput']
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     let id = `chatcmpl_pi_${Date.now()}`;
@@ -1722,6 +1744,7 @@ export class PiAiGatewayClient {
 
     return new ReadableStream<Uint8Array>({
       pull: async (controller) => {
+        const output = controller;
         if (cancelled || terminal) {
           return;
         }
@@ -1751,7 +1774,8 @@ export class PiAiGatewayClient {
               return;
             }
 
-            const event = result.value;
+            const event = structuredClone(result.value);
+            controller = coverModelOutputController(output, rawOutput?.coverAcknowledgement?.());
             if (event.type === 'error')
               terminalFailure = attachPiAiFailure(
                 new Error(event.error.errorMessage ?? 'pi-ai stream failed'),
@@ -1759,7 +1783,7 @@ export class PiAiGatewayClient {
               );
             if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
               usageObserved = true;
-              onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
+              await onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
             }
             if (onModelEvent) await observeModelEvent(event, onModelEvent);
             validateEvent(event);
@@ -1906,7 +1930,7 @@ export class PiAiGatewayClient {
               const drained = drainThinking(controller);
               if (!usageObserved) {
                 usageObserved = true;
-                onUsage?.(event.error.usage);
+                await onUsage?.(event.error.usage);
               }
               const usage = toChatUsage(event.error.usage);
               if (usage) {
@@ -1942,7 +1966,7 @@ export class PiAiGatewayClient {
               });
               if (!usageObserved) {
                 usageObserved = true;
-                onUsage?.(event.message.usage);
+                await onUsage?.(event.message.usage);
               }
               const usage = toChatUsage(event.message.usage);
               controller.enqueue(
@@ -3763,16 +3787,18 @@ function toResponsesSseStream(
   additionalTools: ResponsesAdditionalTools | undefined,
   requireEncryptedReasoning: boolean,
   preserveNativeTextIdentity: boolean,
-  onUsage: ((usage: unknown) => void) | undefined,
+  onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
   signal: AbortSignal,
   abortUpstream: (reason?: unknown) => void,
   bridgeNames?: ResponsesBridgeNames,
   onModelEvent?: (event: ModelSemanticEvent) => void | Promise<void>,
   onReasoningItem?: (item: Record<string, unknown>) => void,
   onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>,
-  envelope?: ResponsesNativeEnvelope
+  envelope?: ResponsesNativeEnvelope,
+  rawOutput?: LLMGatewayTransportContext['rawOutput']
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
+  const sourceEnvelope = envelope;
   const itemNamespace = randomUUID();
   let pending: IteratorResult<AssistantMessageEvent> | undefined = first;
   let cancelled = false;
@@ -3874,6 +3900,7 @@ function toResponsesSseStream(
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
+      const output = controller;
       if (cancelled || terminal) {
         return;
       }
@@ -3892,7 +3919,9 @@ function toResponsesSseStream(
             return;
           }
 
-          const event = result.value;
+          const event = structuredClone(result.value);
+          envelope = sourceEnvelope ? structuredClone(sourceEnvelope) : undefined;
+          controller = coverModelOutputController(output, rawOutput?.coverAcknowledgement?.());
           const source =
             event.type === 'done'
               ? event.message
@@ -3919,7 +3948,7 @@ function toResponsesSseStream(
               : undefined;
           if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
             usageObserved = true;
-            onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
+            await onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
           }
           if (onModelEvent) await observeModelEvent(event, onModelEvent);
           if (event.type === 'done' || event.type === 'error')
@@ -4238,7 +4267,7 @@ function toResponsesSseStream(
           if (event.type === 'error') {
             if (!usageObserved) {
               usageObserved = true;
-              onUsage?.(event.error.usage);
+              await onUsage?.(event.error.usage);
             }
             terminal = true;
             controller.error(observedFailure);
@@ -4248,7 +4277,7 @@ function toResponsesSseStream(
           if (event.type === 'done') {
             if (!usageObserved) {
               usageObserved = true;
-              onUsage?.(event.message.usage);
+              await onUsage?.(event.message.usage);
             }
             for (const contentIndex of pendingReasoning) {
               const block = event.message.content[contentIndex];
@@ -4880,37 +4909,33 @@ interface ResolvedAdapterModel {
  * @param knownCost Whether authored, catalog, and real stock rates are complete.
  */
 function publishObservedUsage(
-  onUsage: ((usage: unknown) => void) | undefined,
+  onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
   usage: unknown,
   model: Model<string>,
   knownCost: boolean
-): void {
+): void | Promise<void> {
   if (!onUsage) {
     return;
   }
   const record = readRecord(usage);
   if (!record) {
-    onUsage(usage);
-    return;
+    return onUsage(usage);
   }
   if (!knownCost) {
     const { cost: _cost, ...rest } = record;
-    onUsage(rest);
-    return;
+    return onUsage(rest);
   }
   const computed = usageForCost(record);
   if (!computed) {
     const { cost: _cost, ...rest } = record;
-    onUsage(rest);
-    return;
+    return onUsage(rest);
   }
   calculateCost(model, computed);
   if (!Number.isFinite(computed.cost.total) || computed.cost.total < 0) {
     const { cost: _cost, ...rest } = record;
-    onUsage(rest);
-    return;
+    return onUsage(rest);
   }
-  onUsage({ ...record, cost: computed.cost });
+  return onUsage({ ...record, cost: computed.cost });
 }
 
 /**
