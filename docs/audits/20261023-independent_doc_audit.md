@@ -36,7 +36,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/AGENTS.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/core/contract-evolution.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
 | `docs/core/architecture.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
-| `docs/core/protocol.md` | protocol | open, pending | — |
+| `docs/core/protocol.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
 | `docs/core/communication.md` | communication | open, pending | — |
 | `docs/core/identity.md` | identity | open, pending | — |
 | `docs/core/policy.md` | policy | open, pending | — |
@@ -75,8 +75,8 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260710-web_ui_rebuild_stack.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/specs/20260910-agent_operator_skill.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/specs/20261020-compute_neutrality_target.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
-| `docs/specs/20261021-protocol_identifiers_and_enums.md` | protocol | open, pending | — |
-| `docs/specs/20260704-app_api_openapi_projection.md` | protocol | open, pending | — |
+| `docs/specs/20261021-protocol_identifiers_and_enums.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
+| `docs/specs/20260704-app_api_openapi_projection.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
 | `docs/specs/20260703-worker_control_protocol.md` | communication | open, pending | — |
 | `docs/specs/20261002-remote_mcp_interface.md` | communication | open, pending | — |
 | `docs/specs/20260528-core_client_boundary.md` | communication | open, pending | — |
@@ -323,3 +323,12 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-26 | architecture | May Vault screens show an AgentSession id | Vault owner defines a user-facing grant target |
 | Q-27 | architecture | The virtualization MUST | Replace with a measured-need rule |
 | Q-28 | architecture | Undefined plan labels | Link or replace each label |
+| Q-29 | protocol | `context-injection` or `knowledge-injection` | Change the documents to the retained `knowledge-injection` |
+| Q-30 | protocol | List `generative-ui-reference` and `context-summary` in the item-to-delta table | Add both rows |
+| Q-31 | protocol | What the error-code namespace rule requires | Allow flat Core command codes |
+| Q-32 | protocol | List the remaining closed enums in the identifiers specification | Add the five lists with Q-01 |
+| Q-33 | protocol | Owner of cross-event delta correlation | State a producer obligation proved by fixtures |
+| Q-34 | protocol | Closed OpenAPI exclusion list versus the coverage test | Add the three surfaces, drop test-support |
+| Q-35 | protocol | Actor allowed to read `/api/openapi.json` | State "authenticated" |
+| Q-36 | protocol | NanoCore reads the generated document for route identity | Derive from the catalog and definitions |
+| Q-37 | protocol | Property protected by the seven-day receipt expiry | Engineer states it; mark as current default |
