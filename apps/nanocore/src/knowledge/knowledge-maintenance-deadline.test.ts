@@ -605,7 +605,7 @@ it('returns the owned timeout code in the Server maintenance summary without pub
   expect(providerSignal?.aborted).toBe(true);
   expect(settledCalls).toEqual([
     expect.objectContaining({
-      status: expect.stringMatching(/^(failed|aborted)$/),
+      status: 'timed-out',
       turnId: result.turnId,
     }),
   ]);

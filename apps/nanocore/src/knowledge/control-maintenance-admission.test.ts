@@ -22,6 +22,7 @@ import {
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { initializeTestCore } from '../test-support/store.js';
 import type { ControlMaintenanceAdmissionInput } from './knowledge-agent-maintenance.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge-maintenance-schedule.js';
 import { NotebookError } from './notebook.js';
@@ -33,6 +34,7 @@ const userId = allocateEntityId('usr');
 /** Runs the actual owner on a real worker connection; test setup finishes before native writing starts. */
 function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
   const root = mkdtempSync(join(tmpdir(), 'maintenance-admission-'));
+  if (kind === 'user') initializeTestCore(root);
   const workspaceId =
     kind === 'user' ? quickChatWorkspaceIdForUser(userId) : allocateEntityId('ws');
   const db = kind === 'server' ? openCoreDb(root) : openWorkspaceDb(root, workspaceId);

@@ -745,6 +745,7 @@ it('flushes the exact crossing prefix before native stop and rejects the next so
     new Response(wire, { headers: { 'content-type': 'text/event-stream' } })
   );
   const held: (() => void)[] = [];
+  const crossingReply = Promise.withResolvers<void>();
   streamWriter.holdReply = (value, release) => {
     const reply = value as { status?: unknown; operation?: unknown };
     if (reply.status !== 'ok' || reply.operation !== 'capability' || held.length) return false;
@@ -753,6 +754,7 @@ it('flushes the exact crossing prefix before native stop and rejects the next so
       | undefined;
     if (proof?.byteLength !== crossingBytes) return false;
     held.push(release);
+    crossingReply.resolve();
     return true;
   };
   let proofAtStop: unknown;
@@ -765,7 +767,8 @@ it('flushes the exact crossing prefix before native stop and rejects the next so
     (error: unknown) => error
   );
   try {
-    await vi.waitFor(() => expect(held).toHaveLength(1));
+    await Promise.race([crossingReply.promise, request]);
+    expect(held).toHaveLength(1);
     // COORD07:5x: crossing is durable, but a held native ACK cannot authorize dependent stop yet.
     expect(Atomics.load(commits, 1)).toBeGreaterThan(0);
     expect(f.onRawOutputStop).not.toHaveBeenCalled();
