@@ -81,7 +81,7 @@ and are not listed here.
 - `docs/specs/20260703-worker_agent_capability.md` — Accepted, Partial — The worker-facing agent capability plane and its gateway projection.
 - `docs/specs/20260703-worker_context_package.md` — Accepted, Partial — Worker-facing context package inputs, manifest shape, materialized file layout, trace records, and replay requirements.
 - `docs/specs/20260703-worker_control_protocol.md` — Accepted, Partial — The worker-visible end-to-end control-plane protocol between Sandbox Integration and NanoCore.
-- `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — This spec owns the backend-portable workspace synchronization contract for
+- `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — This spec owns the backend-portable workspace synchronization contract for worker-agent work:
 - `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — The current durable AgentSession identity, one-current-per-Thread selection, historical replacement lineage, and the relationship of one AgentSession to one Th…
 - `docs/specs/20260704-app_api_openapi_projection.md` — Accepted, Implemented — The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer, including the selected Worker MCP producer.
@@ -250,6 +250,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261024-independent_doc_audit_mediation.md` — Independent Documentation Audit: Mediation Group
 - `docs/audits/20261024-independent_doc_audit_policy.md` — Independent Documentation Audit: Policy Group
 - `docs/audits/20261024-independent_doc_audit_protocol.md` — Independent Documentation Audit: Protocol Group
+- `docs/audits/20261024-independent_doc_audit_sandbox.md` — Independent Documentation Audit: Sandbox Group
 - `docs/audits/20261024-independent_doc_audit_vault.md` — Independent Documentation Audit: Vault Group
 
 ## Platform References
