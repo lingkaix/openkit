@@ -1,4 +1,11 @@
-import { createHash } from 'node:crypto';
+import { commandInputHash } from '../storage/control-store-input.js';
+
+export { commandInputHash } from '../storage/control-store-input.js';
+
+import { IdempotencyKeyConflictError } from '../operation-error.js';
+
+export { IdempotencyKeyConflictError } from '../operation-error.js';
+
 import { deriveEntityId } from '@openkit/protocol';
 
 import {
@@ -19,20 +26,6 @@ import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 export type IdempotentCommandReceipt = Readonly<
   Omit<CommandRequestRecord, 'response'> & { responseKind: CommandRequestResponseKind }
 >;
-
-/** Error raised when one idempotency key is reused for different command input. */
-export class IdempotencyKeyConflictError extends Error {
-  /** Stable protocol API error code. */
-  public readonly code = 'idempotency_key_conflict';
-  /** HTTP response status. */
-  public readonly status = 409;
-
-  /** Creates an idempotency key conflict error. */
-  public constructor() {
-    super('The requestId was already used for different command input.');
-    this.name = 'IdempotencyKeyConflictError';
-  }
-}
 
 /** In-flight command state used to collapse concurrent duplicate requests. */
 export interface InflightIdempotentCommand {
@@ -386,40 +379,6 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
       storeInflightCommands.delete(key);
     }
   }
-}
-
-/**
- * Canonicalizes one value for stable hashing without storing raw command input.
- *
- * @param value Value to canonicalize.
- * @returns Stable JSON text.
- */
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value ?? null);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableJson(item)).join(',')}]`;
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, entryValue]) => entryValue !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right));
-
-  return `{${entries
-    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`)
-    .join(',')}}`;
-}
-
-/**
- * Hashes command input for idempotency conflict detection.
- *
- * @param input Canonical command input.
- * @returns SHA-256-prefixed input hash.
- */
-export function commandInputHash(input: unknown): string {
-  return `sha256:${createHash('sha256').update(stableJson(input)).digest('hex')}`;
 }
 
 /** Derives the receiving Thread of an admitted command-initiated conversation handoff. */

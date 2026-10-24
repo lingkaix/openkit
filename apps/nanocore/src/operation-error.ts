@@ -50,3 +50,41 @@ export function projectOperationError(error: unknown) {
     ...(failure.path === undefined ? {} : { path: failure.path }),
   };
 }
+
+/**
+ * Validation failure that can be returned to UI clients as a typed API error.
+ */
+export class TurnStartValidationError extends Error {
+  /** Protocol API error code. */
+  public readonly code: string;
+  /** HTTP status for the validation failure. */
+  public readonly status: number;
+
+  /**
+   * Creates a turn-start validation error.
+   *
+   * @param code Protocol API error code.
+   * @param message User-facing error message.
+   * @param status HTTP status code.
+   */
+  public constructor(code: string, message: string, status = 400) {
+    super(message);
+    this.name = 'TurnStartValidationError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+/** Error raised when one idempotency key is reused for different command input. */
+export class IdempotencyKeyConflictError extends Error {
+  /** Stable protocol API error code. */
+  public readonly code = 'idempotency_key_conflict';
+  /** HTTP response status. */
+  public readonly status = 409;
+
+  /** Creates an idempotency key conflict error. */
+  public constructor() {
+    super('The requestId was already used for different command input.');
+    this.name = 'IdempotencyKeyConflictError';
+  }
+}

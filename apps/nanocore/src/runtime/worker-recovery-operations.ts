@@ -2,7 +2,6 @@ import type { RECOVERY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   ListInterruptedWorkerStatesResponseSchema,
   type RetryInterruptedWorkerCheckpointResponse,
-  RetryInterruptedWorkerCheckpointResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import { z } from 'zod';
@@ -14,11 +13,11 @@ import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { OperationImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { runInterruptedWorkerRetryWorkspaceCommand } from '../storage/control-store-checkpoints.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { AgentEnvironmentSnapshotReadError } from './aep-snapshot-ledger.js';
-import { commandInputHash, IdempotencyKeyConflictError } from './idempotent-command.js';
+import { IdempotencyKeyConflictError } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import { updateWorkerCheckpoint } from './worker-checkpoints.js';
 import {
   clearWorkerCheckpointAfterTerminalState,
   materializeInterruptedWorkerStates,
@@ -127,123 +126,11 @@ function runInterruptedWorkerRetryCommand(input: {
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
 }): RetryInterruptedWorkerCheckpointResponse {
-  const command = 'worker.recovery.retry' as const;
-  const scope = {
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-  };
-  const inputHash = commandInputHash({});
-
-  return input.workspaceDb.sqlite.transaction(() => {
-    const receipt = input.store.getCommandRequest(
-      command,
-      input.requestId,
-      scope,
-      input.workspaceDb
-    );
-    if (receipt) {
-      if (receipt.inputHash !== inputHash) {
-        throw new IdempotencyKeyConflictError();
-      }
-      if (
-        receipt.command !== command ||
-        receipt.requestId !== input.requestId ||
-        receipt.scope.workspaceId !== input.workspaceId ||
-        receipt.scope.threadId !== input.threadId ||
-        receipt.scope.turnId !== input.turnId ||
-        Object.keys(receipt.scope).length !== 3 ||
-        receipt.response.kind !== 'turn' ||
-        receipt.response.id !== input.turnId
-      ) {
-        throw retryRecoveryRequired('Interrupted-worker retry receipt has invalid lineage.');
-      }
-      assertInterruptedTurn(input.store, input.workspaceId, input.threadId, input.turnId);
-      return RetryInterruptedWorkerCheckpointResponseSchema.parse({
-        outcome: 'released_for_retry',
-        turnId: input.turnId,
-      });
-    }
-
-    const decision = resolveInterruptedWorkerRetryDecision(
-      input.coreDb,
-      input.store,
-      input.workspaceDb,
-      {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        turnId: input.turnId,
-      }
-    );
-    if (decision.status === 'reconnect-pending') {
-      throw new TurnStartValidationError(
-        'worker_reconnect_pending',
-        'The original worker still owns an active reconnect window.',
-        409
-      );
-    }
-    if (decision.status === 'stale') {
-      throw new TurnStartValidationError(
-        'worker_recovery_stale',
-        'The original worker attempt is no longer eligible for retry.',
-        409
-      );
-    }
-    if (decision.status !== 'eligible' || !decision.checkpoint) {
-      throw retryRecoveryRequired(
-        'Interrupted-worker cleanup or continuation authority is incomplete.'
-      );
-    }
-
-    updateWorkerCheckpoint(input.workspaceDb, {
-      authorityActor: input.authorityActor,
-      diagnosticsSummary: 'Interrupted worker attempt released for a later fresh start.',
-      stage: 'aborted',
-      stopReason: 'aborted',
-      threadId: input.threadId,
-      turnId: input.turnId,
-      workspaceId: input.workspaceId,
-    });
-
-    input.store.recordCommandRequest(
-      {
-        command,
-        inputHash,
-        requestId: input.requestId,
-        response: { id: input.turnId, kind: 'turn' },
-        scope,
-      },
-      input.workspaceDb
-    );
-    return RetryInterruptedWorkerCheckpointResponseSchema.parse({
-      outcome: 'released_for_retry',
-      turnId: input.turnId,
-    });
-  })();
-}
-
-/** Confirms that the command receipt still names the original interrupted Turn. */
-function assertInterruptedTurn(
-  store: FsStore,
-  workspaceId: string,
-  threadId: string,
-  turnId: string
-): void {
-  try {
-    if (store.getTurn(workspaceId, threadId, turnId).status !== 'interrupted') {
-      throw retryRecoveryRequired('Interrupted-worker retry Turn is no longer interrupted.');
-    }
-  } catch (error) {
-    if (error instanceof TurnStartValidationError) {
-      throw error;
-    }
-    throw retryRecoveryRequired('Interrupted-worker retry Turn is unavailable.');
-  }
-}
-
-/** Creates the stable fail-closed error for incomplete retry authority. */
-function retryRecoveryRequired(message: string): TurnStartValidationError {
-  return new TurnStartValidationError('recovery_required', message, 409);
+  return runInterruptedWorkerRetryWorkspaceCommand({
+    ...input,
+    resolveDecision: () =>
+      resolveInterruptedWorkerRetryDecision(input.coreDb, input.store, input.workspaceDb, input),
+  });
 }
 
 /** Recovery owns its original Turn lineage and missing-checkpoint refusal, independent of operation spelling. */

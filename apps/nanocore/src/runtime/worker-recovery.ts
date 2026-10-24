@@ -1,3 +1,11 @@
+import {
+  clearWorkerCheckpointIfUnchanged,
+  type InterruptedWorkerRetryDecision,
+  resolveInterruptedWorkerRetryWorkspaceDecision,
+} from '../storage/control-store-checkpoints.js';
+
+export type { InterruptedWorkerRetryDecision } from '../storage/control-store-checkpoints.js';
+
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -44,7 +52,6 @@ import {
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import {
-  clearWorkerCheckpoint,
   getWorkerCheckpoint,
   listRecoverableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
@@ -168,21 +175,6 @@ export type InterruptedWorkerRecoveryChoice =
       /** User-facing action label. */
       readonly label: string;
     };
-
-/**
- * Derived authority decision for one interrupted-worker retry request.
- */
-export interface InterruptedWorkerRetryDecision {
-  /** Whether the exact existing owners permit retry, inspection, or no recovery action. */
-  readonly status:
-    | 'eligible'
-    | 'inspect-only'
-    | 'reconnect-pending'
-    | 'stale'
-    | 'recovery-required';
-  /** Exact source checkpoint, or null when no checkpoint exists. */
-  readonly checkpoint: WorkerCheckpointRecord | null;
-}
 
 /**
  * Input used to clear a checkpoint after terminal state is durably saved.
@@ -1086,66 +1078,28 @@ export function resolveInterruptedWorkerRetryDecision(
   workspaceDb: WorkspaceDb,
   input: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
 ): InterruptedWorkerRetryDecision {
-  const checkpoint = getWorkerCheckpoint(
+  return resolveInterruptedWorkerRetryWorkspaceDecision(
+    store,
     workspaceDb,
-    input.workspaceId,
-    input.threadId,
-    input.turnId
+    input,
+    (agentSessionId) => {
+      const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, input).filter(
+        (attempt) => !isSchedulerExecutionBusyRefusal(attempt)
+      );
+      if (attempts.length !== 1 || attempts[0]?.agentSessionId !== agentSessionId) {
+        return 'recovery-required';
+      }
+      const attempt = attempts[0];
+
+      if (attempt.phase === 'open') {
+        return 'reconnect-pending';
+      }
+      if (attempt.phase === 'closing') {
+        return 'stale';
+      }
+      return attempt.phase === 'closed' ? null : 'recovery-required';
+    }
   );
-  if (!checkpoint) {
-    return { status: 'recovery-required', checkpoint: null };
-  }
-
-  let turn: ReturnType<FsStore['getTurn']>;
-  try {
-    turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
-  } catch {
-    return { status: 'recovery-required', checkpoint };
-  }
-
-  const agentSessionId = checkpoint.workerSessionId;
-  if (!agentSessionId || turn.agentSessionId !== agentSessionId) {
-    return { status: 'recovery-required', checkpoint };
-  }
-
-  let agentSession: ReturnType<FsStore['getAgentSession']>;
-  try {
-    agentSession = store.getAgentSession(agentSessionId);
-  } catch {
-    return { status: 'recovery-required', checkpoint };
-  }
-  if (agentSession.workspaceId !== input.workspaceId || agentSession.threadId !== input.threadId) {
-    return { status: 'recovery-required', checkpoint };
-  }
-
-  const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, input).filter(
-    (attempt) => !isSchedulerExecutionBusyRefusal(attempt)
-  );
-  if (attempts.length !== 1 || attempts[0]?.agentSessionId !== agentSessionId) {
-    return { status: 'recovery-required', checkpoint };
-  }
-  const attempt = attempts[0];
-
-  if (attempt.phase === 'open') {
-    return { status: 'reconnect-pending', checkpoint };
-  }
-  if (attempt.phase === 'closing') {
-    return { status: 'stale', checkpoint };
-  }
-
-  if (
-    (checkpoint.stage !== 'preparing' && checkpoint.stage !== 'running_worker') ||
-    checkpoint.stopReason !== null ||
-    turn.status !== 'interrupted' ||
-    agentSession.status !== 'interrupted' ||
-    attempt.phase !== 'closed'
-  ) {
-    return { status: 'recovery-required', checkpoint };
-  }
-
-  return checkpoint.goalId === null && checkpoint.taskId === null
-    ? { status: 'eligible', checkpoint }
-    : { status: 'inspect-only', checkpoint };
 }
 
 /**
@@ -1267,7 +1221,7 @@ export async function clearWorkerCheckpointAfterTerminalState(
 
   if (input.coreDb && input.store)
     await cancelNeverAllocatedWorkerJournal(input.coreDb, input.store, workspaceDb, checkpoint);
-  return clearWorkerCheckpoint(workspaceDb, input.workspaceId, input.threadId, input.turnId);
+  return clearWorkerCheckpointIfUnchanged(workspaceDb, checkpoint);
 }
 
 /**

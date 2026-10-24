@@ -13,9 +13,12 @@ import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/d
 import type { FsStore } from '../lib/store.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  bindWorkerCheckpointSession,
+  clearCancelledWorkerPreparation,
+} from '../storage/control-store-checkpoints.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readPublishedTurnIdentities } from '../storage/workspace-file-records.js';
-import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
   listSchedulerExecutionAttemptsForTurn,
   requireSchedulerExecutionAttempt,
@@ -25,7 +28,6 @@ import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { validateLiveProductTurnAdmission } from './product-turn-start.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
-  clearWorkerCheckpoint,
   createWorkerCheckpointContextDiagnostics,
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
@@ -527,39 +529,24 @@ function removeOwnCancelledPreparation(
       .get({
         turn: checkpoint.turnId,
       });
-    const workspaceEffects = input.workspaceDb.sqlite
-      .prepare(`
-      SELECT 1 FROM runtime_evidence WHERE turn_id = @turn
-      UNION ALL SELECT 1 FROM evidence_bundles WHERE turn_id = @turn
-      UNION ALL SELECT 1 FROM idempotency_requests WHERE response_id = @turn OR json_extract(response_json, '$.downstream.turnId') = @turn
-      LIMIT 1`)
-      .get({
-        turn: checkpoint.turnId,
-      });
-    if (
-      coreEffects ||
-      workspaceEffects ||
-      listExportableAgentEnvironmentPackageSnapshots(input.workspaceDb, input.workspaceId).some(
-        (snapshot) => snapshot.turnId === checkpoint.turnId
+    if (coreEffects) return false;
+    return clearCancelledWorkerPreparation(input.workspaceDb, checkpoint, () => {
+      const dataRoot = input.store.getDataRoot();
+      if (
+        !dataRoot ||
+        dataRoot !== input.coreDb.dataRoot ||
+        input.workspaceDb.dataRoot !== dataRoot
       )
-    )
-      return false;
-    const dataRoot = input.store.getDataRoot();
-    if (!dataRoot || dataRoot !== input.coreDb.dataRoot || input.workspaceDb.dataRoot !== dataRoot)
-      return false;
-    const history = readPublishedTurnIdentities(dataRoot);
-    if (
-      history.status !== 'readable' ||
-      history.turns.some((turn) => turn.turnId === checkpoint.turnId)
-    )
-      return false;
-    // Published Turns own canonical AgentSession association and input Items; package/control/backend and runtime-binding rows above own native delivery and execution.
-    return clearWorkerCheckpoint(
-      input.workspaceDb,
-      input.workspaceId,
-      input.threadId,
-      checkpoint.turnId
-    );
+        return false;
+      const history = readPublishedTurnIdentities(dataRoot);
+      if (
+        history.status !== 'readable' ||
+        history.turns.some((turn) => turn.turnId === checkpoint.turnId)
+      )
+        return false;
+      // Published Turns own canonical AgentSession association and input Items; package/control/backend and runtime-binding rows above own native delivery and execution.
+      return true;
+    });
   })();
 }
 
@@ -589,25 +576,12 @@ export function bindWorkerCheckpointToPreparedSession(input: {
     attempt.workspaceId !== input.workspaceId ||
     attempt.threadId !== input.threadId ||
     attempt.turnId !== input.turnId ||
-    attempt.agentSessionId !== input.agentSessionId ||
-    checkpoint.requestId !== input.requestId ||
-    checkpoint.stopReason !== null ||
-    !['preparing', 'running_worker'].includes(checkpoint.stage) ||
-    (checkpoint.workerSessionId !== null && checkpoint.workerSessionId !== input.agentSessionId)
+    attempt.agentSessionId !== input.agentSessionId
   )
     throw new TurnStartValidationError(
       'recovery_required',
       'Prepared session contradicts its exact checkpoint.',
       409
     );
-  if (checkpoint.workerSessionId === input.agentSessionId && checkpoint.stage === 'running_worker')
-    return;
-  updateWorkerCheckpoint(input.workspaceDb, {
-    authorityActor: turn.triggerActor,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    stage: 'running_worker',
-    workerSessionId: input.agentSessionId,
-  });
+  bindWorkerCheckpointSession(input.workspaceDb, { ...input, authorityActor: turn.triggerActor });
 }

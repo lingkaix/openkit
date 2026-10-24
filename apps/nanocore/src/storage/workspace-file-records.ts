@@ -22,15 +22,22 @@ import * as fsPromises from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  type AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord,
   KnowledgeManagerDraftedProposalSchema,
   KnowledgeProposalPageIdSchema,
   KnowledgeProposalReviewSchema,
   KnowledgeSourceSchema,
   validKnowledgeProposalShape,
 } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentPackage,
+  RetainedAgentEnvironmentPackageSchema,
+  redactAgentEnvironmentPackageSnapshot,
+  WorkspaceConfigSchema,
+} from '@openkit/config-schema';
 import {
   ActorRefSchema,
+  AgentSessionIdSchema,
   type ArtifactSchema,
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
@@ -43,7 +50,10 @@ import {
   responsibleUserIdForActor,
   type ServerTurnEventEnvelope,
   type SseEventEnvelopeSchema,
+  ThreadIdSchema,
   ThreadSchema,
+  TimestampSchema,
+  TurnIdSchema,
   type TurnSchema,
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
@@ -89,6 +99,7 @@ import {
   type ControlStoreProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
+import type { WorkspaceDb } from './db.js';
 import {
   assertWorkspaceWorkOwner,
   ensureLayoutDirectories,
@@ -3106,4 +3117,272 @@ function requiredFrontmatterString(
   }
 
   return value;
+}
+
+/** Fixed outer v1 metadata; the embedded versioned AEP retains its own safety and digest checks. */
+const StoredAgentEnvironmentSnapshotV1Schema = z
+  .object({
+    snapshotId: z.string().min(1),
+    workspaceId: WorkspaceIdSchema,
+    turnId: TurnIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
+    agentId: z.string().min(1),
+    packageId: z.string().min(1),
+    runtimeKind: z.string().min(1),
+    backendKind: z.string().min(1),
+    contentDigest: z.string().min(1),
+    snapshot: z.record(z.string(), z.any()),
+    createdAt: TimestampSchema,
+  })
+  .strip();
+
+/** Durable Workspace-owned AEP snapshot record with its validated known-field V4 view. */
+export type AgentEnvironmentPackageSnapshotRecord = Omit<
+  AppApiAgentEnvironmentPackageSnapshotRecord,
+  'snapshot'
+> & { readonly snapshot: AgentEnvironmentPackage };
+
+/** Ledger read with digest-verified original JSON for integrity and owned same-identity serialization, excluded from public projections. */
+export type AgentEnvironmentPackageSnapshotReadRecord = AgentEnvironmentPackageSnapshotRecord & {
+  /** Known core has passed the current schema; ignored stored content remains for integrity, same-identity storage and evidence export. */
+  readonly retainedSnapshot: AgentEnvironmentPackage;
+};
+
+/** Established retained-file decoding failure, separate from snapshot preparation. */
+export class AgentEnvironmentSnapshotReadError extends Error {
+  /** @param cause Private retained-file decoder failure. */
+  constructor(cause: unknown) {
+    super('The retained record could not be read.', { cause });
+  }
+}
+
+/**
+ * Lists redacted AEP snapshots for workspace export.
+ *
+ * @param workspaceDb Open workspace database.
+ * @param workspaceId Workspace id.
+ * @returns Exportable snapshot records in stable storage order.
+ */
+export function listExportableAgentEnvironmentPackageSnapshots(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string
+): AgentEnvironmentPackageSnapshotReadRecord[] {
+  assertWorkspaceOwner(workspaceDb, workspaceId);
+  const root = agentSessionsRoot(workspaceDb);
+
+  if (!existsSync(root)) {
+    return [];
+  }
+  if (!lstatSync(root).isDirectory()) {
+    throw new Error('Agent environment package session root must be a directory.');
+  }
+
+  const records: AgentEnvironmentPackageSnapshotReadRecord[] = [];
+  for (const sessionEntry of readdirSync(root, { withFileTypes: true })) {
+    if (sessionEntry.isSymbolicLink()) {
+      throw new Error(`Agent environment package session path is symbolic: ${sessionEntry.name}`);
+    }
+    if (!sessionEntry.isDirectory()) {
+      continue;
+    }
+
+    const snapshotsRoot = join(root, sessionEntry.name, 'aep-snapshots');
+    if (!existsSync(snapshotsRoot)) {
+      continue;
+    }
+    if (!lstatSync(snapshotsRoot).isDirectory()) {
+      throw new Error(
+        `Agent environment package snapshot root must be a directory: ${sessionEntry.name}`
+      );
+    }
+
+    for (const snapshotEntry of readdirSync(snapshotsRoot, { withFileTypes: true })) {
+      if (snapshotEntry.isSymbolicLink()) {
+        throw new Error(
+          `Agent environment package snapshot path is symbolic: ${snapshotEntry.name}`
+        );
+      }
+      if (!snapshotEntry.isFile() || !snapshotEntry.name.endsWith('.json')) {
+        continue;
+      }
+
+      const snapshotId = snapshotEntry.name.slice(0, -'.json'.length);
+      records.push(
+        readSnapshotRecord(
+          workspaceDb,
+          join(snapshotsRoot, snapshotEntry.name),
+          sessionEntry.name,
+          snapshotId
+        )
+      );
+    }
+  }
+
+  records.sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.snapshotId.localeCompare(right.snapshotId)
+  );
+
+  const snapshotIds = new Set<string>();
+  for (const record of records) {
+    if (snapshotIds.has(record.snapshotId)) {
+      throw new Error(`Duplicate agent environment package snapshot: ${record.snapshotId}`);
+    }
+    snapshotIds.add(record.snapshotId);
+  }
+
+  return records;
+}
+
+/**
+ * Reads and validates one canonical snapshot file.
+ *
+ * @param workspaceDb Workspace that owns the snapshot.
+ * @param path Canonical snapshot file path.
+ * @param agentSessionId Parent AgentSession directory name.
+ * @param snapshotId Snapshot file name without extension.
+ * @returns Validated snapshot record.
+ */
+export function readSnapshotRecord(
+  workspaceDb: WorkspaceDb,
+  path: string,
+  agentSessionId: string,
+  snapshotId: string
+): AgentEnvironmentPackageSnapshotReadRecord {
+  if (!lstatSync(path).isFile()) {
+    throw new Error(`Agent environment package snapshot is not a regular file: ${snapshotId}`);
+  }
+  let record: AgentEnvironmentPackageSnapshotReadRecord;
+  // Marker refusal is a retained decode failure, with the same private cause as malformed JSON.
+  try {
+    record = readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+      validateSnapshotRecord(workspaceDb, value)
+    );
+  } catch (cause) {
+    if (cause instanceof SyntaxError || cause instanceof z.ZodError || cause instanceof TypeError) {
+      throw new AgentEnvironmentSnapshotReadError(cause);
+    }
+    throw cause;
+  }
+
+  if (record.agentSessionId !== agentSessionId || record.snapshotId !== snapshotId) {
+    throw new Error(`Agent environment package snapshot path mismatch: ${snapshotId}`);
+  }
+
+  return record;
+}
+
+/**
+ * Parses one retained snapshot record and verifies its original digest and complete AEP lineage.
+ *
+ * @param workspaceDb Workspace that owns the snapshot.
+ * @param value Candidate snapshot record.
+ * @returns Validated record with a parsed Agent Environment Package.
+ * @throws Error for unsafe original evidence, invalid integrity or lineage, or changed retained core.
+ */
+export function validateSnapshotRecord(
+  workspaceDb: WorkspaceDb,
+  value: unknown
+): AgentEnvironmentPackageSnapshotReadRecord {
+  const candidate = value as AgentEnvironmentPackageSnapshotReadRecord;
+  const hasRetainedSnapshot =
+    candidate &&
+    typeof candidate === 'object' &&
+    Object.getOwnPropertyDescriptor(candidate, 'retainedSnapshot')?.enumerable === false;
+  const parsed = StoredAgentEnvironmentSnapshotV1Schema.parse(
+    hasRetainedSnapshot ? { ...candidate, snapshot: candidate.retainedSnapshot } : value
+  );
+  // Retained identity covers the stored value; normalization may discard ignored extensions.
+  if (parsed.contentDigest !== snapshotDigest(parsed.snapshot)) {
+    throw new Error(`Agent environment package snapshot digest mismatch: ${parsed.snapshotId}`);
+  }
+  const snapshot = RetainedAgentEnvironmentPackageSchema.parse(parsed.snapshot);
+  if (
+    hasRetainedSnapshot &&
+    !isDeepStrictEqual(snapshot, RetainedAgentEnvironmentPackageSchema.parse(candidate.snapshot))
+  ) {
+    throw new Error(
+      `Agent environment package snapshot retained core mismatch: ${parsed.snapshotId}`
+    );
+  }
+  // Check the original before granting preservation eligibility; normalization hides unknown unsafe fields.
+  if (
+    !isDeepStrictEqual(
+      parsed.snapshot,
+      redactAgentEnvironmentPackageSnapshot(parsed.snapshot as AgentEnvironmentPackage)
+    )
+  ) {
+    throw new Error(`Agent environment package snapshot is not redacted: ${parsed.snapshotId}`);
+  }
+  const record: AgentEnvironmentPackageSnapshotRecord = { ...parsed, snapshot };
+
+  assertWorkspaceOwner(workspaceDb, record.workspaceId);
+  assertPathSegment(record.agentSessionId, 'AgentSession id');
+  assertPathSegment(record.snapshotId, 'snapshot id');
+
+  if (
+    record.snapshotId !== snapshot.snapshotId ||
+    record.workspaceId !== snapshot.scope.workspaceId ||
+    record.turnId !== snapshot.scope.turnId ||
+    record.threadId !== snapshot.scope.threadId ||
+    record.agentSessionId !== snapshot.scope.agentSessionId ||
+    record.agentId !== snapshot.agent.agentId ||
+    record.packageId !== snapshot.packageId ||
+    record.runtimeKind !== snapshot.agent.runtimeKind ||
+    record.backendKind !== snapshot.backend.preferred
+  ) {
+    throw new Error(`Agent environment package snapshot lineage mismatch: ${record.snapshotId}`);
+  }
+
+  // Same-identity storage and evidence export retain this digest-covered representation.
+  // Execution and public consumers use only the normalized snapshot.
+  return Object.defineProperty(record, 'retainedSnapshot', {
+    value: parsed.snapshot,
+  }) as AgentEnvironmentPackageSnapshotReadRecord;
+}
+
+/**
+ * Resolves the workspace-owned AgentSession directory.
+ *
+ * @param workspaceDb Workspace ownership metadata.
+ * @returns Absolute AgentSession root.
+ */
+export function agentSessionsRoot(workspaceDb: WorkspaceDb): string {
+  return join(dirname(dirname(workspaceDb.sqlite.name)), 'runtime', 'agent-sessions');
+}
+
+/**
+ * Hashes one stored snapshot value using the existing public digest format.
+ *
+ * @param snapshot Stored snapshot value before package-reader normalization.
+ * @returns Lowercase SHA-256 digest.
+ */
+export function snapshotDigest(snapshot: Readonly<Record<string, unknown>>): string {
+  return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+}
+
+/**
+ * Verifies that one API workspace scope matches the open workspace owner.
+ *
+ * @param workspaceDb Open workspace database metadata.
+ * @param workspaceId Workspace id supplied by the record or caller.
+ */
+export function assertWorkspaceOwner(workspaceDb: WorkspaceDb, workspaceId: string): void {
+  if (workspaceId !== workspaceDb.workspaceId) {
+    throw new Error(`Agent environment package snapshot workspace mismatch: ${workspaceId}`);
+  }
+}
+
+/**
+ * Rejects ids that would create nested or escaped canonical paths.
+ *
+ * @param value Candidate file or directory id.
+ * @param label Human-readable id label.
+ */
+export function assertPathSegment(value: string, label: string): void {
+  if (value === '.' || value === '..' || /[\\/\0]/.test(value)) {
+    throw new Error(`Agent environment package ${label} is not a safe path segment.`);
+  }
 }

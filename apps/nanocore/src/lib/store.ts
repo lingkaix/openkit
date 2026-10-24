@@ -1,3 +1,5 @@
+export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-request-records.js';
+
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -135,6 +137,8 @@ import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js'
 import { CanonicalPublicationError } from '../storage/canonical-publication-error.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import {
+  commandRequestExpiresAt,
+  commandRequestKey,
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
   listCommandRequestRecords,
@@ -347,8 +351,6 @@ export interface TerminalTurnPublication {
   /** Actual admitted execution and step identities; omission creates no execution or release. */
   readonly execution?: ControlTerminalTransition['execution'];
 }
-
-const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Stable command names tracked by the app-local idempotency ledger.
@@ -1201,45 +1203,6 @@ export function projectTurnEventRequestId(
   return uuidv5(
     `openkit:protocol.turn-event.request:${JSON.stringify([workspaceId, threadId ?? '', requestId])}`
   );
-}
-
-/**
- * Builds a stable string key for one command idempotency scope.
- *
- * @param scope Non-secret command scope ids.
- * @returns Stable scope key.
- */
-function commandRequestScopeKey(scope: CommandRequestScope): string {
-  return Object.entries(scope)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${value}`)
-    .join('&');
-}
-
-/**
- * Builds the internal map key for one command idempotency record.
- *
- * @param command Stable command name.
- * @param requestId Caller-provided idempotency id.
- * @param scope Non-secret command scope ids.
- * @returns Internal command request key.
- */
-export function commandRequestKey(
-  command: CommandRequestName,
-  requestId: string,
-  scope: CommandRequestScope
-): string {
-  return `${command}|${requestId}|${commandRequestScopeKey(scope)}`;
-}
-
-/**
- * Computes the default expiry timestamp for an idempotency record.
- *
- * @param createdAt Record creation timestamp.
- * @returns Expiry timestamp after the retention window.
- */
-export function commandRequestExpiresAt(createdAt: string): string {
-  return new Date(new Date(createdAt).getTime() + COMMAND_REQUEST_RETENTION_MS).toISOString();
 }
 
 /**

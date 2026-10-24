@@ -1,3 +1,7 @@
+import { TurnStartValidationError } from '../operation-error.js';
+
+export { TurnStartValidationError } from '../operation-error.js';
+
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type GatewayConfig,
@@ -141,30 +145,6 @@ export interface TurnHandle {
   agentSetup: ResolvedAgentSetup | null;
   /** Durable resolved setup record id, when recorded. */
   agentSetupRecordId: string | null;
-}
-
-/**
- * Validation failure that can be returned to UI clients as a typed API error.
- */
-export class TurnStartValidationError extends Error {
-  /** Protocol API error code. */
-  public readonly code: string;
-  /** HTTP status for the validation failure. */
-  public readonly status: number;
-
-  /**
-   * Creates a turn-start validation error.
-   *
-   * @param code Protocol API error code.
-   * @param message User-facing error message.
-   * @param status HTTP status code.
-   */
-  public constructor(code: string, message: string, status = 400) {
-    super(message);
-    this.name = 'TurnStartValidationError';
-    this.code = code;
-    this.status = status;
-  }
 }
 
 /**

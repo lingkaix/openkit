@@ -816,3 +816,44 @@ function readConversationMetadata(json: string): ConversationCommandReceiptMetad
   if (!result.success) throw new Error('conversation.submit command receipt metadata is invalid.');
   return result.data;
 }
+
+const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Builds a stable string key for one command idempotency scope.
+ *
+ * @param scope Non-secret command scope ids.
+ * @returns Stable scope key.
+ */
+function commandRequestScopeKey(scope: CommandRequestScope): string {
+  return Object.entries(scope)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('&');
+}
+
+/**
+ * Builds the internal map key for one command idempotency record.
+ *
+ * @param command Stable command name.
+ * @param requestId Caller-provided idempotency id.
+ * @param scope Non-secret command scope ids.
+ * @returns Internal command request key.
+ */
+export function commandRequestKey(
+  command: CommandRequestName,
+  requestId: string,
+  scope: CommandRequestScope
+): string {
+  return `${command}|${requestId}|${commandRequestScopeKey(scope)}`;
+}
+
+/**
+ * Computes the default expiry timestamp for an idempotency record.
+ *
+ * @param createdAt Record creation timestamp.
+ * @returns Expiry timestamp after the retention window.
+ */
+export function commandRequestExpiresAt(createdAt: string): string {
+  return new Date(new Date(createdAt).getTime() + COMMAND_REQUEST_RETENTION_MS).toISOString();
+}

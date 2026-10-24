@@ -43,3 +43,37 @@ export function readControlScalarText(span: ControlScalarText, content?: ArrayBu
     throw new TypeError('Native scalar binary digest is inconsistent.');
   return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 }
+
+/**
+ * Canonicalizes one value for stable hashing without storing raw command input.
+ *
+ * @param value Value to canonicalize.
+ * @returns Stable JSON text.
+ */
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value ?? null);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return `{${entries
+    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`)
+    .join(',')}}`;
+}
+
+/**
+ * Hashes command input for idempotency conflict detection.
+ *
+ * @param input Canonical command input.
+ * @returns SHA-256-prefixed input hash.
+ */
+export function commandInputHash(input: unknown): string {
+  return `sha256:${createHash('sha256').update(stableJson(input)).digest('hex')}`;
+}
