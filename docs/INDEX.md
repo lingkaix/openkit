@@ -246,6 +246,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261024-independent_doc_audit_contract_evolution.md` — Independent Documentation Audit: Contract-Evolution Group
 - `docs/audits/20261024-independent_doc_audit_foundation.md` — Independent Documentation Audit: Foundation Group
 - `docs/audits/20261024-independent_doc_audit_identity.md` — Independent Documentation Audit: Identity Group
+- `docs/audits/20261024-independent_doc_audit_mediation.md` — Independent Documentation Audit: Mediation Group
 - `docs/audits/20261024-independent_doc_audit_policy.md` — Independent Documentation Audit: Policy Group
 - `docs/audits/20261024-independent_doc_audit_protocol.md` — Independent Documentation Audit: Protocol Group
 - `docs/audits/20261024-independent_doc_audit_vault.md` — Independent Documentation Audit: Vault Group
