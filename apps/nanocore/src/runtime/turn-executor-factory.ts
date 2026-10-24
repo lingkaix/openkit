@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AgentEnvironmentPackage,
@@ -37,7 +38,10 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import {
+  decode as decodeControlProduct,
+  openControlStoreProductReadHandle,
+} from '../storage/control-store-products.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -48,7 +52,9 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import {
   AgentSessionRecordSchema,
+  assertCanonicalDirectory,
   nativeProductMetadataScope,
+  readCanonicalTextFile,
   readNativeProduct,
 } from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
@@ -5337,6 +5343,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     environmentPackage: AgentEnvironmentPackage;
     attemptId: string;
     historical: AgentEnvironmentPackageSnapshotReadRecord;
+    ownerAdmitted: boolean;
   } {
     const latest = this.coreDb.sqlite
       .prepare(
@@ -5373,7 +5380,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       workspaceDb.sqlite.close();
     }
-    return { environmentPackage: historical.snapshot, attemptId: latest.attemptId, historical };
+    const ownerAdmitted =
+      latest.workspaceStatus === 'active' &&
+      isScopeAdmitted(this.coreDb.dataRoot, 'workspace', latest.workspaceId);
+    return {
+      environmentPackage: historical.snapshot,
+      attemptId: latest.attemptId,
+      historical,
+      ownerAdmitted,
+    };
   }
 
   /** Restores a temporary Turn handle only for collection and local close. */
@@ -5396,7 +5411,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       .prepare(`
       SELECT workspace_id AS workspaceId, thread_id AS threadId,
         package_snapshot_id AS packageSnapshotId, sandbox_binding_ref AS sandboxBindingRef,
-        runtime_target_id AS runtimeTargetId, origin_physical_epoch AS originPhysicalEpoch
+        runtime_target_id AS runtimeTargetId, origin_physical_epoch AS originPhysicalEpoch,
+        (SELECT status FROM workspace_registry r
+         WHERE r.workspace_id = worker_backend_sessions.workspace_id) AS workspaceStatus
       FROM worker_backend_sessions WHERE agent_session_id = ?
       ORDER BY created_at DESC, attempt_id DESC LIMIT 1
     `)
@@ -5408,6 +5425,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           sandboxBindingRef: string;
           runtimeTargetId: string;
           originPhysicalEpoch: string;
+          workspaceStatus: string | null;
         }
       | undefined;
     if (!latest) return false;
@@ -5417,9 +5435,44 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       workspaceId: latest.workspaceId,
     });
     const row = readNativeProduct(scope, 'agent-session', inspection.agentSessionId);
-    if (!row) return false;
-    const session = AgentSessionRecordSchema.parse(row.record);
+    const ownerAdmitted =
+      latest.workspaceStatus === 'active' &&
+      isScopeAdmitted(this.coreDb.dataRoot, 'workspace', latest.workspaceId);
+    if (!row && ownerAdmitted) return false;
+    let session: ReturnType<typeof AgentSessionRecordSchema.parse>;
+    if (row) session = AgentSessionRecordSchema.parse(row.record);
+    else {
+      // Only this exact non-admitted cleanup owner can read retained-only metadata; never migrate it.
+      const workspaceRoot = join(this.coreDb.dataRoot, 'workspaces', latest.workspaceId);
+      const runtimeRoot = join(workspaceRoot, 'runtime');
+      const sessionsRoot = join(runtimeRoot, 'agent-sessions');
+      const sessionRoot = join(sessionsRoot, inspection.agentSessionId);
+      try {
+        for (const directory of [workspaceRoot, runtimeRoot, sessionsRoot, sessionRoot])
+          assertCanonicalDirectory(directory);
+        const value = JSON.parse(readCanonicalTextFile(join(sessionRoot, 'session.json')));
+        try {
+          // The existing family decoder checks required semantics before projecting retained V1.
+          session = AgentSessionRecordSchema.parse(
+            decodeControlProduct('agent-session', value, scope.owner)
+          );
+        } catch {
+          throw new WorkerNativeProofValidationError('retiring-proof-handoff/lineage-conflict');
+        }
+      } catch (cause) {
+        if (cause instanceof WorkerNativeProofValidationError) throw cause;
+        const missing =
+          cause instanceof SyntaxError ||
+          (cause instanceof Error && 'code' in cause && cause.code === 'ENOENT');
+        throw new WorkerNativeProofValidationError(
+          missing
+            ? 'retiring-proof-handoff/missing-proof'
+            : 'retiring-proof-handoff/owner-discovery-refused'
+        );
+      }
+    }
     if (
+      session.id !== inspection.agentSessionId ||
       session.nativeHandleDigest !== inspection.nativeHandleDigest ||
       !session.retainedStorage ||
       (workSlotRef !== undefined && session.retainedStorage.workSlotRef !== workSlotRef)
@@ -5471,10 +5524,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
     );
     if (liveSession) liveSession.acceptedProofUnrecorded = true;
-    const { environmentPackage, attemptId, historical } = this.readDurableAgentSession(
-      inspection,
-      retirement
-    );
+    const { environmentPackage, attemptId, historical, ownerAdmitted } =
+      this.readDurableAgentSession(inspection, retirement);
     const attachment = this.requireDurableAgentSessionProvenance(
       environmentPackage,
       attemptId,
@@ -5513,6 +5564,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const recorded =
       retirement &&
       this.hasRecordedRetiringProof(inspection, retirement, retainedStorage.workSlotRef);
+    if (!ownerAdmitted) {
+      // Proof recognition is read-only; no recorder can write a non-admitted Workspace.
+      if (!recorded)
+        throw new WorkerNativeProofValidationError(
+          'retiring-proof-handoff/lineage-conflict',
+          diagnostic
+        );
+      if (liveSession) liveSession.acceptedProofUnrecorded = false;
+      return;
+    }
     const recorder =
       record ??
       liveSession?.recordNativeHandleDigest ??

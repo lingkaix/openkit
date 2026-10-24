@@ -2169,6 +2169,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           scenario === 'native-proof'
             ? 'Retained native-session proof disagrees with its original binding and package provenance.'
             : 'Worker backend materialization capacity inspection failed.',
+        causeCode:
+          scenario === 'native-proof'
+            ? 'package-binding-lineage/attachment-target'
+            : 'materialization-capacity-inspection',
         failedCheck:
           scenario === 'native-proof'
             ? 'package-binding-lineage/attachment-target'

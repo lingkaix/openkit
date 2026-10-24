@@ -66,6 +66,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -17166,6 +17167,16 @@ describe('retired Workspace resident isolation', () => {
     'missing-package',
     'conflicting-package',
     'conflicting-recorded-work-slot',
+    'retained-v1',
+    'retained-v1-delete-failed',
+    'retained-v1-missing-proof',
+    'retained-v1-corrupt-proof',
+    'retained-v1-unknown-required-feature',
+    'retained-v1-conflicting-digest',
+    'retained-v1-conflicting-snapshot',
+    'retained-v1-conflicting-storage',
+    'retained-v1-conflicting-generation',
+    'retained-v1-conflicting-work-slot',
   ] as const)('preserves native proof and retained storage during same-epoch retirement: %s', async (proof) => {
     const { refuseScope, isScopeAdmitted } = await import('../bootstrap/readiness.js');
     const { openControlStoreProductReadHandle } = await import(
@@ -17174,10 +17185,19 @@ describe('retired Workspace resident isolation', () => {
     const { getWorkspaceRegistryLifecycleFact, retireQuarantinedWorkspaceRegistry } = await import(
       '../workspace-sharing.js'
     );
+    const retainedOnly = proof.startsWith('retained-v1');
+    if (retainedOnly) {
+      // The dev resident outlives the original closed attempt's terminal-control replay window.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      onTestFinished(() => vi.useRealTimers());
+      vi.setSystemTime(vi.getRealSystemTime() - attempts.EXECUTION_ATTEMPT_BUDGET_MS);
+    }
+    const accepted = proof === 'accepted' || proof === 'retained-v1';
+    const deleteFailed = proof === 'delete-failed' || proof === 'retained-v1-delete-failed';
     const coreDb = createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    let store = await createDemoStore({ dataRoot });
     const retiredWorkspaceId = DEMO_WORKSPACE_ID;
     const healthy = await store.createWorkspace('Healthy retirement sibling');
     for (const workspaceId of [retiredWorkspaceId, healthy.id])
@@ -17202,7 +17222,7 @@ describe('retired Workspace resident isolation', () => {
         },
       ]),
     });
-    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    let native = createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => snapshot,
     });
     const joins: Array<() => Promise<void>> = [];
@@ -17279,6 +17299,7 @@ describe('retired Workspace resident isolation', () => {
         `${resident.pkg.snapshotId}.json`
       );
       const acceptedBytes = readFileSync(snapshotPath);
+      if (retainedOnly) vi.setSystemTime(vi.getRealSystemTime());
       const second = await admission(2, healthy.id, healthyThread.id);
       // Fault injection follows a complete native Turn and acknowledged proof; it cannot create a fixture record.
       if (proof === 'missing-package') rmSync(snapshotPath);
@@ -17344,7 +17365,71 @@ describe('retired Workspace resident isolation', () => {
         expect(readFileSync(snapshotPath)).toEqual(acceptedBytes);
       }
       const recordedBeforeRetirement = store.getAgentSession(original.id);
+      const sessionPath = join(dirname(snapshotPath), '..', 'session.json');
+      if (retainedOnly) {
+        // DIAG-444A2: model pre-native retained data only after real owners accept the ready proof.
+        // Preserve the original V1 payload; older attachment metadata has no historical generation.
+        const retained = StoredAgentSessionV1Schema.parse({
+          ...original,
+          schemaVersion: 1,
+          retainedStorage: {
+            storageRef: original.retainedStorage!.storageRef,
+            workSlotRef: original.retainedStorage!.workSlotRef,
+          },
+        });
+        if (proof === 'retained-v1-conflicting-digest')
+          retained.nativeHandleDigest = 'b'.repeat(64);
+        if (proof === 'retained-v1-conflicting-snapshot')
+          retained.environmentPackageSnapshotId = 'conflicting-original-snapshot';
+        if (proof === 'retained-v1-conflicting-storage')
+          retained.retainedStorage!.storageRef = testEntityId(
+            'wst',
+            'unrelated_retirement_storage'
+          );
+        if (proof === 'retained-v1-conflicting-generation')
+          retained.retainedStorage!.attachmentGeneration =
+            original.retainedStorage!.attachmentGeneration! + 1;
+        if (proof === 'retained-v1-conflicting-work-slot')
+          retained.retainedStorage!.workSlotRef = 'unrelated-retirement-slot';
+        if (proof !== 'retained-v1-missing-proof')
+          writeFileSync(
+            sessionPath,
+            proof === 'retained-v1-corrupt-proof'
+              ? '{'
+              : JSON.stringify(
+                  // Contract Evolution: required semantics must be checked before normalization.
+                  proof === 'retained-v1-unknown-required-feature'
+                    ? { ...retained, requiredFeatures: ['unsupported-cleanup-semantics'] }
+                    : retained
+                )
+          );
+      }
+      const sessionBytes = existsSync(sessionPath) ? readFileSync(sessionPath) : null;
       const retainedBytes = existsSync(snapshotPath) ? readFileSync(snapshotPath) : null;
+      if (retainedOnly) {
+        for (const join of joins.splice(0)) await join();
+        await native.restore();
+        await shutdownControlStoreWorkerClient();
+        // Named downgrade fault: the diagnosed owner has neither native projection after restart.
+        const historical = openWorkspaceDb(dataRoot, retiredWorkspaceId);
+        try {
+          // Clear dependent native projections in FK order; original AEP and Core lineage stay intact.
+          historical.sqlite.exec(`DELETE FROM control_work_observations;
+            DELETE FROM control_product_entries;
+            DELETE FROM control_turns;
+            DELETE FROM control_agent_sessions;
+            DELETE FROM control_threads;
+            DELETE FROM control_workspaces;`);
+          expect(historical.sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
+          expect(historical.sqlite.pragma('foreign_key_check')).toEqual([]);
+          expect(historical.sqlite.prepare('SELECT id FROM control_workspaces').all()).toEqual([]);
+          expect(historical.sqlite.prepare('SELECT id FROM control_agent_sessions').all()).toEqual(
+            []
+          );
+        } finally {
+          historical.sqlite.close();
+        }
+      }
       refuseScope(dataRoot, { scope: 'workspace', id: retiredWorkspaceId, check: 'recovery' });
       const registry = getWorkspaceRegistryLifecycleFact(coreDb, retiredWorkspaceId)!;
       coreDb.sqlite.transaction(() =>
@@ -17355,6 +17440,17 @@ describe('retired Workspace resident isolation', () => {
         })
       )();
       refuseScope(dataRoot, { scope: 'workspace', id: retiredWorkspaceId, check: 'retired' });
+      if (retainedOnly) {
+        store = new FsStore({ dataRoot });
+        native = createNativeTaskAdmissionFixture(
+          coreDb,
+          store,
+          {
+            readRuntimeConfig: () => snapshot,
+          },
+          native.outside
+        );
+      }
       const effectsBefore = [...native.effects];
       const sandboxId = effectsBefore.find((effect) => effect.kind === 'sandbox.create')!.input
         .sandboxId;
@@ -17377,8 +17473,7 @@ describe('retired Workspace resident isolation', () => {
                 packageSnapshotId: resident.pkg.snapshotId,
                 backendSessionId: anchorBefore.backendSessionId,
               });
-              if (proof === 'delete-failed')
-                throw new Error('Outside peer cannot prove physical deletion.');
+              if (deleteFailed) throw new Error('Outside peer cannot prove physical deletion.');
             }
           return count;
         });
@@ -17391,8 +17486,38 @@ describe('retired Workspace resident isolation', () => {
           newCommands.push(command);
           return command;
         });
+      // Accepted ruling: a non-admitted owner must never enter the writing default recorder.
+      const recorder = vi.spyOn(native.executor, 'recordNativeHandleDigest');
+      const capacityLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
-        if (proof === 'accepted') {
+        if (
+          retainedOnly &&
+          (accepted || deleteFailed || proof === 'retained-v1-unknown-required-feature')
+        ) {
+          const backend = (native.runtime.turnExecutor as WorkerGovernanceTurnExecutor)
+            .executionBackend!;
+          const desired = {
+            ...resident.pkg,
+            scope: {
+              ...resident.pkg.scope,
+              workspaceId: healthy.id,
+              threadId: healthyThread.id,
+              agentSessionId: second.agentSessionId,
+              turnId: second.entry.turnId,
+            },
+          };
+          if (proof === 'retained-v1-unknown-required-feature')
+            await expect(backend.inspectMaterializationCapacity!(desired)).rejects.toThrow();
+          else
+            await expect(backend.inspectMaterializationCapacity!(desired)).resolves.toBe(
+              'available'
+            );
+          expect(native.effects).toEqual(effectsBefore);
+          expect(getWorkerStorageBinding(coreDb, original.retainedStorage!)).toEqual(storageBefore);
+          expect(getWorkerBackendSession(coreDb, first.attemptId)).toEqual(anchorBefore);
+          expect(recorder.mock.calls.some(([, id]) => id === original.id)).toBe(false);
+        }
+        if (accepted) {
           // Scheduling Scale Completion/Release: same Epoch is residency, never an absence proof.
           const admitted = await native.admitTurn(second.entry, second);
           joins.push(admitted.cleanup);
@@ -17422,7 +17547,7 @@ describe('retired Workspace resident isolation', () => {
         } else {
           // Missing/contradictory accepted authority cannot grant capacity or a replacement execution.
           await expect(native.admitTurn(second.entry, second)).rejects.toThrow();
-          if (proof === 'delete-failed') {
+          if (deleteFailed) {
             expect(deleteObserved).toBe(true);
             expect(
               native.effects
@@ -17441,7 +17566,24 @@ describe('retired Workspace resident isolation', () => {
             );
           }
           expect(newCommands.some((command) => command.operation === 'turn.start')).toBe(false);
+          if (retainedOnly && !deleteFailed) {
+            const failure = capacityLog.mock.calls
+              .map(([entry]) => JSON.parse(String(entry)))
+              .find((entry) => entry.event === 'worker.admission.capacity-inspection-failed');
+            // The accepted diagnostic ruling requires finite causes, without exception text or paths.
+            expect(failure).toMatchObject({
+              causeCode:
+                proof === 'retained-v1-unknown-required-feature'
+                  ? expect.stringMatching(
+                      /^retiring-proof-handoff\/(missing-proof|lineage-conflict|owner-discovery-refused)$/
+                    )
+                  : proof === 'retained-v1-missing-proof' || proof === 'retained-v1-corrupt-proof'
+                    ? 'retiring-proof-handoff/missing-proof'
+                    : 'retiring-proof-handoff/lineage-conflict',
+            });
+          }
         }
+        expect(recorder.mock.calls.some(([, id]) => id === original.id)).toBe(false);
         expect(
           newCommands.some(
             (command) =>
@@ -17455,7 +17597,11 @@ describe('retired Workspace resident isolation', () => {
           { kind: 'workspace', workspaceId: retiredWorkspaceId }
         );
         try {
-          if (proof === 'conflicting-recorded-work-slot') {
+          if (retainedOnly) {
+            // Cleanup-only reads must not resurrect native or executable authority.
+            expect(retainedReader.get('workspace', retiredWorkspaceId)).toBeUndefined();
+            expect(retainedReader.get('agent-session', original.id)).toBeUndefined();
+          } else if (proof === 'conflicting-recorded-work-slot') {
             expect(retainedReader.get('agent-session', original.id)!.record).toMatchObject({
               nativeHandleDigest: original.nativeHandleDigest,
               retainedStorage: recordedBeforeRetirement.retainedStorage,
@@ -17479,9 +17625,12 @@ describe('retired Workspace resident isolation', () => {
           store.createThread(retiredWorkspaceId, 'Must remain retired')
         ).rejects.toMatchObject({ code: 'recovery_required' });
         expect(existsSync(snapshotPath) ? readFileSync(snapshotPath) : null).toEqual(retainedBytes);
+        expect(existsSync(sessionPath) ? readFileSync(sessionPath) : null).toEqual(sessionBytes);
       } finally {
         observe.mockRestore();
         physicalPeer.mockRestore();
+        recorder.mockRestore();
+        capacityLog.mockRestore();
       }
     } finally {
       for (const join of joins) await join();

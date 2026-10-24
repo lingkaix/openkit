@@ -1732,6 +1732,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         JSON.stringify({
           event: 'worker.admission.capacity-inspection-failed',
           errorCode: 'recovery_required',
+          causeCode: failedCheck,
           requestId: input.requestId,
           workspaceId: workspaceIdForOwner(input.turn.owner),
           threadId: input.turn.threadId,

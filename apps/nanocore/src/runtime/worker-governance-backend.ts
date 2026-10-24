@@ -178,7 +178,10 @@ export class WorkerNativeProofValidationError extends Error {
     | 'package-binding-lineage/transient-provider'
     | 'accepted-ready-binding'
     | 'retained-storage-association'
-    | 'live-storage-association';
+    | 'live-storage-association'
+    | 'retiring-proof-handoff/owner-discovery-refused'
+    | 'retiring-proof-handoff/missing-proof'
+    | 'retiring-proof-handoff/lineage-conflict';
 
   /** Only admitted record ids and well-formed physical Epochs may accompany operator diagnosis. */
   public readonly diagnostic:
