@@ -70753,10 +70753,7 @@
                   ]
                 },
                 "content": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string"
                 }
               },
               "required": [
@@ -151225,5 +151222,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8e2a2dcb50bcef5f19008804b22234f15ed4870ffc08ad96abfdffc08f07123b"
+  "x-openkit-source-digest": "sha256:c06d117c8763f745098c4b6c2da59e5fc0d2520e10a17cf6a8d6cde9c7ef722d"
 }

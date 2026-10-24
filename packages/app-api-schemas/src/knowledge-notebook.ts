@@ -37,9 +37,13 @@ export const UpdateKnowledgeNotebookRequestSchema = z
           .object({
             path: KnowledgeNotebookEditPathSchema,
             content: z
-              .string()
-              .refine((text) => new TextEncoder().encode(text).length <= 2 * 1024 * 1024)
-              .nullable(),
+              .string({
+                error: (issue) =>
+                  issue.input === null
+                    ? 'Notebook removal requires knowledge.notebook.delete with exact content confirmation.'
+                    : undefined,
+              })
+              .refine((text) => new TextEncoder().encode(text).length <= 2 * 1024 * 1024),
           })
           .strict()
       )
@@ -59,7 +63,7 @@ export const UpdateKnowledgeNotebookRequestSchema = z
           path: ['changes', index, 'path'],
         });
       paths.add(change.path);
-      if (change.content !== null) bytes += new TextEncoder().encode(change.content).length;
+      bytes += new TextEncoder().encode(change.content).length;
     }
     if (bytes > 32 * 1024 * 1024)
       context.addIssue({
@@ -109,7 +113,7 @@ export const CreateKnowledgeNotebookPageRequestSchema = z
     requestId: RequestIdSchema,
     baseRevision: UpdateKnowledgeNotebookRequestSchema.shape.baseRevision,
     path: KnowledgeNotebookPathSchema,
-    content: UpdateKnowledgeNotebookRequestSchema.shape.changes.element.shape.content.unwrap(),
+    content: UpdateKnowledgeNotebookRequestSchema.shape.changes.element.shape.content,
     summary: UpdateKnowledgeNotebookRequestSchema.shape.summary,
   })
   .strict();

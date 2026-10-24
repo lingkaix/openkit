@@ -256,7 +256,7 @@ Thread, Turn, Item and CapabilityCall outputs reuse Protocol's explicit Workspac
 
 Claim and reusable Observation/conflict content use the ordinary Notebook operations and canonical OKF metadata. The seven standalone `knowledge.claim.*`, `knowledge.observation.*` and `knowledge.conflict.*` bindings and their separate fact DTOs are retired without aliases. The definition-derived client, CLI and OpenAPI expose the same Notebook lifecycle. WorkObservation and actual decision APIs retain their owners.
 
-`knowledge.notebook.*` owns the single public page lifecycle. List exposes the existing canonical page shape and selected Knowledge Base/commit. Create takes exact new path/full bytes/base; delete requires exact base/digest and human confirmation. Both use the same publication result as update. The retired entry CRUD operations, separate entry DTO and entry-kind metadata have no aliases.
+`knowledge.notebook.*` owns the single public page lifecycle. List exposes the existing canonical page shape and selected Knowledge Base/commit. Create takes exact new path/full bytes/base; update accepts string content and rejects null with a diagnostic directing removal to delete. Delete requires exact base/digest and human confirmation. Both use the same publication result as update. The retired entry CRUD operations, separate entry DTO and entry-kind metadata have no aliases.
 
 `knowledge-package-operations.ts` declares the two streaming Workspace Knowledge package bindings. Their query selectors, current Knowledge permissions and import publication result share the native operation registry. Package bytes remain outside JSON/model inputs; the Native package owner validates the manifest and current target authority.
 

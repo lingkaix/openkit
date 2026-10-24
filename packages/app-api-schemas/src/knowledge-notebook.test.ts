@@ -28,6 +28,29 @@ describe('Fixed-base notebook publication contract', () => {
     ).toEqual(value.changes);
   });
 
+  it('refuses null edits and directs removal to the confirmed delete operation', () => {
+    const value = { ...request(), changes: [{ path: 'index.md', content: null }] };
+    const definition = KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS['knowledge.notebook.update'];
+    for (const result of [
+      UpdateKnowledgeNotebookRequestSchema.safeParse(value),
+      definition.inputSchema.safeParse({
+        ...value,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      }),
+    ]) {
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['changes', 0, 'content'],
+            message: expect.stringContaining('knowledge.notebook.delete'),
+          }),
+        ])
+      );
+    }
+  });
+
   it.each([
     '../outside.md',
     '/outside.md',
