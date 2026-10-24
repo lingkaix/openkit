@@ -44,10 +44,11 @@ import {
   ControlAdmissionSchema,
 } from './control-store-admission.js';
 import {
-  type ControlCapabilityCommandInput,
-  ControlCapabilityCommandInputSchema,
   type ControlCapabilityCommandResult,
   ControlCapabilityCommandResultSchema,
+  type ControlCapabilityWireInput,
+  ControlCapabilityWireInputSchema,
+  controlCapabilityTextSpan,
 } from './control-store-capability.js';
 import {
   type ControlPendingTransition,
@@ -75,7 +76,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 12;
+export const CONTROL_WORKER_VERSION = 13;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -84,7 +85,7 @@ export const CONTROL_WORKER_LIMITS = {
   batchTransitions: 32,
   batchWaitMs: 5,
   pendingTransitions: 1024,
-  /** Process-wide envelopes and ordinary cloned backing, separate from Material binary/echo. */
+  /** Process-wide envelopes and ordinary cloned backing, separate from binary/echo. */
   pendingBytes: 64 * 1024 * 1024,
   /** Binary input plus echoed range-text capacity also remains independently bounded. */
   materialPendingBytes: 64 * 1024 * 1024,
@@ -154,7 +155,11 @@ export type ControlWorkerCommand =
       | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
-      | { readonly operation: 'capability'; readonly input: ControlCapabilityCommandInput }
+      | {
+          readonly operation: 'capability';
+          readonly input: ControlCapabilityWireInput;
+          readonly content?: ArrayBuffer;
+        }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -196,8 +201,11 @@ export function controlWorkerInputBytes(
       const original = this[key];
       if (typeof original === 'bigint') return original.toString();
       if (original instanceof ArrayBuffer || ArrayBuffer.isView(original)) {
-        // Material binary/echo has an independent reservation. Aliased backing is conservatively counted.
-        if (command.operation !== 'material')
+        // Scalar/Material binary and range echo share one reservation; other backing is counted.
+        if (
+          command.operation !== 'material' &&
+          !(command.operation === 'capability' && key === 'content' && this === command)
+        )
           binaryBytes +=
             original instanceof ArrayBuffer ? original.byteLength : original.buffer.byteLength;
         return null;
@@ -722,6 +730,21 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'capability') {
+    try {
+      const parsed = ControlCapabilityWireInputSchema.safeParse(value.input);
+      if (!parsed.success || !exactFields(value, [...scoped, 'input'], ['content'])) return false;
+      const span = controlCapabilityTextSpan(parsed.data);
+      return (
+        (span
+          ? controlMaterialArrayBufferByteLength(value.content) === span.byteLength
+          : value.content === undefined) &&
+        Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      );
+    } catch {
+      return false;
+    }
+  }
   if (value.operation === 'material') {
     try {
       const parsed = ControlMaterialWireInputSchema.safeParse(value.input);
@@ -745,7 +768,6 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'journal' ||
     value.operation === 'project-cleanup' ||
     value.operation === 'observation' ||
-    value.operation === 'capability' ||
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
     value.operation === 'review' ||
@@ -769,9 +791,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
                       ? ControlMaintenanceAdmissionInputSchema
                       : value.operation === 'terminal'
                         ? ControlTerminalTransitionSchema
-                        : value.operation === 'capability'
-                          ? ControlCapabilityCommandInputSchema
-                          : ControlWorkObservationInputSchema;
+                        : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

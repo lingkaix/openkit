@@ -285,3 +285,135 @@ export function observeWorkerRawOutput(
     })
     .immediate();
 }
+
+/** Existing source identity and positions, without a second call or scope representation. */
+export type WorkerRawOutputPosition = Omit<
+  Parameters<typeof observeWorkerRawOutput>[1],
+  keyof WorkerRawOutputScope | 'callId'
+>;
+
+/** Shared provisional Turn total, initialized from acknowledged canonical proof by the Gateway. */
+export interface WorkerRawOutputTurnWatermark {
+  rawOutputBytes: number;
+  exhausted: boolean;
+}
+
+/** Coalesces one actual Call; sender resolution must mean its native outer FULL acknowledgement. */
+export function createWorkerRawOutputCoalescer(
+  initial: RawState,
+  turn: WorkerRawOutputTurnWatermark,
+  send: (positions: readonly WorkerRawOutputPosition[], force: boolean) => Promise<void>
+) {
+  const state = WorkerRawOutputStateSchema.parse(initial);
+  if (
+    state.coverage !== 'pending' ||
+    !Number.isSafeInteger(turn.rawOutputBytes) ||
+    turn.rawOutputBytes < state.byteLength ||
+    turn.exhausted !== turn.rawOutputBytes > MAX_WORKER_RAW_OUTPUT_BYTES
+  )
+    throw new WorkerRawOutputAuthorityError();
+  const positions = { ...state.positions };
+  let keys = Object.keys(positions).length;
+  let inventoryBytes = Buffer.byteLength(JSON.stringify(positions));
+  const pending = new Map<string, WorkerRawOutputPosition>();
+  let version = 0;
+  let acknowledged = 0;
+  let forcePending = false;
+  let failure: { error: unknown } | undefined;
+  let inFlight: Promise<void> | undefined;
+  let scheduled: ReturnType<typeof setImmediate> | undefined;
+  const schedule = () => {
+    if (scheduled || inFlight || failure || !pending.size) return;
+    scheduled = setImmediate(() => {
+      scheduled = undefined;
+      void flush();
+    });
+  };
+  const flush = (): Promise<void> => {
+    if (failure) return Promise.reject(failure.error);
+    if (inFlight) return inFlight;
+    if (!pending.size) return Promise.resolve();
+    if (scheduled) clearImmediate(scheduled);
+    scheduled = undefined;
+    const batch = Object.freeze([...pending.values()].map((position) => Object.freeze(position)));
+    const target = version;
+    const force = forcePending;
+    forcePending = false;
+    pending.clear();
+    inFlight = Promise.resolve()
+      .then(() => send(batch, force))
+      .then(
+        () => {
+          acknowledged = target;
+        },
+        (error: unknown) => {
+          failure = { error };
+          throw error;
+        }
+      )
+      .finally(() => {
+        inFlight = undefined;
+        schedule();
+      });
+    // Scheduled sends have no immediate waiter; retain their rejection for every later barrier.
+    void inFlight.catch(() => {});
+    return inFlight;
+  };
+  return {
+    /** Runs synchronously before normalization; merge only after checking this exact source prefix. */
+    observe(position: WorkerRawOutputPosition) {
+      if (failure) throw failure.error;
+      if (
+        typeof position.attemptId !== 'string' ||
+        !position.attemptId ||
+        position.attemptId.length > 4096 ||
+        !Number.isSafeInteger(position.partId) ||
+        position.partId < 0 ||
+        !Number.isSafeInteger(position.fromBytePosition) ||
+        position.fromBytePosition < 0 ||
+        !Number.isSafeInteger(position.bytePosition) ||
+        position.bytePosition < position.fromBytePosition ||
+        !['text', 'tool-arguments', 'reasoning'].includes(position.field)
+      )
+        throw new WorkerRawOutputAuthorityError();
+      const key = createHash('sha256')
+        .update(JSON.stringify([position.attemptId, position.partId, position.field]))
+        .digest('hex');
+      const previous = positions[key] ?? 0;
+      if (position.fromBytePosition > previous) throw new WorkerRawOutputAuthorityError();
+      const chargedBytes = Math.max(0, position.bytePosition - previous);
+      if (chargedBytes) {
+        // Canonical JSON adds quoted key, colon, digits and an optional comma.
+        const bytes =
+          inventoryBytes +
+          (previous
+            ? String(position.bytePosition).length - String(previous).length
+            : key.length + 3 + String(position.bytePosition).length + (keys ? 1 : 0));
+        const total = turn.rawOutputBytes + chargedBytes;
+        if (bytes > POSITION_BYTES || !Number.isSafeInteger(total))
+          throw new WorkerRawOutputAuthorityError();
+        inventoryBytes = bytes;
+        if (!previous) keys += 1;
+        positions[key] = position.bytePosition;
+        turn.rawOutputBytes = total;
+        turn.exhausted = total > MAX_WORKER_RAW_OUTPUT_BYTES;
+        const earlier = pending.get(key);
+        pending.set(key, { ...position, fromBytePosition: earlier?.fromBytePosition ?? previous });
+        version += 1;
+        schedule();
+      }
+      return { rawOutputBytes: turn.rawOutputBytes, exhausted: turn.exhausted, chargedBytes };
+    },
+    /** Captures this immutable sufficient prefix; later arrivals cannot advance its ACK target. */
+    cover(force = false): Promise<void> {
+      const target = version;
+      if (force && pending.size) forcePending = true;
+      const wait = (): Promise<void> => {
+        if (failure) return Promise.reject(failure.error);
+        if (acknowledged >= target) return Promise.resolve();
+        return flush().then(wait);
+      };
+      return wait();
+    },
+  };
+}

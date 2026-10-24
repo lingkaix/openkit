@@ -39,9 +39,11 @@ import {
 } from '../workspace-materials.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
-import type {
-  ControlCapabilityCommandInput,
-  ControlCapabilityCommandResult,
+import {
+  type ControlCapabilityCommandInput,
+  type ControlCapabilityCommandResult,
+  controlCapabilityTextSpan,
+  prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import type {
@@ -598,7 +600,18 @@ class ControlStoreWorkerClient {
     input: ControlCapabilityCommandInput
   ): Promise<ControlCapabilityCommandResult> {
     try {
-      const reply = await this.request({ operation: 'capability', database, input });
+      const text =
+        input.kind === 'usage-finish' ? input.finish?.deliveredKnowledgeAnswer : undefined;
+      if (
+        text !== undefined &&
+        Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
+      )
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      const transfer = prepareControlCapabilityTransfer(input);
+      const reply = await this.request(
+        { operation: 'capability', database, input: transfer.input },
+        transfer.parts
+      );
       return (reply as Extract<Success, { operation: 'capability' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'capability') {
@@ -845,8 +858,14 @@ class ControlStoreWorkerClient {
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     let materialBytes = 0;
     let posted = command;
-    if (command.operation === 'material') {
-      const size = controlMaterialTransferSize(command.input);
+    if (command.operation === 'material' || command.operation === 'capability') {
+      const size =
+        command.operation === 'material'
+          ? controlMaterialTransferSize(command.input)
+          : {
+              byteLength: controlCapabilityTextSpan(command.input)?.byteLength ?? 0,
+              replyByteLength: 0,
+            };
       if (!size)
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       materialBytes = size.byteLength + size.replyByteLength;
@@ -885,7 +904,7 @@ class ControlStoreWorkerClient {
     if (this.backupPaused || deferPost) {
       try {
         admittedRequest = structuredClone(request, {
-          transfer: request.operation === 'material' && request.content ? [request.content] : [],
+          transfer: 'content' in request && request.content ? [request.content] : [],
         });
       } catch {
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
@@ -934,7 +953,7 @@ class ControlStoreWorkerClient {
     try {
       const request = entry.request;
       const transferList =
-        request.operation === 'material' && request.content !== undefined ? [request.content] : [];
+        'content' in request && request.content !== undefined ? [request.content] : [];
       entry.host.worker!.postMessage(entry.cohort?.frame ?? request, transferList);
     } catch {
       // A clone/post failure enqueues none of this one frame, including every cohort member.

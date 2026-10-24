@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readWorkerRawOutput } from '../runtime/worker-raw-output.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
@@ -74,7 +76,7 @@ function fixture() {
     return client;
   }
 
-  return { db, workspaceId, inference, open };
+  return { root, db, workspaceId, inference, open };
 }
 
 type Inference = Awaited<ReturnType<ReturnType<typeof fixture>['inference']>>;
@@ -190,4 +192,103 @@ describe('dormant native CapabilityCall raw observation boundary', () => {
     expect(readWorkerRawOutput(f.db, sibling.scope).rawOutputBytes).toBe(3);
     expect(readWorkerRawOutput(other.db, otherInference.scope).rawOutputBytes).toBe(5);
   });
+});
+
+it('retains an exact binary Knowledge answer after reopen and refuses a corrupted finish tuple', async () => {
+  const f = fixture();
+  const writer = await f.open();
+  const admit = async () => {
+    const call = await writer.capability(f.workspaceId, {
+      kind: 'admit',
+      workspaceId: f.workspaceId,
+      now: new Date().toISOString(),
+      context: {
+        authorityActor: null,
+        family: 'knowledge',
+        operation: 'knowledge.ask',
+        capabilityId: 'knowledge.ask',
+        redactionClass: 'metadata-only',
+      },
+    });
+    if (!call || typeof call !== 'object' || !('context' in call))
+      throw new Error('Native Knowledge admission did not return its original Call.');
+    return call;
+  };
+  const accepted = await admit();
+  const refused = await admit();
+  const answer = '\uFEFF' + '"\\\0\r\n\uFEFF🙂'.repeat(131_072);
+  const expected = Buffer.from(answer, 'utf8');
+  expect(expected.byteLength).toBeGreaterThan(1_048_576);
+  const tuple = () =>
+    [
+      'SELECT * FROM capability_calls WHERE call_id = ?',
+      'SELECT * FROM usage_records WHERE capability_call_id = ? ORDER BY usage_id',
+      'SELECT * FROM audit_events WHERE capability_call_id = ? ORDER BY created_at',
+    ].map((sql) => f.db.sqlite.prepare(sql).all(refused.id));
+  const before = tuple();
+  const finish = (call: typeof accepted) => {
+    const now = new Date().toISOString();
+    return writer.capability(f.workspaceId, {
+      kind: 'usage-finish',
+      workspaceId: f.workspaceId,
+      call,
+      finish: { status: 'succeeded', deliveredKnowledgeAnswer: answer, now },
+      usage: { records: [{ category: 'tool', unit: 'capability_calls', quantity: 1 }], now },
+    });
+  };
+  let corrupt = false;
+  let frames = 0;
+  let corruptedByteChanged = false;
+  let corruptedFrameForwarded = false;
+  const post = Worker.prototype.postMessage;
+  // Inspect and corrupt only the real transferred frame; native SQL and acknowledgements stay real.
+  const intercepted = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+    this: Worker,
+    ...args: Parameters<Worker['postMessage']>
+  ) {
+    const message = args[0];
+    if (message.operation === 'capability' && message.content instanceof ArrayBuffer) {
+      const { content, ...metadata } = message;
+      ++frames;
+      expect(content.byteLength).toBe(expected.byteLength);
+      expect(Buffer.byteLength(JSON.stringify(metadata), 'utf8')).toBeLessThanOrEqual(1_048_576);
+      expect(Array.isArray(args[1]) && args[1].length === 1 && args[1][0] === content).toBe(true);
+      if (corrupt) {
+        const bytes = new Uint8Array(content);
+        const original = bytes[3];
+        bytes.set([expected[3]! ^ 1], 3); // Valid UTF-8; declared length/digest stay unchanged.
+        corruptedByteChanged = bytes[3] !== original;
+        const result = post.apply(this, args);
+        corruptedFrameForwarded = true;
+        return result;
+      }
+    }
+    return post.apply(this, args);
+  });
+  try {
+    await expect(finish(accepted)).resolves.toHaveLength(1);
+    corrupt = true;
+    await expect(finish(refused)).rejects.toMatchObject({ commit: 'not-committed' });
+    // A spy throw caught by client admission must not substitute for a native corruption refusal.
+    expect(corruptedByteChanged).toBe(true);
+    expect(corruptedFrameForwarded).toBe(true);
+    expect(frames).toBe(2);
+    expect(tuple()).toEqual(before);
+  } finally {
+    intercepted.mockRestore();
+  }
+  await writer.shutdown();
+  f.db.sqlite.close();
+  const reopened = openWorkspaceDb(f.root, f.workspaceId);
+  databases.push(reopened);
+  reopened.sqlite.pragma('query_only = ON');
+  const calls = listWorkspaceCapabilityCalls(reopened, f.workspaceId);
+  const retained = calls.find((call) => call.id === accepted.id)!;
+  const delivery = retained.extensions?.['openkit.knowledge/delivery'] as { answer: string };
+  // DX exact-byte retention and the original Call jointly decide publication, not the wire spy.
+  expect(Buffer.from(delivery.answer, 'utf8').equals(expected)).toBe(true);
+  expect(retained.status).toBe('succeeded');
+  const rejected = calls.find((call) => call.id === refused.id)!;
+  expect(rejected.status).toBe('running');
+  expect(rejected.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
 });

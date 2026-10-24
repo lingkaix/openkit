@@ -61,7 +61,11 @@ import {
 } from '../workspace-materials.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
-import { applyControlCapabilityCommand } from './control-store-capability.js';
+import {
+  applyControlCapabilityCommand,
+  type ControlCapabilityCommandInput,
+  prepareControlCapabilityCommand,
+} from './control-store-capability.js';
 import {
   applyControlPendingTransition,
   prepareControlPendingArchive,
@@ -153,6 +157,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
   readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
+  readonly preparedCapability?: ControlCapabilityCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
@@ -1122,8 +1127,9 @@ function flush(owner: OwnedDatabase): void {
               result,
             };
           } else if (request.operation === 'capability') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new WorkerRawOutputAuthorityError();
-            const result = applyControlCapabilityCommand(owner.scopeDb, request.input);
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedCapability)
+              throw new WorkerRawOutputAuthorityError();
+            const result = applyControlCapabilityCommand(owner.scopeDb, request.preparedCapability);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -1602,6 +1608,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedPending: PreparedControlPendingCommand | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
           let preparedMaterial: ControlMaterialCommandInput | undefined;
+          let preparedCapability: ControlCapabilityCommandInput | undefined;
           let preparedReview: PreparedControlReviewCommand | undefined;
           let preparedTerminal: PreparedControlTerminal | undefined;
           try {
@@ -1653,6 +1660,10 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 newDirectories
               );
               preparedEntries = preparedPending.entries;
+            }
+            if (value.operation === 'capability') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new WorkerRawOutputAuthorityError();
+              preparedCapability = prepareControlCapabilityCommand(value.input, value.content);
             }
             if (value.operation === 'material') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -1712,9 +1723,10 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedPublication,
               preparedTerminal,
               preparedMaterial,
+              preparedCapability,
               preparedDirectories: [...newDirectories.directories],
               preparedPublications: [...newDirectories.published],
-              ...(value.operation === 'material' ? { content: undefined } : {}),
+              ...('content' in value ? { content: undefined } : {}),
             });
             schedule(owner);
           } catch (error) {

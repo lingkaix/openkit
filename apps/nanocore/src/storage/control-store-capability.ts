@@ -37,7 +37,12 @@ import {
   ControlCheckpointCommandInputSchema,
   ControlCheckpointCommandResultSchema,
 } from './control-store-checkpoints.js';
-import { presentControlFacts } from './control-store-input.js';
+import {
+  ControlScalarTextSchema,
+  frameControlScalarText,
+  presentControlFacts,
+  readControlScalarText,
+} from './control-store-input.js';
 import type { WorkspaceDb } from './db.js';
 
 const scope = {
@@ -206,6 +211,68 @@ export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', 
 ]);
 /** Exact prepared command admitted by the existing bounded native envelope. */
 export type ControlCapabilityCommandInput = z.infer<typeof ControlCapabilityCommandInputSchema>;
+
+/** Only the concrete delivered answer leaves JSON; other commands retain their closed framing. */
+export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
+  ControlCapabilityCommandInputSchema.options[0],
+  admitCommand,
+  permissionCommand,
+  z
+    .object({
+      ...usageFinishCommand.shape,
+      finish: finish
+        .extend({ deliveredKnowledgeAnswer: ControlScalarTextSchema.optional() })
+        .optional(),
+    })
+    .strict()
+    .refine((input) => input.usage !== undefined || input.finish !== undefined),
+  ControlCapabilityCommandInputSchema.options[4],
+  ControlCapabilityCommandInputSchema.options[5],
+  ControlCapabilityCommandInputSchema.options[6],
+]);
+/** Transient binary binding for the current answer field, never retained data. */
+export type ControlCapabilityWireInput = z.infer<typeof ControlCapabilityWireInputSchema>;
+
+/** Selects only the concrete answer binding from the closed wire input. */
+export function controlCapabilityTextSpan(input: ControlCapabilityWireInput) {
+  return input.kind === 'usage-finish' ? input.finish?.deliveredKnowledgeAnswer : undefined;
+}
+
+/** Replaces the actual answer after binary capacity admission; no escaped JSON body is created. */
+export function prepareControlCapabilityTransfer(value: ControlCapabilityCommandInput) {
+  const input = ControlCapabilityCommandInputSchema.parse(value);
+  if (input.kind !== 'usage-finish' || input.finish?.deliveredKnowledgeAnswer === undefined)
+    return { input: ControlCapabilityWireInputSchema.parse(input), parts: [] };
+  const text = input.finish.deliveredKnowledgeAnswer;
+  return {
+    input: ControlCapabilityWireInputSchema.parse({
+      ...input,
+      finish: { ...input.finish, deliveredKnowledgeAnswer: frameControlScalarText(text) },
+    }),
+    parts: [text],
+  };
+}
+
+/** Rebuilds the concrete owner input outside SQL after exact scalar verification. */
+export function prepareControlCapabilityCommand(
+  value: ControlCapabilityWireInput,
+  content?: ArrayBuffer
+) {
+  const input = ControlCapabilityWireInputSchema.parse(value);
+  if (input.kind === 'usage-finish' && input.finish?.deliveredKnowledgeAnswer !== undefined)
+    return ControlCapabilityCommandInputSchema.parse({
+      ...input,
+      finish: {
+        ...input.finish,
+        deliveredKnowledgeAnswer: readControlScalarText(
+          input.finish.deliveredKnowledgeAnswer,
+          content
+        ),
+      },
+    });
+  if (content !== undefined) throw new TypeError('Unexpected native scalar binary content.');
+  return ControlCapabilityCommandInputSchema.parse(input);
+}
 
 /** Closed raw aggregate, actual StartedCapabilityCall or retained usage identifiers. */
 export const ControlCapabilityCommandResultSchema = z.union([

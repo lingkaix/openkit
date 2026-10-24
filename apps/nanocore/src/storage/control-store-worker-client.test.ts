@@ -664,6 +664,38 @@ describe('control writer parent admission', () => {
       });
       materials.push({ workspaceId, materialId });
     }
+    const knowledgeWorkspaceId = f.workspaces[0]!.id;
+    const knowledgeDatabase = `workspace:${
+      nativeProductScope(f.root, {
+        kind: 'workspace',
+        workspaceId: knowledgeWorkspaceId,
+      }).path
+    }`;
+    const knowledgeCall = await f.client.capability(knowledgeDatabase, {
+      kind: 'admit',
+      workspaceId: knowledgeWorkspaceId,
+      now: new Date().toISOString(),
+      context: {
+        authorityActor: null,
+        family: 'knowledge',
+        operation: 'knowledge.ask',
+        capabilityId: 'knowledge.ask',
+        redactionClass: 'metadata-only',
+      },
+    });
+    if (!knowledgeCall || typeof knowledgeCall !== 'object' || !('context' in knowledgeCall))
+      throw new Error('Native Knowledge admission did not return its original Call.');
+    const finishKnowledge = () =>
+      f.client.capability(knowledgeDatabase, {
+        kind: 'usage-finish',
+        workspaceId: knowledgeWorkspaceId,
+        call: knowledgeCall,
+        finish: {
+          status: 'succeeded',
+          deliveredKnowledgeAnswer: 'x',
+          now: new Date().toISOString(),
+        },
+      });
     const save = (index: number, content: string) => {
       const { workspaceId, materialId } = materials[index]!;
       return f.call(workspaceId, 'material.revision-save', {
@@ -702,6 +734,16 @@ describe('control writer parent admission', () => {
       expect(new Set(materialRequests.map(({ host }) => host)).size).toBe(4);
       while (Atomics.load(gate, 0) < 4) await nextTurn();
       await expect(save(4, 'x')).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+      const capabilityPosts = posted.mock.calls.filter(
+        ([request]) => request.operation === 'capability'
+      ).length;
+      await expect(finishKnowledge()).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      expect(
+        posted.mock.calls.filter(([request]) => request.operation === 'capability')
+      ).toHaveLength(capabilityPosts);
       expect(
         posted.mock.calls.filter(([request]) => request.operation === 'material')
       ).toHaveLength(4);
@@ -712,6 +754,7 @@ describe('control writer parent admission', () => {
     await expect(Promise.all(accepted)).resolves.toHaveLength(4);
     // The fifth request becomes admissible only after the original reservations settle.
     await expect(save(4, 'x')).resolves.toHaveProperty('revisionId');
+    await finishKnowledge();
   });
 
   it('refuses excess work before postMessage and keeps sibling admission separate', async () => {
