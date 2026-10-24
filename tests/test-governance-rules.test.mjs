@@ -171,6 +171,85 @@ test.skipIf(true)('literal skip', () => {});
   }
 });
 
+test('validateTestGovernance ratchets new SQL and internal SQLite access outside storage owners', async () => {
+  const { validateTestGovernance } = await loadGovernance();
+  const rawSql = "db.prepare('INSERT INTO threads (id) VALUES (?)').run('thread-1');";
+  const handle = 'const handle = fixture.workspaceDb.sqlite;';
+  // Test Strategy: Test Authority And Lifecycle requires setup through owners.
+  // The accepted pre-3b brief grandfathers existing files, not new test paths.
+  const table = [
+    { id: 'raw-sql', source: rawSql },
+    { id: 'sqlite-handle', source: handle },
+    { id: 'sqlite-element-handle', source: "const handle = fixture.workspaceDb['sqlite'];" },
+    {
+      id: 'node-sqlite',
+      source: "import { DatabaseSync as Sqlite } from 'node:sqlite'; new Sqlite(':memory:');",
+    },
+    {
+      id: 'better-sqlite',
+      source: "import Sqlite from 'better-sqlite3'; new Sqlite(':memory:');",
+    },
+    {
+      id: 'nanocore-storage-owner',
+      allowed: true,
+      path: 'apps/nanocore/src/storage/ratchet-owner.test.ts',
+      source: `${rawSql}\n${handle}`,
+    },
+    {
+      id: 'storage-package-owner',
+      allowed: true,
+      path: 'packages/storage/src/ratchet-owner.test.ts',
+      source: `${rawSql}\n${handle}`,
+    },
+    {
+      id: 'owner-methods',
+      allowed: true,
+      source: "await createDemoFixture(); createThread(store, input); client.prepare('request');",
+    },
+    {
+      id: 'non-sql-command-and-request-text',
+      allowed: true,
+      source: `import { exec } from 'node:child_process';
+exec('git commit -m example');
+client.exec('request SELECT status');
+client.prepare('request UPDATE status');
+/SELECT/.exec('SELECT 1');`,
+    },
+    {
+      id: 'inert-examples',
+      allowed: true,
+      source: `const example = ${JSON.stringify(rawSql)};\n// ${handle}`,
+    },
+    {
+      id: 'grandfathered-file',
+      allowed: true,
+      path: 'apps/nanocore/src/evaluation-candidates.test.ts',
+      source: `${rawSql}\n${handle}`,
+    },
+  ];
+  const roots = [];
+
+  try {
+    const observed = table.map((row) => {
+      const path = row.path ?? `apps/nanocore/src/ratchet-${row.id}.test.ts`;
+      const root = writeFixtureRepo({ [path]: row.source });
+      roots.push(root);
+      const errors = validateTestGovernance(root);
+      return [
+        row.id,
+        row.allowed ? errors : errors.some((error) => error.includes(path) && /sql/i.test(error)),
+      ];
+    });
+    assert.deepEqual(
+      Object.fromEntries(observed),
+      Object.fromEntries(table.map((row) => [row.id, row.allowed ? [] : true])),
+      'new SQL and SQLite handle use must be refused; owner and existing files remain admitted'
+    );
+  } finally {
+    for (const root of roots) rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test('validateTestGovernance rejects ordinary docker invocation and allows Dockerfile reads', async () => {
   const { validateTestGovernance } = await loadGovernance();
   const invocation = (runtime) => `import { spawnSync } from 'node:child_process';
