@@ -102,7 +102,7 @@ The first stable protocol family should define records for:
 - `EventEnvelope`
 - `ServerEvent`
 
-`docs/core/core-concepts.md` owns `TriggerSource` as a Turn sub-field and keeps `Channel` outside the current record family. Protocol schemas project that ownership without introducing peer records.
+`docs/core/core-concepts.md` defines `TriggerSource` as a Turn sub-field and keeps `Channel` outside the current record family. Protocol owns the concrete trigger-source values, which Turn Semantics and Pending Request Semantics name, and the field shape; its schemas project them without introducing peer records.
 
 Record schemas should be authored in the active machine-readable protocol schema package.
 
