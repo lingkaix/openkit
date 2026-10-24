@@ -42,7 +42,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/policy.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/core/vault.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/core/mediation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
-| `docs/core/agent-supply.md` | agent-supply | open, pending | — |
+| `docs/core/agent-supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/core/sandbox.md` | sandbox | open, pending | — |
 | `docs/core/agent-session.md` | agent-session | open, pending | — |
 | `docs/core/knowledge.md` | knowledge | open, pending | — |
@@ -100,12 +100,12 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260708-pi_ai_unified_llm_backend.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260721-provider_subscription_accounts.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
-| `docs/specs/20260616-agent_environment_package.md` | agent-supply | open, pending | — |
-| `docs/specs/20260703-agent_manifest_aep_resolution.md` | agent-supply | open, pending | — |
-| `docs/specs/20260711-skill_catalog_versioning_pinning.md` | agent-supply | open, pending | — |
-| `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md` | agent-supply | open, pending | — |
-| `docs/specs/20260907-mcp_catalog_management.md` | agent-supply | open, pending | — |
-| `docs/specs/20260704-workspace_data_source_catalog.md` | agent-supply | open, pending | — |
+| `docs/specs/20260616-agent_environment_package.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260703-agent_manifest_aep_resolution.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260711-skill_catalog_versioning_pinning.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260907-mcp_catalog_management.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260704-workspace_data_source_catalog.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/specs/20260709-worker_sandbox_freedom_policy.md` | sandbox | open, pending | — |
 | `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` | sandbox | open, pending | — |
 | `docs/specs/20260721-worker_execution_environment_images.md` | sandbox | open, pending | — |
@@ -290,6 +290,13 @@ Filled at close-out.
 | #482 `[providers] Account status never returns unavailable, so a locked Vault makes the status read fail with 503` | mediation | MD-PSA-01 | ordinary |
 | #483 `[mcp] An oversized tools/list fails with mcp-server-unavailable instead of mcp-result-too-large` | mediation | MD-MCP-03 | low |
 | #484 `[gateway] Prompt cache scope lets caller metadata override the trusted caller scope` | mediation | MD-LLM-04 | low |
+| #486 `[catalog] Agent Plugin import merges a name-derived id collision into an existing entry and records no source provenance` | agent-supply | AS-PLG-03, 04, 06 | blocking candidate (retained data) |
+| #487 `[catalog] Agent Plugin management has only list and import, and authored setup does not expand an installation` | agent-supply | AS-PLG-01, 02, 05 | enhancement |
+| #488 `[mcp] Plugin MCP import treats SSE as Streamable HTTP, skips the format version, and does not contain an explicit stdio cwd` | agent-supply | AS-MCC-05, 06 | ordinary |
+| #489 `[mcp] Workspace MCP management has no stage-version or remove, and selection names no expected current digest` | agent-supply | AS-MCC-02, 03, 07 | ordinary |
+| #490 `[mcp] Plugin MCP package data key derives from the entry id, so installations do not get their own key` | agent-supply | AS-MCC-04 | ordinary |
+| #491 `[aep] Build egress host accepts URL, path, and port forms at package resolution` | agent-supply | AS-MAR-02 | ordinary |
+| #492 `[catalog] Skill directory walk rejects a directory at depth 32 although 32 levels are allowed` | agent-supply | AS-SKL-05 | low |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -429,3 +436,12 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-110 | mediation | Create slot-id error code | Move the check to the owner |
 | Q-111 | mediation | Mediation labels, numbers, and OD paragraph length | As Q-28; split OD line 306 after Q-99 |
 | Q-112 | mediation | Knowledge package transfer channel | Administrator CLI in the Knowledge package owner |
+| Q-113 | agent-supply | Product-visible readiness vocabulary | MAR states the Core vocabulary; `stale` goes to the protocol summary |
+| Q-114 | agent-supply | Direct-Provider route arms in the package schema | Remove them |
+| Q-115 | agent-supply | Stale Provider references in MAR | Gateway endpoint bullet; drop `providers` |
+| Q-116 | agent-supply | Withdrawn after review (decided by SKL; issue #492) | — |
+| Q-117 | agent-supply | Skill conflict outcome and expected digest | The diagnostic is `conflict`; field mandatory |
+| Q-118 | agent-supply | Withdrawn after review (decided by PLG and MCC; issue #487) | — |
+| Q-119 | agent-supply | HTTPS-only Git data sources | State HTTPS and the key set |
+| Q-120 | agent-supply | Source-id lineage on capability rows | Applies to future source-aware producers |
+| Q-121 | agent-supply | Agent-supply history, status, numbers, time-relative text | As Q-28 |
