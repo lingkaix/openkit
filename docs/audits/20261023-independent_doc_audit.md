@@ -41,7 +41,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/identity.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
 | `docs/core/policy.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/core/vault.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
-| `docs/core/mediation.md` | mediation | open, pending | — |
+| `docs/core/mediation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/core/agent-supply.md` | agent-supply | open, pending | — |
 | `docs/core/sandbox.md` | sandbox | open, pending | — |
 | `docs/core/agent-session.md` | agent-session | open, pending | — |
@@ -91,15 +91,15 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260704-vault_backend_implementation.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/specs/20260709-worker_credential_access_declarations.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/specs/20260703-openshell_mechanism_internalization.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
-| `docs/specs/20261002-operation_definition.md` | mediation | open, pending | — |
-| `docs/specs/20260703-worker_agent_capability.md` | mediation | open, pending | — |
-| `docs/specs/20260704-capability_usage_gateway_foundation.md` | mediation | open, pending | — |
-| `docs/specs/20260704-worker_mcp_tool_supply.md` | mediation | open, pending | — |
-| `docs/specs/20260526-llm_gateway_responses_api.md` | mediation | open, pending | — |
-| `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` | mediation | open, pending | — |
-| `docs/specs/20260708-pi_ai_unified_llm_backend.md` | mediation | open, pending | — |
-| `docs/specs/20260721-provider_subscription_accounts.md` | mediation | open, pending | — |
-| `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` | mediation | open, pending | — |
+| `docs/specs/20261002-operation_definition.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260703-worker_agent_capability.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260704-capability_usage_gateway_foundation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260704-worker_mcp_tool_supply.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260526-llm_gateway_responses_api.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260708-pi_ai_unified_llm_backend.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260721-provider_subscription_accounts.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/specs/20260616-agent_environment_package.md` | agent-supply | open, pending | — |
 | `docs/specs/20260703-agent_manifest_aep_resolution.md` | agent-supply | open, pending | — |
 | `docs/specs/20260711-skill_catalog_versioning_pinning.md` | agent-supply | open, pending | — |
@@ -286,6 +286,10 @@ Filled at close-out.
 | #478 `[vault] Administrator MCP discovery preview checks grant provenance by id prefix, not by the issuance field` | vault | VA-SI-02 | low |
 | #479 `[vault] Restart re-resolution of collection runtime-env values reads the raw backend and writes no VaultUse` | vault | VA-VB-01, VA-SI-05 | ordinary |
 | #480 `[vault] Persistent Worker images refuse every runtime-file credential, so runtime-file visibility cannot launch` | vault | VA-SI-08, VA-CAD-06 | ordinary |
+| #481 `[mcp] A Workspace-origin captured call skips the catalog digest and credential recheck before dispatch` | mediation | MD-MCP-05 | blocking candidate (credentials) |
+| #482 `[providers] Account status never returns unavailable, so a locked Vault makes the status read fail with 503` | mediation | MD-PSA-01 | ordinary |
+| #483 `[mcp] An oversized tools/list fails with mcp-server-unavailable instead of mcp-result-too-large` | mediation | MD-MCP-03 | low |
+| #484 `[gateway] Prompt cache scope lets caller metadata override the trusted caller scope` | mediation | MD-LLM-04 | low |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -397,3 +401,31 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-82 | vault | Backend and file inventories in Core Vault and projections | Move the backend sentence to VB; name owners |
 | Q-83 | vault | Per-Turn or session-static runtime material | Amend SI to session-static |
 | Q-84 | vault | Vault labels, history, and example ids | As Q-28; use a canonical grant id |
+| Q-85 | mediation | Ownership of capability rate limits and budgets | Mediation owns the enforcement point; a named owner owns limit values |
+| Q-86 | mediation | Three-way ownership of the Operation definition | State the Core, OD, and Policy Enforcement split in each |
+| Q-87 | mediation | Boot self-check row I36 marked for later routing | Mark I36 Kernel-only |
+| Q-88 | mediation | Revoked actor call record: CUG versus Pending Requests | Add the after-claim record to CUG |
+| Q-89 | mediation | `schemaSnapshotId` as a replay attribution field | Add it to CUG and fix list-tools replay |
+| Q-90 | mediation | Null actor accepted by the shared recorder | Fail closed in the recorder |
+| Q-91 | mediation | No CapabilityCall for a repeated pending call | Record one denied, no-contact call |
+| Q-92 | mediation | Worker-visible capability error vocabulary | Document the MCP set; fold Policy-origin codes into `mcp-denied` |
+| Q-93 | mediation | `stdio` teardown on revocation | Add a revocation hook |
+| Q-94 | mediation | Discovery contact and usage | Only `tools/call` contact counts |
+| Q-95 | mediation | Remote MCP refusal codes and call annotations | Name the codes and the worst-case annotation rule |
+| Q-96 | mediation | Descriptor credential procedures and table facts | Update the OD lists |
+| Q-97 | mediation | Goal checks in common admission | Move them behind a Goal-owned strategy |
+| Q-98 | mediation | Header-carried request identity rule | State it once in OD |
+| Q-99 | mediation | Unmigrated operations and OD `Partial` | Remove the sentence after a route check; list open work |
+| Q-100 | mediation | Unconditional Work supply of `automation.event-admit` | Supply it only to the scheduled-poll Worker |
+| Q-101 | mediation | `work_artifact_submit` media-type refusal | Remove it from WAC |
+| Q-102 | mediation | Inactive advise and transform dispatch code | Remove until an owner exists |
+| Q-103 | mediation | Pi runtime host pi-ai dependency | State it is outside PIA |
+| Q-104 | mediation | Unhashed explicit prompt cache keys | Hash with provider and slot |
+| Q-105 | mediation | Unknown provider model metadata fields | Ignore with a diagnostic, per COMPAT-001 |
+| Q-106 | mediation | Startup reconciliation of subscription accounts | Reword to read-time reconciliation |
+| Q-107 | mediation | Quota `label` and `activeUntil` fields | Remove both |
+| Q-108 | mediation | Account-directory residue recovery | Clean own create residue; state the cleanup gate |
+| Q-109 | mediation | Audited reconcile on each Codex attempt | Read the setting without reconcile |
+| Q-110 | mediation | Create slot-id error code | Move the check to the owner |
+| Q-111 | mediation | Mediation labels, numbers, and OD paragraph length | As Q-28; split OD line 306 after Q-99 |
+| Q-112 | mediation | Knowledge package transfer channel | Administrator CLI in the Knowledge package owner |
