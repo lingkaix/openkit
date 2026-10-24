@@ -25,7 +25,7 @@ export async function scanUserMemoryMaintenance(input: {
 }): Promise<void> {
   const { store, coreDb } = input;
   const turns = (userId: string) => {
-    const workspaceId = quickChatWorkspaceIdForUser(userId);
+    const workspaceId = quickChatWorkspaceIdForUser(userId, coreDb.dataRoot);
     if (!store.listWorkspaces().some((workspace) => workspace.id === workspaceId)) return [];
     return store
       .listThreads(workspaceId)
@@ -119,7 +119,7 @@ export async function scanUserMemoryMaintenance(input: {
         if (admissionAttempted) throw error;
         // A missing credential is an inspectable skipped run, never a fabricated session.
         await ensureUserQuickChatWorkspace({ coreDb, store, userId });
-        const workspaceId = quickChatWorkspaceIdForUser(userId);
+        const workspaceId = quickChatWorkspaceIdForUser(userId, coreDb.dataRoot);
         const admitted = await admitControlMaintenance(coreDb.dataRoot, workspaceId, {
           purpose: 'maintenance',
           ownerScope,

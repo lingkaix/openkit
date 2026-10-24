@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -7,16 +8,18 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 
 import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser as ensureFixtureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
@@ -297,7 +300,8 @@ describe('database setup', () => {
     const coreDb = openCoreDb(dataRoot);
     try {
       applyNativeScopeMigrations(coreDb.sqlite, 'core', legacyFolder);
-      ensureLocalUser(coreDb);
+      // Historical setup uses its original columns, not the current ORM insert shape.
+      ensureFixtureLocalUser(coreDb);
       const before = coreDb.sqlite
         .prepare('SELECT id,display_name,status FROM users ORDER BY id')
         .all();
@@ -353,6 +357,7 @@ describe('database setup', () => {
         '0014_execution_journal.sql',
         '0015_work_observations.sql',
         '0016_workspace_recovery_admissions.sql',
+        '0017_personal_workspace_binding.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -378,6 +383,7 @@ describe('database setup', () => {
         'core_0014_execution_journal',
         'core_0015_work_observations',
         'core_0016_workspace_recovery_admissions',
+        'core_0017_personal_workspace_binding',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -414,6 +420,7 @@ describe('database setup', () => {
         'last_seen_at',
         'status',
         'disabled_at',
+        'personal_workspace_id',
       ]);
       expect(listColumnNames(coreDb, 'audit_events')).toEqual(
         expect.arrayContaining([
@@ -1096,6 +1103,76 @@ describe('database setup', () => {
 });
 
 describe('native Drizzle migrate', () => {
+  it('reapplies a fully migrated Workspace journal through the 5 ms Main handle while a writer holds its lock', async () => {
+    const root = createDataRoot();
+    const db = openWorkspaceDb(root, testEntityId('ws', 'repeat-migration-lock'));
+    let blocker: Worker | undefined;
+    try {
+      applyScopedMigrations(db);
+      const journal = JSON.parse(
+        readFileSync(new URL('../../drizzle/workspace/meta/_journal.json', import.meta.url), 'utf8')
+      ) as { entries: Array<{ tag: string }> };
+      expect(listMigrationIds(db, 'workspace')).toEqual(
+        journal.entries.map((entry) => `workspace_${entry.tag}`)
+      );
+      // DX bounds this real Main handle at 5 ms; the native default would hide contention.
+      expect(db.sqlite.pragma('busy_timeout', { simple: true })).toBe(5);
+      const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
+      const before = db.sqlite.serialize();
+      const state = new Int32Array(new SharedArrayBuffer(8));
+      // Reuse the native lock-fixture pattern: a second real connection owns and releases the lock.
+      blocker = new Worker(
+        `const { parentPort, workerData } = require('node:worker_threads');
+         const Database = require(workerData.databaseModule);
+         const state = new Int32Array(workerData.state);
+         const sqlite = new Database(workerData.path, { fileMustExist: true, timeout: 5 });
+         try {
+           sqlite.exec('BEGIN IMMEDIATE');
+           Atomics.store(state, 1, 1);
+           parentPort.postMessage('locked');
+           Atomics.wait(state, 0, 0);
+           Atomics.wait(state, 1, 1, 50);
+         } finally {
+           Atomics.store(state, 1, 0);
+           if (sqlite.inTransaction) sqlite.exec('ROLLBACK');
+           sqlite.close();
+         }`,
+        {
+          eval: true,
+          workerData: {
+            databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+            path: db.sqlite.name,
+            state: state.buffer,
+          },
+        }
+      );
+      const exited = once(blocker, 'exit');
+      void exited.catch(() => undefined);
+      try {
+        expect((await once(blocker, 'message'))[0]).toBe('locked');
+        expect(Atomics.load(state, 1)).toBe(1);
+        // Start the 50 ms interval only after Main observes the lock; release needs no Main callback.
+        Atomics.store(state, 0, 1);
+        Atomics.notify(state, 0);
+        expect(() => applyNativeScopeMigrations(db.sqlite, 'workspace')).not.toThrow();
+        // A return after lock release cannot prove the coordinator's no-write-lock assumption.
+        expect(Atomics.load(state, 1)).toBe(1);
+        expect(db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+          ledger
+        );
+        expect(db.sqlite.serialize().equals(before)).toBe(true);
+      } finally {
+        Atomics.store(state, 0, 1);
+        Atomics.notify(state, 0);
+        expect((await exited)[0]).toBe(0);
+      }
+    } finally {
+      await blocker?.terminate();
+      db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('adds trusted Discord origin without attributing or changing retained receipts', () => {
     const journal = JSON.parse(
       readFileSync(join(process.cwd(), 'drizzle/core/meta/_journal.json'), 'utf8')

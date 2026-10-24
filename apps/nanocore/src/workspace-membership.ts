@@ -1,3 +1,4 @@
+import { allocateEntityId } from '@openkit/protocol';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { isScopeAdmitted } from './bootstrap/readiness.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
@@ -49,35 +50,59 @@ export interface EnsureUserQuickChatWorkspaceInput {
 export async function ensureUserQuickChatWorkspace(
   input: EnsureUserQuickChatWorkspaceInput
 ): Promise<void> {
-  if (!isCanonicalUserActive(input.coreDb, input.userId)) {
-    throw new Error('Personal workspace requires an active canonical user.');
-  }
-  // Retirement reserves the personal identity; authentication must not reprovision its unreadable data.
-  const workspaceId = quickChatWorkspaceIdForUser(input.userId);
+  // Reserve a successor before the first await, so concurrent/restarted callers keep one identity.
+  const workspaceId = input.coreDb.sqlite.transaction(() => {
+    if (!isCanonicalUserActive(input.coreDb, input.userId))
+      throw new Error('Personal workspace requires an active canonical user.');
+    const currentId = quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot);
+    const registry = input.coreDb.sqlite
+      .prepare(
+        'SELECT status, owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?'
+      )
+      .get(currentId) as { status: string; ownerUserId: string } | undefined;
+    if (registry && registry.ownerUserId !== input.userId)
+      throw new Error('Personal Workspace ownership is contradictory.');
+    const membership = input.coreDb.sqlite
+      .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(currentId, input.userId) as { status: string } | undefined;
+    if (membership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
+    if (registry && membership?.status !== 'active')
+      throw new Error('Personal Workspace requires active owner membership.');
+    if (registry?.status === 'retired') {
+      const successor = allocateEntityId('ws');
+      input.coreDb.sqlite
+        .prepare('UPDATE users SET personal_workspace_id = ? WHERE id = ?')
+        .run(successor, input.userId);
+      return successor;
+    }
+    if (registry && registry.status !== 'active')
+      throw new Error('Personal Workspace requires an active registry.');
+    return currentId;
+  })();
   const registry = input.coreDb.sqlite
-    .prepare(
-      'SELECT status, owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?'
-    )
-    .get(workspaceId) as { status: string; ownerUserId: string } | undefined;
-  if (registry?.status === 'retired') return;
+    .prepare('SELECT owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?')
+    .get(workspaceId) as { ownerUserId: string } | undefined;
   if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', workspaceId)) {
     if (registry?.ownerUserId !== input.userId)
       throw new Error('Personal Workspace ownership is unavailable or contradictory.');
-    const membership = input.coreDb.sqlite
-      .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(workspaceId, input.userId) as { status: string } | undefined;
-    if (membership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
-    if (registry.status !== 'active' || membership?.status !== 'active')
-      throw new Error('Personal Workspace requires active owner membership.');
-    // Quarantine isolates this home; Core facts do not authorize opening or replacing it.
+    // Valid Core relationships permit authentication, but never replace a quarantined home.
     return;
   }
+  // An established home with missing storage is recovery, never fresh empty provisioning.
+  if (registry) input.store.getWorkspace(workspaceId);
   const workspace = await input.store.ensureQuickChatWorkspace(input.userId);
-  recordWorkspaceOwnerMembership({
-    coreDb: input.coreDb,
-    ownerUserId: input.userId,
-    workspaceId: workspace.id,
-  });
+  input.coreDb.sqlite.transaction(() => {
+    if (
+      quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot) !== workspace.id ||
+      workspace.id !== workspaceId
+    )
+      throw new Error('Current personal Workspace binding changed.');
+    recordWorkspaceOwnerMembership({
+      coreDb: input.coreDb,
+      ownerUserId: input.userId,
+      workspaceId: workspace.id,
+    });
+  })();
 }
 
 /**
@@ -97,12 +122,14 @@ export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMember
     }
 
     const existing = input.coreDb.sqlite
-      .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-      .get(input.workspaceId) as { owner_user_id: string } | undefined;
+      .prepare('SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id = ?')
+      .get(input.workspaceId) as { owner_user_id: string; status: string } | undefined;
 
     if (existing && existing.owner_user_id !== input.ownerUserId) {
       throw new Error('Workspace is already owned by another user.');
     }
+    if (existing && existing.status !== 'active')
+      throw new Error('Workspace owner requires an active registry.');
 
     input.coreDb.sqlite
       .prepare(

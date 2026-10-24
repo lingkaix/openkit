@@ -989,12 +989,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         inflightCommands,
         runtimeEffects: workerEnvironmentRuntimeEffects,
         configFilesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
-        privateWorkspaceIdForUser: quickChatWorkspaceIdForUser,
+        privateWorkspaceIdForUser: (userId) =>
+          quickChatWorkspaceIdForUser(userId, options.coreDb!.dataRoot),
         requireCurrentAdministrator: (actor) => {
           requireCurrentDeploymentAdmin(options.coreDb!, actor);
         },
         authorizePrivateHome: ({ actor, workspaceId, threadId, turnId }) => {
-          if (workspaceId !== quickChatWorkspaceIdForUser(actor.userId)) return false;
+          if (workspaceId !== quickChatWorkspaceIdForUser(actor.userId, options.coreDb!.dataRoot))
+            return false;
           try {
             const thread = sharedStore.getThread(workspaceId, threadId);
             if (thread.entryPath !== 'administration') return false;
@@ -1932,7 +1934,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     registerOperationAccessGuards({
       app,
       coreDb: options.coreDb,
-      quickChatWorkspaceIdForUser,
+      quickChatWorkspaceIdForUser: (userId) =>
+        quickChatWorkspaceIdForUser(userId, options.coreDb!.dataRoot),
       store: sharedStore,
       workspaceMutationAdmission,
     });
@@ -2074,7 +2077,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     mode,
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-    quickChatWorkspaceIdForUser,
+    quickChatWorkspaceIdForUser: (userId) =>
+      quickChatWorkspaceIdForUser(userId, options.coreDb?.dataRoot),
     resolveGatewayProvider,
     runtimeConfig,
     reloadRuntimeConfig: () => runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }),

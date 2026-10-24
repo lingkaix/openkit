@@ -306,7 +306,7 @@ export async function admitOperation(
               throw error;
             }
           }
-          workspaceId = quickChatWorkspaceIdForUser(entry.actor.userId);
+          workspaceId = quickChatWorkspaceIdForUser(entry.actor.userId, coreDb.dataRoot);
           break;
         case 'opaque-child-workspace':
           switch (definition.scope.childOwner) {

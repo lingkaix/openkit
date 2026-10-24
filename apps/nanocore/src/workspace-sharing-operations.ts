@@ -1064,10 +1064,13 @@ function requireCoreDb(coreDb: CoreDb | undefined): CoreDb {
   return coreDb;
 }
 
-/** Rejects the deterministic owner-only personal Workspace without opening its content. */
+/** Rejects the current owner-only personal Workspace without opening its content. */
 function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
-  if (registry && workspaceId === quickChatWorkspaceIdForUser(registry.ownerUserId)) {
+  if (
+    registry &&
+    workspaceId === quickChatWorkspaceIdForUser(registry.ownerUserId, coreDb.dataRoot)
+  ) {
     throw new OperationError(
       'personal_workspace_not_shareable',
       'Personal Workspaces cannot be shared.',

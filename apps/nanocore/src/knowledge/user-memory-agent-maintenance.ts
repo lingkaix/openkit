@@ -221,6 +221,18 @@ export async function prepareUserMemoryMaintenance(
   };
   const owner = admitMemoryContext(context);
   input.signal.throwIfAborted();
+  let workspaceId: string;
+  try {
+    await ensureUserQuickChatWorkspace({ coreDb, store, userId: userDb.userId });
+    workspaceId = quickChatWorkspaceIdForUser(userDb.userId, coreDb.dataRoot);
+    const home = store.getWorkspace(workspaceId);
+    if (home.kind !== 'personal' || home.status !== 'active')
+      throw new NotebookError('recovery_required');
+  } catch {
+    throw new NotebookError('recovery_required');
+  }
+  admitMemoryContext(context);
+  input.signal.throwIfAborted();
   if (!lstatSync(owner.notebookRoot, { throwIfNoEntry: false })) {
     if (
       userDb.sqlite
@@ -243,8 +255,6 @@ export async function prepareUserMemoryMaintenance(
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
   let baseRevision = notebook.publishedRevision();
-  await ensureUserQuickChatWorkspace({ coreDb, store, userId: userDb.userId });
-  const workspaceId = quickChatWorkspaceIdForUser(userDb.userId);
   const actor = { kind: 'user', id: userDb.userId } as const;
   const admitted = await admitControlMaintenance(coreDb.dataRoot, workspaceId, {
     purpose: 'maintenance',

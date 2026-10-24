@@ -802,7 +802,7 @@ function nativeThreadVisible(
   if (
     !administrator &&
     workspace.record.kind === 'personal' &&
-    db.workspaceId !== quickChatWorkspaceIdForUser(actor.userId)
+    db.workspaceId !== quickChatWorkspaceIdForUser(actor.userId, db.dataRoot)
   )
     return false;
   if (

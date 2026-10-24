@@ -115,7 +115,8 @@ export function requireSkillCandidateArtifactAccess(input: {
         !(
           workspace.kind === 'personal' &&
           thread.privateOwnerUserId &&
-          workspace.id === quickChatWorkspaceIdForUser(thread.privateOwnerUserId)
+          workspace.id ===
+            quickChatWorkspaceIdForUser(thread.privateOwnerUserId, input.coreDb.dataRoot)
         )
       )
         throw new SkillCandidateArtifactError('source_unavailable');

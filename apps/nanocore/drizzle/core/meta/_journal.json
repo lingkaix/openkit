@@ -120,6 +120,13 @@
       "when": 1792588800000,
       "tag": "0016_workspace_recovery_admissions",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1792868268926,
+      "tag": "0017_personal_workspace_binding",
+      "breakpoints": true
     }
   ]
 }

@@ -146,7 +146,7 @@ export type ControlMaintenanceAdmissionResult = z.infer<
 /**
  * Selects and admits complete Knowledge work against current native scope state in the caller's savepoint.
  *
- * Workspace/User maintenance serializes on its existing notebook Thread. Queries always create a fresh Thread. User Memory receipts remain in User SQLite and cannot join this Workspace transaction. No file effects, sibling connection, callback, or commit occurs here.
+ * Workspace/User maintenance serializes on its existing notebook Thread. Queries always create a fresh Thread. User Memory receipts remain in User SQLite and cannot join this Workspace transaction. No file effects, callback or commit occurs here. User-home admission reads its Core binding through the existing read-only view; it writes only this scope.
  */
 export function applyControlMaintenanceAdmission(
   db: CoreDb | WorkspaceDb,
@@ -180,7 +180,7 @@ export function applyControlMaintenanceAdmission(
       (input.ownerScope.userId !== userId ||
         db.scope !== 'workspace' ||
         (input.purpose === 'maintenance' &&
-          db.workspaceId !== quickChatWorkspaceIdForUser(userId)))) ||
+          db.workspaceId !== quickChatWorkspaceIdForUser(userId, db.dataRoot)))) ||
     (input.purpose === 'query' && (db.scope !== 'workspace' || input.trigger !== 'request')) ||
     (input.purpose === 'maintenance' && input.outputThreadId !== undefined)
   )

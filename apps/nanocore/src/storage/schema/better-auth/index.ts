@@ -22,6 +22,8 @@ export const users = sqliteTable('users', {
     .default('active')
     .notNull(),
   disabledAt: text('disabled_at'),
+  /** Current personal home; null retains the initial User-derived identity. No FK precedes provisioning. */
+  personalWorkspaceId: text('personal_workspace_id').unique(),
 });
 
 export const user = users;

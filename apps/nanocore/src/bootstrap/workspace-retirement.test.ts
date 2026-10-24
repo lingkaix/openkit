@@ -21,17 +21,31 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
+import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
+import {
+  prepareUserMemoryMaintenance,
+  runUserMemoryMaintenanceCommand,
+} from '../knowledge/user-memory-agent-maintenance.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
+  openUserDb,
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from '../storage/db.js';
-import { workspaceDbPath } from '../storage/fs-layout.js';
-import { applyMigrations, applyNativeScopeMigrations } from '../storage/migrate.js';
+import { userMemoryRoot, workspaceDbPath } from '../storage/fs-layout.js';
+import {
+  applyMigrations,
+  applyNativeScopeMigrations,
+  applyScopedMigrations,
+} from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
@@ -108,7 +122,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
   // An uncompleted real call distinguishes byte retention from ordinary restart recovery writes.
   await shutdownControlStoreWorkerClient();
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  startCapabilityCall({
+  await startCapabilityCall({
     authorityActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
     callId: testEntityId('cap', 'retirement-running-call'),
     capabilityId: 'llm.responses',
@@ -119,6 +133,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     workspaceDb,
     workspaceId,
   });
+  await shutdownControlStoreWorkerClient();
   const originalWorkspaceRecord = workspaceDb.sqlite
     .prepare('SELECT record_json FROM control_workspaces WHERE id = ?')
     .pluck()
@@ -165,6 +180,77 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     request,
     call,
     originalWorkspaceRecord,
+  };
+}
+
+/** Uses real User storage and native notebook tools; only the external model role is substituted. */
+function memoryDependencies(f: Awaited<ReturnType<typeof fixture>>) {
+  const userDb = openUserDb(f.dataRoot, FIXTURE_LOCAL_USER_ID);
+  applyScopedMigrations(userDb);
+  disposals.push(() => {
+    if (userDb.sqlite.open) userDb.sqlite.close();
+  });
+  const run = vi.fn(async (input: KnowledgeManagerAgentRun) => {
+    const submit = input.tools.find(({ name }) => name === 'knowledge.notebook.update')!;
+    const result = await submit.execute(
+      { summary: 'Inspect existing User Memory without edits.' },
+      { callId: randomUUID(), toolOccurrence: 1, signal: input.signal }
+    );
+    expect(
+      JSON.parse(
+        result.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+      )
+    ).toEqual({ outcome: 'no_change' });
+    await f.store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    return { turnId: input.turn.id, text: '{"summary":"No changes."}' };
+  });
+  const dependencies = {
+    coreDb: f.coreDb,
+    userDb,
+    store: f.store,
+    runtimeConfigManager: {
+      current: () => ({
+        userConfigs: [
+          {
+            userId: FIXTURE_LOCAL_USER_ID,
+            config: {
+              knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
+            },
+          },
+        ],
+      }),
+    } as unknown as RuntimeConfigManager,
+    openWorkspace: (id: string) => openWorkspaceDb(f.dataRoot, id),
+    inflightCommands: new WeakMap(),
+    run,
+    pin: async (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => {
+      await f.store.updateTurn(input.turn.id, {
+        internalExecution: {
+          roleId: 'knowledge-manager',
+          logicalModelId: 'fixture-model',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
+          contextStrategy: 'compaction',
+          threshold: 1000,
+          knowledge: input.inputs!,
+        },
+      });
+    },
+  };
+  return {
+    userDb,
+    run,
+    dependencies,
+    input: {
+      requestId: randomUUID(),
+      requestActor: { kind: 'local' as const, userId: FIXTURE_LOCAL_USER_ID },
+      trigger: 'request' as const,
+      instructions: 'Inspect existing User Memory.',
+      sources: [],
+      signal: new AbortController().signal,
+    },
   };
 }
 
@@ -599,39 +685,241 @@ describe('retired registry consumers and retained Core migration', () => {
     expect((await retry('workspace.member-list', { workspaceId: f.siblingId })).status).toBe(200);
   }, 20000);
 
-  it('does not reprovision a retired personal identity while its user can still access a healthy sibling', async () => {
+  it('keeps a quarantined home without initializing User Memory or running a model', async () => {
+    const f = await fixture('missing', true);
+    const memory = memoryDependencies(f);
+    const home = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
+    const scopes = f.store.listWorkspaces().map(({ id }) => id);
+    expect(existsSync(userMemoryRoot(f.dataRoot, FIXTURE_LOCAL_USER_ID))).toBe(false);
+    await ensureUserQuickChatWorkspace({
+      coreDb: f.coreDb,
+      store: f.store,
+      userId: FIXTURE_LOCAL_USER_ID,
+    });
+    // MEM-2: an unavailable dependency is a recovery outcome before User-notebook effects.
+    await expect
+      .soft(prepareUserMemoryMaintenance(memory.dependencies, memory.input))
+      .rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+    expect(existsSync(userMemoryRoot(f.dataRoot, FIXTURE_LOCAL_USER_ID))).toBe(false);
+    expect(
+      memory.userDb.sqlite
+        .prepare("SELECT 1 FROM audit_events WHERE action = 'knowledge.notebook.initialize'")
+        .all()
+    ).toEqual([]);
+    expect(memory.run).not.toHaveBeenCalled();
+    expect(f.store.listWorkspaces().map(({ id }) => id)).toEqual(scopes);
+    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(home);
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(f.workspaceId)
+    ).toEqual({ status: 'active', revision: 1 });
+  });
+
+  it('retains an unpublished successor binding across Core reopen and a new authorized request', async () => {
     const f = await fixture('missing', true);
     const response = await f.call('workspace.retire-quarantined', f.request);
     expect(response.status, await response.clone().text()).toBe(200);
-    const tree = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
-    const ensure = vi.spyOn(f.store, 'ensureQuickChatWorkspace');
-    // This is the existing successful-session provisioning callback, not a new recovery API.
+    const retired = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
+    // Fault the Store's public publication boundary before it can create any successor bytes.
+    const publication = vi
+      .spyOn(f.store, 'ensureQuickChatWorkspace')
+      .mockRejectedValueOnce(new Error('Injected pre-publication interruption.'));
     await expect(
       ensureUserQuickChatWorkspace({
         coreDb: f.coreDb,
         store: f.store,
         userId: FIXTURE_LOCAL_USER_ID,
       })
-    ).resolves.toBeUndefined();
-    const sibling = await f.call(
-      'workspace.member-list',
-      { workspaceId: f.siblingId },
-      f.member.secret
-    );
-    expect(sibling.status).toBe(200);
-    const personal = await f.call(
-      'workspace.member-list',
-      { workspaceId: f.workspaceId },
-      f.member.secret
-    );
-    expect([403, 409]).toContain(personal.status);
-    expect(ensure).not.toHaveBeenCalled();
+    ).rejects.toThrow();
+    expect(publication).toHaveBeenCalledTimes(1);
+    publication.mockRestore();
+    const selectedId = f.coreDb.sqlite
+      .prepare('SELECT personal_workspace_id FROM users WHERE id = ?')
+      .pluck()
+      .get(FIXTURE_LOCAL_USER_ID) as string;
+    expect(selectedId).toMatch(/^ws_/);
+    expect(selectedId).not.toBe(f.workspaceId);
+    expect(existsSync(join(f.dataRoot, 'workspaces', selectedId))).toBe(false);
     expect(
       f.coreDb.sqlite
+        .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id = ?')
+        .get(selectedId)
+    ).toBeUndefined();
+    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(retired);
+
+    await shutdownControlStoreWorkerClient();
+    await f.gateway.close();
+    f.coreDb.sqlite.close();
+    const coreDb = openCoreDb(f.dataRoot);
+    disposals.push(() => {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    });
+    applyMigrations(coreDb);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT personal_workspace_id FROM users WHERE id = ?')
+        .pluck()
+        .get(FIXTURE_LOCAL_USER_ID)
+    ).toBe(selectedId);
+    const store = new FsStore({ dataRoot: f.dataRoot });
+    // This is a new authorized request after the known pre-effect failure, not an inferred effect replay.
+    await ensureUserQuickChatWorkspace({
+      coreDb,
+      store,
+      userId: FIXTURE_LOCAL_USER_ID,
+    });
+    expect(
+      store
+        .listWorkspaces()
+        .filter(({ kind }) => kind === 'personal')
+        .map(({ id }) => id)
+    ).toEqual([selectedId]);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT personal_workspace_id FROM users WHERE id = ?')
+        .pluck()
+        .get(FIXTURE_LOCAL_USER_ID)
+    ).toBe(selectedId);
+    expect(
+      coreDb.sqlite
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
         .get(f.workspaceId)
     ).toEqual({ status: 'retired', revision: 2 });
-    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(tree);
     expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
+    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(retired);
   });
+
+  it('replaces only terminally retired personal homes and routes private native maintenance through the durable successor', async () => {
+    const f = await fixture('missing', true);
+    // This retained User has no explicit binding and keeps its pre-existing deterministic home.
+    expect(f.workspaceId).toBe('ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28');
+    const memory = memoryDependencies(f);
+    const notebookRoot = userMemoryRoot(f.dataRoot, FIXTURE_LOCAL_USER_ID);
+    const originalRevision = initializeScopedNotebook({
+      coreDb: f.coreDb,
+      userDb: memory.userDb,
+      actor: memory.input.requestActor,
+      target: { kind: 'user' },
+      initialization: {
+        requestId: randomUUID(),
+        instructionReference: 'test:retained-user-memory',
+      },
+    });
+    const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
+    const originalMemory = notebook.readRevision(originalRevision);
+    const response = await f.call('workspace.retire-quarantined', f.request);
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(
+      (await f.call('workspace.member-list', { workspaceId: f.siblingId }, f.member.secret)).status
+    ).toBe(200);
+    expect([403, 409]).toContain(
+      (await f.call('workspace.member-list', { workspaceId: f.workspaceId }, f.member.secret))
+        .status
+    );
+    const retired = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
+    // One caller may meet an unpublished Workspace and truthfully refuse; neither may mint another successor.
+    const attempts = await Promise.allSettled(
+      [0, 1].map(() =>
+        ensureUserQuickChatWorkspace({
+          coreDb: f.coreDb,
+          store: f.store,
+          userId: FIXTURE_LOCAL_USER_ID,
+        })
+      )
+    );
+    expect(attempts.some(({ status }) => status === 'fulfilled')).toBe(true);
+    // A new authorized invocation must reuse the acknowledged identity after those attempts settle.
+    await ensureUserQuickChatWorkspace({
+      coreDb: f.coreDb,
+      store: f.store,
+      userId: FIXTURE_LOCAL_USER_ID,
+    });
+    const homes = f.store.listWorkspaces().filter(({ kind }) => kind === 'personal');
+    expect(homes).toHaveLength(1);
+    const successorId = homes[0]!.id;
+    expect(successorId).not.toBe(f.workspaceId);
+    const timeline = await openAssistantTimeline(
+      f.store,
+      successorId,
+      FIXTURE_LOCAL_USER_ID,
+      'Private successor Timeline'
+    );
+    expect(timeline).toMatchObject({
+      visibility: 'private',
+      privateOwnerUserId: FIXTURE_LOCAL_USER_ID,
+    });
+    // Real User preparation, native maintenance admission and native notebook submission surround only a fake model.
+    const result = await runUserMemoryMaintenanceCommand(memory.dependencies, memory.input);
+    expect(result).toMatchObject({ outcome: 'no-change', notebookRevision: originalRevision });
+    expect(f.store.getThread(successorId, result.threadId)).toMatchObject({
+      visibility: 'private',
+      privateOwnerUserId: FIXTURE_LOCAL_USER_ID,
+      entryPath: 'knowledge-manager',
+    });
+    expect(await runUserMemoryMaintenanceCommand(memory.dependencies, memory.input)).toEqual(
+      result
+    );
+    expect(memory.run).toHaveBeenCalledTimes(1);
+    expect(notebook.readRevision(notebook.publishedRevision())).toEqual(originalMemory);
+    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(retired);
+    expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
+
+    // A successor can itself retire; this must not fall back to either reserved identity.
+    await shutdownControlStoreWorkerClient();
+    rmSync(workspaceDbPath(f.dataRoot, successorId));
+    verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
+      FsStore.validateFileAuthority(f.dataRoot)
+    );
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', successorId)).toBe(false);
+    const second = await f.call('workspace.retire-quarantined', {
+      workspaceId: successorId,
+      requestId: randomUUID(),
+      expectedRegistryRevision: 1,
+      confirmation: `retire-quarantined-workspace:${successorId}:1`,
+    });
+    expect(second.status, await second.clone().text()).toBe(200);
+    const successorBytes = bytes(join(f.dataRoot, 'workspaces', successorId));
+    await ensureUserQuickChatWorkspace({
+      coreDb: f.coreDb,
+      store: f.store,
+      userId: FIXTURE_LOCAL_USER_ID,
+    });
+    const currentHomes = f.store.listWorkspaces().filter(({ kind }) => kind === 'personal');
+    expect(currentHomes).toHaveLength(1);
+    const currentId = currentHomes[0]!.id;
+    expect([f.workspaceId, successorId]).not.toContain(currentId);
+
+    await shutdownControlStoreWorkerClient();
+    await f.gateway.close();
+    f.coreDb.sqlite.close();
+    const coreDb = openCoreDb(f.dataRoot);
+    disposals.push(() => {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    });
+    applyMigrations(coreDb);
+    const store = new FsStore({ dataRoot: f.dataRoot });
+    for (const _ of [0, 1])
+      await ensureUserQuickChatWorkspace({ coreDb, store, userId: FIXTURE_LOCAL_USER_ID });
+    expect(
+      store
+        .listWorkspaces()
+        .filter(({ kind }) => kind === 'personal')
+        .map(({ id }) => id)
+    ).toEqual([currentId]);
+    expect(notebook.readRevision(notebook.publishedRevision())).toEqual(originalMemory);
+    for (const id of [f.workspaceId, successorId]) {
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+          .get(id)
+      ).toEqual({ status: 'retired', revision: 2 });
+      expect(existsSync(workspaceDbPath(f.dataRoot, id))).toBe(false);
+    }
+    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(retired);
+    expect(bytes(join(f.dataRoot, 'workspaces', successorId))).toEqual(successorBytes);
+    expect(store.getWorkspace(f.siblingId).id).toBe(f.siblingId);
+  }, 20000);
 });

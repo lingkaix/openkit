@@ -90,7 +90,7 @@ export interface AdministrationConfigurationOptions {
 /** Creates bounded catalog observation, immutable proposal and human application operations. */
 export function createAdministrationConfiguration(options: AdministrationConfigurationOptions) {
   const { actor, coreDb, store, files } = options;
-  const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
+  const workspaceId = quickChatWorkspaceIdForUser(actor.userId, coreDb.dataRoot);
 
   /** Authorizes the current user's exact private administration home before observing artifacts. */
   function requireHome(threadId: string, turnId?: string): void {

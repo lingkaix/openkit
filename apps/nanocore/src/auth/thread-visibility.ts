@@ -13,7 +13,7 @@ type Thread = import('zod').infer<typeof ThreadSchema>;
 
 /** Unique Thread audience predicate after Workspace eligibility; administrator eligibility must come from the current credential owner. */
 export function isThreadVisible(
-  store: Pick<FsStore, 'getWorkspace' | 'getWorkspaceResourceAccess'>,
+  store: Pick<FsStore, 'getWorkspace' | 'getWorkspaceResourceAccess' | 'getDataRoot'>,
   thread: Thread,
   userId: string | undefined,
   administratorEligible = false,
@@ -26,7 +26,7 @@ export function isThreadVisible(
   if (
     !administratorEligible &&
     workspace.kind === 'personal' &&
-    workspace.id !== quickChatWorkspaceIdForUser(userId)
+    workspace.id !== quickChatWorkspaceIdForUser(userId, store.getDataRoot())
   )
     return false;
   if (

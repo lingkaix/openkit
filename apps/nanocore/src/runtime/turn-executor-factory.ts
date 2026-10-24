@@ -6060,6 +6060,7 @@ function currentWorkerStorageAudienceAuthorizer(
     const thread = threads.find((thread) => thread.id === contributor.threadId);
     if (!thread || workspaceIdForOwner(thread.owner) !== scope.workspaceId) return false;
     const audienceOwner = {
+      getDataRoot: () => store.getDataRoot(),
       getWorkspace: () => workspace,
       getWorkspaceResourceAccess: (workspaceId: string) => {
         if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');

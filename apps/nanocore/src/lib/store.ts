@@ -54,6 +54,7 @@ import {
   TurnSchema,
   type TurnStatus,
   WorkOwnerSchema,
+  WorkspaceIdSchema,
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -172,6 +173,7 @@ import {
   type WorkspaceDb,
 } from '../storage/db.js';
 import {
+  coreDbPath,
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
   resolveDataRootPath,
@@ -1217,13 +1219,24 @@ function isCommandRequestExpired(record: CommandRequestRecord, referenceTime: st
 }
 
 /**
- * Derives the built-in owner-only personal Workspace id for one canonical user.
+ * Resolves the current owner-only personal Workspace, retaining the original derivation for an absent binding.
  *
  * @param userId Canonical user id.
- * @returns Stable personal Workspace id.
+ * @param dataRoot Actual Core owner, when present; in-memory callers retain the initial derivation.
+ * @returns Current bound personal Workspace id, or its original identity when no binding exists.
  */
-export function quickChatWorkspaceIdForUser(userId: string): string {
-  return deriveEntityId('ws', ['quick_chat', userId]);
+export function quickChatWorkspaceIdForUser(userId: string, dataRoot?: string | null): string {
+  const initialId = deriveEntityId('ws', ['quick_chat', userId]);
+  if (!dataRoot) return initialId;
+  const core = openControlStoreProductReadHandle(coreDbPath(dataRoot), { kind: 'server' });
+  try {
+    const row = core.sqlite
+      .prepare('SELECT personal_workspace_id FROM users WHERE id = ?')
+      .get(userId) as { personal_workspace_id: string | null } | undefined;
+    return WorkspaceIdSchema.parse(row?.personal_workspace_id ?? initialId);
+  } finally {
+    core.close();
+  }
 }
 
 /**
@@ -2577,12 +2590,12 @@ export class FsStore {
   /**
    * Ensures the built-in owner-only personal Workspace for one canonical user.
    *
-   * @param userId Canonical user id that determines the stable Workspace id.
+   * @param userId Canonical user id whose Core binding selects the current Workspace.
    * @returns Existing or newly created personal Workspace.
    * @throws Error when the reserved id already belongs to another Workspace kind.
    */
   public async ensureQuickChatWorkspace(userId: string): Promise<WorkspaceRecord> {
-    const workspaceId = quickChatWorkspaceIdForUser(userId);
+    const workspaceId = quickChatWorkspaceIdForUser(userId, this.dataRoot);
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     const existing = this.dataRoot
       ? existsSync(this.workspaceRootPath(workspaceId))
@@ -2592,6 +2605,19 @@ export class FsStore {
     if (existing) {
       if (existing.kind !== 'personal') {
         throw new Error(`Reserved personal workspace id ${workspaceId} has another kind.`);
+      }
+      if (this.dataRoot) {
+        // An overlapping publisher can expose the final directory before its original open ACK.
+        const native = this.nativeScope({ kind: 'workspace', workspaceId });
+        await getControlStoreWorkerClient().open({
+          database: `workspace:${native.path}`,
+          path: native.path,
+          dataRoot: this.dataRoot,
+          create: false,
+          initialize: 'workspace',
+          productOwner: native.owner,
+          contentMount: native.contentMount,
+        });
       }
       return existing;
     }
@@ -4454,7 +4480,7 @@ export class FsStore {
     if (
       this.getWorkspace(workspaceId).kind === 'personal' &&
       audience.visibility === 'private' &&
-      workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? '')
+      workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? '', this.dataRoot)
     ) {
       throw new Error('Personal Workspace private Threads require their owner.');
     }
