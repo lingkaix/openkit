@@ -187,6 +187,8 @@ export interface UsageMeasurementInput {
   quantity: number;
   /** LLM model id when applicable. */
   modelId?: string | null;
+  /** Resolved provider-native model actually measured, when known. */
+  providerModel?: string | null;
   /** Provider reference when applicable. */
   providerRef?: string | null;
   /** Measurement source. */
@@ -693,6 +695,7 @@ export function recordUsageInDb(input: RecordUsageInput): string[] {
         unit: record.unit,
         quantity: record.quantity,
         modelId: record.modelId ?? null,
+        providerModel: record.providerModel ?? null,
         providerRef: record.providerRef ?? input.call.context.providerRef ?? null,
         source: record.source ?? null,
         recordedAt,
@@ -721,10 +724,11 @@ export function recordUsageInDb(input: RecordUsageInput): string[] {
             unit,
             quantity,
             model_id,
+            provider_model,
             provider_ref,
             source,
             recorded_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           writeRetainedV1(usage).schemaVersion,
@@ -743,6 +747,7 @@ export function recordUsageInDb(input: RecordUsageInput): string[] {
           usage.unit,
           usage.quantity,
           usage.modelId,
+          usage.providerModel ?? null,
           usage.providerRef,
           usage.source,
           usage.recordedAt
@@ -782,6 +787,7 @@ function hasEquivalentUsageRecord(
          AND unit = ?
          AND quantity = ?
          AND model_id IS ?
+         AND provider_model IS ?
          AND provider_ref IS ?
          AND source IS ?
          AND source_ids_json = ?
@@ -793,6 +799,7 @@ function hasEquivalentUsageRecord(
       usage.unit,
       usage.quantity,
       usage.modelId,
+      usage.providerModel ?? null,
       usage.providerRef,
       usage.source,
       sourceIdsJson(usage.sourceIds)
@@ -1261,10 +1268,11 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
         unit,
         quantity,
         model_id,
+        provider_model,
         provider_ref,
         source,
         recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       writeRetainedV1(usage).schemaVersion,
@@ -1283,6 +1291,7 @@ function insertUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord): void {
       usage.unit,
       usage.quantity,
       usage.modelId,
+      usage.providerModel ?? null,
       usage.providerRef,
       usage.source,
       usage.recordedAt
@@ -1360,6 +1369,7 @@ function usageRecordFromRow(row: unknown, server = false): UsageRecord | ServerU
     unit: usage.unit,
     quantity: usage.quantity,
     modelId: usage.model_id,
+    providerModel: usage.provider_model ?? null,
     providerRef: usage.provider_ref,
     source: usage.source,
     recordedAt: usage.recorded_at,

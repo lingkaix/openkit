@@ -769,7 +769,9 @@ describe('slice 1d round 2 terminal frame closeout', () => {
 
 it('skips a missing API key with auth_rejected lineage and only backup effort levels', async () => {
   const f = await fixture(true);
-  f.backup.setResponses([fauxAssistantMessage('backup served')]);
+  const served = fauxAssistantMessage('backup served');
+  served.usage = { ...served.usage, input: 7, output: 3, totalTokens: 10 };
+  f.backup.setResponses([served]);
   try {
     const diagnostics = await (
       await f.app.request(...operationRequest('diagnostics.app', {}))
@@ -783,7 +785,15 @@ it('skips a missing API key with auth_rejected lineage and only backup effort le
     expect(calls).toHaveLength(1);
     const measured = usage.filter((record) => record.capabilityCallId === calls[0]?.id);
     expect(measured.length).toBeGreaterThan(0);
-    expect(measured.every((record) => record.providerRef === 'b')).toBe(true);
+    // #447: retain the actual dispatch model beside the logical route and measured profile.
+    for (const record of measured)
+      expect(record).toMatchObject({
+        modelId: 'tier',
+        providerRef: 'b',
+        providerModel: 'claude-sonnet-4-5',
+      });
+    // Each read opens a fresh handle; the identity survives ledger close and reopen.
+    expect(f.read().usage).toEqual(usage);
     expect(calls[0]?.extensions?.['openkit.gateway/routeLineage']).toMatchObject({
       entries: [
         {

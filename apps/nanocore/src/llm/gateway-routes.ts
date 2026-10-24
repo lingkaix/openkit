@@ -386,6 +386,8 @@ async function recordLlmGatewayUsage(input: {
   provider: ResolvedLLMProviderConfig;
   /** Model requested by the client. */
   model: string;
+  /** Resolved provider-native model dispatched for this measurement. */
+  providerModel: string;
   /** Provider usage payload. */
   usage: unknown;
 }): Promise<string[]> {
@@ -440,6 +442,7 @@ async function recordLlmGatewayUsage(input: {
           {
             category: 'llm' as const,
             modelId: input.model,
+            providerModel: input.providerModel,
             providerRef: input.provider.id,
             quantity: record.quantity,
             source: record.source,
@@ -2293,6 +2296,7 @@ export function registerWorkerInferenceRoutes({
                     await recordLlmGatewayUsage({
                       durableCall,
                       model: logicalModel.id,
+                      providerModel,
                       provider,
                       usage,
                     })
@@ -3375,6 +3379,7 @@ export function registerLlmGatewayRoutes({
                       await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
+                        providerModel,
                         provider,
                         usage,
                       })
@@ -3417,6 +3422,7 @@ export function registerLlmGatewayRoutes({
                       await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
+                        providerModel,
                         provider,
                         usage,
                       })
@@ -3559,6 +3565,7 @@ export function registerLlmGatewayRoutes({
                       await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
+                        providerModel,
                         provider,
                         usage,
                       })
@@ -3601,6 +3608,7 @@ export function registerLlmGatewayRoutes({
                       await recordLlmGatewayUsage({
                         durableCall,
                         model: logicalModel.id,
+                        providerModel,
                         provider,
                         usage,
                       })

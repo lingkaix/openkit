@@ -345,6 +345,8 @@ export async function recordInternalLlmGatewayUsage(
     readonly auditLineage?: CapabilityAuditLineage;
     readonly logicalModelId: string;
     readonly providerId: string;
+    /** Actual selected native model; omitted only when the measurement has no such evidence. */
+    readonly providerModel?: string | null;
     readonly usage?: unknown;
     readonly succeeded: boolean;
   }
@@ -397,6 +399,7 @@ export async function recordInternalLlmGatewayUsage(
             category: 'llm' as const,
             modelId: input.logicalModelId,
             providerRef: input.providerId,
+            providerModel: input.providerModel ?? null,
             quantity: record.quantity,
             source: record.source,
             unit: record.unit,
@@ -413,6 +416,7 @@ export async function recordInternalLlmGatewayUsage(
         category: 'llm',
         modelId: input.logicalModelId,
         providerRef: input.providerId,
+        providerModel: input.providerModel ?? null,
         quantity: 1,
         source: 'gateway-observed',
         unit: 'requests',

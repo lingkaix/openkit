@@ -861,6 +861,7 @@ function capabilityUsageResponse() {
         unit: 'tokens',
         quantity: 12,
         modelId: 'openai/gpt-5.1',
+        providerModel: null,
         providerRef: 'openrouter',
         source: 'llm-gateway-adapter-reported:input',
         recordedAt: timestamp,

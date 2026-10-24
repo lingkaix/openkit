@@ -131,3 +131,5 @@ Model capture awaits each native observation acknowledgement before its existing
 `recordInternalLlmGatewayUsage` retains reported input, output, cache-read, cache-write, and positive adapter USD estimates with the route recorder source labels. Aggregate tokens are a fallback when no positive component counts are reported. Explicit zero cache observations remain visible. Successful unmetered calls retain observed-request usage; failed unmetered calls do not invent usage. The recorder calculates no catalog cost.
 
 Terminal pi-ai error events retain opaque exposed failure evidence for the existing classifier; mutable non-error events still snapshot before asynchronous observation. A resolved loop deadline is separate from the Gateway call owner’s native terminal acknowledgement.
+
+Gateway usage records the selected dispatch attempt’s provider-native providerModel beside logical modelId and measured providerRef. Public-format, Worker inference and internal-role usage callbacks supply the selected model; historical rows are not reconstructed from current routing.

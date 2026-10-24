@@ -141,6 +141,8 @@ export const usageRecords = sqliteTable(
     quantity: real('quantity').notNull(),
     /** Model id for LLM usage. */
     modelId: text('model_id'),
+    /** Resolved provider-native model; null preserves unknown historical facts. */
+    providerModel: text('provider_model'),
     /** Provider reference. */
     providerRef: text('provider_ref'),
     /** Measurement source. */

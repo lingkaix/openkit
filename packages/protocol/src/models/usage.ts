@@ -48,6 +48,8 @@ export const UsageRecordSchema = z.object({
   unit: UsageUnitSchema,
   quantity: z.number().nonnegative(),
   modelId: z.string().min(1).nullable().default(null),
+  /** Resolved provider-native model of this measurement; historical absence is unknown. */
+  providerModel: z.string().min(1).nullable().default(null),
   providerRef: z.string().min(1).nullable().default(null),
   source: z.string().min(1).nullable().default(null),
   recordedAt: TimestampSchema,

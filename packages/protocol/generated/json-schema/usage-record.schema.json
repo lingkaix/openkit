@@ -154,6 +154,18 @@
         }
       ]
     },
+    "providerModel": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "providerRef": {
       "default": null,
       "anyOf": [
@@ -199,6 +211,7 @@
     "unit",
     "quantity",
     "modelId",
+    "providerModel",
     "providerRef",
     "source",
     "recordedAt"

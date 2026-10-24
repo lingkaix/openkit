@@ -117086,6 +117086,18 @@
                     }
                   ]
                 },
+                "providerModel": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "providerRef": {
                   "default": null,
                   "anyOf": [
@@ -117131,6 +117143,7 @@
                 "unit",
                 "quantity",
                 "modelId",
+                "providerModel",
                 "providerRef",
                 "source",
                 "recordedAt"
@@ -151222,5 +151235,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:c06d117c8763f745098c4b6c2da59e5fc0d2520e10a17cf6a8d6cde9c7ef722d"
+  "x-openkit-source-digest": "sha256:03879edb7d4f309294feb7039b7b623d044b3641ca69697003f549afebddd3a3"
 }

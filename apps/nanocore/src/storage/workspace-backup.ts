@@ -184,7 +184,7 @@ export interface WorkspaceBackupStageResult {
 
 /** Installed native formats; app keys also admit recognized immutable recovery versions. */
 export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>> = Object.freeze({
-  'drizzle.workspace': 14,
+  'drizzle.workspace': 15,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,
@@ -387,7 +387,8 @@ function databaseFormats(dataRoot: string, workspaceId: string, root: string) {
     try {
       const prefix = nativePrefix(db, app ? 'app' : 'workspace');
       if (!app) {
-        if (prefix !== 14) refuse('unsupported-format');
+        if (prefix !== WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace'])
+          refuse('unsupported-format');
         formats.push({ path, markers: { 'drizzle.workspace': prefix } });
       } else {
         const snapshot = app[2] !== 'data.sqlite';

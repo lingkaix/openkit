@@ -234,6 +234,7 @@ export function createInternalAgentGatewayProvider(
                         ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                         logicalModelId: options.logicalModel.id,
                         providerId: provider.id,
+                        providerModel,
                         usage,
                         succeeded: false,
                       })
@@ -317,6 +318,7 @@ export function createInternalAgentGatewayProvider(
                 ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
                 logicalModelId: options.logicalModel.id,
                 providerId: provider.id,
+                providerModel,
                 usage: response.usage,
                 succeeded: true,
               })

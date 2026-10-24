@@ -52,15 +52,18 @@ describe('storage layout report', () => {
       const report = createStorageLayoutReport(root);
       expect(report.workspaces).toHaveLength(1);
       expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
-      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-3)).toEqual([
+      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-4)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
+        'workspace_0014_usage_provider_model',
       ]);
-      expect(report.serverDb.appliedMigrations.slice(-3)).toEqual([
+      expect(report.serverDb.appliedMigrations.slice(-5)).toEqual([
         'core_0014_execution_journal',
         'core_0015_work_observations',
         'core_0016_workspace_recovery_admissions',
+        'core_0017_personal_workspace_binding',
+        'core_0018_usage_provider_model',
       ]);
       expect(report.serverDb.appliedMigrations).not.toContain('workspace_0012_execution_journal');
       expect(workspace.sqlite.serialize().equals(before)).toBe(true);
@@ -103,6 +106,8 @@ describe('storage layout report', () => {
         'core_0014_execution_journal',
         'core_0015_work_observations',
         'core_0016_workspace_recovery_admissions',
+        'core_0017_personal_workspace_binding',
+        'core_0018_usage_provider_model',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -143,6 +148,7 @@ describe('storage layout report', () => {
               'workspace_0011_workspace_capture_protection',
               'workspace_0012_execution_journal',
               'workspace_0013_work_observations',
+              'workspace_0014_usage_provider_model',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

@@ -222,10 +222,11 @@ describe('database setup', () => {
       )
         skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
-      expect(listMigrationIds(db, 'workspace').slice(-3)).toEqual([
+      expect(listMigrationIds(db, 'workspace').slice(-4)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
+        'workspace_0014_usage_provider_model',
       ]);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
@@ -358,6 +359,7 @@ describe('database setup', () => {
         '0015_work_observations.sql',
         '0016_workspace_recovery_admissions.sql',
         '0017_personal_workspace_binding.sql',
+        '0018_usage_provider_model.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -384,6 +386,7 @@ describe('database setup', () => {
         'core_0015_work_observations',
         'core_0016_workspace_recovery_admissions',
         'core_0017_personal_workspace_binding',
+        'core_0018_usage_provider_model',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -803,6 +806,7 @@ describe('database setup', () => {
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
+        'workspace_0014_usage_provider_model',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -871,6 +875,7 @@ describe('database setup', () => {
         'recorded_at',
         'responsible_user_id',
         'schema_version',
+        'provider_model',
       ]);
       expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([]);
       expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([]);
@@ -1173,6 +1178,66 @@ describe('native Drizzle migrate', () => {
     }
   });
 
+  it.each([
+    ['core', 18],
+    ['workspace', 14],
+  ] as const)('adds a nullable resolved model without changing historical %s usage', (scope, cutoff) => {
+    const journal = JSON.parse(
+      readFileSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'), 'utf8')
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    // These prefixes are the last retained formats before #447, not expected new migration names.
+    const folder = createNativeJournalFolder(
+      journal.entries
+        .filter((entry) => entry.idx < cutoff)
+        .map((entry) => ({
+          ...entry,
+          sql: readFileSync(join(process.cwd(), 'drizzle', scope, `${entry.tag}.sql`), 'utf8'),
+        }))
+    );
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+    try {
+      applyNativeScopeMigrations(sqlite, scope, folder);
+      const workspaceId = scope === 'core' ? null : testEntityId('ws', 'retained-model-usage');
+      const callId = testEntityId('cap', 'retained-model-call');
+      const timestamp = '2026-10-25T00:00:00.000Z';
+      // Migration setup must use the historical columns; current writers require current schema.
+      sqlite
+        .prepare(
+          `INSERT INTO capability_calls (schema_version, call_id, workspace_id, capability_id,
+            family, operation, status, redaction_class, started_at, completed_at)
+           VALUES (1, ?, ?, 'llm.responses', 'llm', 'responses', 'succeeded', 'metadata-only', ?, ?)`
+        )
+        .run(callId, workspaceId, timestamp, timestamp);
+      sqlite
+        .prepare(
+          `INSERT INTO usage_records (schema_version, usage_id, workspace_id, capability_call_id,
+            category, unit, quantity, model_id, provider_ref, source, recorded_at)
+           VALUES (1, ?, ?, ?, 'llm', 'tokens', 42, 'logical-tier', 'retained-profile',
+            'provider-reported', ?)`
+        )
+        .run(testEntityId('use', 'retained-model-usage'), workspaceId, callId, timestamp);
+      const retained = sqlite.prepare('SELECT * FROM usage_records').get() as Record<
+        string,
+        unknown
+      >;
+      const retainedCall = sqlite.prepare('SELECT * FROM capability_calls').get();
+      expect(retained).not.toHaveProperty('provider_model');
+      applyNativeScopeMigrations(sqlite, scope);
+      const migrated = sqlite.prepare('SELECT * FROM usage_records').get();
+      // #447 preserves every historical fact and adds no inferred physical-model attribution.
+      expect(migrated).toEqual({ ...retained, provider_model: null });
+      expect(sqlite.prepare('SELECT * FROM capability_calls').get()).toEqual(retainedCall);
+      const migratedBytes = sqlite.serialize();
+      applyNativeScopeMigrations(sqlite, scope);
+      expect(sqlite.prepare('SELECT * FROM usage_records').get()).toEqual(migrated);
+      expect(sqlite.serialize().equals(migratedBytes)).toBe(true);
+      expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+    } finally {
+      sqlite.close();
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
   it('adds trusted Discord origin without attributing or changing retained receipts', () => {
     const journal = JSON.parse(
       readFileSync(join(process.cwd(), 'drizzle/core/meta/_journal.json'), 'utf8')
@@ -1269,6 +1334,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
+        'workspace_0014_usage_provider_model',
       ]);
     } finally {
       db.sqlite.close();

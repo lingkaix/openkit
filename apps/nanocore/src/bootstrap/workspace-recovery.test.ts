@@ -690,7 +690,7 @@ async function recurringBundle(f: Awaited<ReturnType<typeof recurringFixture>>) 
       stagingParent,
       admission: new FileStorageAdmission(f.commandRoot, () => 0n),
       expectedRelease: { version: 'v0.1.0-rc.11', buildId: '1'.repeat(40) },
-      supportedDatabaseFormats: { 'drizzle.workspace': 14 },
+      supportedDatabaseFormats: { 'drizzle.workspace': 15 },
       supportedRequiredFeatures: ['workspace.recurring-triggers.v1'],
     },
     async (verified) => {

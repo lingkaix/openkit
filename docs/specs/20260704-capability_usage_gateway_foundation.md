@@ -160,7 +160,7 @@ The reason is recorded in [Assistant Inference Request Lineage](../decisions/202
 
 The recorder's independent default call and usage IDs use shared `cap` and `use` UUIDv7 allocation once per new row. Caller-supplied derived IDs require the exact UUIDv5 name declared by their accepted allocating owner: [Pending Requests](20260930-pending_requests.md), [Worker Agent Capability](20260703-worker_agent_capability.md), [Worker Turn Reliability](20260531-worker_turn_reliability_envelope.md), or [Workspace export accounting](20260704-workspace_backup_export_import.md). [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids) owns kind admission and canonical name bytes. Registering a kind does not authorize another deterministic producer ([accepted declaration boundary](../decisions/20261015-identifier_owner_declarations.md)).
 
-Terminal-checkpoint, export-inventory and contacted pending-call measurements use the existing independent `use` UUIDv7 default. Stored measurement equivalence is separate from identity. Compare `capabilityCallId`, category, unit, quantity, nullable `modelId`, `providerRef` and `source`, and normalized `sourceIds`. Replay and reopen reuse the retained equivalent row and its ID. Only a new measurement allocates. An ID cannot establish equivalence or collapse a different quantity or attribution. No usage derivation or new lifecycle is declared.
+Terminal-checkpoint, export-inventory and contacted pending-call measurements use the existing independent `use` UUIDv7 default. Stored measurement equivalence is separate from identity. Compare `capabilityCallId`, category, unit, quantity, nullable `modelId`, `providerModel`, `providerRef` and `source`, and normalized `sourceIds`. Replay and reopen reuse the retained equivalent row and its ID. Only a new measurement allocates. An ID cannot establish equivalence or collapse a different quantity or attribution. No usage derivation or new lifecycle is declared.
 
 A transient random import-accounting suffix supplies no deterministic allocating authority. Its new call and usage rows use independent UUIDv7 at existing staged admission, with existing record reuse and foreign-key attribution. No new correlation record or import ledger is added.
 
@@ -173,12 +173,15 @@ LLM usage rows:
 - category: `llm`
 - unit: `tokens` for input, output, cache-read, and cache-write quantities; `usd` for a positive provider-reported cost estimate; request count only when a producer has no token measurement
 - providerRef: OpenKit provider instance id, never a pi-ai provider name
-- modelId
+- modelId: the logical model route requested by the caller
+- providerModel: the actual resolved provider-native model of the measured dispatch attempt; nullable when no such fact was retained
 - quantity
 - cache metrics when available
 - cost estimate when pi-ai reports one, treated as telemetry rather than billing truth
 - source: OpenKit vocabulary that distinguishes input, output, cache-read, cache-write, total fallback, and cost estimate without storing a provider-native payload
 - requestId and capabilityCallId
+
+The Gateway supplies `providerModel` where it already knows the selected member, alongside its existing measured-profile `providerRef`. A fallback, retry or runtime route change cannot relabel an earlier measurement. Historical absent values remain unknown/null; do not infer or backfill them from current configuration, a logical route or a response alias. The additive field belongs to the existing usage row and survives its ordinary native publication, reads, export/import and equivalent-measurement replay. It introduces no second ledger, routing authority or lifecycle.
 
 MCP usage rows:
 

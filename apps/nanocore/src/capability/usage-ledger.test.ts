@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, UsageRecordSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
@@ -93,6 +93,84 @@ describe('capability usage ledger', () => {
         TypeError
       );
       expect(usageRows(workspaceDb, call.id)).toHaveLength(1);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retains resolved model facts and distinguishes measurements across ledger reopen', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-usage-provider-model-'));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
+      const call = await startCapabilityCall({
+        workspaceDb,
+        workspaceId,
+        authorityActor: null,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+      });
+      const measurement = {
+        category: 'llm' as const,
+        unit: 'tokens' as const,
+        quantity: 42,
+        modelId: 'tier',
+        providerRef: 'profile-a',
+        source: 'provider-reported',
+      };
+      const omitted = await recordUsage({ workspaceDb, call, records: [measurement] });
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toMatchObject([
+        { id: omitted[0], modelId: 'tier', providerRef: 'profile-a', providerModel: null },
+      ]);
+      // An old retained record has no physical-model fact to infer from its logical id.
+      const [stored] = listWorkspaceUsageRecords(workspaceDb, workspaceId);
+      const legacy = Object.fromEntries(
+        Object.entries(stored!).filter(([key]) => key !== 'providerModel')
+      );
+      expect(UsageRecordSchema.parse(legacy)).toMatchObject({
+        modelId: 'tier',
+        providerRef: 'profile-a',
+        providerModel: null,
+      });
+      expect(
+        await recordUsage({
+          workspaceDb,
+          call,
+          records: [{ ...measurement, providerModel: null }],
+        })
+      ).toEqual(omitted);
+      const physicalA = { ...measurement, providerModel: 'native-a' };
+      const first = await recordUsage({ workspaceDb, call, records: [physicalA] });
+      const second = await recordUsage({
+        workspaceDb,
+        call,
+        records: [{ ...measurement, providerModel: 'native-b' }],
+      });
+      // #447 extends stored-measurement equivalence to the actual resolved model fact.
+      expect(new Set([...omitted, ...first, ...second]).size).toBe(3);
+      const before = listWorkspaceUsageRecords(workspaceDb, workspaceId);
+      expect(before).toHaveLength(3);
+      expect(before).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: omitted[0], providerModel: null }),
+          expect.objectContaining({ id: first[0], providerModel: 'native-a' }),
+          expect.objectContaining({ id: second[0], providerModel: 'native-b' }),
+        ])
+      );
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(before);
+      expect(await recordUsage({ workspaceDb, call, records: [physicalA] })).toEqual(first);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(before);
     } finally {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
@@ -1162,7 +1240,7 @@ function auditRows(
 }
 
 describe('retained call digest round-trip', () => {
-  it('exports then imports a digest and preserves absence on an old row', async () => {
+  it('exports then imports a digest and resolved model while preserving old absent fields', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-digest-transfer-'));
     const source = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71b1-9af2-985861a05396');
     const target = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7b16-81e5-c0b623c0c636');
@@ -1174,7 +1252,7 @@ describe('retained call digest round-trip', () => {
         'cap_00000000-0000-7409-878a-46cfc62378f7',
         'cap_00000000-0000-7ff2-b713-d35db1d00ca0',
       ]) {
-        await startCapabilityCall({
+        const call = await startCapabilityCall({
           workspaceDb: source,
           workspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
           authorityActor: null,
@@ -1183,6 +1261,22 @@ describe('retained call digest round-trip', () => {
           operation: 'responses',
           redactionClass: 'metadata-only',
           callId,
+        });
+        await recordUsage({
+          workspaceDb: source,
+          call,
+          records: [
+            {
+              category: 'llm',
+              unit: 'tokens',
+              quantity: 42,
+              modelId: 'tier',
+              providerRef: 'profile-a',
+              ...(callId === 'cap_00000000-0000-7409-878a-46cfc62378f7'
+                ? { providerModel: 'native-a' }
+                : {}),
+            },
+          ],
         });
       }
       const digest = `sha256:${'a'.repeat(64)}`;
@@ -1194,14 +1288,39 @@ describe('retained call digest round-trip', () => {
           listWorkspaceCapabilityCalls(source, 'ws_00000000-0000-71b1-9af2-985861a05396')
         )
       );
+      const exportedUsage = JSON.parse(
+        JSON.stringify(listWorkspaceUsageRecords(source, source.workspaceId))
+      ) as Array<Record<string, unknown>>;
+      for (const usage of exportedUsage) {
+        usage.workspaceId = target.workspaceId;
+        // Old portable records omit the additive fact; no current route can supply it.
+        if (usage.capabilityCallId === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0')
+          delete usage.providerModel;
+      }
       importWorkspaceCapabilityUsageLedger({
         workspaceDb: target,
         capabilityCalls: exported.map((call: Record<string, unknown>) => ({
           ...call,
           owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' },
         })),
-        usageRecords: [],
+        usageRecords: exportedUsage.map((usage) => UsageRecordSchema.parse(usage)),
       });
+      expect(listWorkspaceUsageRecords(target, target.workspaceId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            capabilityCallId: 'cap_00000000-0000-7409-878a-46cfc62378f7',
+            modelId: 'tier',
+            providerRef: 'profile-a',
+            providerModel: 'native-a',
+          }),
+          expect.objectContaining({
+            capabilityCallId: 'cap_00000000-0000-7ff2-b713-d35db1d00ca0',
+            modelId: 'tier',
+            providerRef: 'profile-a',
+            providerModel: null,
+          }),
+        ])
+      );
       expect(
         listWorkspaceCapabilityCalls(target, 'ws_00000000-0000-7b16-81e5-c0b623c0c636').find(
           (call) => call.id === 'cap_00000000-0000-7409-878a-46cfc62378f7'

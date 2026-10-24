@@ -19,6 +19,7 @@
     "modelId": null,
     "providerRef": null,
     "source": "nanocore",
-    "recordedAt": "2026-05-15T10:07:01Z"
+    "recordedAt": "2026-05-15T10:07:01Z",
+    "providerModel": null
   }
 }

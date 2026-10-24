@@ -163,6 +163,7 @@ const measurement = z
     unit: UsageRecordSchema.shape.unit,
     quantity: UsageRecordSchema.shape.quantity,
     modelId: UsageRecordSchema.shape.modelId.optional(),
+    providerModel: UsageRecordSchema.shape.providerModel.optional(),
     providerRef: UsageRecordSchema.shape.providerRef.optional(),
     source: UsageRecordSchema.shape.source.optional(),
   })
