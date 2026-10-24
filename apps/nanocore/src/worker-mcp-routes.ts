@@ -92,6 +92,7 @@ import {
   mcpToolArgumentsContentDigest,
   mcpToolSchemaContentDigest,
   readCurrentMcpToolSchemaSnapshot,
+  readTurnMcpToolSchemaSnapshot,
   recordMcpToolSchemaSnapshot,
   WorkerCapabilityMcpToolSchema,
 } from './runtime/mcp-tool-schema-snapshots.js';
@@ -2552,53 +2553,6 @@ function mcpDeniedError(): ProtocolError {
   return new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
     code: 'mcp-denied',
   });
-}
-
-/** Reads the exact live schema already selected for this Turn through its capability calls. */
-function readTurnMcpToolSchemaSnapshot(input: {
-  readonly environmentPackage: AgentEnvironmentPackage;
-  readonly selected: AgentEnvironmentPackage['supply']['mcpServers'][number];
-  readonly workspaceDb: WorkspaceDb;
-}): ReturnType<typeof readCurrentMcpToolSchemaSnapshot> {
-  const scope = input.environmentPackage.scope;
-  const bound = input.workspaceDb.sqlite
-    .prepare(`
-    SELECT schema_version AS schemaVersion, schema_snapshot_id FROM capability_calls
-    WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
-      AND agent_session_id = ? AND package_snapshot_id = ?
-      AND family = 'mcp' AND provider_ref = ?
-      AND operation IN ('mcp.list-tools', 'mcp.call-tool')
-      AND schema_snapshot_id IS NOT NULL
-    ORDER BY started_at, call_id LIMIT 1
-  `)
-    .get(
-      scope.workspaceId,
-      scope.threadId,
-      scope.turnId,
-      scope.agentSessionId,
-      input.environmentPackage.snapshotId,
-      input.selected.id
-    ) as { schemaVersion: unknown; schema_snapshot_id: string } | undefined;
-  if (!bound) return null;
-  readRetainedV1(bound, () => bound);
-  const snapshot = readCurrentMcpToolSchemaSnapshot({
-    catalogEntryId: input.selected.id,
-    pinnedSchemaSnapshotId: bound.schema_snapshot_id,
-    workspaceDb: input.workspaceDb,
-    workspaceId: scope.workspaceId,
-  });
-  if (
-    !snapshot ||
-    (input.selected.schemaPolicy === 'pinned' &&
-      snapshot.schemaSnapshotId !== input.selected.pinnedSchemaSnapshotId)
-  ) {
-    throw new WorkerControlGatewayError(
-      'mcp-schema-drift',
-      'MCP Turn tool schema is unavailable.',
-      409
-    );
-  }
-  return snapshot;
 }
 
 /** Discovers live tools while retaining the exact schema already selected for the Turn. */

@@ -335,7 +335,7 @@ export function createWorkerRawOutputCoalescer(
     if (!pending.size) return Promise.resolve();
     if (scheduled) clearImmediate(scheduled);
     scheduled = undefined;
-    const batch = Object.freeze([...pending.values()].map((position) => Object.freeze(position)));
+    const batch = [...pending.values()];
     const target = version;
     const force = forcePending;
     forcePending = false;

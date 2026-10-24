@@ -103,9 +103,8 @@ export type ControlCheckpointCommandResult = z.infer<typeof ControlCheckpointCom
 /** Applies the existing checkpoint owners inside the native command's active savepoint. */
 export function applyControlCheckpointCommand(
   db: WorkspaceDb,
-  value: ControlCheckpointCommandInput
+  input: ControlCheckpointCommandInput
 ): ControlCheckpointCommandResult {
-  const input = ControlCheckpointCommandInputSchema.parse(value);
   if (db.scope !== 'workspace' || db.workspaceId !== input.workspaceId || !db.sqlite.inTransaction)
     throw new ControlProductPreconditionError();
   if (input.kind === 'clear')

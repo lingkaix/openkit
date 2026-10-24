@@ -261,7 +261,10 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
   ) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
-  } else if (operation === 'capability' && error instanceof GoalCommandError) {
+  } else if (
+    operation === 'capability' &&
+    (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
+  ) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
   } else if (
     operation === 'material' &&
@@ -461,15 +464,17 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     case 'capability': {
       const input = request.input;
       const context =
-        input.kind === 'checkpoint'
-          ? input.input
-          : input.kind === 'admit'
-            ? input.context
-            : input.kind === 'usage-finish'
-              ? input.call.context
-              : input.kind === 'permission'
-                ? (input.decision.mediation?.subject.process ?? input.decision.contextSummary)
-                : input;
+        input.kind === 'mcp-schema'
+          ? input.environmentPackage.scope
+          : input.kind === 'checkpoint'
+            ? input.input
+            : input.kind === 'admit'
+              ? input.context
+              : input.kind === 'usage-finish'
+                ? input.call.context
+                : input.kind === 'permission'
+                  ? (input.decision.mediation?.subject.process ?? input.decision.contextSummary)
+                  : input;
       if (typeof context?.turnId === 'string') lanes.add(context.turnId);
       if (context && 'agentSessionId' in context && typeof context.agentSessionId === 'string')
         lanes.add(`session:${context.agentSessionId}`);

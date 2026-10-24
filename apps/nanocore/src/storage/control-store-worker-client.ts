@@ -43,6 +43,7 @@ import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
   controlCapabilityTextSpan,
+  controlCapabilityTransferText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
@@ -600,8 +601,7 @@ class ControlStoreWorkerClient {
     input: ControlCapabilityCommandInput
   ): Promise<ControlCapabilityCommandResult> {
     try {
-      const text =
-        input.kind === 'usage-finish' ? input.finish?.deliveredKnowledgeAnswer : undefined;
+      const text = controlCapabilityTransferText(input);
       if (
         text !== undefined &&
         Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
@@ -617,6 +617,8 @@ class ControlStoreWorkerClient {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'capability') {
         if (error.domain.code === 'unsupported_retained_format')
           throw new TypeError('Unsupported retained record format.');
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
         throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);
       }
       throw error;

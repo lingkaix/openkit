@@ -1,4 +1,9 @@
 import {
+  AgentEnvironmentAgentSchema,
+  AgentEnvironmentMcpServerSchema,
+  AgentEnvironmentScopeSchema,
+} from '@openkit/config-schema';
+import {
   ActorRefSchema,
   AuditAuthenticationSchema,
   AuditEventIdSchema,
@@ -9,6 +14,7 @@ import {
   PolicyInvocationV1Schema,
   PolicyStatementReferenceV1Schema,
   RequestIdSchema,
+  readRetainedV1,
   SystemPromptDigestSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -20,11 +26,17 @@ import { z } from 'zod';
 import {
   finishCapabilityCall,
   recordUsage,
+  stampCapabilityCallSchemaSnapshot,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { persistLlmCapabilityCallSystemPromptDigest } from '../llm/system-prompt-digest.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { PermissionDecisionRetainedV1Schema } from '../policy/retained-records-v1.js';
+import {
+  readTurnMcpToolSchemaSnapshot,
+  recordMcpToolSchemaSnapshot,
+  WorkerCapabilityMcpToolSchema,
+} from '../runtime/mcp-tool-schema-snapshots.js';
 import {
   initializeWorkerRawOutput,
   invalidateWorkerRawOutputProof,
@@ -197,6 +209,37 @@ const usageFinishCommand = z
     message: 'A usage/finish command requires an owned mutation.',
   });
 
+const mcpServer = AgentEnvironmentMcpServerSchema.pick({
+  id: true,
+  schemaPolicy: true,
+  pinnedSchemaSnapshotId: true,
+}).strict();
+const mcpFrame = z
+  .object({
+    snapshotId: z.string().min(1),
+    scope: AgentEnvironmentScopeSchema.pick({
+      workspaceId: true,
+      threadId: true,
+      turnId: true,
+      agentSessionId: true,
+      triggerActor: true,
+    }).strict(),
+    agent: AgentEnvironmentAgentSchema.pick({ agentId: true }).strict(),
+    supply: z.object({ mcpServers: z.array(mcpServer).length(1) }).strict(),
+  })
+  .strict();
+const mcpCaptureCommand = z
+  .object({
+    kind: z.literal('mcp-schema'),
+    workspaceId: WorkspaceIdSchema,
+    callId: CapabilityCallIdSchema,
+    environmentPackage: mcpFrame,
+    schemaSnapshotId: z.string().min(1),
+    serverVersion: z.string().nullable().optional(),
+    tools: z.array(WorkerCapabilityMcpToolSchema),
+  })
+  .strict();
+
 /** Dormant native commands; all prepared facts share the existing native savepoint. */
 export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('checkpoint'), input: ControlCheckpointCommandInputSchema }).strict(),
@@ -208,6 +251,7 @@ export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', 
     .strict(),
   z.object({ kind: z.literal('raw-settle'), ...scope, complete: z.boolean() }).strict(),
   z.object({ kind: z.literal('raw-invalidate'), ...scope }).strict(),
+  mcpCaptureCommand,
 ]);
 /** Exact prepared command admitted by the existing bounded native envelope. */
 export type ControlCapabilityCommandInput = z.infer<typeof ControlCapabilityCommandInputSchema>;
@@ -229,53 +273,67 @@ export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
   ControlCapabilityCommandInputSchema.options[4],
   ControlCapabilityCommandInputSchema.options[5],
   ControlCapabilityCommandInputSchema.options[6],
+  mcpCaptureCommand.extend({ serverVersion: ControlScalarTextSchema.nullable().optional() }),
 ]);
 /** Transient binary binding for the current answer field, never retained data. */
 export type ControlCapabilityWireInput = z.infer<typeof ControlCapabilityWireInputSchema>;
 
 /** Selects only the concrete answer binding from the closed wire input. */
 export function controlCapabilityTextSpan(input: ControlCapabilityWireInput) {
-  return input.kind === 'usage-finish' ? input.finish?.deliveredKnowledgeAnswer : undefined;
+  return input.kind === 'usage-finish'
+    ? input.finish?.deliveredKnowledgeAnswer
+    : input.kind === 'mcp-schema'
+      ? (input.serverVersion ?? undefined)
+      : undefined;
 }
 
-/** Replaces the actual answer after binary capacity admission; no escaped JSON body is created. */
+/** Selects the one concrete scalar before shared binary admission and UTF-8 encoding. */
+export function controlCapabilityTransferText(
+  input: ControlCapabilityCommandInput
+): string | undefined {
+  return input.kind === 'usage-finish'
+    ? input.finish?.deliveredKnowledgeAnswer
+    : input.kind === 'mcp-schema'
+      ? (input.serverVersion ?? undefined)
+      : undefined;
+}
+
+/** Replaces only the concrete answer or observed server version after binary capacity admission. */
 export function prepareControlCapabilityTransfer(value: ControlCapabilityCommandInput) {
   const input = ControlCapabilityCommandInputSchema.parse(value);
-  if (input.kind !== 'usage-finish' || input.finish?.deliveredKnowledgeAnswer === undefined)
+  const text = controlCapabilityTransferText(input);
+  if (text === undefined)
     return { input: ControlCapabilityWireInputSchema.parse(input), parts: [] };
-  const text = input.finish.deliveredKnowledgeAnswer;
-  return {
-    input: ControlCapabilityWireInputSchema.parse({
-      ...input,
-      finish: { ...input.finish, deliveredKnowledgeAnswer: frameControlScalarText(text) },
-    }),
-    parts: [text],
-  };
+  const span = frameControlScalarText(text);
+  const wire =
+    input.kind === 'usage-finish'
+      ? { ...input, finish: { ...input.finish, deliveredKnowledgeAnswer: span } }
+      : { ...input, serverVersion: span };
+  return { input: ControlCapabilityWireInputSchema.parse(wire), parts: [text] };
 }
 
-/** Rebuilds the concrete owner input outside SQL after exact scalar verification. */
+/** Rebuilds the exact owner scalar outside SQL after length, digest and UTF-8 verification. */
 export function prepareControlCapabilityCommand(
   value: ControlCapabilityWireInput,
   content?: ArrayBuffer
 ) {
   const input = ControlCapabilityWireInputSchema.parse(value);
-  if (input.kind === 'usage-finish' && input.finish?.deliveredKnowledgeAnswer !== undefined)
-    return ControlCapabilityCommandInputSchema.parse({
-      ...input,
-      finish: {
-        ...input.finish,
-        deliveredKnowledgeAnswer: readControlScalarText(
-          input.finish.deliveredKnowledgeAnswer,
-          content
-        ),
-      },
-    });
+  const span = controlCapabilityTextSpan(input);
+  if (span !== undefined) {
+    const text = readControlScalarText(span, content);
+    return ControlCapabilityCommandInputSchema.parse(
+      input.kind === 'usage-finish'
+        ? { ...input, finish: { ...input.finish, deliveredKnowledgeAnswer: text } }
+        : { ...input, serverVersion: text }
+    );
+  }
   if (content !== undefined) throw new TypeError('Unexpected native scalar binary content.');
   return ControlCapabilityCommandInputSchema.parse(input);
 }
 
 /** Closed raw aggregate, actual StartedCapabilityCall or retained usage identifiers. */
 export const ControlCapabilityCommandResultSchema = z.union([
+  z.object({ schemaSnapshotId: z.string().min(1), liveSnapshotId: z.string().min(1) }).strict(),
   ControlCheckpointCommandResultSchema,
   z.object({ rawOutputBytes: ordinal, exhausted: z.boolean(), chargedBytes: ordinal }).strict(),
   startedCall,
@@ -304,12 +362,60 @@ function recordControlPermissionDecision(
 /** Applies prepared ledger facts and raw proof on the supplied native transaction. */
 export function applyControlCapabilityCommand(
   db: WorkspaceDb,
-  value: ControlCapabilityCommandInput
+  input: ControlCapabilityCommandInput
 ): ControlCapabilityCommandResult {
-  const input = ControlCapabilityCommandInputSchema.parse(value);
   if (input.kind === 'checkpoint') return applyControlCheckpointCommand(db, input.input);
   if (db.scope !== 'workspace' || db.workspaceId !== input.workspaceId || !db.sqlite.inTransaction)
     throw new WorkerRawOutputAuthorityError();
+  if (input.kind === 'mcp-schema') {
+    if (input.environmentPackage.scope.workspaceId !== db.workspaceId)
+      throw new WorkerRawOutputAuthorityError();
+    const selected = input.environmentPackage.supply.mcpServers[0]!;
+    const frame = input.environmentPackage;
+    const actual = db.sqlite
+      .prepare(`SELECT schema_version, workspace_id, thread_id, turn_id,
+      agent_session_id, package_snapshot_id, agent_id, provider_ref, family, operation, capability_id,
+      status, completed_at FROM capability_calls WHERE call_id = ?`)
+      .get(input.callId) as Record<string, unknown> | undefined;
+    if (actual) readRetainedV1({ schemaVersion: actual.schema_version }, () => undefined);
+    const facts = {
+      workspace_id: db.workspaceId,
+      thread_id: frame.scope.threadId,
+      turn_id: frame.scope.turnId,
+      agent_session_id: frame.scope.agentSessionId,
+      package_snapshot_id: frame.snapshotId,
+      agent_id: frame.agent.agentId,
+      provider_ref: selected.id,
+      family: 'mcp',
+      status: 'running',
+      completed_at: null,
+    };
+    if (
+      !actual ||
+      Object.entries(facts).some(([key, fact]) => actual[key] !== fact) ||
+      !['mcp.list-tools', 'mcp.call-tool'].includes(String(actual.operation)) ||
+      actual.capability_id !== actual.operation
+    )
+      throw new WorkerRawOutputAuthorityError();
+    const bound = readTurnMcpToolSchemaSnapshot({ ...input, selected, workspaceDb: db });
+    const liveSnapshotId = recordMcpToolSchemaSnapshot({
+      ...input,
+      capabilityCallId: input.callId,
+      serverId: selected.id,
+      source: 'live',
+      workspaceDb: db,
+      onRecorded: (liveId) => {
+        if (selected.schemaPolicy === 'pinned' && selected.pinnedSchemaSnapshotId !== liveId)
+          return;
+        stampCapabilityCallSchemaSnapshot({
+          callId: input.callId,
+          schemaSnapshotId: bound?.schemaSnapshotId ?? liveId,
+          workspaceDb: db,
+        });
+      },
+    });
+    return { schemaSnapshotId: bound?.schemaSnapshotId ?? liveSnapshotId, liveSnapshotId };
+  }
   if (input.kind === 'admit') {
     const call = startCapabilityCall(
       presentControlFacts({
@@ -384,6 +490,6 @@ export function applyControlCapabilityCommand(
     final = observeWorkerRawOutput(db, { ...input, ...watermark });
     chargedBytes += final.chargedBytes;
   }
-  if (!final || !Number.isSafeInteger(chargedBytes)) throw new WorkerRawOutputAuthorityError();
+  if (!final) throw new WorkerRawOutputAuthorityError();
   return { ...final, chargedBytes };
 }
