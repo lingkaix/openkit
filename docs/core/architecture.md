@@ -6,7 +6,7 @@ updated: 2026-09-10
 
 This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, internal Core role boundaries, and the workspace-service boundary.
 
-This document does not own package layout, App API endpoints, protocol or database record shapes, storage backends, communication transports, internal Agent runtime mechanics, runtime session continuity, deployment topology, agent-native protocols, provider mappings, launch commands, or sandbox backend details. The Internal Agent Runtime specification owns the role-agnostic bounded execution substrate used by model-using internal roles.
+This document does not own package layout, App API endpoints, protocol or database record shapes, storage backends, communication transports, internal Agent runtime mechanics, runtime session continuity, deployment topology, agent-native protocols, provider mappings, launch commands, or sandbox backend details. Internal Agent runtime mechanics means the role-agnostic bounded execution substrate used by model-using internal roles.
 
 ## Purpose
 
@@ -100,7 +100,7 @@ Each model-using internal role has its own work records and usage accounting thr
 
 Internal roles may produce decisions or proposals only through normal Core services and records. They must not create private workflow, knowledge, evaluation, or product-state authorities.
 
-NanoCore MUST own one interception mechanism at its mediation boundaries, with Policy-bound observe, advise, gate and transform participants. A participant may be an agent, deterministic engine, model, external service or human; its output cannot create authority. Existing effect owners and the final Policy Kernel check remain decisive. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records the design; implementation of the unified mechanism is Not Started.
+NanoCore MUST own one interception mechanism at its mediation boundaries, with Policy-bound observe, advise, gate and transform participants. A participant may be an agent, deterministic engine, model, external service or human; its output cannot create authority. Existing effect owners and the final Policy Kernel check remain decisive. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records the design.
 
 Product target selection and runtime placement are independent. A product surface may select an internal role, Agent supply and profile, logical model preference, and Thread or explicit new-work action. Core alone resolves that intent to Core-local execution or worker placement; product surfaces do not select Provider routes, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.
 
@@ -130,7 +130,7 @@ Product target selection and runtime placement are independent. A product surfac
 
 ## Relationships To Other Core Aspects
 
-Core Concepts owns the shared product objects and identifier semantics; Identity owns actors, authentication, and membership; Work Model owns user-facing work meaning; Agent Workflow owns workflow progression; Runtime Model and AgentSession own execution lifecycle and continuity; Communication owns command, event, streaming, and transport projections; Storage owns persistence and data-source boundaries.
+Core Concepts owns the shared product objects and identifier semantics; Identity owns actors, authentication, and membership; Work Model owns user-facing work meaning and, through Agent Workflow, workflow progression; Runtime Model and AgentSession own execution lifecycle and continuity; Communication owns command, event, streaming, and transport projections; Storage owns persistence and data-source boundaries.
 
 Agent Supply owns selectable agent profiles and readiness; Mediation owns governed runtime capability supply; Policy, Sandbox, and Vault own authorization, containment, and credential boundaries; Knowledge and Evidence own their respective workspace services and records.
 
