@@ -39,6 +39,10 @@ import {
 } from '../workspace-materials.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
+import type {
+  ControlCapabilityCommandInput,
+  ControlCapabilityCommandResult,
+} from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import type {
   ControlProductTransition,
@@ -586,6 +590,15 @@ class ControlStoreWorkerClient {
   async journal(database: string, input: ControlExecutionJournalInput): Promise<string> {
     const reply = await this.request({ operation: 'journal', database, input });
     return (reply as Extract<Success, { operation: 'journal' }>).resultJson;
+  }
+
+  /** Submits dormant raw proof through the existing bounded writer and awaits durable acknowledgement. */
+  async capability(
+    database: string,
+    input: ControlCapabilityCommandInput
+  ): Promise<ControlCapabilityCommandResult> {
+    const reply = await this.request({ operation: 'capability', database, input });
+    return (reply as Extract<Success, { operation: 'capability' }>).result;
   }
 
   /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */

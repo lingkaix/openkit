@@ -44,6 +44,12 @@ import {
   ControlAdmissionSchema,
 } from './control-store-admission.js';
 import {
+  type ControlCapabilityCommandInput,
+  ControlCapabilityCommandInputSchema,
+  type ControlCapabilityCommandResult,
+  ControlCapabilityCommandResultSchema,
+} from './control-store-capability.js';
+import {
   type ControlPendingTransition,
   ControlPendingTransitionSchema,
 } from './control-store-pending.js';
@@ -69,7 +75,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 10;
+export const CONTROL_WORKER_VERSION = 11;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -148,6 +154,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
+      | { readonly operation: 'capability'; readonly input: ControlCapabilityCommandInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -312,6 +319,11 @@ export type ControlWorkerReply = {
     }
   | {
       readonly status: 'ok';
+      readonly operation: 'capability';
+      readonly result: ControlCapabilityCommandResult;
+    }
+  | {
+      readonly status: 'ok';
       readonly operation: 'goal';
       readonly result: ControlGoalCommandResult;
     }
@@ -467,6 +479,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return true;
   if (reply.operation === 'project-cleanup')
     return WorkerBackendCleanupProjectionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'capability')
+    return ControlCapabilityCommandResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'observation') {
     if (
       !isRecord(reply.result) ||
@@ -729,6 +743,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'journal' ||
     value.operation === 'project-cleanup' ||
     value.operation === 'observation' ||
+    value.operation === 'capability' ||
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
     value.operation === 'review' ||
@@ -752,7 +767,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
                       ? ControlMaintenanceAdmissionInputSchema
                       : value.operation === 'terminal'
                         ? ControlTerminalTransitionSchema
-                        : ControlWorkObservationInputSchema;
+                        : value.operation === 'capability'
+                          ? ControlCapabilityCommandInputSchema
+                          : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

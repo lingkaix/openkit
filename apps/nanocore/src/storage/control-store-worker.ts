@@ -52,6 +52,7 @@ import {
   ProjectWorkerBackendCleanupInputSchema,
   projectWorkerBackendCleanupInDb,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
   applyControlMaterialCommand,
   type ControlMaterialCommandInput,
@@ -60,6 +61,7 @@ import {
 } from '../workspace-materials.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
+import { applyControlCapabilityCommand } from './control-store-capability.js';
 import {
   applyControlPendingTransition,
   prepareControlPendingArchive,
@@ -122,6 +124,7 @@ type WriteCommand = Extract<
       | 'publication'
       | 'project-cleanup'
       | 'observation'
+      | 'capability'
       | 'pending'
       | 'journal'
       | 'goal'
@@ -286,7 +289,11 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
 
 /** Classifies a native failure without publishing its message, SQL or parameters. */
 function failureCode(error: unknown): ControlWorkerFailureCode {
-  if (error instanceof PreconditionError || error instanceof ControlProductPreconditionError)
+  if (
+    error instanceof PreconditionError ||
+    error instanceof ControlProductPreconditionError ||
+    error instanceof WorkerRawOutputAuthorityError
+  )
     return 'precondition';
   if (error instanceof ControlStoreBusyError) return 'busy';
   const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
@@ -440,6 +447,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'publication':
     case 'observation':
+    case 'capability':
     case 'project-cleanup':
     case 'maintenance':
       lanes.add(request.input.turnId);
@@ -1095,6 +1103,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'material',
               result,
             };
+          } else if (request.operation === 'capability') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new WorkerRawOutputAuthorityError();
+            const result = applyControlCapabilityCommand(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'capability',
+              result,
+            };
           } else if (request.operation === 'maintenance') {
             if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
             const result = applyControlMaintenanceAdmission(owner.scopeDb, request.input);
@@ -1511,6 +1529,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
+      value.operation === 'capability' ||
       value.operation === 'pending' ||
       value.operation === 'journal' ||
       value.operation === 'goal' ||
