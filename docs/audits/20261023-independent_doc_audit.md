@@ -40,7 +40,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/communication.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
 | `docs/core/identity.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
 | `docs/core/policy.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
-| `docs/core/vault.md` | vault | open, pending | — |
+| `docs/core/vault.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/core/mediation.md` | mediation | open, pending | — |
 | `docs/core/agent-supply.md` | agent-supply | open, pending | — |
 | `docs/core/sandbox.md` | sandbox | open, pending | — |
@@ -87,10 +87,10 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260703-policy_enforcement_mapping.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/specs/20260909-thread_visibility_and_sharing.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
 | `docs/specs/20260930-pending_requests.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
-| `docs/specs/20260703-vault_secret_injection.md` | vault | open, pending | — |
-| `docs/specs/20260704-vault_backend_implementation.md` | vault | open, pending | — |
-| `docs/specs/20260709-worker_credential_access_declarations.md` | vault | open, pending | — |
-| `docs/specs/20260703-openshell_mechanism_internalization.md` | vault | open, pending | — |
+| `docs/specs/20260703-vault_secret_injection.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260704-vault_backend_implementation.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260709-worker_credential_access_declarations.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260703-openshell_mechanism_internalization.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
 | `docs/specs/20261002-operation_definition.md` | mediation | open, pending | — |
 | `docs/specs/20260703-worker_agent_capability.md` | mediation | open, pending | — |
 | `docs/specs/20260704-capability_usage_gateway_foundation.md` | mediation | open, pending | — |
@@ -279,6 +279,13 @@ Filled at close-out.
 | #471 `[thread] Thread records never emit the thread-entry and thread-visibility required features` | policy | PO-TVS-01 | blocking candidate (retained data) |
 | #472 `[discord] A paired Discord account gains administrator eligibility from an owned server-admin Token` | policy | PO-PR-04 | blocking candidate (authorization) |
 | #473 `[pending-requests] A repeated command-intent approval with a new request id is not deduplicated` | policy | PO-PR-01 | ordinary |
+| #474 `[vault] Worker MCP Gateway releases Vault material after a tool.use check, without the vault.use current-authority predicate` | vault | VA-SI-01 | blocking candidate (credentials) |
+| #475 `[vault] Worker credential declarations resolve secret material before the backend visibility check and before later declarations are validated` | vault | VA-CAD-01, 04 | blocking candidate (credentials) |
+| #476 `[vault] Credential revocation does not interrupt the resident binding or terminate the affected sandbox` | vault | VA-CAD-03, VA-SI-04, VA-VB-05 | blocking candidate (credentials) |
+| #477 `[vault] Credential declaration failures use free text instead of the stable error codes` | vault | VA-CAD-02 | ordinary |
+| #478 `[vault] Administrator MCP discovery preview checks grant provenance by id prefix, not by the issuance field` | vault | VA-SI-02 | low |
+| #479 `[vault] Restart re-resolution of collection runtime-env values reads the raw backend and writes no VaultUse` | vault | VA-VB-01, VA-SI-05 | ordinary |
+| #480 `[vault] Persistent Worker images refuse every runtime-file credential, so runtime-file visibility cannot launch` | vault | VA-SI-08, VA-CAD-06 | ordinary |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -378,3 +385,15 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-70 | policy | Agent-principal status sentence in Core Doctrine | Move the status to the specifications |
 | Q-71 | policy | Policy numbers and labels | As Q-23 and Q-28 |
 | Q-72 | policy | Local-mode Discord administrator eligibility | Treat channel input as an ordinary actor in both modes |
+| Q-73 | vault | Grant validation in the audited Vault wrapper | Remove the any-`grantId` exception |
+| Q-74 | vault | Whole-store decryption on each audited resolve | Read only the addressed reference |
+| Q-75 | vault | Grant for server-owned provider credentials | State the server-owned provider exception |
+| Q-76 | vault | Decision lineage for administrator-issued grants | Record a `PermissionDecision` for worker-visible grants |
+| Q-77 | vault | Destruction trigger for expired prior versions | Destroy at the next rotation or inventory pass |
+| Q-78 | vault | Same-PID temporary file blocks revoke (high priority) | Random temporary suffix; revoke destroys writer temporaries |
+| Q-79 | vault | Master key in the unlock request and empty-store initialization | Same key; initialize only from the key file |
+| Q-80 | vault | Duplicate endpoint names and raw host in NanoHost policy | Reject duplicates; render the canonical host |
+| Q-81 | vault | Revocation-driven sandbox termination current or deferred | Keep the MUST; state the gap until #476 lands |
+| Q-82 | vault | Backend and file inventories in Core Vault and projections | Move the backend sentence to VB; name owners |
+| Q-83 | vault | Per-Turn or session-static runtime material | Amend SI to session-static |
+| Q-84 | vault | Vault labels, history, and example ids | As Q-28; use a canonical grant id |
