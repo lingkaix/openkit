@@ -30,10 +30,10 @@ The ledger lists every Core document and every active specification with its hom
 
 | Core document | Group | State | Group record |
 | --- | --- | --- | --- |
-| `docs/core/doctrine.md` | foundation | open, pending | — |
-| `docs/core/core-concepts.md` | foundation | open, pending | — |
-| `docs/core/README.md` | foundation | open, pending | — |
-| `docs/core/AGENTS.md` | foundation | open, pending | — |
+| `docs/core/doctrine.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/core-concepts.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/README.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/AGENTS.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/core/contract-evolution.md` | contract-evolution | open, pending | — |
 | `docs/core/architecture.md` | architecture | open, pending | — |
 | `docs/core/protocol.md` | protocol | open, pending | — |
@@ -57,8 +57,8 @@ The ledger lists every Core document and every active specification with its hom
 
 | Specification | Group | State | Group record |
 | --- | --- | --- | --- |
-| `docs/specs/20260709-quick_chat_workspace.md` | foundation | open, pending | — |
-| `docs/specs/20260711-scheduler_recurring_event_triggers.md` | foundation | open, pending | — |
+| `docs/specs/20260709-quick_chat_workspace.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/specs/20260711-scheduler_recurring_event_triggers.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
 | `docs/specs/20260703-schema_evolution_record_envelope.md` | contract-evolution | open, pending | — |
 | `docs/specs/20260715-contract_stability_baseline.md` | contract-evolution | open, pending | — |
 | `docs/specs/20261017-retained_format_register.md` | contract-evolution | open, pending | — |
@@ -258,7 +258,11 @@ Filled at close-out.
 
 ## Issues Opened
 
-None yet.
+| Issue | Group | Finding | Severity hint |
+| --- | --- | --- | --- |
+| #454 `[workspace-sharing] Personal Workspace share refusal emits a code outside the published error enum` | foundation | FND-PW-01 | ordinary |
+| #455 `[dashboard] Default Agent projection skips the User preference` | foundation | FND-CC-01 | ordinary |
+| #456 `[recurring-schedules] A very large fixed interval can stop every recurring scan` | foundation | FND-RT-04 | blocking candidate (recovery) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -281,3 +285,16 @@ Each question states the context and evidence, the options, the recommendation w
 - Options: (A) Record each such format in the retained format register as externally owned, with its pinned dependency version and the continuity rule that applies to it. (B) Specify the bytes in OpenKit documents. (C) Accept that a rebuild resets these records.
 - Recommendation: A. It states the obligation where retained formats are already inventoried, and it does not copy a third-party format into prose.
 - Meanwhile: no change.
+
+### Questions Recorded In Group Records
+
+Each group record states the full context, options, recommendation, and interim action.
+
+| Question | Group | Subject | Recommendation |
+| --- | --- | --- | --- |
+| Q-03 | foundation | Keep the Quick Chat file name of the personal Workspace specification | Keep the path |
+| Q-04 | foundation | Drop the Quick Chat name from code and identifier derivation input | Rename code symbols only |
+| Q-05 | foundation | Must the origin-Thread handoff Item reference the receiving Thread | Add the reference to the Item |
+| Q-06 | foundation | Do stale pending expiries share the expired-range write bound | Read the bound per phase and say so |
+| Q-07 | foundation | Does the "Migration preserves" acceptance bullet still apply | Replace its first clause |
+| Q-08 | foundation | A past audit record contains a local absolute path | Approve a one-time redaction |

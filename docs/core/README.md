@@ -60,9 +60,10 @@ Core documents must not contain unresolved questions. If a candidate decision is
 Each core aspect file should move toward this shape:
 
 ```md
+---
+status: Accepted
+---
 # <Aspect> Model
-
-Status: Accepted
 
 This document owns ...
 

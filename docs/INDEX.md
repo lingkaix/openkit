@@ -241,6 +241,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261003-goal_mode_coordination_terminal_archive.md` — Goal Mode Coordination Terminal Archive
 - `docs/audits/20261005-openkit_agent_skill_interface_terminal_archive.md` — OpenKit Agent Skill Interface Terminal Archive
 - `docs/audits/20261023-independent_doc_audit.md` — Independent Documentation Audit Before v0.1.0
+- `docs/audits/20261024-independent_doc_audit_foundation.md` — Independent Documentation Audit: Foundation Group
 
 ## Platform References
 
