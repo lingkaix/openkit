@@ -241,7 +241,7 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     };
   // Retained format refusal is a fixed owner message, not an arbitrary TypeError diagnostic.
   if (
-    operation === 'goal' &&
+    (operation === 'goal' || operation === 'capability') &&
     error instanceof TypeError &&
     error.message === 'Unsupported retained record format.'
   ) {
@@ -255,6 +255,8 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     operation === 'goal' &&
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
   ) {
+    domain = { operation, code: error.code, message: error.message, status: error.status };
+  } else if (operation === 'capability' && error instanceof GoalCommandError) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
   } else if (
     operation === 'material' &&
@@ -447,11 +449,27 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'publication':
     case 'observation':
-    case 'capability':
     case 'project-cleanup':
     case 'maintenance':
       lanes.add(request.input.turnId);
       break;
+    case 'capability': {
+      const input = request.input;
+      const context =
+        input.kind === 'checkpoint'
+          ? input.input
+          : input.kind === 'admit'
+            ? input.context
+            : input.kind === 'usage-finish'
+              ? input.call.context
+              : input.kind === 'permission'
+                ? (input.decision.mediation?.subject.process ?? input.decision.contextSummary)
+                : input;
+      if (typeof context?.turnId === 'string') lanes.add(context.turnId);
+      if (context && 'agentSessionId' in context && typeof context.agentSessionId === 'string')
+        lanes.add(`session:${context.agentSessionId}`);
+      break;
+    }
     case 'journal':
       journal(request.input);
       break;

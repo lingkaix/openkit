@@ -75,7 +75,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 11;
+export const CONTROL_WORKER_VERSION = 12;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -267,6 +267,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 export interface ControlWorkerDomainRefusal {
   readonly operation:
     | 'goal'
+    | 'capability'
     | 'maintenance'
     | 'material'
     | 'review'
@@ -410,10 +411,11 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     exactFields(value, ['operation', 'code', 'message', 'status']) &&
     // This reserved owner refusal carries no native exception text or SQL details.
     (value.code !== 'unsupported_retained_format' ||
-      (value.operation === 'goal' &&
+      ((value.operation === 'goal' || value.operation === 'capability') &&
         value.message === 'Unsupported retained record format.' &&
         value.status === 409)) &&
     (value.operation === 'goal' ||
+      value.operation === 'capability' ||
       value.operation === 'pending' ||
       ((value.operation === 'products' || value.operation === 'transition') &&
         ['request_executing', 'thread_busy', 'conflict'].includes(String(value.code)) &&

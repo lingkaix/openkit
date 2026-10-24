@@ -4,8 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import { startCapabilityCall } from '../capability/usage-ledger.js';
-import { initializeWorkerRawOutput, readWorkerRawOutput } from '../runtime/worker-raw-output.js';
+import { readWorkerRawOutput } from '../runtime/worker-raw-output.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -21,7 +20,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Prepares private dormant ledgers through their current owners before native command admission. */
+/** Prepares private dormant ledgers through the native tuple owner with Main restricted to reads. */
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'control-capability-'));
   roots.push(root);
@@ -30,29 +29,37 @@ function fixture() {
   databases.push(db);
   applyScopedMigrations(db);
 
-  /** Creates real inference proof for one exact Turn; callers finish setup before opening the writer. */
-  function inference(
+  /** Creates real inference proof for one exact Turn and awaits its actual admission acknowledgement. */
+  async function inference(
     scope = {
       workspaceId,
       threadId: allocateEntityId('th'),
       turnId: allocateEntityId('tu'),
     }
   ) {
-    const call = startCapabilityCall({
-      workspaceDb: db,
-      ...scope,
-      authorityActor: null,
-      family: 'llm',
-      operation: 'chat_completions',
-      capabilityId: 'llm.gateway.use',
-      redactionClass: 'metadata-only',
-      serviceRef: 'worker-inference-gateway',
+    const writer = await open();
+    const call = await writer.capability(workspaceId, {
+      kind: 'admit',
+      workspaceId,
+      now: new Date().toISOString(),
+      initializeRaw: true,
+      context: {
+        threadId: scope.threadId,
+        turnId: scope.turnId,
+        authorityActor: null,
+        family: 'llm',
+        operation: 'chat_completions',
+        capabilityId: 'llm.gateway.use',
+        redactionClass: 'metadata-only',
+        serviceRef: 'worker-inference-gateway',
+      },
     });
-    initializeWorkerRawOutput(db, call, scope);
+    if (!call || typeof call !== 'object' || !('id' in call))
+      throw new Error('Native inference admission did not return its original Call.');
     return { scope, callId: call.id, attemptId: randomUUID() };
   }
 
-  /** Opens the existing worker against the already migrated private scope, then restricts Main to reads. */
+  /** Opens the existing worker against the migrated private scope with Main restricted to reads. */
   async function open() {
     db.sqlite.pragma('query_only = ON');
     client = getControlStoreWorkerClient();
@@ -70,7 +77,7 @@ function fixture() {
   return { db, workspaceId, inference, open };
 }
 
-type Inference = ReturnType<ReturnType<typeof fixture>['inference']>;
+type Inference = Awaited<ReturnType<ReturnType<typeof fixture>['inference']>>;
 
 /** Supplies only trusted value-free source positions; no native response or durable proof is fabricated. */
 function position(
@@ -93,7 +100,7 @@ function proof(db: WorkspaceDb, callId: string) {
 describe('dormant native CapabilityCall raw observation boundary', () => {
   it('returns the final Turn aggregate and the total new charge for all positions in one command', async () => {
     const f = fixture();
-    const inference = f.inference();
+    const inference = await f.inference();
     const writer = await f.open();
     const command = { kind: 'raw-observe' as const, ...inference.scope, callId: inference.callId };
     await expect(
@@ -122,11 +129,11 @@ describe('dormant native CapabilityCall raw observation boundary', () => {
 
   it('rolls back a late gap and refuses queued same-Turn successors while sibling scopes commit', async () => {
     const f = fixture();
-    const failed = f.inference();
-    const successor = f.inference(failed.scope);
-    const sibling = f.inference();
+    const failed = await f.inference();
+    const successor = await f.inference(failed.scope);
+    const sibling = await f.inference();
     const other = fixture();
-    const otherInference = other.inference();
+    const otherInference = await other.inference();
     const originals = [proof(f.db, failed.callId), proof(f.db, successor.callId)];
     const writer = await f.open();
     await other.open();

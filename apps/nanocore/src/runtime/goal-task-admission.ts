@@ -22,7 +22,7 @@ export interface GoalTaskAdmission {
 }
 /** Records only a Task link, in the ordinary Task owner's reservation transaction. */
 export function reserveGoalTask(
-  store: FsStore,
+  store: Pick<FsStore, 'getThread' | 'listThreads'>,
   db: WorkspaceDb,
   input: GoalTaskAdmission,
   threadId: string

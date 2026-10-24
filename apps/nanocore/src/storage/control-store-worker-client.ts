@@ -592,13 +592,22 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'journal' }>).resultJson;
   }
 
-  /** Submits dormant raw proof through the existing bounded writer and awaits durable acknowledgement. */
+  /** Submits prepared family facts through the bounded writer and awaits durable acknowledgement. */
   async capability(
     database: string,
     input: ControlCapabilityCommandInput
   ): Promise<ControlCapabilityCommandResult> {
-    const reply = await this.request({ operation: 'capability', database, input });
-    return (reply as Extract<Success, { operation: 'capability' }>).result;
+    try {
+      const reply = await this.request({ operation: 'capability', database, input });
+      return (reply as Extract<Success, { operation: 'capability' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'capability') {
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError('Unsupported retained record format.');
+        throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
   }
 
   /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */
