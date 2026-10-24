@@ -84,7 +84,7 @@ disabled
 
 `disabled` preserves the stable User identity and historical references while denying new authentication and authority. V1 exposes no re-enable or hard-delete transition; adding either requires an accepted owning specification before implementation.
 
-`WorkspaceMember` record areas include workspace ID, user ID, membership status, access level or policy attributes, invitation reference, joined time, removed time, and revision.
+`WorkspaceMember` record areas include workspace ID, user ID, membership status, policy attributes, invitation reference, joined time, removed time, and revision.
 
 Workspace member status values may include:
 
@@ -116,7 +116,7 @@ revoked
 rotated
 ```
 
-`Invitation` record areas include workspace ID, inviter identity, canonical invitee user ID, proposed access level or policy attributes, issued time, expiration time, accepted time, declined time, revoked time, and status. A pending invitation is not a membership and grants no Workspace authority.
+`Invitation` record areas include workspace ID, inviter identity, canonical invitee user ID, proposed policy attributes, issued time, expiration time, accepted time, declined time, revoked time, and status. A pending invitation is not a membership and grants no Workspace authority.
 
 Invitation status values may include:
 

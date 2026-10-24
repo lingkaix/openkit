@@ -38,7 +38,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/architecture.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
 | `docs/core/protocol.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
 | `docs/core/communication.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
-| `docs/core/identity.md` | identity | open, pending | — |
+| `docs/core/identity.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
 | `docs/core/policy.md` | policy | open, pending | — |
 | `docs/core/vault.md` | vault | open, pending | — |
 | `docs/core/mediation.md` | mediation | open, pending | — |
@@ -80,9 +80,9 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260703-worker_control_protocol.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
 | `docs/specs/20261002-remote_mcp_interface.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
 | `docs/specs/20260528-core_client_boundary.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
-| `docs/specs/20260628-nanocore_config_identity_contract.md` | identity | open, pending | — |
-| `docs/specs/20260704-remote_auth_credential_bootstrap.md` | identity | open, pending | — |
-| `docs/specs/20260715-multi_user_workspace_system.md` | identity | open, pending | — |
+| `docs/specs/20260628-nanocore_config_identity_contract.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
+| `docs/specs/20260704-remote_auth_credential_bootstrap.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
+| `docs/specs/20260715-multi_user_workspace_system.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
 | `docs/specs/20260629-openkit_policy_model.md` | policy | open, pending | — |
 | `docs/specs/20260703-policy_enforcement_mapping.md` | policy | open, pending | — |
 | `docs/specs/20260909-thread_visibility_and_sharing.md` | policy | open, pending | — |
@@ -271,6 +271,11 @@ Filled at close-out.
 | #463 `[nanohost] Harness-control routes forward client binding headers when the path has a query string` | communication | CM-WCP-03 | blocking candidate (authorization) |
 | #464 `[worker-control] Artifact notice, heartbeat persistence and final status differ from the specification` | communication | CM-WCP-01, 02, 10 | ordinary |
 | #465 `[core-client] Remove unused hand-maintained transport helpers after the definition-table cutover` | communication | CM-CCB-05 | low |
+| #466 `[auth] Plaintext transport gate trusts the TCP peer, so the bundled App image accepts bearer tokens over public plaintext HTTP` | identity | ID-RA-01 | blocking candidate (credentials) |
+| #467 `[config] Local mode accepts a non-loopback bind host and then grants every caller local administrator authority` | identity | ID-CFG-01 | blocking candidate (authorization) |
+| #468 `[auth] Bootstrap notice omits that the credential cannot be recovered, and the token file stays after consumption` | identity | ID-RA-07 | low |
+| #469 `[workspace-sharing] Access-change residue remains after the equal-member cutover, and the Workspace summary is not closed` | identity | ID-MU-06, 07 | low |
+| #470 `[config] knowledgeMaintenance parsing strips unknown keys although the contract gives it a strict shape` | identity | ID-CFG-05 | ordinary |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -344,3 +349,16 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-44 | communication | Marking of worker-control timing numbers | As Q-23 |
 | Q-45 | communication | Worker-control labels S61, A1, #179 ruling | As Q-28 |
 | Q-46 | communication | Remote MCP exclusion list | State the non-JSON binding rule |
+| Q-47 | identity | May an administrator accept or decline another user's invitation | Limit it to the administrator's own invitations |
+| Q-48 | identity | Pending invitations after the inviter loses membership | Revoke them |
+| Q-49 | identity | Sign-up before bootstrap completes (high priority) | Refuse sign-up while no `server-admin` Token exists |
+| Q-50 | identity | Declared fronting proxy (CFG and RA conflict) | Add one explicit TLS-proxy declaration and amend CFG |
+| Q-51 | identity | `knowledgeMaintenance.schedule` member | Name `schedule` in the specification |
+| Q-52 | identity | Fields of the Server configuration file | State a reference rule and list `user.jsonc` |
+| Q-53 | identity | `BETTER_AUTH_TRUSTED_ORIGINS` override | Remove the override |
+| Q-54 | identity | Token expiry bound and rate limits | Add a maximum lifetime and state the rate limit |
+| Q-55 | identity | Synchronous last-used update | Amend the Risks text |
+| Q-56 | identity | Recovery request id source | State the path derivation |
+| Q-57 | identity | Private-Thread administrator gap and MU line 656 | Open a low issue |
+| Q-58 | identity | Identity numbers and labels | As Q-23 and Q-28 |
+| Q-59 | identity | "Roles" in Identity Core | Replace with policy attributes |
