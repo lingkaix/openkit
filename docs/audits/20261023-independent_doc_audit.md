@@ -45,7 +45,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/agent-supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/core/sandbox.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
-| `docs/core/knowledge.md` | knowledge | open, pending | — |
+| `docs/core/knowledge.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/core/generative-apps.md` | generative-apps | open, pending | — |
 | `docs/core/storage.md` | storage | held (#440) | — |
 | `docs/core/runtime-model.md` | runtime-model | held (#440) | — |
@@ -119,14 +119,14 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260716-opencode_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/specs/20260716-pi_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/specs/20260930-deepseek_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
-| `docs/specs/20260702-knowledge_store_governance_rules.md` | knowledge | open, pending | — |
-| `docs/specs/20260703-knowledge_store_implementation.md` | knowledge | open, pending | — |
-| `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` | knowledge | open, pending | — |
-| `docs/specs/20260909-personal_memory_and_knowledge_learning.md` | knowledge | open, pending | — |
-| `docs/specs/20260909-knowledge_notebook_editing.md` | knowledge | open, pending | — |
-| `docs/specs/20261014-retrieval_kernel.md` | knowledge | open, pending | — |
-| `docs/specs/20260703-worker_context_package.md` | knowledge | open, pending | — |
-| `docs/specs/20260710-self_improvement_evaluation_loop.md` | knowledge | open, pending | — |
+| `docs/specs/20260702-knowledge_store_governance_rules.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260703-knowledge_store_implementation.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260909-personal_memory_and_knowledge_learning.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260909-knowledge_notebook_editing.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20261014-retrieval_kernel.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260703-worker_context_package.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260710-self_improvement_evaluation_loop.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20260908-generative_kernel_data_operations.md` | generative-apps | open, pending | — |
 | `docs/specs/20260908-generative_ui_interaction.md` | generative-apps | open, pending | — |
 | `docs/specs/20260529-test_strategy.md` | process | open, pending | — |
@@ -303,6 +303,14 @@ Filled at close-out.
 | #496 `[workspace] Default session layout puts Turn-cleared slots under retained /workspace, and inputs bind to slots without a compatibility check` | agent-session | AG-SSM-03, 04 | ordinary |
 | #497 `[opencode] Adapter does not inspect native automatic recovery or prove its isolation outcomes before startup admission` | agent-session | AG-OPC-01, 02, 03 | blocking candidate (recovery, authorization) |
 | #498 `[pi] Pi runtime host emits free-form failure reasons instead of the closed vocabulary the reader admits` | agent-session | AG-PI-01 | low |
+| #502 `[knowledge] Workspace Proposal id and Review file use workspaceId instead of ownerScope` | knowledge | KN-IMP-02, 03 | blocking candidate (retained data) |
+| #503 `[knowledge] Knowledge Manager answer citations omit revision, digest, Source citations, and observed time` | knowledge | KN-KMR-04 | ordinary |
+| #504 `[knowledge] Model-backed draft-proposal entry and its knowledge.change.propose Tool are not implemented` | knowledge | KN-KMR-02 | ordinary (enhancement) |
+| #505 `[retrieval] Product sources are sent as inline text, so a scope larger than 8 MiB fails the whole search` | knowledge | KN-RTK-02 | ordinary |
+| #506 `[context] Context Package Material exclusion never records policy_excluded or budget_exceeded, and Knowledge exclusion rows omit notebookRevision` | knowledge | KN-WCP-03, 04 | ordinary |
+| #507 `[knowledge] Notebook publisher does not auto-admit embedded raw files or rewrite referrers on raw rename` | knowledge | KN-NBE-02 | ordinary (enhancement) |
+| #508 `[knowledge] Scope Schema lacks owner, timestamps, rules, and review requirements, and schema changes have no reviewed migration flow` | knowledge | KN-GOV-02 | ordinary |
+| #509 `[web] Notebook UI has no page state selection` | knowledge | KN-NBE-03 | low (enhancement) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -465,3 +473,16 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-133 | agent-session | SSM skeleton and layout example | Rewrite to the NWB and VOL layout; drop `fuse-mount` |
 | Q-134 | agent-session | `allow-anthropic-api-key` carrier | Settle it absent; remove the launcher branch |
 | Q-135 | agent-session | Agent-session history, repetition, numbers, labels | As Q-28 |
+| Q-136 | knowledge | Reads a maintenance run receives | The admitted snapshot and supplied Sources |
+| Q-137 | knowledge | Name of the daily maintenance switch (confirms Q-51) | Name `knowledgeMaintenance.schedule.enabled` |
+| Q-138 | knowledge | `knowledge-manager` as a `Thread.entryPath` value (confirms Q-63) | Add it to Thread Visibility |
+| Q-139 | knowledge | "Ephemeral or no-memory" work | Remove the phrase until an owner defines it |
+| Q-140 | knowledge | SIE operation names and scheduling sentence | Dotted names; scope the sentence |
+| Q-141 | knowledge | Sensitivity and freshness values that block retrieval | State the current stricter rule |
+| Q-142 | knowledge | Credential-pattern decision and page frontmatter values | Remove value-pattern rejection; keep field names |
+| Q-143 | knowledge | Withdrawn after review (decided by GOV; issue #508) | — |
+| Q-144 | knowledge | Diff overflow and the page index | State the refusal; remove the page index |
+| Q-145 | knowledge | Enumeration ceiling and sidecar cache boundary | Current default 1,000; per-generation reuse |
+| Q-146 | knowledge | User editor update `requestId` | Add it to the shape |
+| Q-147 | knowledge | WCP projection and field rules | Align the layout, counting, sorts, and fields |
+| Q-148 | knowledge | Knowledge history, numbers, labels, placement | As Q-28 |
