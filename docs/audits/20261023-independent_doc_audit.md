@@ -317,3 +317,33 @@ None yet.
   - (b) Record that the freeze proceeds with the Draft, and amend the decision.
 - Recommendation: option (a), or an explicit amendment. A freeze that silently drops a decided precondition leaves the decision and the release in conflict.
 - Meanwhile: the auditor recorded the gap. The architecture group record checks the Draft for its own G2 and G5 findings.
+
+### Q3: Which Core document defines the Goal `Coordinator` role?
+
+- Context: doctrine group, finding DOC-G2-08.
+- Evidence: `core-concepts.md` names the Coordinator in its naming boundary. `architecture.md` lists the Internal Core Roles without it. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) rule 1 adds the role. The Core README term index has no row for it.
+- Options:
+  - (a) Define the role in `architecture.md` with the other Internal Core Roles, and add it to the term index.
+  - (b) Define it in `work-model.md` beside Goal Mode.
+- Recommendation: option (a). `architecture.md` already owns every other internal role, so one owner keeps the role family together.
+- Meanwhile: the auditor changed nothing, because the Goal specification and `work-model.md` are held under #440.
+
+### Q4: Should `docs/core/AGENTS.md` drop its restated and completed rules?
+
+- Context: doctrine group, findings DOC-G2-09 and DOC-G2-10. Only the engineer may change this file.
+- Evidence: lines 26 and 27 restate the Core retirement and archive rules that `docs/documentation-model.md` owns, and they name `docs/core/retired/`, which does not exist. Lines 28 and 29 instruct two document splits that are complete.
+- Options:
+  - (a) Replace lines 26 and 27 with one pointer to the Terminal Archive Audit And Archive Immutability section of `docs/documentation-model.md`, and turn lines 28 and 29 into standing boundary rules, such as "Keep knowledge and AgentSession in separate documents."
+  - (b) Keep the file as it is.
+- Recommendation: option (a). One fact in one place removes the drift risk, and a standing rule says what still holds after the split.
+- Meanwhile: the auditor did not edit the file.
+
+### Q5: Should the product vision call `doctrine.md` "Doctrine"?
+
+- Context: doctrine group, finding DOC-G2-11. Only the engineer may change `docs/product-vision.md`.
+- Evidence: the vision uses the link text "Foundation" for `./core/doctrine.md` five times. The document title is "Doctrine Model", and no other document uses the name "Foundation" for it.
+- Options:
+  - (a) Change the link text to "Doctrine".
+  - (b) Keep "Foundation" as a vision-level name, and add it to the glossary.
+- Recommendation: option (a). One name for one document lets a reader find the owner without a mapping.
+- Meanwhile: the auditor did not edit the product vision.
