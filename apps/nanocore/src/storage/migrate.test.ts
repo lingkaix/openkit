@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { formatBootFailureMessage, runBootPhases } from '../bootstrap/phases.js';
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
@@ -1534,6 +1535,110 @@ describe('native Drizzle migrate', () => {
       expect(listTableNames({ sqlite })).toEqual(['__drizzle_migrations']);
     } finally {
       sqlite.close();
+    }
+  });
+
+  it('keeps the initiating native migration diagnostic when rollback also fails', async () => {
+    const folder = createNativeJournalFolder([
+      { tag: '0000_setup', when: 1000, sql: 'CREATE TABLE retained (id text PRIMARY KEY);' },
+    ]);
+    const sqlite = new Database(join(folder, 'db.sqlite'));
+    const privateValue = 'private-migration-payload';
+    const failingSql = `INSERT INTO pending_rows (id) VALUES ('${privateValue}');`;
+    const initiatingFailure = new Database.SqliteError(
+      `Cannot open ${join(folder, 'private-temp')} while executing ${failingSql}`,
+      'SQLITE_IOERR_GETTEMPPATH'
+    );
+    let restorePrepare: (() => void) | undefined;
+    let injected = false;
+    let rollbackFailure: unknown;
+    const laterPhase = vi.fn(() => ({ status: 'ok' as const }));
+
+    try {
+      applyNativeScopeMigrations(sqlite, 'core', folder);
+      sqlite.prepare('INSERT INTO retained (id) VALUES (?)').run('keep');
+      const ledger = sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
+      appendNativeJournalEntry(folder, {
+        tag: '0001_pending',
+        when: 2000,
+        sql: `CREATE TABLE pending_rows (id text PRIMARY KEY);\n--> statement-breakpoint\n${failingSql}`,
+      });
+      const prepare = sqlite.prepare.bind(sqlite);
+      const prepareFault = vi.spyOn(sqlite, 'prepare').mockImplementation((sql) => {
+        const statement = prepare(sql);
+        if (sql.trim() === failingSql) {
+          vi.spyOn(statement, 'run').mockImplementation(() => {
+            injected = true;
+            // Model SQLite's automatic transaction rollback after an initiating I/O fault.
+            sqlite.exec('ROLLBACK');
+            throw initiatingFailure;
+          });
+        } else if (sql.trim().toUpperCase() === 'ROLLBACK') {
+          const run = statement.run.bind(statement);
+          vi.spyOn(statement, 'run').mockImplementation((...parameters) => {
+            try {
+              return run(...parameters);
+            } catch (error) {
+              rollbackFailure = error;
+              throw error;
+            }
+          });
+        }
+        return statement;
+      });
+      restorePrepare = () => prepareFault.mockRestore();
+
+      const result = await runBootPhases({
+        bootId: 'boot_migration_io_fault',
+        phases: [
+          {
+            name: 'migrations',
+            subsystem: 'storage',
+            critical: true,
+            run: () => {
+              applyNativeScopeMigrations(sqlite, 'core', folder);
+              return { status: 'ok' };
+            },
+          },
+          { name: 'policy', subsystem: 'policy', critical: true, run: laterPhase },
+        ],
+      });
+
+      expect(injected).toBe(true);
+      expect(rollbackFailure).toBeInstanceOf(Database.SqliteError);
+      expect(rollbackFailure).toMatchObject({ code: 'SQLITE_ERROR' });
+      expect(result.outcomes).toHaveLength(1);
+      expect(result.outcomes[0]).toMatchObject({
+        outcome: { status: 'failed', reason: { code: 'migrations.failed' } },
+      });
+      expect(result.readiness).toMatchObject({
+        acceptingProductWork: false,
+        overall: 'failed',
+        subsystems: { storage: { state: 'failed' } },
+      });
+      expect(laterPhase).not.toHaveBeenCalled();
+      const message = formatBootFailureMessage(result);
+      // Bootstrap phase 4 and #501 require the exact migration tag and initiating SQLite code.
+      expect(message).toContain('0001_pending');
+      expect(message).toContain('SQLITE_IOERR_GETTEMPPATH');
+      // Statement numbers are one-based: the failed INSERT is statement 2 in this migration.
+      expect(message).toMatch(/statement(?:[\s_]+index)?\s*[:=#]?\s*2\b/i);
+      expect(message).toMatch(/SQLITE_IOERR_GETTEMPPATH[\s\S]*rollback[\s\S]*SQLITE_ERROR/i);
+      for (const sensitive of [folder, failingSql, privateValue, initiatingFailure.message]) {
+        expect(message).not.toContain(sensitive);
+        expect(JSON.stringify(result)).not.toContain(sensitive);
+      }
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+        ledger
+      );
+      expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual(['core_0000_setup']);
+      expect(sqlite.prepare('SELECT id FROM retained').pluck().all()).toEqual(['keep']);
+      expect(listTableNames({ sqlite })).toEqual(['__drizzle_migrations', 'retained']);
+    } finally {
+      restorePrepare?.();
+      sqlite.close();
+      rmSync(folder, { recursive: true, force: true });
     }
   });
 

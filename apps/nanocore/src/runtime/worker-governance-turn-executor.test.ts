@@ -8255,19 +8255,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
-      await expect(
-        executor.startTurn(store, turn.id, 'Fail workspace storage migration', {
-          attemptId: testEntityId('attempt', `lease_${turn.id}`),
-          agentSessionId: testEntityId('as', 'as_workspace_migrate_fail_1'),
-          sandboxBindingRef: `lease-binding:${turn.id}`,
-          agentSetup: createTestAgentSetup(),
-          requestId: '00000000-0000-4000-8000-000000000209',
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow(
-        /Failed to apply workspace native Drizzle migrations: injected workspace migration failure/
-      );
+      const execution = executor.startTurn(store, turn.id, 'Fail workspace storage migration', {
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        agentSessionId: testEntityId('as', 'as_workspace_migrate_fail_1'),
+        sandboxBindingRef: `lease-binding:${turn.id}`,
+        agentSetup: createTestAgentSetup(),
+        requestId: '00000000-0000-4000-8000-000000000209',
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+      // Bootstrap phase 4 requires a typed scoped failure and excludes arbitrary exception text.
+      await expect(execution).rejects.toMatchObject({
+        code: 'migration_failed',
+        message: expect.stringContaining('workspace'),
+      });
+      await expect(execution).rejects.not.toThrow('injected workspace migration failure');
 
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(

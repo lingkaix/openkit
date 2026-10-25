@@ -613,7 +613,7 @@ describe('Worker environment App composition', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-replacement-app-'));
     const coreDb = openCoreDb(dataRoot);
     const dispatchObservation = vi.spyOn(schedulerDispatch, 'runSchedulerDispatchLoop');
-    let collectionHeld = false;
+    const collectionEntered = Promise.withResolvers<void>();
     const releaseCollection = Promise.withResolvers<void>();
     const entered: { turnId: string; execution: Promise<void> }[] = [];
     let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
@@ -704,7 +704,7 @@ describe('Worker environment App composition', () => {
         .spyOn(backend, 'collectTranscript')
         .mockImplementation(async (...args) => {
           const transcript = await collect(...args);
-          collectionHeld = true;
+          collectionEntered.resolve();
           await releaseCollection.promise;
           return transcript;
         });
@@ -832,7 +832,13 @@ describe('Worker environment App composition', () => {
       void activationResponsePromise.then(() => {
         responseSettled = true;
       });
-      await vi.waitFor(() => expect(collectionHeld).toBe(true));
+      // Join the existing collection hold point within this case's original timeout.
+      await Promise.race([
+        collectionEntered.promise,
+        activationResponsePromise.then(() => {
+          throw new Error('Activation completed before transcript collection was held.');
+        }),
+      ]);
       await new Promise<void>((resolve) => setImmediate(resolve));
       const beforeTerminalTurnIds = store
         .listThreadTurns(productWorkspace.id, productThread.id)

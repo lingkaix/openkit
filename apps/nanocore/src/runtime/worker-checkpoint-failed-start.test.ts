@@ -205,16 +205,16 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   });
   const log = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
-    fail.resolve();
-    await vi.waitFor(() => expect(executor.isTurnExecutionActive(turnId)).toBe(false));
-    await setImmediate();
-    // Executor inactivity precedes the surrounding scheduler's final native publication attempt.
     const claims = getSchedulerPreparationClaims(coreDb);
     const admission = coreDb.sqlite
       .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
       .get(turnId) as { id: string };
+    // Capture the live invocation before releasing materialization; it joins full scheduler closeout.
     const dispatch = claims.get(admission.id);
-    if (dispatch) await expect(dispatch).rejects.toBeInstanceOf(AggregateError);
+    fail.resolve();
+    expect(dispatch).toBeDefined();
+    await expect(dispatch).rejects.toBeInstanceOf(AggregateError);
+    expect(executor.isTurnExecutionActive(turnId)).toBe(false);
     expect(claims.has(admission.id)).toBe(false);
     expect(nativeRefusals).toBeGreaterThan(0);
     expect(store.getTurnEvents(turnId).filter((event) => event.event === 'turn.completed')).toEqual(

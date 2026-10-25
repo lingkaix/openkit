@@ -511,12 +511,14 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   };
   harness.openNanoHostAgentSessionBinding(core, opening);
   const { harnessInstanceId: _harness, timestamp: _time, ...body } = opening;
-  harness.queueNanoHostHarnessOperation(core, {
+  const openingOperation = {
     body: { ...body, adapterId: 'codex', resume: null },
     harnessInstanceId: opening.harnessInstanceId,
     operation: 'session.open',
     timestamp: now,
-  });
+  };
+  const preparedOpening = harness.prepareNanoHostHarnessOperation(core, openingOperation);
+  harness.queueNanoHostHarnessOperation(core, { ...openingOperation, prepared: preparedOpening });
   const command = harness.dispatchNanoHostHarnessOperation(core, {
     sandboxIntegrationBindingRef: 'idle-corpus-integration',
     now: () => now,

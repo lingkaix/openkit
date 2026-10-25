@@ -2,8 +2,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { BetterSQLiteSession } from 'drizzle-orm/better-sqlite3';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
+import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 import { BootConfigError } from '../config/mode.js';
 import { configureOwnedSqlite } from './control-store.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
@@ -77,7 +78,7 @@ export function listAppliedMigrationIds(coreDb: CoreDb): string[] {
 }
 
 /**
- * Applies one scope's native Drizzle Kit journal through better-sqlite3 `migrate`.
+ * Applies one scope's native Drizzle Kit journal through its synchronous SQLite dialect.
  *
  * @param sqlite Open SQLite connection.
  * @param scope Journal scope.
@@ -89,32 +90,80 @@ export function applyNativeScopeMigrations(
   scope: StorageMigrationScope,
   migrationsFolder = findMigrationsFolder(scope)
 ): void {
-  if (hasSqliteTable(sqlite, 'schema_migrations')) {
-    throw new BootConfigError(
-      'migration_failed',
-      'schema_migrations already exists; refuse native startup apply and handle the predecessor ledger offline.'
-    );
-  }
-
+  let failure: string | undefined;
+  let rollbackCode: string | undefined;
   try {
+    if (hasSqliteTable(sqlite, 'schema_migrations')) {
+      failure =
+        'schema_migrations already exists; refuse native startup apply and handle the predecessor ledger offline.';
+      throw new BootConfigError('migration_failed', failure);
+    }
     configureOwnedSqlite(sqlite);
-    migrate(drizzle(sqlite), { migrationsFolder });
+    const config = { migrationsFolder };
+    const journal = readJournal(migrationsFolder);
+    const migrations = readMigrationFiles(config);
+    // Use the same latest-row predicate as the native dialect, including sparse ledgers.
+    const latest = hasSqliteTable(sqlite, NATIVE_LEDGER_TABLE)
+      ? (sqlite
+          .prepare(`SELECT created_at FROM ${NATIVE_LEDGER_TABLE} ORDER BY created_at DESC LIMIT 1`)
+          .get() as { created_at: number | string } | undefined)
+      : undefined;
+    const statements = migrations.flatMap((migration, migrationIndex) =>
+      !latest || Number(latest.created_at) < migration.folderMillis
+        ? migration.sql.map((text, index) => ({
+            text,
+            tag: journal.entries[migrationIndex]?.tag,
+            index: index + 1,
+          }))
+        : []
+    );
+    const dialect = new SQLiteSyncDialect();
+    const session = new BetterSQLiteSession(sqlite, dialect, undefined);
+    const run = session.run.bind(session);
+    let statementIndex = 0;
+    let started = false;
+    // Capture before Drizzle's cleanup can replace the initiating exception. Its
+    // native dialect still owns every statement, ledger write and transaction.
+    session.run = (query) => {
+      const compiled = dialect.sqlToQuery(query);
+      const text = compiled.sql;
+      const next = statements[statementIndex];
+      const statement =
+        started && compiled.params.length === 0 && next?.text === text ? next : undefined;
+      if (statement) statementIndex += 1;
+      try {
+        const result = run(query);
+        if (!started && text === 'BEGIN') started = true;
+        return result;
+      } catch (error) {
+        if (failure === undefined) {
+          const tag = statement?.tag;
+          const migration =
+            tag && /^[0-9]{4}_[a-z0-9_]{1,96}$/.test(tag) ? `${scope}_${tag}` : 'unavailable';
+          failure = `sqlite_code=${migrationSqliteCode(error)}; migration=${migration}; statement_index=${statement?.index ?? 'unavailable'}`;
+        } else if (text === 'ROLLBACK') {
+          rollbackCode = migrationSqliteCode(error);
+        }
+        throw error;
+      }
+    };
+    dialect.migrate(migrations, session, config);
     if (scope === 'workspace') {
       applyGoalCutover(sqlite);
       applyHostRepositoryCutover(sqlite);
     }
     if (scope === 'core') removeGoalSandboxPin(sqlite);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (isMissingNativeSqlError(message)) {
-      throw new BootConfigError(
-        'migration_missing',
-        `Missing ${scope} native Drizzle SQL: ${message}`
-      );
+    const message = error instanceof Error ? error.message : '';
+    if (
+      (error instanceof BootConfigError && error.code === 'migration_missing') ||
+      isMissingNativeSqlError(message)
+    ) {
+      throw new BootConfigError('migration_missing', `Missing ${scope} native Drizzle SQL.`);
     }
     throw new BootConfigError(
       'migration_failed',
-      `Failed to apply ${scope} native Drizzle migrations: ${message}`
+      `Failed to apply ${scope} native Drizzle migrations: ${failure ?? `sqlite_code=${migrationSqliteCode(error)}; migration=unavailable; statement_index=unavailable`}${rollbackCode ? `; rollback_code=${rollbackCode}` : ''}`
     );
   }
 }
@@ -252,4 +301,14 @@ function isMissingNativeSqlError(message: string): boolean {
     message.includes("Can't find meta/_journal.json file") ||
     /^No file .+ found in .+ folder$/.test(message)
   );
+}
+
+/** Extracts only a bounded SQLite code, never native SQL, parameters or error text. */
+function migrationSqliteCode(error: unknown): string {
+  for (let depth = 0; depth < 4 && error && typeof error === 'object'; depth += 1) {
+    const { code, cause } = error as { code?: unknown; cause?: unknown };
+    if (typeof code === 'string' && /^SQLITE_[A-Z0-9_]{1,60}$/.test(code)) return code;
+    error = cause;
+  }
+  return 'unavailable';
 }
