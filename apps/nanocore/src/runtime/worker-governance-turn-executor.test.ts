@@ -12795,7 +12795,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
         .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
         .all() as { ref: string }[];
       for (const integration of integrations) {
-        const command = dispatchNanoHostHarnessOperation(coreDb, {
+        let command = dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integration.ref,
         });
         if (!command) continue;
@@ -12805,7 +12805,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
           expect(preparation.operationId).toEqual(expect.any(String));
           acceptedPreparationOperations.push(preparation.operationId!);
         }
-        runtime.acceptNanoHostHarnessCommand(command);
+        command = await runtime.acceptNanoHostHarnessCommand(command);
         commands.push(command.operation);
         // An illicit turn.start is refused externally so the test still drains the production waiter.
         // The refusal assertion below counts queue publication itself, before this modeled result.
@@ -12848,7 +12848,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
           sandboxIntegrationBindingRef: integration.ref,
           timestamp: new Date().toISOString(),
         });
-        runtime.acceptNanoHostHarnessResult(result);
+        await runtime.acceptNanoHostHarnessResult(result);
       }
       if (!done) await Promise.race([running, delay(1)]);
     }

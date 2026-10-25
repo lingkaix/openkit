@@ -336,6 +336,10 @@ A restore lacking that identity must refuse pre-restore invocations, not reopen 
 
 Every physical receiver, including Harness, retains its keyed result until the Workspace outcome transaction durably schedules consumption acknowledgement, retried by the reconciler after crashes.
 
+Physical results owned by an active or closing Worker-Turn execution use that execution's Workspace outcome and consumption acknowledgement. Idle AgentSession lifecycle work is admitted by its existing exact Core binding owner, never by a historical Turn. For that Core-owned work, the existing lifecycle owner must durably consume the exact keyed result and commit its required physical-state transition before acknowledgement or retirement. Required Workspace capture or outcome publication still commits in its actual owner before the corresponding barrier releases. A closed Turn execution is never reopened for idle lifecycle work.
+
+Wider idle-resident cleanup uses `core-idle-cleanup/v1` in the existing Core journal. Its existing cleanup, collection, release and receipt-consumption kinds retain the exact original bridge/delete request, resident, actor and physical Epoch. Intent precedes contact; the exact outcome and consumption commit before acknowledgement. The existing closed-resident recovery owner consumes retained results and continues a never-admitted delete after an acknowledged bridge close. An unfinished or unknown effect grants result-only inspection, never repeated contact or a renewed allowance; unavailable evidence preserves exclusion until the existing physical fencing owner proves absence. This definition adds no table, column, queue, retry or protocol and supplies no authority for prior Turn work.
+
 The receiver conditionally accepts the exact consumer identity/receipt acknowledgement; only then may a successor retire the result.
 
 Unavailable consumers block retirement and competing dispatch rather than discard evidence; this uses existing receiver receipts, not another ledger.

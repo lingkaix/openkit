@@ -35,7 +35,6 @@ import {
   createNanoHostHarnessRuntime,
   dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
-  queueNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
 } from './runtime/nanohost-harness-records.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -52,7 +51,10 @@ import {
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import {
+  queueTestPreparedHarnessOperation,
+  recordTestExecutionAttempt,
+} from './test-support/execution-attempt.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
@@ -810,7 +812,7 @@ it.each([
       };
       openNanoHostAgentSessionBinding(coreDb, { ...binding, timestamp });
       const { harnessInstanceId, ...sessionOpen } = binding;
-      queueNanoHostHarnessOperation(coreDb, {
+      queueTestPreparedHarnessOperation(coreDb, {
         body: { ...sessionOpen, adapterId: 'codex', resume: null },
         harnessInstanceId,
         operation: 'session.open',

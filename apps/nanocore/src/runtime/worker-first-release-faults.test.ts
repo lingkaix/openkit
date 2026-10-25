@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, constants, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { WorkerControlClient } from '../../../../packages/worker-shim/src/control-client.js';
 import { runWorkerHarness, WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
@@ -22,8 +22,12 @@ import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/stor
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { openBootVerifiedWorkspaceDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -38,6 +42,8 @@ import {
   markSchedulerAttemptForTerminalTurn,
   requireSchedulerExecutionAttempt,
 } from './execution-attempt-records.js';
+import { createExecutionStepJournalReader } from './execution-journal.js';
+import type { ExecutionJournalIntent } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { requireNanoHostExecutionAttempt } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
@@ -63,6 +69,7 @@ import {
   listWorkerControlAcceptedEvents,
 } from './worker-control-records.js';
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
+import * as workerJournal from './worker-governance-turn-executor.js';
 
 const harnessLoop = vi.hoisted(() => ({ client: null as SandboxIntegrationClient | null }));
 
@@ -199,6 +206,13 @@ async function faultFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
   const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
+  // Register before awaited setup so failure cannot remove a live native writer's root.
+  const cleanup = async () => {
+    await shutdownControlStoreWorkerClient();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  };
+  onTestFinished(cleanup);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -239,13 +253,24 @@ async function faultFixture() {
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
     }),
-    harnessCommandDispatched: (command) => {
-      dispatchedCommands.push({
-        operationId: command.operationId,
-        operation: command.operation,
-        sequence: command.sequence,
-      });
-      return runtime.acceptNanoHostHarnessCommand(command);
+    harnessCommandDispatched: async (command) => {
+      // Physical delivery starts only after the real Factory accepts its native invocation proof.
+      const accepted = await runtime.acceptNanoHostHarnessCommand(command);
+      // Cached redelivery repeats the proof gate; only a distinct operation is a new dispatch.
+      if (
+        !dispatchedCommands.some(
+          (previous) =>
+            previous.operationId === accepted.operationId &&
+            previous.sequence === accepted.sequence &&
+            previous.operation === accepted.operation
+        )
+      )
+        dispatchedCommands.push({
+          operationId: accepted.operationId,
+          operation: accepted.operation,
+          sequence: accepted.sequence,
+        });
+      return accepted;
     },
     harnessResultSettled: runtime.acceptNanoHostHarnessResult,
     harnessCommandDeliveryFailed: runtime.failNanoHostHarnessDelivery,
@@ -516,8 +541,7 @@ async function faultFixture() {
     enqueueObserver.mockRestore();
     client.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await cleanup();
   };
   return {
     coreDb,
@@ -544,6 +568,7 @@ async function faultFixture() {
     poll,
     controlClient,
     post,
+    failHarnessDelivery: runtime.failNanoHostHarnessDelivery,
     holdNextPoll: (entered: () => void, release: Promise<void>) => {
       heldPoll = { entered, release };
     },
@@ -582,6 +607,569 @@ async function faultFixture() {
 
 const ready = { nativeHandleDigest: DIGEST, nativeHandleState: 'ready' };
 
+describe('Workspace execution journal producer boundaries', () => {
+  it.each([
+    { name: 'live parent', delivered: true },
+    { name: 'expired parent', delivered: false },
+    { name: 'clock rollback', delivered: false },
+    { name: 'fresh native process witness', delivered: false },
+  ])('T5 preserves original native allowance at actual Factory delivery: $name', async ({
+    name,
+    delivered,
+  }) => {
+    // Actual caller wall time and the native Worker's wall/monotonic clocks remain real at admission.
+    const begin = workerJournal.beginWorkerTurnJournalStep;
+    let parent: ExecutionJournalIntent | undefined;
+    let child: ExecutionJournalIntent | undefined;
+    let admittedAt = 0;
+    let expiry = '';
+    const admission = vi
+      .spyOn(workerJournal, 'beginWorkerTurnJournalStep')
+      .mockImplementation(async (...args) => {
+        const [store, db, turnId, kind, carriage, correlation] = args;
+        if (carriage?.operation === 'worker.turn.start.wait' && !parent) {
+          if (!correlation)
+            throw new Error('Clock fixture requires the actual original parent input.');
+          admittedAt = Date.now();
+          expiry = new Date(admittedAt + 1_000).toISOString();
+          parent = await begin(store, db, turnId, kind, carriage, {
+            ...correlation,
+            deadline: expiry,
+          });
+          return parent;
+        }
+        if (
+          parent &&
+          correlation?.parent?.stepId === parent.stepId &&
+          carriage?.operation === 'turn.start'
+        ) {
+          // Observe the producer's actual child input; only production can inherit the original cap.
+          child = await begin(...args);
+          return child;
+        }
+        return begin(...args);
+      });
+    const f = await faultFixture();
+    let command: NanoHostHarnessCommand | null = null;
+    let completed = false;
+    try {
+      const opened = await f.dispatch('session.open');
+      await f.result(opened, {
+        ...ready,
+        state: 'open',
+        maxActiveTurns: opened.body.maxActiveTurns,
+      });
+      await f.waitQueued('turn.start');
+      admission.mockRestore();
+      if (!parent || !child)
+        throw new Error('Clock fixture requires real parent and exact native child admission.');
+      expect(Date.parse(expiry) - admittedAt).toBe(1_000);
+      expect(parent.control.deadlineUnixNano).toBe(BigInt(Date.parse(expiry)) * 1_000_000n);
+      expect(child.control.deadlineUnixNano).toBe(parent.control.deadlineUnixNano);
+      expect(child.parent).toEqual({
+        ref: { execution: parent.execution.ref, stepId: parent.stepId },
+        deadlineUnixNano: parent.control.deadlineUnixNano,
+      });
+      // Scheduler authority is immutable Turn input; the native command cap controls delivery.
+      // DX Effect And Deadline Semantics keeps operation expiry out of JSON fingerprints.
+      const executionDeadline = requireSchedulerExecutionAttempt(
+        f.coreDb,
+        testEntityId('attempt', 'fault-lease')
+      ).deadline;
+      expect(executionDeadline).not.toBeNull();
+      expect(Date.parse(executionDeadline!)).toBeGreaterThan(Date.parse(expiry));
+      const native = await f.store.writeWorkspaceExecutionJournalIntent(
+        'ws_00000000-0000-7000-8000-000000000001',
+        child
+      );
+      expect(native.remainingMs).toBeGreaterThan(0);
+      expect(native.remainingMs).toBeLessThanOrEqual(1_000);
+      const realTimers =
+        await vi.importActual<typeof import('node:timers/promises')>('node:timers/promises');
+      if (name === 'live parent') {
+        await realTimers.setTimeout(Math.max(0, admittedAt + 500 - Date.now()));
+      } else if (name === 'expired parent') {
+        await realTimers.setTimeout(Math.max(0, Date.parse(expiry) - Date.now() + 1));
+        // The real outage timer can already have ended this child; inspect instead of re-admitting it.
+        const workspace = openWorkspaceDb(
+          f.coreDb.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        try {
+          const expired = await createExecutionStepJournalReader(
+            workspace,
+            child.execution.ref.owner
+          ).readInvocation({ execution: child.execution.ref, stepId: child.stepId });
+          expect(expired.remainingMs).toBe(0);
+        } finally {
+          workspace.sqlite.close();
+        }
+      } else if (name === 'clock rollback') {
+        // Deliberate caller clock uncertainty after genuine native setup; the Worker's clock stays real.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(admittedAt - 1_000);
+      } else {
+        // A fresh actual native Worker must not adopt the retired owner's process witness.
+        await shutdownControlStoreWorkerClient();
+        const cold = await f.store.writeWorkspaceExecutionJournalIntent(
+          'ws_00000000-0000-7000-8000-000000000001',
+          child
+        );
+        // Successful real admission/read is the fixture check; startup/import failure proves no refusal.
+        expect(Date.now()).toBeLessThan(Date.parse(expiry));
+        expect(cold.clock).toEqual(native.clock);
+        expect(cold.remainingMs).toBe(0);
+      }
+      const response = await f.poll();
+      command =
+        response.status === 200 ? (JSON.parse(response.body) as NanoHostHarnessCommand) : null;
+      // Core redacted dispatch is not delivery. This response follows the real async Factory proof gate.
+      expect(command !== null).toBe(delivered);
+      if (command) expect(command.body.deadline).toBe(executionDeadline);
+      if (name === 'clock rollback') vi.useRealTimers();
+      if (command) {
+        await f.result(command, { ...ready, state: 'started' });
+        const control = f.controlClient(command);
+        await control.recordHeartbeat({ status: 'starting' });
+        await control.recordHeartbeat({ status: 'running' });
+        f.sealTranscript(command);
+        await control.recordFinalStatus({
+          sequence: 1,
+          status: 'completed',
+          stopReason: 'completed',
+        });
+        await f.result(await f.dispatch('session.inspect'), {
+          ...ready,
+          state: 'open',
+          childState: 'running',
+          cleanupState: 'clean',
+        });
+        await f.running;
+        completed = true;
+      } else {
+        await f.running.catch(() => undefined);
+      }
+    } finally {
+      vi.useRealTimers();
+      admission.mockRestore();
+      if (!completed && !f.isSettled() && child) {
+        // Abandon only the actual addressed command through the existing live failure owner.
+        if (!command) {
+          const response = await f.poll();
+          if (response.status === 200)
+            command = JSON.parse(response.body) as NanoHostHarnessCommand;
+        }
+        const row = f.coreDb.sqlite
+          .prepare(`SELECT harness_instance_id AS harnessInstanceId
+          FROM harness_instance_records WHERE operation_id = ?`)
+          .get(child.carriage.requestId) as { harnessInstanceId: string } | undefined;
+        if (row)
+          f.failHarnessDelivery(
+            {
+              harnessInstanceId: row.harnessInstanceId,
+              operationId: child.carriage.requestId,
+            },
+            new Error('Native clock fixture command abandoned.')
+          );
+        await f.running.catch(() => undefined);
+      }
+      await f.close();
+    }
+  }, 60_000);
+
+  it('T3 rolls back an outcome when exact receipt consumption cannot commit, then awaits replay consumption ACK', async () => {
+    // Keep wall and monotonic clocks real; virtualize only existing teardown timers.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const f = await faultFixture();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspace = openWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+    let releaseAck = () => {};
+    let replay: ReturnType<typeof f.post> | undefined;
+    let ackObserver: { mockRestore(): void } | undefined;
+    try {
+      const opened = await f.dispatch('session.open');
+      const result = {
+        schemaVersion: 2,
+        harnessInstanceId: opened.harnessInstanceId,
+        operationId: opened.operationId,
+        sequence: opened.sequence,
+        disposition: 'succeeded',
+        body: { ...ready, state: 'open', maxActiveTurns: opened.body.maxActiveTurns },
+      };
+      const originals = workspace.sqlite
+        .prepare(`SELECT execution_id AS executionId, step_id AS stepId, state
+          FROM control_execution_steps
+          WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
+            AND json_extract(invocation_json, '$.carriage.sequence') = ?
+            AND json_extract(control_json, '$.kind') = 'open-session'`)
+        .all(opened.operationId, opened.sequence) as {
+        executionId: string;
+        stepId: string;
+        state: string;
+      }[];
+      expect(originals).toHaveLength(1);
+      const original = originals[0]!;
+      expect(original.state).toBe('intent');
+      const readOriginal = () =>
+        workspace.sqlite
+          .prepare('SELECT * FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
+          .get(original.executionId, original.stepId);
+      const readRoot = () =>
+        workspace.sqlite
+          .prepare('SELECT * FROM control_executions WHERE id = ?')
+          .get(original.executionId);
+      const readConsumption = () =>
+        workspace.sqlite
+          .prepare(`SELECT execution_id AS executionId, inspected_execution_id AS inspectedExecutionId,
+          inspected_step_id AS inspectedStepId, state
+          FROM control_execution_steps WHERE json_extract(control_json, '$.kind') = 'consume-receipt'
+            AND inspected_execution_id = ? AND inspected_step_id = ?`)
+          .all(original.executionId, original.stepId);
+      const readReceipt = () =>
+        f.coreDb.sqlite
+          .prepare(`SELECT result_json AS bytes, result_fingerprint AS fingerprint
+          FROM harness_instance_records WHERE harness_instance_id = ?`)
+          .get(opened.harnessInstanceId) as { bytes: string; fingerprint: string };
+      const beforeStep = readOriginal();
+      const beforeRoot = readRoot();
+      expect(readConsumption()).toEqual([]);
+      const executionSql = `'${original.executionId.replaceAll("'", "''")}'`;
+      const stepSql = `'${original.stepId.replaceAll("'", "''")}'`;
+      // Fault only the second member of the real outcome/consumption tuple after valid native setup.
+      workspace.sqlite.exec(`CREATE TRIGGER refuse_exact_harness_consumption
+        BEFORE INSERT ON control_execution_steps
+        WHEN json_extract(NEW.control_json, '$.kind') = 'consume-receipt'
+          AND NEW.inspected_execution_id = ${executionSql} AND NEW.inspected_step_id = ${stepSql}
+        BEGIN SELECT RAISE(ABORT, 'exact Harness consumption refused'); END`);
+      const refused = await f.post('/worker-control/harness/result', result);
+      expect(refused.status).not.toBe(204);
+      // Commit Rule: failing consumption must not leave an independently committed outcome.
+      expect(readOriginal()).toEqual(beforeStep);
+      expect(readRoot()).toEqual(beforeRoot);
+      expect(readConsumption()).toEqual([]);
+      const receipt = readReceipt();
+      expect(JSON.parse(receipt.bytes)).toEqual(result);
+      expect(receipt.fingerprint).toBe(createHash('sha256').update(receipt.bytes).digest('hex'));
+      expect((await f.poll()).status === 200).toBe(false);
+      expect(readReceipt()).toEqual(receipt);
+      expect(
+        f.dispatchedCommands.filter((command) => command.operation === 'session.open')
+      ).toHaveLength(1);
+      workspace.sqlite.exec('DROP TRIGGER refuse_exact_harness_consumption');
+
+      let enteredAck!: () => void;
+      const ackEntered = new Promise<void>((resolve) => {
+        enteredAck = resolve;
+      });
+      const ackRelease = new Promise<void>((resolve) => {
+        releaseAck = resolve;
+      });
+      const client = getControlStoreWorkerClient();
+      const journal = client.journal.bind(client);
+      // Hold only delivery of the real completed native call to its actual Factory consumer.
+      ackObserver = vi.spyOn(client, 'journal').mockImplementation(async (database, input) => {
+        const reply = await journal(database, input);
+        if (input.kind === 'settle' && input.consumeIntentJson) {
+          const settlement = JSON.parse(input.inputJson) as { ref: { stepId: string } };
+          if (settlement.ref.stepId === original.stepId) {
+            enteredAck();
+            await ackRelease;
+          }
+        }
+        return reply;
+      });
+      let responded = false;
+      replay = f.post('/worker-control/harness/result', result).finally(() => {
+        responded = true;
+      });
+      await Promise.race([
+        ackEntered,
+        replay.then(() => {
+          throw new Error('Harness result returned before covering native consumption ACK.');
+        }),
+      ]);
+      expect(responded).toBe(false);
+      expect(readOriginal()).toMatchObject({ state: 'completed' });
+      expect(readConsumption()).toEqual([
+        {
+          executionId: original.executionId,
+          inspectedExecutionId: original.executionId,
+          inspectedStepId: original.stepId,
+          state: 'intent',
+        },
+      ]);
+      expect(readReceipt()).toEqual(receipt);
+      expect((await f.poll()).status === 200).toBe(false);
+      expect(responded).toBe(false);
+      releaseAck();
+      expect(await replay).toEqual({ status: 204, body: '' });
+      ackObserver.mockRestore();
+      ackObserver = undefined;
+      expect(readConsumption()).toHaveLength(1);
+      // DX Physical Receipt Consumption: exact HTTP replay reuses the durable ACK; changed core refuses.
+      const consumedReceipt = readReceipt();
+      const consumedOriginal = readOriginal();
+      expect(await f.post('/worker-control/harness/result', result)).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(readReceipt()).toEqual(consumedReceipt);
+      expect(
+        (
+          await f.post('/worker-control/harness/result', {
+            ...result,
+            body: { ...result.body, maxActiveTurns: Number(opened.body.maxActiveTurns) + 1 },
+          })
+        ).status
+      ).toBe(409);
+      expect(readReceipt()).toEqual(consumedReceipt);
+      expect(readOriginal()).toEqual(consumedOriginal);
+      expect(readConsumption()).toHaveLength(1);
+      const start = await f.dispatch('turn.start');
+      expect(start.sequence).toBe(opened.sequence + 1);
+      expect(
+        f.dispatchedCommands.filter((command) => command.operation === 'session.open')
+      ).toHaveLength(1);
+      await f.result(start, { ...ready, state: 'started' });
+      const control = f.controlClient(start);
+      await control.recordHeartbeat({ status: 'starting' });
+      await control.recordHeartbeat({ status: 'running' });
+      f.sealTranscript(start);
+      await control.recordFinalStatus({
+        sequence: 1,
+        status: 'completed',
+        stopReason: 'completed',
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      await f.result(await f.dispatch('session.inspect'), {
+        ...ready,
+        state: 'open',
+        childState: 'running',
+        cleanupState: 'clean',
+      });
+      await f.running;
+    } finally {
+      releaseAck();
+      if (replay) await replay.catch(() => undefined);
+      ackObserver?.mockRestore();
+      workspace.sqlite.exec('DROP TRIGGER IF EXISTS refuse_exact_harness_consumption');
+      workspace.sqlite.close();
+      if (!f.isSettled()) {
+        await vi.advanceTimersByTimeAsync(600_000);
+        await f.running.catch(() => undefined);
+      }
+      await f.close();
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it.each([
+    { boundary: 'delivery', operation: 'session.open' },
+    { boundary: 'result', operation: 'session.open' },
+    { boundary: 'delivery', operation: 'turn.start' },
+    { boundary: 'result', operation: 'turn.start' },
+  ] as const)('T2/T3 refuses $operation $boundary while the owning Workspace is unavailable', async ({
+    boundary,
+    operation,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
+    vi.setSystemTime(vi.getRealSystemTime());
+    const f = await faultFixture();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceRoot = dirname(dirname(workspaceDbPath(f.coreDb.dataRoot, workspaceId)));
+    const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
+    let moved = false;
+    let writerBlock: ReturnType<typeof openBootVerifiedWorkspaceDb> | undefined;
+    let acknowledgedStart: NanoHostHarnessCommand | null = null;
+    try {
+      if (operation === 'turn.start') {
+        const opened = await f.dispatch('session.open');
+        await f.result(opened, {
+          ...ready,
+          state: 'open',
+          maxActiveTurns: opened.body.maxActiveTurns,
+        });
+      }
+      await f.waitQueued(operation);
+      const available = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+      available.sqlite.close();
+      const command = boundary === 'result' ? await f.dispatch(operation) : null;
+      const originalTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
+      expect(originalTurn.triggerActor).toEqual({
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      });
+      // Hold the real database's writer lock: renaming alone cannot stop an already-open native handle.
+      writerBlock = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+      const contender = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+      try {
+        writerBlock.sqlite.exec('BEGIN IMMEDIATE');
+        contender.sqlite.pragma('busy_timeout = 0');
+        expect(() => contender.sqlite.exec('BEGIN IMMEDIATE')).toThrow(/locked|busy/i);
+      } finally {
+        contender.sqlite.close();
+      }
+      // Move the complete private Workspace and sidecars as well; never synthesize a replacement.
+      renameSync(workspaceRoot, heldRoot);
+      moved = true;
+      expect(() => openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId)).toThrow();
+      const response = command
+        ? await f.post('/worker-control/harness/result', {
+            schemaVersion: 2,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            sequence: command.sequence,
+            disposition: 'succeeded',
+            body: {
+              ...ready,
+              state: operation === 'turn.start' ? 'started' : 'open',
+              maxActiveTurns: command.body.maxActiveTurns,
+            },
+          })
+        : await f.poll();
+      if (operation === 'turn.start' && command && response.status === 204) {
+        acknowledgedStart = command;
+      }
+      // A Core receipt alone cannot acknowledge an unconsumed Workspace outcome. Do not print credential-bearing wire bodies.
+      expect
+        .soft({
+          delivered: boundary === 'delivery' && response.status === 200,
+          acknowledged: boundary === 'result' && response.status === 204,
+        })
+        .toEqual({ delivered: false, acknowledged: false });
+      expect
+        .soft(
+          existsSync(workspaceDbPath(f.coreDb.dataRoot, workspaceId)),
+          'unavailable canonical database must not be recreated'
+        )
+        .toBe(false);
+    } finally {
+      if (writerBlock?.sqlite.open) {
+        if (writerBlock.sqlite.inTransaction) writerBlock.sqlite.exec('ROLLBACK');
+        writerBlock.sqlite.close();
+      }
+      if (moved) {
+        if (existsSync(workspaceRoot))
+          renameSync(workspaceRoot, join(f.coreDb.dataRoot, 'unexpected-workspace'));
+        renameSync(heldRoot, workspaceRoot);
+      }
+      if (acknowledgedStart && !f.isSettled()) {
+        // Finish the controlled Worker only after the fault assertions; advancing time before its monitor exists can strand teardown.
+        f.sealTranscript(acknowledgedStart);
+        expect(
+          await f.controlClient(acknowledgedStart).recordFinalStatus({
+            sequence: 1,
+            status: 'completed',
+            stopReason: 'completed',
+          })
+        ).toMatchObject({ accepted: true });
+        // Let the existing completion poll consume the final status before waiting for inspection.
+        await vi.advanceTimersByTimeAsync(100);
+        await f.waitQueued('session.inspect').then(
+          async () => {
+            await f.result(await f.dispatch('session.inspect'), {
+              ...ready,
+              state: 'open',
+              childState: 'running',
+              cleanupState: 'clean',
+            });
+          },
+          (error: unknown) => {
+            if (!f.isSettled()) throw error;
+          }
+        );
+      }
+      await vi.advanceTimersByTimeAsync(600_000);
+      await f.running.catch(() => undefined);
+      await f.close();
+    }
+  });
+
+  it.for([
+    'session.open',
+    'turn.start',
+  ] as const)('T2 commits the actual Worker Turn intent before native %s delivery', async (operation) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
+    vi.setSystemTime(vi.getRealSystemTime());
+    const f = await faultFixture();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspace = openWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+    try {
+      if (operation === 'turn.start') {
+        const opened = await f.dispatch('session.open');
+        await f.result(opened, {
+          ...ready,
+          state: 'open',
+          maxActiveTurns: opened.body.maxActiveTurns,
+        });
+      }
+      await f.waitQueued(operation);
+      const tables = workspace.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
+        )
+        .all();
+      expect(tables).toEqual([{ name: 'control_execution_steps' }, { name: 'control_executions' }]);
+      // Read at the completed real enqueue, before the first poll can deliver the command.
+      const queued = workspace.sqlite
+        .prepare(`
+        SELECT s.control_json AS control, s.invocation_json AS invocation,
+               r.owner_json AS owner, r.work_id AS workId, r.definition_version AS definitionVersion
+        FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
+        WHERE s.state = 'intent' AND json_extract(s.control_json, '$.kind') = ?
+          AND json_extract(s.invocation_json, '$.carriage.operation') = ?
+          AND r.work_id = ?
+      `)
+        .all(
+          operation === 'session.open' ? 'open-session' : 'deliver-start',
+          operation,
+          testEntityId('tu', 'fault-turn')
+        ) as {
+        control: string;
+        invocation: string;
+        owner: string;
+        workId: string;
+        definitionVersion: string;
+      }[];
+      expect
+        .soft(
+          queued.map((row) => ({
+            owner: JSON.parse(row.owner),
+            workId: row.workId,
+            definitionVersion: row.definitionVersion,
+            actor: JSON.parse(row.control).actor,
+            attemptId: JSON.parse(row.control).attemptId,
+          }))
+        )
+        .toEqual([
+          {
+            owner: { kind: 'workspace', workspaceId },
+            workId: testEntityId('tu', 'fault-turn'),
+            definitionVersion: 'workspace-worker-turn/v1',
+            actor: f.store.getTurnById(testEntityId('tu', 'fault-turn')).triggerActor,
+            attemptId: testEntityId('attempt', 'fault-lease'),
+          },
+        ]);
+      const command = await f.dispatch(operation);
+      expect(
+        queued.map((row) => {
+          const carriage = JSON.parse(row.invocation).carriage;
+          return {
+            operation: carriage.operation,
+            requestId: carriage.requestId,
+            sequence: carriage.sequence,
+          };
+        })
+      ).toEqual([{ operation, requestId: command.operationId, sequence: command.sequence }]);
+    } finally {
+      workspace.sqlite.close();
+      await vi.advanceTimersByTimeAsync(600_000);
+      await f.running.catch(() => undefined);
+      await f.close();
+    }
+  });
+});
+
 describe('first-release worker faults (real Core crossings)', () => {
   it.each([
     'delayed',
@@ -589,7 +1177,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     'expired',
   ] as const)('bounds committed session.open carriage by its existing parent allowance (%s)', async (mode) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     const controller = new AbortController();
     let release!: () => void;
@@ -715,7 +1303,7 @@ describe('first-release worker faults (real Core crossings)', () => {
 
   it('keeps the Native attempt live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     const workspaceDb = openWorkspaceDb(
       f.coreDb.dataRoot,
@@ -738,6 +1326,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       const control = f.controlClient(start);
       await control.recordHeartbeat({ status: 'starting' });
       await control.recordHeartbeat({ status: 'running' });
+      const heartbeatStartedAt = Date.now();
       const firstDeadline = requireNanoHostExecutionAttempt(
         f.coreDb,
         testEntityId('attempt', 'fault-lease')
@@ -791,9 +1380,28 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(readPendingRequest(workspaceDb.sqlite, request.requestId)).toEqual(pendingRecord);
         expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
       }
-      expect(new Date().toISOString()).toBe('2026-10-05T00:01:20.000Z');
+      expect(new Date().toISOString()).toBe(new Date(heartbeatStartedAt + 80_000).toISOString());
       expect(new Date().toISOString() > firstDeadline).toBe(true);
       expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      // Include accepted content chunks omitted by canonical-event readers.
+      expect(
+        f.coreDb.sqlite
+          .prepare(`SELECT count(*) AS count FROM worker_control_records
+          WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+            AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ? AND operation = 'event_append'`)
+          .get(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId ?? null
+          )
+      ).toEqual({ count: 0 });
+      expect(
+        requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
+          .lastWorkerSequence
+      ).toBe(9);
       expect(
         answerPendingRequest(
           workspaceDb.sqlite,
@@ -824,6 +1432,12 @@ describe('first-release worker faults (real Core crossings)', () => {
         new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(testEntityId('tu', 'fault-turn'))
           .status
       ).toBe('completed');
+      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
+      expect(workspaceDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
     } finally {
       workspaceDb.sqlite.close();
       await f.close();
@@ -838,7 +1452,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     'finished-reset',
   ] as const)('recovers a lost committed turn.start from the same live Worker sequence proof (%s)', async (loss) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     try {
       const opened = await f.dispatch('session.open');
@@ -859,6 +1473,7 @@ describe('first-release worker faults (real Core crossings)', () => {
           writableFinished: true,
           resetCode: constants.NGHTTP2_CANCEL,
         });
+      const beforeReplay = f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
       await vi.advanceTimersByTimeAsync(250);
       const recovered = await f.poll(proof);
       expect(
@@ -870,6 +1485,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         recovered.body === f.droppedWire(),
         'redelivery must retain every original wire byte'
       ).toBe(true);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
+        beforeReplay
+      );
       expect(
         f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
       ).toHaveLength(1);
@@ -901,6 +1519,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(
         f.store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
       ).toHaveLength(1);
+      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
     } finally {
       await f.close();
       vi.useRealTimers();
@@ -912,7 +1533,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     true,
   ])('fails quickly when a proof-capable Worker dies after turn.start reset (writableFinished: %s)', async (finished) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     try {
       const opened = await f.dispatch('session.open');
@@ -958,6 +1579,21 @@ describe('first-release worker faults (real Core crossings)', () => {
         f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
       ).toHaveLength(1);
       expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      // Include accepted content chunks and other record kinds omitted by canonical-event readers.
+      expect(
+        f.coreDb.sqlite
+          .prepare(`SELECT count(*) AS count FROM worker_control_records
+          WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+            AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
+          .get(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId ?? null
+          )
+      ).toEqual({ count: 0 });
       expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
         requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
@@ -976,7 +1612,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     'future-sequence',
   ] as const)('refuses %s non-receipt proof without replay or resurrection', async (kind) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     try {
       const opened = await f.dispatch('session.open');
@@ -1024,6 +1660,21 @@ describe('first-release worker faults (real Core crossings)', () => {
         f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
       ).toHaveLength(1);
       expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      // Include accepted content chunks and other record kinds omitted by canonical-event readers.
+      expect(
+        f.coreDb.sqlite
+          .prepare(`SELECT count(*) AS count FROM worker_control_records
+          WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+            AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
+          .get(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId ?? null
+          )
+      ).toEqual({ count: 0 });
       expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
         requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
@@ -1041,7 +1692,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     true,
   ])('fails a lost committed turn.start quickly for an older Worker that omits sequence proof (writableFinished: %s)', async (finished) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     try {
       const opened = await f.dispatch('session.open');
@@ -1067,6 +1718,21 @@ describe('first-release worker faults (real Core crossings)', () => {
       // Prompt cleanup may already have retired the Integration; neither response may carry work.
       expect([204, 409]).toContain(nextPoll.status);
       expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      // Include accepted content chunks and other record kinds omitted by canonical-event readers.
+      expect(
+        f.coreDb.sqlite
+          .prepare(`SELECT count(*) AS count FROM worker_control_records
+          WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+            AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
+          .get(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId ?? null
+          )
+      ).toEqual({ count: 0 });
       expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
         requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
@@ -1094,6 +1760,21 @@ describe('first-release worker faults (real Core crossings)', () => {
       ]);
       expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(turn.id)).toEqual(turn);
       expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      // Include accepted content chunks and other record kinds omitted by canonical-event readers.
+      expect(
+        f.coreDb.sqlite
+          .prepare(`SELECT count(*) AS count FROM worker_control_records
+          WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+            AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
+          .get(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId ?? null
+          )
+      ).toEqual({ count: 0 });
       expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
       expect(
         requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
@@ -1103,6 +1784,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         'cleaned'
       );
       expect(f.effects.map((effect) => effect.kind)).toContain('sandbox.delete');
+      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // D97/D111: terminal failure and physical cleanup cannot prove unread output or evidence.
       expect(
@@ -1121,7 +1805,7 @@ describe('first-release worker faults (real Core crossings)', () => {
 
   it('fails closed when a dispatched session.inspect result is held for the 300-second budget', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-    vi.setSystemTime(new Date(NOW));
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await faultFixture();
     try {
       const opened = await f.dispatch('session.open');
@@ -1194,6 +1878,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         disposition: 'accepted',
         operationId: expect.any(String),
         fenceRef: null,
+      });
+      expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
       });
     } finally {
       await f.close();

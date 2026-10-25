@@ -20,6 +20,9 @@ import type {
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
 export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
 
+/** COORD 23:5x idle physical cleanup; each keyed operation has its own existing Core root. */
+export const CORE_IDLE_CLEANUP_EXECUTION_DEFINITION = 'core-idle-cleanup/v1';
+
 /** Release-authored interpretation for the existing Workspace Worker-Turn producers. */
 export const WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION = 'workspace-worker-turn/v1';
 
@@ -159,6 +162,7 @@ const refSchema = z.object({ owner: ownerSchema, executionId: text });
 const stepRefSchema = z.object({ execution: refSchema, stepId: text });
 const definition = z.enum([
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -269,7 +273,13 @@ export function decodeExecutionJournalSpan(value: unknown): ExecutionJournalSpan
 /** Closed native transport for the existing journal owner; decimal JSON preserves exact typed integers. */
 export const ControlExecutionJournalInputSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('intent'), inputJson: z.string().min(1) }).strict(),
-  z.object({ kind: z.literal('settle'), inputJson: z.string().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal('settle'),
+      inputJson: z.string().min(1),
+      consumeIntentJson: z.string().min(1).optional(),
+    })
+    .strict(),
 ]);
 /** One existing journal mutation, never a SQL or callback transport. */
 export type ControlExecutionJournalInput = z.infer<typeof ControlExecutionJournalInputSchema>;
@@ -376,11 +386,27 @@ export function applyControlExecutionJournal(
     .all(workId) as { id: string }[];
   if (roots.some((root) => root.id !== ref.executionId))
     throw new Error('Workspace execution root conflicts.');
-  return encodeExecutionJournalValue(
-    command.kind === 'intent'
-      ? writeExecutionJournalIntent(db, input as ExecutionJournalIntent)
-      : settleExecutionJournalStep(db, input as ExecutionJournalSettlement)
-  );
+  if (command.kind === 'intent')
+    return encodeExecutionJournalValue(
+      writeExecutionJournalIntent(db, input as ExecutionJournalIntent)
+    );
+  const settlement = input as ExecutionJournalSettlement;
+  const ended = settleExecutionJournalStep(db, settlement);
+  if (command.consumeIntentJson) {
+    const consume = decodeExecutionJournalIntent(command.consumeIntentJson);
+    if (
+      !isDeepStrictEqual(consume.execution.ref, ref) ||
+      consume.execution.workId !== workId ||
+      consume.control.kind !== 'consume-receipt' ||
+      consume.control.operationId !== ended.control.operationId ||
+      !isDeepStrictEqual(consume.inspectedStep, settlement.ref) ||
+      !isDeepStrictEqual(consume.carriage, storedStep(db, settlement.ref).invocation.carriage)
+    )
+      throw new Error('Receipt consumption conflicts with its original outcome.');
+    // The existing request savepoint makes the observed outcome and ACK obligation indivisible.
+    writeExecutionJournalIntent(db, consume);
+  }
+  return encodeExecutionJournalValue(ended);
 }
 
 /** Parses known fields while refusing unknown core versions, tags and malformed required content. */
@@ -410,14 +436,12 @@ function requireScope(db: CoreDb | WorkspaceDb, owner: WorkOwner): void {
 
 /** Refuses a known definition used in the wrong physical scope, not just unknown versions. */
 function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
-  if (
-    value !==
-    (db.scope === 'core'
-      ? CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION
-      : WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION)
-  ) {
-    throw new Error('Execution definition conflicts with its physical owner.');
-  }
+  const admitted =
+    db.scope === 'core'
+      ? value === CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
+        value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION
+      : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
+  if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
 
 /** Reads an exact root; absence, invalid metadata and unknown definitions fail closed. */
@@ -466,6 +490,12 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
       .get(ref.execution.executionId, ref.stepId)
   );
   const control = decode(controlSchema, row.control_json);
+  if (
+    db.scope === 'core' &&
+    root.definitionVersion === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION &&
+    !['inspect-cleanup', 'collect', 'release', 'consume-receipt'].includes(control.kind)
+  )
+    throw new Error('Core idle cleanup step has no admitted producer.');
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
@@ -615,6 +645,12 @@ export function writeExecutionJournalIntent(
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);
   requireDefinition(db, admission.definitionVersion);
+  if (
+    db.scope === 'core' &&
+    admission.definitionVersion === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION &&
+    !['inspect-cleanup', 'collect', 'release', 'consume-receipt'].includes(control.kind)
+  )
+    throw new Error('Core idle cleanup step has no admitted producer.');
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
@@ -790,8 +826,53 @@ export function settleExecutionJournalStep(
         "SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND state = 'unknown' LIMIT 1"
       )
       .get(input.ref.execution.executionId) !== undefined;
+  const inspectedRelease =
+    stored.row.inspected_step_id === null
+      ? undefined
+      : storedStep(db, {
+          execution: {
+            owner: input.ref.execution.owner,
+            executionId: stored.row.inspected_execution_id!,
+          },
+          stepId: stored.row.inspected_step_id,
+        });
+  const releaseProof =
+    stored.control.kind === 'release' ||
+    (stored.control.kind === 'inspect-cleanup' &&
+      stored.row.inspected_execution_id === input.ref.execution.executionId &&
+      inspectedRelease?.row.state === 'completed' &&
+      inspectedRelease.control.kind === 'release' &&
+      isDeepStrictEqual(inspectedRelease.control.outputRefs, outputRefs));
+  const qualifiedRelease =
+    db.scope === 'workspace' &&
+    releaseProof &&
+    outcome === 'completed' &&
+    outputRefs.length === 1 &&
+    (
+      db.sqlite
+        .prepare(
+          "SELECT step_id FROM control_execution_steps WHERE execution_id = ? AND state = 'unknown'"
+        )
+        .all(input.ref.execution.executionId) as { step_id: string }[]
+    ).every((unknown) => {
+      const proofs = db.sqlite
+        .prepare(
+          "SELECT step_id FROM control_execution_steps WHERE execution_id = ? AND inspected_execution_id = ? AND inspected_step_id = ? AND state = 'completed'"
+        )
+        .all(input.ref.execution.executionId, input.ref.execution.executionId, unknown.step_id) as {
+        step_id: string;
+      }[];
+      return proofs.some((proof) => {
+        const observed = storedStep(db, { execution: input.ref.execution, stepId: proof.step_id });
+        return (
+          observed.control.kind === 'inspect-cleanup' &&
+          isDeepStrictEqual(observed.control.outputRefs, outputRefs)
+        );
+      });
+    });
   if (
     hasUnknown &&
+    !qualifiedRelease &&
     (input.nextPhase === 'closed' ||
       stored.root.exclusionRefs.some((ref) => !exclusionRefs.includes(ref)))
   ) {

@@ -139,6 +139,7 @@ import type {
   ExecutionJournalAdmission,
   ExecutionJournalIntent,
   ExecutionStepControl,
+  ExecutionStepRef,
 } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
@@ -2839,8 +2840,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         session,
         workspaceHandoffState: session.workspaceHandoffState,
       };
+      const collected = await hasCompletedWorkerTurnCollection(workspaceDb, session);
       const collectDurableOutput =
-        session.state !== 'physical-cleaned' && session.state !== 'cleaned';
+        !collected && session.state !== 'physical-cleaned' && session.state !== 'cleaned';
       const restartFailure = {
         agentSessionId: environmentPackage.scope.agentSessionId,
         completedAt: this.now(),
@@ -2876,7 +2878,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
         return currentTurn.status;
       }
-      if (session.state !== 'cleaned')
+      if (session.state !== 'cleaned' && !collected)
         await this.bindNativeHandleRecorder(store, environmentPackage);
       if (
         currentTurn.status === 'interrupted' &&
@@ -2944,9 +2946,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
 
-      if (turn.status === recoveredStatus) {
+      if (turn.status === recoveredStatus || (collected && isSealedTurnTerminal(turn.status))) {
         await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
-        return recoveredStatus;
+        return turn.status as 'cancelled' | 'completed' | 'failed' | 'interrupted';
       }
 
       await this.recordAcceptedWorkerOutcome(
@@ -3181,15 +3183,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     recordedAt: string
   ): Promise<void> {
     if (!workspaceDb) throw new Error('Worker collection requires its native journal owner.');
+    const attempt =
+      backendLifecycle.session && this.coreDb
+        ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
+        : undefined;
+    const collectionCarriage = {
+      operation: 'worker.collect.transcript',
+      requestId: environmentPackage.scope.requestId ?? environmentPackage.scope.turnId,
+      sequence: null,
+      bindingRef: attempt?.bindingRef ?? null,
+    };
     let collectionJournal: ExecutionJournalIntent | null = await beginWorkerTurnJournalStep(
       store,
       workspaceDb,
       environmentPackage.scope.turnId,
       'collect',
-      undefined,
-      backendLifecycle.session && this.coreDb
-        ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
-        : undefined
+      collectionCarriage,
+      attempt
     );
     try {
       await this.backend.collectEvidence(environmentPackage.snapshotId);
@@ -3353,7 +3363,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           workspaceDb,
           environmentPackage.scope.turnId,
           'collect',
-          undefined,
+          { ...collectionCarriage, operation: 'worker.collect.capture' },
           backendLifecycle.session && this.coreDb
             ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
             : undefined
@@ -3385,7 +3395,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           workspaceDb,
           environmentPackage.scope.turnId,
           'collect',
-          undefined,
+          { ...collectionCarriage, operation: 'worker.collect.publication' },
           backendLifecycle.session && this.coreDb
             ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
             : undefined
@@ -3416,6 +3426,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           materializationRecords,
           recordedAt
         );
+        const artifactJournal = collectionJournal;
+        collectionJournal = null;
+        await endWorkerTurnJournalStep(store, workspaceDb, artifactJournal, 'completed');
+        // Durable output/capture publication is complete independently of physical cleanup.
         await this.cleanupBackendLifecycle(
           store,
           backendLifecycle,
@@ -3423,9 +3437,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           environmentPackage,
           backendCapabilities
         );
-        const artifactJournal = collectionJournal;
-        collectionJournal = null;
-        await endWorkerTurnJournalStep(store, workspaceDb, artifactJournal, 'completed');
       } finally {
         releaseMutation?.();
       }
@@ -4689,6 +4700,43 @@ async function readWorkerTurnJournal(workspaceDb: WorkspaceDb, turnId: string) {
   return { root, reader };
 }
 
+/** Reads this attempt's acknowledged output prefix; terminality or physical absence supplies no substitute. */
+export async function hasCompletedWorkerTurnCollection(
+  workspaceDb: WorkspaceDb,
+  session: Pick<
+    WorkerBackendSessionRecord,
+    'turnId' | 'attemptId' | 'sandboxBindingRef' | 'packageSnapshotId'
+  >
+): Promise<boolean> {
+  const { root, reader } = await readWorkerTurnJournal(workspaceDb, session.turnId);
+  const rows = workspaceDb.sqlite
+    .prepare(`SELECT step_id AS stepId FROM control_execution_steps
+    WHERE execution_id = ? AND json_extract(control_json, '$.kind') = 'collect'
+      AND json_extract(invocation_json, '$.carriage.operation') IN
+        ('worker.collect.transcript', 'worker.collect.capture', 'worker.collect.publication')
+    ORDER BY ordinal`)
+    .all(root.ref.executionId) as { stepId: string }[];
+  const operations = [
+    'worker.collect.transcript',
+    'worker.collect.capture',
+    'worker.collect.publication',
+  ];
+  let prefix = 0;
+  for (const { stepId } of rows) {
+    const invocation = await reader.readInvocation({ execution: root.ref, stepId });
+    if (
+      invocation.state === 'completed' &&
+      invocation.control.attemptId === session.attemptId &&
+      invocation.carriage.bindingRef === session.sandboxBindingRef &&
+      invocation.control.inputRefs.includes(session.packageSnapshotId) &&
+      invocation.carriage.operation === operations[prefix]
+    )
+      prefix += 1;
+    if (prefix === operations.length) return true;
+  }
+  return false;
+}
+
 /** Retrieves one original planned obligation; absent or duplicate rows require recovery. */
 async function readWorkerTurnJournalObligation(
   workspaceDb: WorkspaceDb,
@@ -4698,9 +4746,12 @@ async function readWorkerTurnJournalObligation(
   const journal = await readWorkerTurnJournal(workspaceDb, turnId);
   const rows = workspaceDb.sqlite
     .prepare(
-      "SELECT step_id,span_json FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind')=?"
+      "SELECT step_id,span_json FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind')=? AND json_extract(invocation_json,'$.carriage.operation')=?"
     )
-    .all(journal.root.ref.executionId, kind) as { step_id: string; span_json: string }[];
+    .all(journal.root.ref.executionId, kind, `worker.${kind}`) as {
+    step_id: string;
+    span_json: string;
+  }[];
   if (rows.length !== 1) throw new Error('Worker journal requires its original unique obligation.');
   const invocation = await journal.reader.readInvocation({
     execution: journal.root.ref,
@@ -4724,21 +4775,66 @@ export async function beginWorkerTurnJournalStep(
     | 'deliver-start'
     | 'collect'
     | 'cancel'
-    | 'inspect-cleanup',
+    | 'inspect-cleanup'
+    | 'resolve-setup'
+    | 'validate-setup'
+    | 'materialize'
+    | 'consume-receipt',
   carriage?: ExecutionJournalIntent['carriage'],
-  correlation?: { operationId: string | null; deadline: string | null }
+  correlation?: {
+    operationId: string | null;
+    deadline: string | null;
+    parent?: ExecutionJournalIntent;
+    inspectedStep?: ExecutionStepRef;
+    target?: ExecutionStepControl['target'];
+  }
 ): Promise<ExecutionJournalIntent> {
   const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
   const { root, invocation } = original;
   if (root.phase === 'closed') throw new Error('Worker journal execution is already closed.');
+  const parent = correlation?.parent;
+  const inspected = correlation?.inspectedStep
+    ? await original.reader.readInvocation(correlation.inspectedStep)
+    : undefined;
+  const inspectedSpan = inspected
+    ? (await original.reader.readEndedSteps(inspected.ref.execution)).find(
+        (step) => step.ref.stepId === inspected.ref.stepId
+      )?.span
+    : undefined;
+  const selectedCarriage = carriage ?? { ...invocation.carriage, operation: `worker.${kind}` };
+  let deadlineUnixNano = correlation
+    ? correlation.deadline === null
+      ? null
+      : BigInt(Date.parse(correlation.deadline)) * 1_000_000n
+    : invocation.control.deadlineUnixNano;
+  // Execution work cannot acquire a later expiry than its originally admitted Turn.
+  // Cleanup and receipt consumption have their separately bounded invocation allowance.
+  if (
+    !['inspect-cleanup', 'consume-receipt', 'cancel'].includes(kind) &&
+    invocation.control.deadlineUnixNano !== null &&
+    (deadlineUnixNano === null || deadlineUnixNano > invocation.control.deadlineUnixNano)
+  )
+    deadlineUnixNano = invocation.control.deadlineUnixNano;
   const span = {
     ...original.span,
     spanId: randomBytes(8).toString('hex'),
     startTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
     endTimeUnixNano: null,
     name: `worker.${kind}`,
+    parentSpanId: parent?.span.spanId ?? root.span.spanId,
     status: { code: 'UNSET' as const },
     events: [],
+    links: inspectedSpan
+      ? [
+          {
+            traceId: inspectedSpan.traceId,
+            spanId: inspectedSpan.spanId,
+            flags: inspectedSpan.flags,
+            attributes: [],
+            droppedAttributesCount: 0,
+          },
+        ]
+      : [],
   };
   const intent: ExecutionJournalIntent = {
     execution: {
@@ -4750,27 +4846,43 @@ export async function beginWorkerTurnJournalStep(
       span: { ...root.span, endTimeUnixNano: null },
     },
     stepId: randomUUID(),
-    parentStepId: null,
+    parentStepId: parent?.stepId ?? null,
     control: {
       ...invocation.control,
       kind,
+      operationId: selectedCarriage.requestId,
+      fingerprint: commandInputHash({
+        execution: root.fingerprint,
+        kind,
+        carriage: selectedCarriage,
+      }),
+      ...(correlation?.target !== undefined ? { target: correlation.target } : {}),
       invocationId: randomUUID(),
       outputRefs: [],
       ...(correlation
         ? {
             operationId: correlation.operationId,
-            deadlineUnixNano:
-              correlation.deadline === null
-                ? null
-                : BigInt(Date.parse(correlation.deadline)) * 1_000_000n,
+            deadlineUnixNano,
           }
         : {}),
     },
-    parent: null,
-    carriage: carriage ?? { ...invocation.carriage, operation: `worker.${kind}` },
-    inspectedStep: null,
+    parent: parent
+      ? {
+          ref: { execution: parent.execution.ref, stepId: parent.stepId },
+          deadlineUnixNano: parent.control.deadlineUnixNano,
+        }
+      : null,
+    carriage: selectedCarriage,
+    inspectedStep: correlation?.inspectedStep ?? null,
     span,
   };
+  if (
+    parent?.control.deadlineUnixNano !== null &&
+    parent?.control.deadlineUnixNano !== undefined &&
+    (intent.control.deadlineUnixNano === null ||
+      intent.control.deadlineUnixNano > parent.control.deadlineUnixNano)
+  )
+    throw new Error('Worker child invocation cannot renew its original parent allowance.');
   await store.writeWorkspaceExecutionJournalIntent(workspaceDb.workspaceId, intent);
   return intent;
 }
@@ -4781,23 +4893,28 @@ export async function endWorkerTurnJournalStep(
   workspaceDb: WorkspaceDb,
   intent: ExecutionJournalIntent,
   state: 'completed' | 'failed' | 'unknown' | 'cancelled',
-  outputRefs: readonly string[] = []
+  outputRefs: readonly string[] = [],
+  consumeIntent?: ExecutionJournalIntent
 ): Promise<void> {
   const { root } = await readWorkerTurnJournal(workspaceDb, intent.execution.workId);
-  await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
-    ref: { execution: root.ref, stepId: intent.stepId },
-    expectedExecutionRevision: root.revision,
-    state,
-    outputRefs,
-    span: {
-      ...intent.span,
-      endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
-      status: { code: state === 'completed' ? 'OK' : 'ERROR' },
+  await store.settleWorkspaceExecutionJournalStep(
+    workspaceDb.workspaceId,
+    {
+      ref: { execution: root.ref, stepId: intent.stepId },
+      expectedExecutionRevision: root.revision,
+      state,
+      outputRefs,
+      span: {
+        ...intent.span,
+        endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+        status: { code: state === 'completed' ? 'OK' : 'ERROR' },
+      },
+      nextPhase: root.phase,
+      terminalCause: root.terminalCause,
+      exclusionRefs: root.exclusionRefs,
     },
-    nextPhase: root.phase,
-    terminalCause: root.terminalCause,
-    exclusionRefs: root.exclusionRefs,
-  });
+    consumeIntent
+  );
 }
 
 /** Ends actual materialization only after its owner acknowledged the real result. */
@@ -4827,32 +4944,76 @@ export async function endWorkerTurnMaterialization(
   });
 }
 
-/** Records actual release proof; prior unknown effects keep their exclusion and cannot close the root. */
+/** Records this owner's complete-domain release proof without changing historical unknown outcomes. */
 export async function endWorkerTurnJournalRelease(
   store: FsStore,
   workspaceDb: WorkspaceDb,
   turnId: string,
   fenceRef: string
 ): Promise<void> {
-  const release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+  let release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
   if (release.invocation.state === 'completed') {
     if (!isDeepStrictEqual(release.invocation.control.outputRefs, [fenceRef]))
       throw new Error('Worker release fence conflicts with its retained result.');
-    return;
-  }
-  if (release.invocation.state !== 'intent')
+    if (release.root.phase === 'closed') return;
+  } else if (release.invocation.state !== 'intent')
     throw new Error('Worker release obligation conflicts with its result.');
   const ended = await release.reader.readEndedSteps(release.root.ref);
-  const canClose =
-    !ended.some((step) => step.state === 'unknown') &&
-    release.root.openSteps.every((step) => step.stepId === release.invocation.ref.stepId);
+  // This entry is reached only after releaseTerminalAttempt verifies output, collection,
+  // drain, route revocation and the exact backend fence. Link that later proof separately.
+  for (const unknown of ended.filter((step) => step.state === 'unknown')) {
+    const linked = await release.reader.readLinkedInspections(unknown.ref);
+    if (
+      linked.some(
+        ({ inspection }) =>
+          inspection.state === 'completed' &&
+          inspection.control.kind === 'inspect-cleanup' &&
+          isDeepStrictEqual(inspection.control.outputRefs, [fenceRef])
+      )
+    )
+      continue;
+    const inspection = await beginWorkerTurnJournalStep(
+      store,
+      workspaceDb,
+      turnId,
+      'inspect-cleanup',
+      {
+        ...release.invocation.carriage,
+        operation: 'worker.release-inspection',
+        requestId: fenceRef,
+      },
+      { operationId: fenceRef, deadline: null, inspectedStep: unknown.ref }
+    );
+    await endWorkerTurnJournalStep(store, workspaceDb, inspection, 'completed', [fenceRef]);
+  }
+  release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+  let ref = release.invocation.ref;
+  let span = release.span;
+  if (release.invocation.state === 'completed') {
+    const inspection = await beginWorkerTurnJournalStep(
+      store,
+      workspaceDb,
+      turnId,
+      'inspect-cleanup',
+      {
+        ...release.invocation.carriage,
+        operation: 'worker.release-inspection',
+        requestId: fenceRef,
+      },
+      { operationId: fenceRef, deadline: null, inspectedStep: release.invocation.ref }
+    );
+    ref = { execution: inspection.execution.ref, stepId: inspection.stepId };
+    span = inspection.span;
+    release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+  }
+  const canClose = release.root.openSteps.every((step) => step.stepId === ref.stepId);
   await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
-    ref: release.invocation.ref,
+    ref,
     expectedExecutionRevision: release.root.revision,
     state: 'completed',
     outputRefs: [fenceRef],
     span: {
-      ...release.span,
+      ...span,
       endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
       status: { code: 'OK' },
     },

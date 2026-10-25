@@ -19,7 +19,11 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import {
+  acknowledgeTestExternalWorkspaceConsumer,
+  queueTestPreparedHarnessOperation,
+  recordTestExecutionAttempt,
+} from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -27,7 +31,7 @@ import {
   markNanoHostHarnessOperationUnknown,
   type NanoHostHarnessCommand,
   openNanoHostAgentSessionBinding,
-  queueNanoHostHarnessOperation,
+  prepareNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
@@ -145,6 +149,17 @@ describe('Harness delivery localization through real Core and shim owners', () =
     const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-lifecycle-diag-')));
     applyMigrations(coreDb);
+    const preparedOperations = new Map<
+      string,
+      ReturnType<typeof prepareNanoHostHarnessOperation>
+    >();
+    // Core transport owns the queued identity; the outside admission owner retains its wire body.
+    const queueOperation = (input: Parameters<typeof prepareNanoHostHarnessOperation>[1]) => {
+      const prepared = prepareNanoHostHarnessOperation(coreDb, input);
+      queueTestPreparedHarnessOperation(coreDb, { ...input, prepared });
+      preparedOperations.set(prepared.command.operationId, prepared);
+      return prepared.command;
+    };
     const authority = createNanoHostTransportSessionAuthority();
     const target = { deploymentId: 'diag', identityId: 'diag', targetId: 'diag' };
     allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
@@ -258,15 +273,28 @@ describe('Harness delivery localization through real Core and shim owners', () =
       dispatch,
       nanoHostConfig: target,
       harnessCommandDispatched: (command) => {
+        const prepared = preparedOperations.get(command.operationId);
+        if (!prepared || prepared.command.sequence !== command.sequence)
+          throw new Error('Diagnostic fixture lost its exact prepared command.');
+        const wireCommand = { ...command, body: prepared.wireBody };
         dispatchCount += 1;
-        dispatchedCommand = command;
-        operationId = command.operationId;
+        dispatchedCommand = wireCommand;
+        operationId = wireCommand.operationId;
         rawTokens = ['workerControlToken', 'inferenceToken', 'capabilityToken'].map(
-          (name) => command.body[name] as string
+          (name) => wireCommand.body[name] as string
         );
         committed.resolve();
-        return command;
+        return wireCommand;
       },
+      // Model the outside Workspace consumer; this suite proves Core/shim diagnostics, not native execution.
+      harnessResultSettled: () =>
+        acknowledgeTestExternalWorkspaceConsumer(coreDb, {
+          harnessInstanceId: 'diag-harness',
+          harnessBindingRef: 'diag-harness-binding',
+          workspaceId: testEntityId('ws', 'diag-workspace'),
+          turnId: testEntityId('tu', 'diag-turn'),
+          timestamp: new Date().toISOString(),
+        }),
     });
     const listener = getRequestListener(app.fetch);
     let admitted = false;
@@ -388,7 +416,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
                   )
                 ).status
               ).toBe(204);
-              queueNanoHostHarnessOperation(coreDb, {
+              queueOperation({
                 harnessInstanceId: 'diag-harness',
                 operation: 'session.inspect',
                 timestamp: new Date().toISOString(),
@@ -476,7 +504,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         operationId: 'diag-submit',
         now: () => now,
       });
-      queueNanoHostHarnessOperation(coreDb, {
+      const queuedCommand = queueOperation({
         harnessInstanceId: 'diag-harness',
         operation: 'turn.start',
         timestamp: now,
@@ -534,7 +562,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
             )
           ).status
         ).toBe(204);
-        queueNanoHostHarnessOperation(coreDb, {
+        queueOperation({
           harnessInstanceId: 'diag-harness',
           operation: 'session.inspect',
           timestamp: new Date().toISOString(),
@@ -587,7 +615,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
               )
             ).status
           ).toBe(204);
-          queueNanoHostHarnessOperation(coreDb, {
+          queueOperation({
             harnessInstanceId: 'diag-harness',
             operation: 'session.inspect',
             timestamp: new Date().toISOString(),
@@ -626,7 +654,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
           coreDb.sqlite
             .prepare('SELECT operation_state, operation_id FROM harness_instance_records')
             .get()
-        ).toEqual({ operation_state: 'queued', operation_id: null });
+        ).toEqual({ operation_state: 'queued', operation_id: queuedCommand.operationId });
         expect(
           coreDb.sqlite
             .prepare(
@@ -655,7 +683,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
           coreDb.sqlite
             .prepare('SELECT operation_state, operation_id FROM harness_instance_records')
             .get()
-        ).toEqual({ operation_state: 'queued', operation_id: null });
+        ).toEqual({ operation_state: 'queued', operation_id: queuedCommand.operationId });
         expect(
           coreDb.sqlite
             .prepare('SELECT worker_control_token_hash FROM scheduler_execution_attempts')

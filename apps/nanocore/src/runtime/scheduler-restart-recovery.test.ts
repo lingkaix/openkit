@@ -2581,7 +2581,8 @@ function dispatchLease(
   triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID },
   submitted = true,
   nativePrepared = true,
-  threadId = testEntityId('th', `th_${suffix}`)
+  threadId = testEntityId('th', `th_${suffix}`),
+  admittedAt = '2026-07-05T00:00:01.000Z'
 ): void {
   const responsible =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -2613,19 +2614,19 @@ function dispatchLease(
     turnId: testEntityId('tu', `turn_${suffix}`),
     turnInput: `Run ${suffix}`,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    now: () => '2026-07-05T00:00:01.000Z',
+    now: () => admittedAt,
   });
   if (!nativePrepared) {
     const attempt = attempts.createSchedulerExecutionAttempt(coreDb, {
       entry,
       attemptId: testEntityId('attempt', `lease_${suffix}`),
       preparationInput: { admission: entry },
-      now: () => '2026-07-05T00:00:02.000Z',
+      now: () => new Date(Date.parse(admittedAt) + 1_000).toISOString(),
     });
     attempts.bindSchedulerExecutionAttemptSession(coreDb, {
       attemptId: attempt.attemptId,
       agentSessionId: testEntityId('as', `as_${suffix}`),
-      now: () => '2026-07-05T00:00:02.000Z',
+      now: () => new Date(Date.parse(admittedAt) + 1_000).toISOString(),
     });
   } else {
     recordTestExecutionAttempt(coreDb, {
@@ -2635,7 +2636,7 @@ function dispatchLease(
       inputRef: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
       bindingRef: `lease-binding:lease_${suffix}`,
       sessionCompatibilityKey: 'sha256:restart-fixture',
-      now: () => '2026-07-05T00:00:02.000Z',
+      now: () => new Date(Date.parse(admittedAt) + 1_000).toISOString(),
       ...(submitted ? { operationId: `operation_${suffix}` } : {}),
     });
   }
@@ -5472,6 +5473,8 @@ describe('minimal scheduler reconnect contract', () => {
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
     const coreDb = createMigratedCoreDb(false);
     const suffix = 'graceful_same_epoch_reconnect';
+    const epochShift = Date.now() - Date.parse('2026-07-05T00:00:00.000Z');
+    const at = (value: string) => new Date(Date.parse(value) + epochShift).toISOString();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -5485,7 +5488,7 @@ describe('minimal scheduler reconnect contract', () => {
     );
     await store.createAgentSession({
       agentId: 'agent_codex_host',
-      createdAt: '2026-07-05T00:00:01.000Z',
+      createdAt: at('2026-07-05T00:00:01.000Z'),
       environmentPackageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
       id: testEntityId('as', `as_${suffix}`),
       message: null,
@@ -5493,12 +5496,20 @@ describe('minimal scheduler reconnect contract', () => {
       sessionCompatibilityKey: null,
       status: 'busy',
       threadId: testEntityId('th', `th_${suffix}`),
-      updatedAt: '2026-07-05T00:00:01.000Z',
+      updatedAt: at('2026-07-05T00:00:01.000Z'),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       workspaceRoots: [],
     });
     // Real materialization precedes submitted/native ownership; it cannot create over a live lease.
-    dispatchLease(coreDb, suffix, undefined, false);
+    dispatchLease(
+      coreDb,
+      suffix,
+      undefined,
+      false,
+      true,
+      testEntityId('th', `th_${suffix}`),
+      at('2026-07-05T00:00:01.000Z')
+    );
     recordBackendSession(coreDb, suffix, 'materializing');
     const fixture = {
       reconnectKey: reconnectKeyFor(suffix),
@@ -5630,7 +5641,7 @@ describe('minimal scheduler reconnect contract', () => {
           readonly backend: {
             materialize(
               environmentPackage: AgentEnvironmentPackage,
-              context: { readonly workspaceRoots: [] }
+              context: { readonly workspaceRoots: []; readonly sandboxBindingRef: string }
             ): Promise<unknown>;
             planSession(environmentPackage: AgentEnvironmentPackage): {
               readonly backendSessionId: string;
@@ -5645,10 +5656,42 @@ describe('minimal scheduler reconnect contract', () => {
            WHERE attempt_id = ?`
         )
         .run(initialBackend.planSession(environmentPackage).backendSessionId, leaseId);
-      vi.useFakeTimers({ toFake: ['Date'] });
-      vi.setSystemTime(new Date('2026-07-05T00:00:07.000Z'));
+      // Admit the actual Workspace journal before native materialization, on its live clock.
+      await store.createTurn(
+        environmentPackage.scope.workspaceId,
+        environmentPackage.scope.threadId,
+        'Same-Epoch restart fixture',
+        environmentPackage.scope.triggerActor,
+        null,
+        {
+          turnId: environmentPackage.scope.turnId,
+          agentId: environmentPackage.agent.agentId,
+          executorKind: 'worker',
+        }
+      );
+      const journalDb = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
       try {
-        await initialBackend.materialize(environmentPackage, { workspaceRoots: [] });
+        const journalIntents = prepareWorkerTurnJournalIntents(
+          journalDb,
+          environmentPackage,
+          attempts.requireSchedulerExecutionAttempt(coreDb, leaseId),
+          { backendKind: 'openshell', targetId: runtimeTargetId, allocationRef: sandboxBindingRef }
+        );
+        await store.updateTurn(
+          environmentPackage.scope.turnId,
+          { agentSessionId: environmentPackage.scope.agentSessionId },
+          { journalIntents }
+        );
+      } finally {
+        journalDb.sqlite.close();
+      }
+      await initialBackend.materialize(environmentPackage, {
+        workspaceRoots: [],
+        sandboxBindingRef,
+      });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(at('2026-07-05T00:00:07.000Z')));
+      try {
         const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
           attemptId: leaseId,
           operationId: `operation_${suffix}`,
@@ -5715,14 +5758,14 @@ describe('minimal scheduler reconnect contract', () => {
         effectiveSetupGeneration: 1,
         harnessInstanceId: harness.harnessInstanceId,
         threadId: environmentPackage.scope.threadId,
-        timestamp: '2026-07-05T00:00:07.000Z',
+        timestamp: at('2026-07-05T00:00:07.000Z'),
         workspaceId: environmentPackage.scope.workspaceId,
       });
       effects.length = 0;
       recordNanoHostRuntimeTargetConnectionClose(coreDb, {
         authoritativeGeneration: null,
         closedGeneration: 1,
-        observedAt: '2026-07-05T00:00:08.000Z',
+        observedAt: at('2026-07-05T00:00:08.000Z'),
         targetId: runtimeTargetId,
       });
 
@@ -5739,7 +5782,7 @@ describe('minimal scheduler reconnect contract', () => {
       ).resolves.toBeUndefined();
       await recoverTestStartup(coreDb, {
         cleanupBackendSession: restartedRuntime.cleanupBackendSession,
-        now: () => '2026-07-05T00:01:00.000Z',
+        now: () => at('2026-07-05T00:01:00.000Z'),
         prepareBackendCleanup: restartedRuntime.prepareBackendCleanup,
         projectRecoveredTurn: async () => ({ status: 'failed' }),
         restoreBackendSession: restartedRuntime.restoreBackendSession,
@@ -5777,7 +5820,7 @@ describe('minimal scheduler reconnect contract', () => {
       ).rejects.toThrow(/not ready for admission/i);
       expect(() =>
         adoptNanoHostAttemptReconnect(coreDb, {
-          acceptedAt: '2026-07-05T00:01:01.000Z',
+          acceptedAt: at('2026-07-05T00:01:01.000Z'),
           lineage: fixture.lineage,
           reconnectKey: fixture.reconnectKey,
           sandboxBindingRef,
@@ -5792,20 +5835,20 @@ describe('minimal scheduler reconnect contract', () => {
       const differentGeneration = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         deploymentId: 'deployment-test',
         identityId: 'identity-test',
-        observedAt: '2026-07-05T00:01:02.000Z',
+        observedAt: at('2026-07-05T00:01:02.000Z'),
         targetId: runtimeTargetId,
       });
       upsertNanoHostRuntimeTarget(coreDb, {
         ...differentGeneration,
         freshEmpty: true,
-        observedAt: '2026-07-05T00:01:03.000Z',
+        observedAt: at('2026-07-05T00:01:03.000Z'),
         physicalEpoch: 'b'.repeat(64),
         predecessorFenced: true,
         ready: true,
       });
       expect(() =>
         adoptNanoHostAttemptReconnect(coreDb, {
-          acceptedAt: '2026-07-05T00:01:04.000Z',
+          acceptedAt: at('2026-07-05T00:01:04.000Z'),
           lineage: fixture.lineage,
           reconnectKey: fixture.reconnectKey,
           sandboxBindingRef,
@@ -5820,20 +5863,20 @@ describe('minimal scheduler reconnect contract', () => {
       const sameGeneration = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         deploymentId: 'deployment-test',
         identityId: 'identity-test',
-        observedAt: '2026-07-05T00:01:05.000Z',
+        observedAt: at('2026-07-05T00:01:05.000Z'),
         targetId: runtimeTargetId,
       });
       upsertNanoHostRuntimeTarget(coreDb, {
         ...sameGeneration,
         freshEmpty: true,
-        observedAt: '2026-07-05T00:01:06.000Z',
+        observedAt: at('2026-07-05T00:01:06.000Z'),
         physicalEpoch: 'a'.repeat(64),
         predecessorFenced: true,
         ready: true,
       });
       expect(
         adoptNanoHostAttemptReconnect(coreDb, {
-          acceptedAt: '2026-07-05T00:01:07.000Z',
+          acceptedAt: at('2026-07-05T00:01:07.000Z'),
           lineage: fixture.lineage,
           reconnectKey: fixture.reconnectKey,
           sandboxBindingRef,

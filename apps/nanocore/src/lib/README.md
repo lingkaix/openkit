@@ -1,5 +1,7 @@
 # Library
 
+Workspace journal settlement can carry its linked receipt-consumption intent in the same existing native request and savepoint. Callers await the covering FULL acknowledgement before Core consumption, receiver acknowledgement or release of the producer's command slot. This join adds no second transaction owner and does not treat a callback or a missing consumer as durable proof.
+
 This directory contains NanoCore's existing app-local product-state aggregate and deterministic simulator. It is not a general utility directory.
 
 ## Boundaries

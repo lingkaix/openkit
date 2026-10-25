@@ -30,6 +30,7 @@ import {
   recordNanoHostEffectAcceptance,
 } from '../telemetry.js';
 import {
+  CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   createExecutionStepJournalReader,
   settleExecutionJournalStep,
@@ -262,6 +263,12 @@ export interface NanoHostSessionEffectRequest {
     readonly workId: string;
     readonly authorize: () => boolean;
   };
+  /** Rechecks the original owning journal immediately before physical delivery. Never wire data. */
+  readonly beforeDelivery?: (() => Promise<void>) | undefined;
+  /** Commits the actual owner's outcome and receipt obligation before receiver acknowledgement. */
+  readonly consumeResult?:
+    | ((result: Readonly<Record<string, unknown>>) => Promise<void>)
+    | undefined;
   /** Process-private live capture cancellation; never hashed or carried on the wire. */
   readonly signal?: AbortSignal | undefined;
   readonly input: Readonly<Record<string, unknown>>;
@@ -277,6 +284,8 @@ interface NanoHostCleanupResultOnlyExpectation {
   /** Immutable origin of the physical cleanup target. */
   readonly originPhysicalEpoch: string;
   readonly requestId: string;
+  /** Existing owning journal must consume this exact recovered result before HTTP acknowledgement. */
+  readonly consumeResult?: (result: Readonly<Record<string, unknown>>) => Promise<void>;
 }
 
 /** One exact accepted preparation-image identity reconstructed without replay authority. */
@@ -382,6 +391,10 @@ export interface NanoHostSessionDispatch {
 
 /** One process-local pending effect owned by the dispatcher. */
 interface PendingNanoHostEffect {
+  readonly beforeDelivery?: (() => Promise<void>) | undefined;
+  readonly consumeResult?:
+    | ((result: Readonly<Record<string, unknown>>) => Promise<void>)
+    | undefined;
   /** Initiating context captured at enqueue, outside exact command and result identity. */
   readonly telemetryContext?: TelemetryContext | undefined;
   /** Caller has left; accepted file results remain owned solely for verified disposal. */
@@ -452,10 +465,14 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   readonly dispatch: NanoHostSessionDispatch;
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
   readonly harnessCommandDispatched?:
-    | ((command: NanoHostHarnessCommand) => NanoHostHarnessCommand)
+    | ((
+        command: NanoHostHarnessCommand
+      ) => NanoHostHarnessCommand | Promise<NanoHostHarnessCommand>)
     | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
-  readonly harnessResultSettled?: ((result: NanoHostHarnessResult) => void) | undefined;
+  readonly harnessResultSettled?:
+    | ((result: NanoHostHarnessResult) => void | Promise<void>)
+    | undefined;
   /** Releases the exact live waiter into cleanup after incomplete-delivery fencing or storage failure. */
   readonly harnessCommandDeliveryFailed?:
     | ((
@@ -824,6 +841,8 @@ export function createNanoHostSessionDispatch(
             telemetryContext: captureTelemetryContext(),
             ...(collectionAbort ? { collectionAbort } : {}),
             accepted: false,
+            beforeDelivery: request.beforeDelivery,
+            consumeResult: request.consumeResult,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
             ...(imageExecution ? { imageExecution } : {}),
             command,
@@ -834,6 +853,20 @@ export function createNanoHostSessionDispatch(
           });
           if (operation === 'file.export' && request.input.purpose === 'artifact-submission') {
             armLiveFileExportWait(pendingEffects, pendingEffects.get(operation)!, request.signal);
+          } else if (request.signal) {
+            const pending = pendingEffects.get(operation)!;
+            const abandon = () => {
+              if (pendingEffects.get(operation) !== pending) return;
+              pending.collectionAbort?.abort();
+              if (!pending.accepted) removePendingEffectGroup(pendingEffects, operation, pending);
+              pending.reject(
+                new Error('NanoHost original effect allowance ended; outcome requires inspection.')
+              );
+            };
+            pending.fileExportWaitCleanup = () =>
+              request.signal?.removeEventListener('abort', abandon);
+            request.signal.addEventListener('abort', abandon, { once: true });
+            if (request.signal.aborted) abandon();
           }
           if (imageExecution) {
             const journal = imageExecution;
@@ -969,6 +1002,7 @@ export function createNanoHostSessionDispatch(
               : {}),
             reject,
             requestId: expectation.requestId,
+            ...('consumeResult' in expectation ? { consumeResult: expectation.consumeResult } : {}),
             resolve: (value) => resolve(value as NanoHostResultOnlySettlement),
             resultOnlyGroup: group,
             ...(expectation.originPhysicalEpoch !== undefined
@@ -1075,6 +1109,13 @@ export function createNanoHostSessionDispatch(
           pending.reject(new Error('Image delivery authority is no longer usable.'));
           return null;
         }
+      }
+      if (pending.beforeDelivery) {
+        await pending.beforeDelivery();
+        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+        requireCurrentReadiness(pollingReadiness);
+        if (pendingEffects.get(operation) !== pending || pending.accepted || !pending.command)
+          return null;
       }
       pending.accepted = true;
       pending.acceptedConnection = physicalConnection;
@@ -1224,6 +1265,61 @@ export function createNanoHostSessionDispatch(
             return;
           }
         }
+        if (input.coreDb) {
+          const retained = input.coreDb.sqlite
+            .prepare(`SELECT execution_id, step_id
+            FROM control_execution_steps
+            WHERE json_extract(control_json, '$.definitionVersion') = ?
+              AND json_extract(invocation_json, '$.carriage.operation') = ?
+              AND json_extract(invocation_json, '$.carriage.requestId') = ?
+              AND json_extract(control_json, '$.kind') <> 'consume-receipt'`)
+            .all(CORE_IDLE_CLEANUP_EXECUTION_DEFINITION, operation, requestId) as {
+            execution_id: string;
+            step_id: string;
+          }[];
+          if (retained.length > 0) {
+            if (retained.length !== 1)
+              throw effectTransportError(409, 'NanoHost idle cleanup receipt identity conflicts.');
+            const selected = retained[0]!;
+            const ref = { owner: { kind: 'server' as const }, executionId: selected.execution_id };
+            const reader = createExecutionStepJournalReader(input.coreDb, ref.owner);
+            const original = await reader.readInvocation({
+              execution: ref,
+              stepId: selected.step_id,
+            });
+            const linked = await reader.readLinkedInspections({
+              execution: ref,
+              stepId: selected.step_id,
+            });
+            requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+            const readiness = readyPhysicalConnections.get(physicalConnection);
+            const epoch = readiness ? requireCurrentReadiness(readiness) : null;
+            const fingerprint = commandInputHash(resultBody);
+            if (
+              !readiness ||
+              epoch === null ||
+              original.control.target?.targetId !== readiness.runtimeTarget.targetId ||
+              !original.control.physicalFenceRefs.includes(epoch) ||
+              !['completed', 'failed', 'unknown'].includes(original.state) ||
+              (original.state !== 'unknown' &&
+                (original.control.outputRefs.length !== 1 ||
+                  original.control.outputRefs[0] !== fingerprint)) ||
+              !linked.some(
+                ({ inspection: step }) =>
+                  step.control.kind === 'consume-receipt' &&
+                  step.state === 'completed' &&
+                  step.control.operationId === requestId &&
+                  step.control.outputRefs.length === 1 &&
+                  step.control.outputRefs[0] === fingerprint
+              )
+            )
+              throw effectTransportError(
+                409,
+                'NanoHost idle cleanup retained consumption conflicts.'
+              );
+            return;
+          }
+        }
         const completed = completedEffects.get(operation);
         if (completed?.requestId === requestId && completed.resultJson === resultJson) {
           if (
@@ -1311,6 +1407,13 @@ export function createNanoHostSessionDispatch(
           console.info('nanohost image settlement recovered');
       }
       if (isExactEffectFailure) {
+        await pending.consumeResult?.(resultBody);
+        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+        if (pendingEffects.get(operation) !== pending)
+          throw effectTransportError(
+            409,
+            'NanoHost effect consumer changed during acknowledgement.'
+          );
         removePendingEffectGroup(pendingEffects, operation, pending);
         completedEffects.set(operation, {
           redeliveredConnection: physicalConnection,
@@ -1351,6 +1454,12 @@ export function createNanoHostSessionDispatch(
           throw effectTransportError(409, 'NanoHost import result disagrees with its command.');
         }
       }
+      const callerResult =
+        resourceSummary === undefined ? resultBody : { ...resultBody, resourceSummary };
+      await pending.consumeResult?.(callerResult);
+      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      if (pendingEffects.get(operation) !== pending)
+        throw effectTransportError(409, 'NanoHost effect consumer changed during acknowledgement.');
       removePendingEffectGroup(pendingEffects, operation, pending);
       completedEffects.set(operation, {
         requestId,
@@ -1360,8 +1469,6 @@ export function createNanoHostSessionDispatch(
           : {}),
       });
       recordNanoHostEffectAcceptance(telemetryHeaders);
-      const callerResult =
-        resourceSummary === undefined ? resultBody : { ...resultBody, resourceSummary };
       pending.resolve(
         pending.resultOnlyGroup ? { kind: operation, result: callerResult } : callerResult
       );
@@ -1451,11 +1558,7 @@ export function createNanoHostSessionDispatch(
         await rm(staged.directory, { force: true, recursive: true });
         throw error;
       }
-      clearTimeout(pending.collectionTimeout);
-      pending.command = null;
-      pendingEffects.delete('workspace.collect');
-      recordNanoHostEffectAcceptance(request.headers);
-      pending.resolve({
+      const result = {
         outcome: 'candidate',
         head,
         previousHead,
@@ -1464,7 +1567,19 @@ export function createNanoHostSessionDispatch(
         byteLength,
         sha256,
         stagingPath: staged.path,
-      });
+      };
+      await pending.consumeResult?.(result);
+      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      if (pendingEffects.get('workspace.collect') !== pending)
+        throw effectTransportError(
+          409,
+          'Workspace collection consumer changed during acknowledgement.'
+        );
+      clearTimeout(pending.collectionTimeout);
+      pending.command = null;
+      pendingEffects.delete('workspace.collect');
+      recordNanoHostEffectAcceptance(request.headers);
+      pending.resolve(result);
     },
 
     async fileExportResult(physicalConnection, request) {
@@ -1501,6 +1616,17 @@ export function createNanoHostSessionDispatch(
         // A complete late copy is verified above and disposed before uncertain admission is freed.
         await rm(staged.directory, { force: true, recursive: true });
       }
+      const result = {
+        byteLength: metadata.byteLength,
+        relativePath: metadata.relativePath,
+        sha256: metadata.sha256,
+        slot: metadata.slot,
+        stagingPath: staged.path,
+      };
+      await pending.consumeResult?.(result);
+      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      if (pendingEffects.get('file.export') !== pending)
+        throw effectTransportError(409, 'NanoHost file consumer changed during acknowledgement.');
       removePendingEffectGroup(pendingEffects, 'file.export', pending);
       completedEffects.set('file.export', {
         fileResult: metadata,
@@ -1510,13 +1636,7 @@ export function createNanoHostSessionDispatch(
       });
       recordNanoHostEffectAcceptance(request.headers);
       if (pending.fileExportAbandoned) return;
-      pending.resolve({
-        byteLength: metadata.byteLength,
-        relativePath: metadata.relativePath,
-        sha256: metadata.sha256,
-        slot: metadata.slot,
-        stagingPath: staged.path,
-      });
+      pending.resolve(result);
     },
 
     async route(physicalConnection, request) {
@@ -1813,12 +1933,25 @@ export function registerNanoHostSessionSemanticRoutes(
               sandboxIntegrationBindingRef,
             });
           const committedAt = performance.now();
-          if (command && !delivery) {
-            command = input.harnessCommandDispatched?.(command) ?? command;
+          if (command) {
+            if (!input.harnessCommandDispatched)
+              throw new Error('NanoHost Harness native delivery admission is unavailable.');
+            // Repeated carriage uses the same exact invocation and cannot renew its allowance.
+            command = await input.harnessCommandDispatched(command);
           }
           const boundAt = performance.now();
           if (!command) return context.body(null, 204);
-          const wire = delivery?.wire ?? JSON.stringify(command);
+          if (
+            request.signal.aborted ||
+            incoming?.aborted ||
+            incoming?.stream.destroyed ||
+            incoming?.stream.rstCode ||
+            !pendingDelivery(command)
+          )
+            return context.body(null, 204);
+          const wire = JSON.stringify(command);
+          if (delivery && delivery.wire !== wire)
+            throw new Error('NanoHost Harness repeated carriage changed its exact command.');
           const encodedAt = performance.now();
           if (!delivery && progress?.get(command.harnessInstanceId) === command.sequence) {
             const selected = command;
@@ -1899,8 +2032,11 @@ export function registerNanoHostSessionSemanticRoutes(
           sandboxIntegrationBindingRef,
           result,
           timestamp: new Date().toISOString(),
-          onSettled: input.harnessResultSettled,
         });
+        if (!input.harnessResultSettled)
+          throw new Error('NanoHost Harness native result consumer is unavailable.');
+        // Exact result replay must cross the same durable consumer boundary before HTTP ACK.
+        await input.harnessResultSettled(result);
         const settledDelivery = deliveries.get(result.harnessInstanceId);
         if (settledDelivery?.command.operationId === result.operationId)
           releaseDelivery(settledDelivery);

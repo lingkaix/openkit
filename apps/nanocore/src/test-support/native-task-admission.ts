@@ -335,7 +335,7 @@ export function createNativeTaskAdmissionFixture(
         let commandSettled = false;
         let turn: ReturnType<typeof executionFor> | undefined;
         try {
-          const wire = runtime.acceptNanoHostHarnessCommand(command);
+          const wire = await runtime.acceptNanoHostHarnessCommand(command);
           const agentSessionId = command.body.agentSessionId;
           if (typeof agentSessionId !== 'string') throw new Error('Native command lacks Session.');
           let harness = bindings.get(command.harnessInstanceId);
@@ -470,7 +470,7 @@ export function createNativeTaskAdmissionFixture(
             timestamp: new Date().toISOString(),
           });
           commandSettled = true;
-          runtime.acceptNanoHostHarnessResult(result);
+          await runtime.acceptNanoHostHarnessResult(result);
           if (command.operation === 'turn.start') {
             turn!.acceptedStart = true;
             // Export history retains peer data, without the stopped controller's gates or callbacks.

@@ -4,6 +4,7 @@ import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
+  HarnessCommandBodySchemas,
   HarnessQueuedCommandBodySchemas,
   HarnessResultEnvelopeReaderSchema,
   NativeEnvironmentRecordSchema,
@@ -90,8 +91,27 @@ export interface OpenNanoHostAgentSessionBindingInput {
   readonly workspaceId: string;
 }
 
+/** Exact durable command identity and its separately retained transient wire body. */
+export interface PreparedNanoHostHarnessOperation {
+  readonly command: NanoHostHarnessCommand;
+  readonly wireBody: Readonly<Record<string, unknown>>;
+}
+
+/** Read-only preparation after the existing Harness slot wait, before native child admission. */
+export interface PrepareNanoHostHarnessOperationInput {
+  readonly body: Readonly<Record<string, unknown>>;
+  readonly harnessInstanceId: string;
+  readonly operation: NanoHostHarnessOperation;
+  readonly timestamp: string;
+  /** Test seam for the three turn.start route tokens. */
+  readonly routeToken?: () => string;
+  /** Test seam for the two session.open loopback credentials. */
+  readonly loopbackCredential?: () => string;
+}
+
 /** Input for queueing one fixed Harness operation. */
 export interface QueueNanoHostHarnessOperationInput {
+  readonly prepared: PreparedNanoHostHarnessOperation;
   readonly body: Readonly<Record<string, unknown>>;
   readonly harnessInstanceId: string;
   readonly operation: NanoHostHarnessOperation;
@@ -102,10 +122,6 @@ export interface QueueNanoHostHarnessOperationInput {
 export interface DispatchNanoHostHarnessOperationInput {
   readonly sandboxIntegrationBindingRef: string;
   readonly now?: () => string;
-  /** Test seam for the three `turn.start` route tokens. */
-  readonly routeToken?: () => string;
-  /** Test seam for the two `session.open` loopback credentials. */
-  readonly loopbackCredential?: () => string;
 }
 
 /** Input for settling one exact Harness result. */
@@ -113,8 +129,6 @@ export interface SettleNanoHostHarnessOperationInput {
   readonly sandboxIntegrationBindingRef: string;
   readonly result: NanoHostHarnessResult;
   readonly timestamp: string;
-  /** Called after durable first settlement with only the admitted result core. */
-  readonly onSettled?: ((result: NanoHostHarnessResult) => void) | undefined;
 }
 
 /** Input for widening one dispatched operation to unknown cleanup. */
@@ -210,6 +224,7 @@ interface HarnessRow {
   readonly operation_sequence: number | null;
   readonly operation: NanoHostHarnessOperation | null;
   readonly command_body_json: string | null;
+  readonly command_fingerprint: string | null;
   readonly result_json: string | null;
   readonly result_fingerprint: string | null;
   readonly updated_at: string;
@@ -873,45 +888,113 @@ export function listNanoHostMeasuredHarnessIdentities(
     .filter((digest) => /^sha256:[0-9a-f]{64}$/.test(digest));
 }
 
-/** Queues one fixed typed operation without raw route credentials or clearing a prior result receipt. */
+/**
+ * Prepares exact native identity after serialization and before native child admission.
+ * This owner reads current lineage without SQL writes. Raw credentials stay transient.
+ */
+export function prepareNanoHostHarnessOperation(
+  coreDb: CoreDb,
+  input: PrepareNanoHostHarnessOperationInput
+): PreparedNanoHostHarnessOperation {
+  const body = requireHarnessOperationBody(input.operation, input.body);
+  const harness = requireHarness(coreDb, input.harnessInstanceId);
+  requireOperationLineage(coreDb, harness, input.operation, body);
+  let wireBody = body;
+  if (input.operation === 'turn.start') {
+    const token = input.routeToken ?? (() => randomBytes(32).toString('base64url'));
+    const workerControlToken = requireRouteToken(token());
+    let inferenceToken = requireRouteToken(token());
+    while (inferenceToken === workerControlToken) inferenceToken = requireRouteToken(token());
+    let capabilityToken = requireRouteToken(token());
+    while (capabilityToken === workerControlToken || capabilityToken === inferenceToken)
+      capabilityToken = requireRouteToken(token());
+    wireBody = { ...body, capabilityToken, inferenceToken, workerControlToken };
+  } else if (input.operation === 'session.open') {
+    const credential = input.loopbackCredential ?? (() => randomBytes(32).toString('base64url'));
+    const inferenceLoopbackCredential = requireRouteToken(credential());
+    let capabilityLoopbackCredential = requireRouteToken(credential());
+    while (capabilityLoopbackCredential === inferenceLoopbackCredential)
+      capabilityLoopbackCredential = requireRouteToken(credential());
+    wireBody = { ...body, capabilityLoopbackCredential, inferenceLoopbackCredential };
+  }
+  // Compare the same JSON representation that survives Core publication and reopen.
+  const durableBody = readJsonObject(
+    canonicalJson(redactHarnessWireBody(input.operation, wireBody))
+  );
+  return {
+    command: {
+      body: durableBody,
+      harnessInstanceId: harness.harness_instance_id,
+      operation: input.operation,
+      operationId: harnessOperationId(harness, input.operation, harness.next_sequence, durableBody),
+      schemaVersion: 2,
+      sequence: harness.next_sequence,
+    },
+    wireBody,
+  };
+}
+
+/** Queues the prepared identity without credentials or unconsumed receipt retirement. */
 export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: QueueNanoHostHarnessOperationInput
 ): number {
   const startedAt = performance.now();
   try {
-    input = { ...input, body: requireHarnessOperationBody(input.operation, input.body) };
+    const body = requireHarnessOperationBody(input.operation, input.body);
     coreDb.sqlite.exec('BEGIN IMMEDIATE');
     try {
       const harness = requireHarness(coreDb, input.harnessInstanceId);
       if (!['idle', 'settled'].includes(harness.operation_state)) {
         throw new Error('NanoHost Harness already has an unsettled operation.');
       }
+      // Queueing retains the predecessor receipt; only physical dispatch may retire it.
       if (
         (input.operation === 'session.open' || input.operation === 'turn.start') &&
         (harness.lifecycle_state !== 'open' || harness.drain_state !== 'accepting')
       ) {
         throw new Error('NanoHost Harness is not accepting new work.');
       }
-      requireOperationLineage(coreDb, harness, input.operation, input.body);
-      const commandBodyJson = canonicalJson(input.body);
-      coreDb.sqlite
+      requireOperationLineage(coreDb, harness, input.operation, body);
+      const command = input.prepared.command;
+      const durableBody = redactHarnessWireBody(input.operation, input.prepared.wireBody);
+      const commandBodyJson = canonicalJson(durableBody);
+      if (
+        command.schemaVersion !== 2 ||
+        command.harnessInstanceId !== harness.harness_instance_id ||
+        command.operation !== input.operation ||
+        command.sequence !== harness.next_sequence ||
+        canonicalJson(command.body) !== commandBodyJson ||
+        canonicalJson(requireDurableHarnessBody(input.operation, command.body)) !==
+          canonicalJson(body) ||
+        command.operationId !==
+          harnessOperationId(harness, input.operation, command.sequence, durableBody)
+      ) {
+        throw new Error(
+          'NanoHost Harness prepared identity conflicts with current binding or sequence.'
+        );
+      }
+      const update = coreDb.sqlite
         .prepare(
           `UPDATE harness_instance_records
-         SET operation_state = 'queued', operation_id = NULL,
+         SET operation_state = 'queued', operation_id = ?,
              operation_sequence = next_sequence, operation = ?, command_body_json = ?,
              command_fingerprint = ?, updated_at = ?
-         WHERE harness_instance_id = ? AND operation_state IN ('idle', 'settled')`
+         WHERE harness_instance_id = ? AND operation_state IN ('idle', 'settled')
+           AND next_sequence = ?`
         )
         .run(
+          command.operationId,
           input.operation,
           commandBodyJson,
           sha256(commandBodyJson),
           input.timestamp,
-          input.harnessInstanceId
+          input.harnessInstanceId,
+          command.sequence
         );
+      if (update.changes !== 1) throw new Error('NanoHost Harness changed before enqueue.');
       coreDb.sqlite.exec('COMMIT');
-      return harness.next_sequence;
+      return command.sequence;
     } catch (error) {
       coreDb.sqlite.exec('ROLLBACK');
       throw error;
@@ -936,10 +1019,8 @@ export function queueNanoHostHarnessOperation(
 }
 
 /**
- * Dispatches one exact operation once and drops the prior result receipt. In the same
- * transaction, `turn.start` binds its three route-token hashes to the lease and `session.open`
- * binds its two loopback-credential digests to the AgentSession binding; only the returned live
- * command carries the raw values, and the durable body and operation identity carry only hashes.
+ * Dispatches stored identity after current lineage and retained consumer proof checks.
+ * Raw credentials are supplied by the caller only after its native child acknowledgement.
  */
 export function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
@@ -968,6 +1049,12 @@ export function dispatchNanoHostHarnessOperation(
       return null;
     }
     readRetainedV1(harness, () => harness);
+    const receipt = readHarnessResultReceipt(harness);
+    if (receipt && receipt.retained.consumption === undefined) {
+      coreDb.sqlite.exec('COMMIT');
+      return null;
+    }
+    requireConsumedHarnessResult(harness);
     const now = input.now?.() ?? new Date().toISOString();
     if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
       setHarnessUnknown(coreDb, harness.harness_instance_id, now, 'queued');
@@ -977,71 +1064,47 @@ export function dispatchNanoHostHarnessOperation(
     if (
       harness.operation_sequence !== harness.next_sequence ||
       !harness.operation ||
-      !harness.command_body_json
+      !harness.operation_id ||
+      !harness.command_body_json ||
+      sha256(harness.command_body_json) !== harness.command_fingerprint
     ) {
-      throw new Error('NanoHost Harness queued operation is incomplete.');
+      throw new Error('NanoHost Harness queued operation is incomplete or corrupt.');
     }
-    const body = requireHarnessOperationBody(
-      harness.operation,
-      readJsonObject(harness.command_body_json)
-    );
-    if (typeof body.agentSessionRuntimeBindingId === 'string') {
-      const binding = coreDb.sqlite
-        .prepare(`SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings
-        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`)
-        .get(body.agentSessionRuntimeBindingId, harness.harness_instance_id);
-      if (binding) readRetainedV1(binding, () => binding);
-    }
-    let wireBody = body;
-    let durableBody = body;
+    const durableBody = readJsonObject(harness.command_body_json);
+    const body = requireDurableHarnessBody(harness.operation, durableBody);
+    if (
+      harness.operation_id !==
+      harnessOperationId(harness, harness.operation, harness.next_sequence, durableBody)
+    )
+      throw new Error('NanoHost Harness prepared operation identity conflicts.');
+    requireOperationLineage(coreDb, harness, harness.operation, body);
     if (harness.operation === 'turn.start') {
-      const token = input.routeToken ?? (() => randomBytes(32).toString('base64url'));
-      const workerControlToken = requireRouteToken(token());
-      let inferenceToken = requireRouteToken(token());
-      while (inferenceToken === workerControlToken) {
-        inferenceToken = requireRouteToken(token());
-      }
-      let capabilityToken = requireRouteToken(token());
-      while (capabilityToken === workerControlToken || capabilityToken === inferenceToken) {
-        capabilityToken = requireRouteToken(token());
-      }
       const attemptId = body.leaseId as string;
       const lease = coreDb.sqlite
         .prepare(
           'SELECT binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
         )
         .get(attemptId) as { readonly bindingRef: string } | undefined;
-      if (!lease) {
-        throw new Error('NanoHost Harness Turn lease is missing.');
-      }
-      const workerControlTokenHash = hashWorkerRouteToken(workerControlToken);
-      const workerInferenceTokenHash = hashWorkerRouteToken(inferenceToken);
-      const workerCapabilityTokenHash = hashWorkerRouteToken(capabilityToken);
+      if (!lease) throw new Error('NanoHost Harness Turn lease is missing.');
       bindNanoHostAttemptRouteTokenHashes(coreDb, {
         attemptId,
         ...(input.now ? { now: input.now } : {}),
         sandboxBindingRef: lease.bindingRef,
-        workerCapabilityTokenHash,
-        workerControlTokenHash,
-        workerInferenceTokenHash,
+        workerCapabilityTokenHash: requireSha256(
+          durableBody.capabilityTokenHash,
+          'capability token hash'
+        ),
+        workerControlTokenHash: requireSha256(
+          durableBody.workerControlTokenHash,
+          'worker control token hash'
+        ),
+        workerInferenceTokenHash: requireSha256(
+          durableBody.inferenceTokenHash,
+          'inference token hash'
+        ),
       });
-      durableBody = {
-        ...body,
-        capabilityTokenHash: workerCapabilityTokenHash,
-        inferenceTokenHash: workerInferenceTokenHash,
-        workerControlTokenHash,
-      };
-      wireBody = { ...body, capabilityToken, inferenceToken, workerControlToken };
     }
     if (harness.operation === 'session.open') {
-      const credential = input.loopbackCredential ?? (() => randomBytes(32).toString('base64url'));
-      const inferenceLoopbackCredential = requireRouteToken(credential());
-      let capabilityLoopbackCredential = requireRouteToken(credential());
-      while (capabilityLoopbackCredential === inferenceLoopbackCredential) {
-        capabilityLoopbackCredential = requireRouteToken(credential());
-      }
-      const inferenceLoopbackCredentialHash = hashLoopbackCredential(inferenceLoopbackCredential);
-      const capabilityLoopbackCredentialHash = hashLoopbackCredential(capabilityLoopbackCredential);
       const bound = coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
@@ -1053,8 +1116,14 @@ export function dispatchNanoHostHarnessOperation(
              AND capability_loopback_credential_digest IS NULL`
         )
         .run(
-          inferenceLoopbackCredentialHash,
-          capabilityLoopbackCredentialHash,
+          requireSha256(
+            durableBody.inferenceLoopbackCredentialHash,
+            'inference loopback credential hash'
+          ),
+          requireSha256(
+            durableBody.capabilityLoopbackCredentialHash,
+            'capability loopback credential hash'
+          ),
           now,
           body.agentSessionRuntimeBindingId,
           harness.harness_instance_id,
@@ -1063,45 +1132,30 @@ export function dispatchNanoHostHarnessOperation(
       if (bound.changes !== 1) {
         throw new Error('NanoHost AgentSession loopback credentials were already delivered.');
       }
-      durableBody = { ...body, capabilityLoopbackCredentialHash, inferenceLoopbackCredentialHash };
-      wireBody = { ...body, capabilityLoopbackCredential, inferenceLoopbackCredential };
     }
-    const operationId = sha256(
-      canonicalJson({
-        body: durableBody,
-        harnessBindingRef: harness.harness_binding_ref,
-        operation: harness.operation,
-        sequence: harness.next_sequence,
-      })
-    );
-    const durableBodyJson = canonicalJson(durableBody);
     const update = coreDb.sqlite
       .prepare(
         `UPDATE harness_instance_records
-         SET operation_state = 'dispatched', operation_id = ?, command_body_json = ?,
-             command_fingerprint = ?, result_json = NULL, result_fingerprint = NULL,
+         SET operation_state = 'dispatched', result_json = NULL, result_fingerprint = NULL,
              updated_at = ?
          WHERE harness_instance_id = ? AND operation_state = 'queued'
-           AND operation_sequence = ? AND next_sequence = ?`
+           AND operation_id = ? AND operation_sequence = ? AND next_sequence = ?`
       )
       .run(
-        operationId,
-        durableBodyJson,
-        sha256(durableBodyJson),
         now,
         harness.harness_instance_id,
+        harness.operation_id,
         harness.next_sequence,
         harness.next_sequence
       );
-    if (update.changes !== 1) {
+    if (update.changes !== 1)
       throw new Error('NanoHost Harness operation changed before dispatch.');
-    }
     coreDb.sqlite.exec('COMMIT');
     return {
-      body: wireBody,
+      body: durableBody,
       harnessInstanceId: harness.harness_instance_id,
       operation: harness.operation,
-      operationId,
+      operationId: harness.operation_id,
       schemaVersion: 2,
       sequence: harness.next_sequence,
     };
@@ -1154,7 +1208,7 @@ export function settleNanoHostHarnessOperation(
       throw new Error('NanoHost Harness retained result fingerprint conflicts.');
     const retained = harness.result_json ? readJsonObject(harness.result_json) : null;
     const isPriorReceipt =
-      (harness.operation_state === 'settled' || harness.operation_state === 'queued') &&
+      ['settled', 'queued', 'unknown'].includes(harness.operation_state) &&
       retained?.operationId === input.result.operationId;
     if (isPriorReceipt && retained) {
       const receipt = HarnessResultEnvelopeReaderSchema.parse(retained);
@@ -1208,7 +1262,6 @@ export function settleNanoHostHarnessOperation(
         result: requireHarnessResult(harness.operation, input.result, harness.max_active_turns),
       };
     }
-    const resultJson = canonicalJson(input.result as unknown as Record<string, unknown>);
     if (harness.operation_state === 'settled') {
       throw new Error('NanoHost Harness result replay conflicts with the settled result.');
     }
@@ -1220,6 +1273,58 @@ export function settleNanoHostHarnessOperation(
     ) {
       throw new Error('NanoHost Harness result does not match the dispatched operation.');
     }
+    if (harness.operation === 'session.close') {
+      if (
+        !harness.command_body_json ||
+        sha256(harness.command_body_json) !== harness.command_fingerprint
+      )
+        throw new Error('NanoHost close command fingerprint conflicts before Core consumption.');
+      const closeBody = readJsonObject(harness.command_body_json);
+      requireDurableHarnessBody('session.close', closeBody);
+      if (
+        harness.operation_id !==
+        harnessOperationId(harness, 'session.close', input.result.sequence, closeBody)
+      )
+        throw new Error('NanoHost close operation identity conflicts before Core consumption.');
+    }
+    const consumerContext =
+      harness.operation === 'session.close'
+        ? readHarnessConsumerContext(coreDb, harness)
+        : undefined;
+    // An idle AgentSession close is Core binding lifecycle work, not historical Turn work.
+    // Consume its exact receipt in this same physical-state/capacity transaction before ACK.
+    const command =
+      harness.operation === 'session.close' && harness.command_body_json
+        ? readJsonObject(harness.command_body_json)
+        : null;
+    const idleConsumerReceipt = command
+      ? readNanoHostIdleCloseConsumerReceipt(coreDb, {
+          harnessInstanceId: harness.harness_instance_id,
+          harnessBindingRef: harness.harness_binding_ref,
+          agentSessionId: requireIdentity(command.agentSessionId, 'close AgentSession'),
+          agentSessionRuntimeBindingId: requireIdentity(
+            command.agentSessionRuntimeBindingId,
+            'close binding'
+          ),
+        })
+      : null;
+    const consumption: HarnessResultConsumption | undefined =
+      idleConsumerReceipt === null
+        ? undefined
+        : {
+            consumerReceipt: idleConsumerReceipt,
+            harnessBindingRef: harness.harness_binding_ref,
+            operationId: input.result.operationId,
+            sequence: input.result.sequence,
+            resultFingerprint: sha256(
+              canonicalJson(input.result as unknown as Record<string, unknown>)
+            ),
+          };
+    const resultJson = canonicalJson({
+      ...input.result,
+      ...(consumerContext ? { consumerContext } : {}),
+      ...(consumption ? { consumption } : {}),
+    });
     if (
       input.result.disposition === 'refused' &&
       input.result.body.reasonCode === 'cleanup_required'
@@ -1233,6 +1338,19 @@ export function settleNanoHostHarnessOperation(
     }
     if (input.result.disposition === 'unknown') {
       setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
+      const retainedUnknown = coreDb.sqlite
+        .prepare(`UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?
+          WHERE harness_instance_id = ? AND operation_state = 'unknown'
+            AND operation_id = ? AND operation_sequence = ?`)
+        .run(
+          resultJson,
+          sha256(resultJson),
+          harness.harness_instance_id,
+          input.result.operationId,
+          input.result.sequence
+        );
+      if (retainedUnknown.changes !== 1)
+        throw new Error('NanoHost Harness unknown receipt changed concurrently.');
       coreDb.sqlite.exec('COMMIT');
     } else {
       if (input.result.disposition === 'succeeded') {
@@ -1263,7 +1381,6 @@ export function settleNanoHostHarnessOperation(
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
-  input.onSettled?.(input.result);
   return 'settled';
 }
 
@@ -1610,6 +1727,459 @@ function requireOperationLineage(
     lease.inputRef !== body.packageSnapshotId
   ) {
     throw new Error('NanoHost Harness Turn lease lineage conflicts.');
+  }
+}
+
+/** Returns the queued instruction after checking its closed credential-digest extension. */
+function requireDurableHarnessBody(
+  operation: NanoHostHarnessOperation,
+  durableBody: Readonly<Record<string, unknown>>
+): Readonly<Record<string, unknown>> {
+  const body = { ...durableBody };
+  const digestNames =
+    operation === 'turn.start'
+      ? ['capabilityTokenHash', 'inferenceTokenHash', 'workerControlTokenHash']
+      : operation === 'session.open'
+        ? ['capabilityLoopbackCredentialHash', 'inferenceLoopbackCredentialHash']
+        : [];
+  const digests = digestNames.map((name) => {
+    const digest = requireSha256(body[name], name);
+    delete body[name];
+    return digest;
+  });
+  if (new Set(digests).size !== digests.length)
+    throw new Error('NanoHost Harness credential digests must be distinct.');
+  return requireHarnessOperationBody(operation, body);
+}
+
+/** Redacts the exact wire schema before credentials can enter durable command bytes. */
+function redactHarnessWireBody(
+  operation: NanoHostHarnessOperation,
+  value: Readonly<Record<string, unknown>>
+): Readonly<Record<string, unknown>> {
+  const parsed = HarnessCommandBodySchemas[operation].safeParse(value);
+  if (!parsed.success) throw new Error(`NanoHost ${operation} prepared wire body is invalid.`);
+  const body: Record<string, unknown> = { ...parsed.data };
+  if (operation === 'turn.start') {
+    body.capabilityTokenHash = hashWorkerRouteToken(
+      requireRouteToken(body.capabilityToken as string)
+    );
+    body.inferenceTokenHash = hashWorkerRouteToken(
+      requireRouteToken(body.inferenceToken as string)
+    );
+    body.workerControlTokenHash = hashWorkerRouteToken(
+      requireRouteToken(body.workerControlToken as string)
+    );
+    delete body.capabilityToken;
+    delete body.inferenceToken;
+    delete body.workerControlToken;
+  } else if (operation === 'session.open') {
+    body.capabilityLoopbackCredentialHash = hashLoopbackCredential(
+      requireRouteToken(body.capabilityLoopbackCredential as string)
+    );
+    body.inferenceLoopbackCredentialHash = hashLoopbackCredential(
+      requireRouteToken(body.inferenceLoopbackCredential as string)
+    );
+    delete body.capabilityLoopbackCredential;
+    delete body.inferenceLoopbackCredential;
+  }
+  requireDurableHarnessBody(operation, body);
+  return body;
+}
+
+/** Derives identity from current binding, exact sequence and redacted instruction. */
+function harnessOperationId(
+  harness: HarnessRow,
+  operation: NanoHostHarnessOperation,
+  sequence: number,
+  body: Readonly<Record<string, unknown>>
+): string {
+  return sha256(
+    canonicalJson({ body, harnessBindingRef: harness.harness_binding_ref, operation, sequence })
+  );
+}
+
+/** Existing result receipt progress; this metadata grants no new execution authority. */
+interface HarnessResultConsumption {
+  readonly consumerReceipt: string;
+  readonly harnessBindingRef: string;
+  readonly operationId: string;
+  readonly sequence: number;
+  readonly resultFingerprint: string;
+}
+
+/** Reads the original normalized result separately from receiver-owned progress metadata. */
+function readHarnessResultReceipt(harness: HarnessRow): {
+  readonly retained: Record<string, unknown>;
+  readonly result: NanoHostHarnessResult;
+  readonly resultFingerprint: string;
+} | null {
+  if (harness.result_json === null) {
+    if (harness.result_fingerprint !== null)
+      throw new Error('NanoHost Harness result fingerprint has no receipt.');
+    return null;
+  }
+  if (sha256(harness.result_json) !== harness.result_fingerprint)
+    throw new Error('NanoHost Harness retained result fingerprint conflicts.');
+  const retained = readJsonObject(harness.result_json);
+  const original = { ...retained };
+  delete original.consumption;
+  delete original.consumerContext;
+  const result = HarnessResultEnvelopeReaderSchema.parse(original);
+  if (result.harnessInstanceId !== harness.harness_instance_id)
+    throw new Error('NanoHost Harness retained result owner conflicts.');
+  return { retained, result, resultFingerprint: sha256(canonicalJson(original)) };
+}
+
+/** Exact existing Workspace-step or Core idle-binding consumer identity. */
+type HarnessConsumerReceipt =
+  | {
+      readonly workspaceId: string;
+      readonly turnId: string;
+      readonly executionId: string;
+      readonly stepId: string;
+    }
+  | {
+      readonly workspaceId: string;
+      readonly threadId: string;
+      readonly agentSessionId: string;
+      readonly agentSessionRuntimeBindingId: string;
+    };
+
+/** Checks closed consumer identity without crossing into Workspace SQL. */
+function readHarnessConsumerReceipt(value: unknown): HarnessConsumerReceipt {
+  if (typeof value !== 'string' || value.length > 4096)
+    throw new Error('NanoHost Harness consumer receipt is invalid.');
+  const receipt = readJsonObject(value);
+  const fields = Object.keys(receipt).sort().join(',');
+  if (fields === 'agentSessionId,agentSessionRuntimeBindingId,threadId,workspaceId') {
+    return {
+      workspaceId: requireIdentity(receipt.workspaceId, 'consumer Workspace'),
+      threadId: requireIdentity(receipt.threadId, 'consumer Thread'),
+      agentSessionId: requireIdentity(receipt.agentSessionId, 'consumer AgentSession'),
+      agentSessionRuntimeBindingId: requireIdentity(
+        receipt.agentSessionRuntimeBindingId,
+        'consumer binding'
+      ),
+    };
+  }
+  if (fields !== 'executionId,stepId,turnId,workspaceId')
+    throw new Error('NanoHost Harness consumer receipt fields are invalid.');
+  return {
+    workspaceId: requireIdentity(receipt.workspaceId, 'consumer Workspace'),
+    turnId: requireIdentity(receipt.turnId, 'consumer Turn'),
+    executionId: requireIdentity(receipt.executionId, 'consumer execution'),
+    stepId: requireIdentity(receipt.stepId, 'consumer step'),
+  };
+}
+
+/**
+ * Reads positive idle Core binding authority under AgentSession Core and DX receipt consumption.
+ * Missing binding or any open/closing attempt supplies no idle authority. Historical Turns and
+ * process-local callback presence cannot establish this Core lifecycle owner.
+ */
+export function readNanoHostIdleCloseConsumerReceipt(
+  coreDb: CoreDb,
+  input: {
+    readonly harnessInstanceId: string;
+    readonly harnessBindingRef: string;
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+  }
+): string | null {
+  const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+  if (harness.harness_instance_id !== input.harnessInstanceId)
+    throw new Error('NanoHost idle close Harness binding conflicts.');
+  const binding = coreDb.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion, workspace_id AS workspaceId,
+      thread_id AS threadId, agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
+      current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
+      FROM agent_session_runtime_bindings
+      WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`)
+    .get(input.agentSessionRuntimeBindingId, harness.harness_instance_id) as
+    | {
+        schemaVersion: unknown;
+        workspaceId: string;
+        threadId: string;
+        agentSessionId: string;
+        lifecycleState: string;
+        currentTurnId: string | null;
+        currentAttemptId: string | null;
+      }
+    | undefined;
+  if (!binding) return null;
+  readRetainedV1(binding, () => binding);
+  if (binding.agentSessionId !== input.agentSessionId)
+    throw new Error('NanoHost idle close AgentSession binding conflicts.');
+  if (
+    binding.currentTurnId !== null ||
+    binding.currentAttemptId !== null ||
+    !['opening', 'open', 'failed'].includes(binding.lifecycleState)
+  )
+    return null;
+  const attempts = coreDb.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion, phase FROM scheduler_execution_attempts
+      WHERE agent_session_id = ?`)
+    .all(binding.agentSessionId) as { schemaVersion: unknown; phase: string }[];
+  for (const attempt of attempts) {
+    readRetainedV1(attempt, () => attempt);
+    if (!['open', 'closing', 'closed'].includes(attempt.phase))
+      throw new Error('NanoHost idle close attempt phase is invalid.');
+    if (attempt.phase !== 'closed') return null;
+  }
+  return canonicalJson({
+    workspaceId: requireIdentity(binding.workspaceId, 'idle Workspace'),
+    threadId: requireIdentity(binding.threadId, 'idle Thread'),
+    agentSessionId: binding.agentSessionId,
+    agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
+  });
+}
+
+/** Reads exact Workspace/Thread context before session.close removes the binding. */
+function readHarnessConsumerContext(
+  coreDb: CoreDb,
+  harness: HarnessRow
+): {
+  readonly workspaceId: string;
+  readonly threadId: string;
+} {
+  if (!harness.command_body_json) throw new Error('NanoHost Harness consumer command is missing.');
+  const command = readJsonObject(harness.command_body_json);
+  const binding = coreDb.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion, workspace_id AS workspaceId,
+      thread_id AS threadId, agent_session_id AS agentSessionId
+      FROM agent_session_runtime_bindings
+      WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`)
+    .get(command.agentSessionRuntimeBindingId, harness.harness_instance_id) as
+    | {
+        readonly schemaVersion: unknown;
+        readonly workspaceId: string;
+        readonly threadId: string;
+        readonly agentSessionId: string;
+      }
+    | undefined;
+  if (!binding || binding.agentSessionId !== command.agentSessionId)
+    throw new Error('NanoHost Harness consumer binding is missing or stale.');
+  readRetainedV1(binding, () => binding);
+  return { workspaceId: binding.workspaceId, threadId: binding.threadId };
+}
+
+/** Validates exact consumer progress before a successor may retire this result. */
+function requireConsumedHarnessResult(harness: HarnessRow): HarnessResultConsumption | null {
+  const receipt = readHarnessResultReceipt(harness);
+  if (!receipt) return null;
+  const value = receipt.retained.consumption;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('NanoHost Harness retained result has no exact consumer acknowledgement.');
+  const consumption = value as Record<string, unknown>;
+  if (
+    Object.keys(consumption).sort().join(',') !==
+      'consumerReceipt,harnessBindingRef,operationId,resultFingerprint,sequence' ||
+    consumption.harnessBindingRef !== harness.harness_binding_ref ||
+    consumption.operationId !== receipt.result.operationId ||
+    consumption.sequence !== receipt.result.sequence ||
+    consumption.resultFingerprint !== receipt.resultFingerprint
+  )
+    throw new Error('NanoHost Harness retained consumer acknowledgement conflicts.');
+  const consumer = readHarnessConsumerReceipt(consumption.consumerReceipt);
+  if (canonicalJson(consumer) !== consumption.consumerReceipt)
+    throw new Error('NanoHost Harness retained consumer receipt is not canonical.');
+  if ('agentSessionRuntimeBindingId' in consumer) {
+    const context = receipt.retained.consumerContext;
+    if (
+      !context ||
+      typeof context !== 'object' ||
+      Array.isArray(context) ||
+      Object.keys(context).sort().join(',') !== 'threadId,workspaceId' ||
+      (context as Record<string, unknown>).workspaceId !== consumer.workspaceId ||
+      (context as Record<string, unknown>).threadId !== consumer.threadId
+    )
+      throw new Error('NanoHost idle Core consumer namespace conflicts.');
+  }
+  return consumption as unknown as HarnessResultConsumption;
+}
+
+/** Confirms an exact already-acknowledged replay after its live Workspace consumer has left. */
+export function hasConsumedNanoHostHarnessResult(
+  coreDb: CoreDb,
+  result: NanoHostHarnessResult
+): boolean {
+  const incoming = HarnessResultEnvelopeReaderSchema.parse(result);
+  const harness = requireHarness(coreDb, incoming.harnessInstanceId);
+  const receipt = readHarnessResultReceipt(harness);
+  if (!receipt || receipt.retained.consumption === undefined) return false;
+  if (
+    incoming.operationId !== receipt.result.operationId ||
+    incoming.sequence !== receipt.result.sequence
+  )
+    return false;
+  requireConsumedHarnessResult(harness);
+  const operations =
+    harness.operation_id === incoming.operationId && harness.operation
+      ? [harness.operation]
+      : NANO_HOST_HARNESS_OPERATIONS.filter((operation) => {
+          try {
+            requireHarnessResult(operation, receipt.result, harness.max_active_turns);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+  if (operations.length === 0)
+    throw new Error('NanoHost Harness consumed result operation is invalid.');
+  for (const operation of operations) {
+    if (
+      canonicalJson(
+        requireHarnessResult(operation, incoming, harness.max_active_turns) as unknown as Record<
+          string,
+          unknown
+        >
+      ) !==
+      canonicalJson(
+        requireHarnessResult(
+          operation,
+          receipt.result,
+          harness.max_active_turns
+        ) as unknown as Record<string, unknown>
+      )
+    )
+      throw new Error('NanoHost Harness consumed result replay conflicts.');
+  }
+  return true;
+}
+
+/**
+ * Records exact native consumer ACK after its Workspace outcome and consume intent commit.
+ * The trusted internal consumer supplies its existing receipt after Worker ACK. Core checks
+ * the original keyed result, binding and namespace without claiming cross-database atomicity.
+ * Additive consumption and close-only consumerContext remain inside the existing result cell.
+ */
+export function acknowledgeNanoHostHarnessResult(
+  coreDb: CoreDb,
+  input: {
+    readonly result: NanoHostHarnessResult;
+    readonly harnessBindingRef: string;
+    readonly consumerReceipt: string;
+    readonly timestamp: string;
+  }
+): void {
+  const incoming = HarnessResultEnvelopeReaderSchema.parse(input.result);
+  const consumer = readHarnessConsumerReceipt(input.consumerReceipt);
+  const consumerReceipt = canonicalJson(consumer);
+  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+  try {
+    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+    const receipt = readHarnessResultReceipt(harness);
+    if (
+      !receipt ||
+      incoming.harnessInstanceId !== harness.harness_instance_id ||
+      incoming.operationId !== receipt.result.operationId ||
+      incoming.sequence !== receipt.result.sequence
+    )
+      throw new Error('NanoHost Harness consumer acknowledgement does not match retained result.');
+    // The original command remains available until its first ACK; an identical later ACK can
+    // arrive after a successor queues, so validate replay from the retained keyed proof itself.
+    const candidates =
+      harness.operation_id === incoming.operationId && harness.operation
+        ? [harness.operation]
+        : NANO_HOST_HARNESS_OPERATIONS.filter((operation) => {
+            try {
+              requireHarnessResult(operation, receipt.result, harness.max_active_turns);
+              return true;
+            } catch {
+              return false;
+            }
+          });
+    if (candidates.length === 0)
+      throw new Error('NanoHost Harness consumer result operation is invalid.');
+    for (const operation of candidates) {
+      if (
+        canonicalJson(
+          requireHarnessResult(operation, incoming, harness.max_active_turns) as unknown as Record<
+            string,
+            unknown
+          >
+        ) !==
+        canonicalJson(
+          requireHarnessResult(
+            operation,
+            receipt.result,
+            harness.max_active_turns
+          ) as unknown as Record<string, unknown>
+        )
+      )
+        throw new Error(
+          'NanoHost Harness consumer result conflicts with retained normalized core.'
+        );
+    }
+    const consumption: HarnessResultConsumption = {
+      consumerReceipt,
+      harnessBindingRef: input.harnessBindingRef,
+      operationId: incoming.operationId,
+      sequence: incoming.sequence,
+      resultFingerprint: receipt.resultFingerprint,
+    };
+    if (receipt.retained.consumption !== undefined) {
+      const previous = requireConsumedHarnessResult(harness);
+      if (
+        canonicalJson(previous as unknown as Record<string, unknown>) !==
+        canonicalJson(consumption as unknown as Record<string, unknown>)
+      )
+        throw new Error('NanoHost Harness consumer acknowledgement replay conflicts.');
+      coreDb.sqlite.exec('COMMIT');
+      return;
+    }
+    if (
+      !['settled', 'unknown'].includes(harness.operation_state) ||
+      harness.operation_id !== incoming.operationId ||
+      harness.operation_sequence !== incoming.sequence ||
+      !harness.operation ||
+      !harness.command_body_json ||
+      sha256(harness.command_body_json) !== harness.command_fingerprint
+    )
+      throw new Error('NanoHost Harness consumer command binding is stale.');
+    if (!('turnId' in consumer))
+      throw new Error('NanoHost idle Core consumption must commit with its physical transition.');
+    const command = requireDurableHarnessBody(
+      harness.operation,
+      readJsonObject(harness.command_body_json)
+    );
+    const context =
+      receipt.retained.consumerContext === undefined
+        ? readHarnessConsumerContext(coreDb, harness)
+        : receipt.retained.consumerContext;
+    if (!context || typeof context !== 'object' || Array.isArray(context))
+      throw new Error('NanoHost Harness consumer namespace is missing.');
+    const namespace = context as Record<string, unknown>;
+    const workspaceId = requireIdentity(namespace.workspaceId, 'consumer Workspace');
+    const threadId = requireIdentity(namespace.threadId, 'consumer Thread');
+    if (
+      Object.keys(namespace).sort().join(',') !== 'threadId,workspaceId' ||
+      consumer.workspaceId !== workspaceId ||
+      (command.workspaceId !== undefined && command.workspaceId !== consumer.workspaceId) ||
+      (command.threadId !== undefined && command.threadId !== threadId) ||
+      (command.turnId !== undefined && command.turnId !== consumer.turnId)
+    )
+      throw new Error('NanoHost Harness consumer namespace conflicts with exact command.');
+    const resultJson = canonicalJson({ ...receipt.retained, consumption });
+    const update = coreDb.sqlite
+      .prepare(`UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?
+        WHERE harness_instance_id = ? AND result_fingerprint = ?
+          AND operation_id = ? AND operation_sequence = ?`)
+      .run(
+        resultJson,
+        sha256(resultJson),
+        harness.harness_instance_id,
+        harness.result_fingerprint,
+        incoming.operationId,
+        incoming.sequence
+      );
+    if (update.changes !== 1)
+      throw new Error('NanoHost Harness consumer acknowledgement changed concurrently.');
+    coreDb.sqlite.exec('COMMIT');
+  } catch (error) {
+    coreDb.sqlite.exec('ROLLBACK');
+    throw error;
   }
 }
 

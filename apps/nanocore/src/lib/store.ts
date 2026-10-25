@@ -3741,11 +3741,13 @@ export class FsStore {
   /** Settles the original Workspace step from observed facts; this does not itself prove physical release. */
   public async settleWorkspaceExecutionJournalStep(
     workspaceId: string,
-    input: ExecutionJournalSettlement
+    input: ExecutionJournalSettlement,
+    consumeIntent?: ExecutionJournalIntent
   ): Promise<EndedExecutionStep> {
     const result = await this.writeWorkspaceExecutionJournal(workspaceId, {
       kind: 'settle',
       inputJson: encodeExecutionJournalValue(input),
+      ...(consumeIntent ? { consumeIntentJson: encodeExecutionJournalValue(consumeIntent) } : {}),
     });
     return decodeEndedExecutionStep(result);
   }

@@ -33,10 +33,15 @@ import {
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import {
+  CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+  createExecutionStepJournalReader,
+} from './execution-journal.js';
+import {
   type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import { readPendingRequest } from './pending-requests.js';
 import type { RunSchedulerRestartRecoveryInput } from './scheduler-restart-recovery.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
@@ -382,10 +387,61 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   // Closed attempts can retain idle native bindings. No incoming Turn or synthetic attempt owns their retirement.
   for (const session of listWorkerBackendSessions(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', session.workspaceId)) continue;
-    if (session.state === 'cleaned') continue;
     try {
       const owner = requireSchedulerExecutionAttempt(coreDb, session.attemptId);
       if (owner.phase !== 'closed') continue;
+      // The backend's old cleaned state can coexist with a later idle eviction. Only its
+      // positive draining resident and exact Core cleanup intent select this recovery.
+      const idleRoots = coreDb.sqlite
+        .prepare(`
+        SELECT r.id AS executionId, s.step_id AS stepId,
+          p.sandbox_binding_ref AS sandboxBindingRef FROM sandbox_runtime_records p
+        JOIN control_executions r ON r.definition_version = ?
+        JOIN control_execution_steps s ON s.execution_id = r.id
+        WHERE p.origin_physical_epoch = ?
+          AND p.runtime_target_id = ? AND p.drain_state = 'draining'
+          AND json_extract(s.control_json, '$.attemptId') = ?
+          AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
+          AND json_extract(s.invocation_json, '$.carriage.bindingRef') = p.sandbox_binding_ref
+          AND json_extract(s.invocation_json, '$.carriage.operation') IN ('bridge.close', 'sandbox.delete')
+      `)
+        .all(
+          CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+          session.originPhysicalEpoch,
+          session.runtimeTargetId,
+          session.attemptId
+        ) as { executionId: string; stepId: string; sandboxBindingRef: string }[];
+      let awaitingIdleResult = false;
+      for (const selected of idleRoots) {
+        const invocation = await createExecutionStepJournalReader(coreDb, {
+          kind: 'server',
+        }).readInvocation({
+          execution: { owner: { kind: 'server' }, executionId: selected.executionId },
+          stepId: selected.stepId,
+        });
+        if (
+          invocation.control.attemptId !== session.attemptId ||
+          invocation.control.target?.targetId !== session.runtimeTargetId ||
+          invocation.carriage.bindingRef !== selected.sandboxBindingRef ||
+          invocation.control.target?.allocationRef !== selected.sandboxBindingRef ||
+          !invocation.control.authorityRefs.includes(session.sandboxBindingRef) ||
+          invocation.control.operationId !== invocation.carriage.requestId ||
+          !invocation.control.physicalFenceRefs.includes(session.originPhysicalEpoch)
+        )
+          throw new Error('Idle cleanup recovery conflicts with the exact resident lineage.');
+        const linked = await createExecutionStepJournalReader(coreDb, {
+          kind: 'server',
+        }).readLinkedInspections(invocation.ref);
+        if (
+          (invocation.state === 'intent' || invocation.state === 'unknown') &&
+          !linked.some(
+            ({ inspection }) =>
+              inspection.state === 'completed' && inspection.control.kind === 'consume-receipt'
+          )
+        )
+          awaitingIdleResult = true;
+      }
+      if (session.state === 'cleaned' && idleRoots.length === 0) continue;
       const captureWorkspace = openRecoveryWorkspace(
         coreDb,
         requireNanoHostExecutionAttempt(coreDb, session.attemptId)
@@ -403,6 +459,22 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           continue;
       } finally {
         captureWorkspace.db.sqlite.close();
+      }
+      if (idleRoots.length > 0) {
+        if (
+          awaitingIdleResult &&
+          getNanoHostRuntimeTarget(coreDb, session.runtimeTargetId)?.physicalEpoch ===
+            session.originPhysicalEpoch
+        ) {
+          // Register the existing result-only consumer, then let unrelated maintenance advance.
+          // Its eventual actual receipt commits in that consumer before HTTP acknowledgement.
+          input.prepareBackendCleanup(toRestartBackendIdentity(session));
+          continue;
+        }
+        // Keep the historical backend state immutable. Its existing physical cleanup owner
+        // consumes retained results or admits only the first not-yet-issued delete.
+        await input.cleanupBackendSession(toRestartBackendIdentity(session));
+        continue;
       }
       const cleaned = await cleanupPhysicalSession(
         coreDb,

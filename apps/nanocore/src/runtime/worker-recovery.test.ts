@@ -440,7 +440,7 @@ async function createCheckpointCloseoutFixture(
           sandboxIntegrationBindingRef: integration.ref,
         });
         if (!queued) continue;
-        const command = runtime.acceptNanoHostHarnessCommand(queued);
+        const command = await runtime.acceptNanoHostHarnessCommand(queued);
         const native = { nativeHandleState: 'ready', nativeHandleDigest: 'c'.repeat(64) };
         const body =
           command.operation === 'session.close'
@@ -478,7 +478,7 @@ async function createCheckpointCloseoutFixture(
           sandboxIntegrationBindingRef: integration.ref,
           timestamp: new Date().toISOString(),
         });
-        runtime.acceptNanoHostHarnessResult(result);
+        await runtime.acceptNanoHostHarnessResult(result);
         if (command.operation === 'turn.start') {
           // The real final waiter follows native deliver-start and delivery-prove ACKs.
           await Promise.race([

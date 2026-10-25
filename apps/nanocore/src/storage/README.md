@@ -1,5 +1,7 @@
 # Storage
 
+Worker physical-result settlement carries the linked journal consumption intent through the existing native journal request. The outcome and that intent share the supplied connection and savepoint; receipt acknowledgement follows the covering FULL commit. Idle Core cleanup retains its separate owning transaction and existing journal tables. No worker protocol extension or second product writer is required for this join.
+
 The native terminal input can carry the original submission command and one waiting internal Stop. Both receipts and Audits commit with the same Turn tuple or neither; the second command is limited to the exact interrupted or cancelled Turn. Worker Stop retains its existing accepted-cancellation boundary.
 
 A fresh Core-local Pending archive closeout publishes its terminal Turn and canonical request outcome before archiving its Thread in the same native savepoint. Native archive admission checks current Turn rows with prepared immutable Pending proof before applying the tuple. Ordinary new Turns on an already archived Thread remain refused; terminal replay does not rewind later Thread metadata.

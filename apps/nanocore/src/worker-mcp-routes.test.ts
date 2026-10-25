@@ -4040,8 +4040,8 @@ describe('worker MCP routes', () => {
           }
           if (command) {
             if (operation === 'turn.start' && command.operation === 'session.inspect') {
-              workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
-              settle(
+              command = await workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
+              await settle(
                 { command, integrationRef: binding!.integrationRef },
                 {
                   childState: 'absent',
@@ -4054,7 +4054,7 @@ describe('worker MCP routes', () => {
               continue;
             }
             expect(command.operation).toBe(operation);
-            workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
+            command = await workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
             return { command, integrationRef: binding!.integrationRef };
           }
           await new Promise<void>((resolve) => setTimeout(resolve, 1));
@@ -4070,7 +4070,7 @@ describe('worker MCP routes', () => {
           )}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
         );
       };
-      const settle = (
+      const settle = async (
         dispatched: Awaited<ReturnType<typeof dispatchNext>>,
         body: Readonly<Record<string, unknown>>
       ) => {
@@ -4087,12 +4087,12 @@ describe('worker MCP routes', () => {
           sandboxIntegrationBindingRef: dispatched.integrationRef,
           timestamp: new Date().toISOString(),
         });
-        workerLifecycleRuntime.acceptNanoHostHarnessResult(result);
+        await workerLifecycleRuntime.acceptNanoHostHarnessResult(result);
       };
       const driveTask = async (blocked: boolean) => {
         if (blocked) {
           const opened = await dispatchNext('session.open');
-          settle(opened, {
+          await settle(opened, {
             maxActiveTurns: opened.command.body.maxActiveTurns,
             nativeHandleDigest: null,
             nativeHandleState: 'pending',
@@ -4100,7 +4100,7 @@ describe('worker MCP routes', () => {
           });
         }
         const started = await dispatchNext('turn.start');
-        settle(started, {
+        await settle(started, {
           nativeHandleDigest: blocked ? null : 'b'.repeat(64),
           nativeHandleState: blocked ? 'pending' : 'ready',
           state: 'started',
@@ -4334,7 +4334,7 @@ describe('worker MCP routes', () => {
         });
         expect(finalStatus.status, await finalStatus.clone().text()).toBe(200);
         const inspected = await dispatchNext('session.inspect');
-        settle(inspected, {
+        await settle(inspected, {
           childState: 'absent',
           cleanupState: 'clean',
           nativeHandleDigest: 'b'.repeat(64),
