@@ -237,6 +237,23 @@ describe('dormant native CapabilityCall raw observation boundary', () => {
       })
     ).resolves.toEqual({ rawOutputBytes: 2, chargedBytes: 2, exhausted: false });
 
+    expect(readWorkerRawOutput(f.db, inference.scope)).toEqual({
+      rawOutputBytes: 2,
+      exhausted: false,
+    });
+    // COORD13:1x requires reuse for this measured read; no SQL spelling or call order is fixed.
+    const preparing = vi.spyOn(f.db.sqlite, 'prepare');
+    try {
+      expect(readWorkerRawOutput(f.db, inference.scope)).toEqual({
+        rawOutputBytes: 2,
+        exhausted: false,
+      });
+      expect(preparing).not.toHaveBeenCalled();
+      expect(f.db.sqlite.inTransaction).toBe(false);
+    } finally {
+      preparing.mockRestore();
+    }
+
     // Raw-Output Accounting owns the aggregate; DX owns committed visibility after native ACK.
     await expect(
       writer.capability(f.workspaceId, {

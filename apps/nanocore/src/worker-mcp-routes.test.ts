@@ -2,7 +2,10 @@ import { createRequire } from 'node:module';
 
 import Database from 'better-sqlite3';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
@@ -153,6 +156,7 @@ import {
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import {
@@ -6515,6 +6519,45 @@ describe('worker MCP routes', () => {
       expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
         toolCallsBeforeRevoke + 1
       );
+      if (presentation === 'raw' && issuance === 'target') {
+        // Vault Secret Injection:147 and DX:103 require current authority after hold ACK.
+        // Observe the real hold, then remove authority before its caller resumes.
+        const nativeWriter = getControlStoreWorkerClient();
+        const acquire = nativeWriter.pauseForDataRootBackup.bind(nativeWriter);
+        const databaseKey = `workspace:${workspaceDbPath(dataRoot, environmentPackage.scope.workspaceId)}`;
+        let disabled: ReturnType<typeof disableCanonicalUser> | undefined;
+        const pause = vi
+          .spyOn(nativeWriter, 'pauseForDataRootBackup')
+          .mockImplementation(async (database) => {
+            const resume = await acquire(database);
+            try {
+              if (database === databaseKey && disabled === undefined) {
+                disabled = coreDb.sqlite
+                  .transaction(() =>
+                    disableCanonicalUser(coreDb, environmentPackage.scope.triggerActor.id)
+                  )
+                  .immediate();
+              }
+              return resume;
+            } catch (error) {
+              resume();
+              throw error;
+            }
+          });
+        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+        const upstreamBeforeHold = [...upstream.observed];
+        try {
+          await expect(
+            client.callTool({ arguments: { message: 'authority lost at hold ACK' }, name: 'echo' })
+          ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+          expect(disabled?.changed).toBe(true);
+          expect(resolve).not.toHaveBeenCalled();
+          expect(upstream.observed).toEqual(upstreamBeforeHold);
+        } finally {
+          resolve.mockRestore();
+          pause.mockRestore();
+        }
+      }
     } finally {
       await client.close();
       await workerMcpGateway.close();

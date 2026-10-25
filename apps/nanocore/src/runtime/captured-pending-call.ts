@@ -113,6 +113,7 @@ export async function prepareCapturedPendingCall(input: {
       agent: { agentId: record.agentId ?? '' },
     };
     const material = await resolveWorkerMcpCredentials({
+      current: () => mediation?.current() !== false,
       call: { id: executionCallIdForRequest(record.requestId) },
       environmentPackage,
       input: {

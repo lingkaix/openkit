@@ -38,6 +38,7 @@ import {
   currentWorkspaceAuthority,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
+import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import {
   finishCapabilityCall,
   finishMcpToolCall,
@@ -139,18 +140,20 @@ import {
   type ControlCapabilityAdmissionFailure,
   ControlCapabilityCommandInputSchema,
 } from './storage/control-store-capability.js';
+import { getWorkspaceProductReadHandle } from './storage/control-store-products.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import {
+  bindWorkspaceSqlite,
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openWorkspaceDb,
-  openWorkspaceReadDb,
   type WorkspaceDb,
 } from './storage/db.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
 import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
@@ -163,28 +166,34 @@ import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
+/** Borrows the existing native reader; scope lifecycle owns closure and each caller ends its snapshot before awaiting. */
+function borrowWorkspaceReadDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
+  const reader = getWorkspaceProductReadHandle(workspaceDbPath(dataRoot, workspaceId), {
+    kind: 'workspace',
+    workspaceId,
+  });
+  return bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
+}
+
 /** Reads the committed current schema without borrowing the caller's mixed-writer connection. */
 function readCurrentMcpToolSchemaSnapshot(
   input: Parameters<typeof readCurrentMcpToolSchemaSnapshotInDb>[0]
 ) {
-  const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
-  try {
-    return readCurrentMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader });
-  } finally {
-    reader.sqlite.close();
-  }
+  const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  return reader.sqlite.transaction(() =>
+    readCurrentMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader })
+  )();
 }
 
-/** Reads the committed Turn schema and closes its connection before subsequent native or external work. */
+/** Reads the committed Turn schema in one snapshot before subsequent native or external work. */
 function readTurnMcpToolSchemaSnapshot(
   input: Parameters<typeof readTurnMcpToolSchemaSnapshotInDb>[0]
 ) {
-  const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
-  try {
-    return readTurnMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader });
-  } finally {
-    reader.sqlite.close();
-  }
+  const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  return reader.sqlite.transaction(() =>
+    readTurnMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader })
+  )();
 }
 
 /** Materializes the native-owned finite-use count without a Main writable ledger read. */
@@ -192,12 +201,8 @@ function readPolicyStatementUseCount(
   workspaceDb: WorkspaceDb,
   statement: Parameters<typeof readPolicyStatementUseCountInDb>[1]
 ): number {
-  const reader = openWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
-  try {
-    return readPolicyStatementUseCountInDb(reader, statement);
-  } finally {
-    reader.sqlite.close();
-  }
+  const reader = borrowWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+  return reader.sqlite.transaction(() => readPolicyStatementUseCountInDb(reader, statement))();
 }
 
 const toolArgumentValidator = new Ajv2020({ allErrors: false, strict: false });
@@ -318,7 +323,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         workspaceId: environmentPackage.scope.workspaceId,
         workspaceCatalog: localCatalog ?? { schemaVersion: 1, servers: [] },
       });
-      workspaceDb = openWorkspaceReadDb(
+      workspaceDb = borrowWorkspaceReadDb(
         input.coreDb.dataRoot,
         environmentPackage.scope.workspaceId
       );
@@ -407,7 +412,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         call && workspaceDb ? await finishMcpCallFailure(error, call, workspaceDb) : error;
       return workerMcpHttpError(normalized);
     } finally {
-      workspaceDb?.sqlite.close();
       releaseMutation?.();
     }
   });
@@ -825,11 +829,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         }
         let activeWorkspaceDb: WorkspaceDb | null = null;
         try {
-          activeWorkspaceDb = openWorkspaceDb(
+          activeWorkspaceDb = borrowWorkspaceReadDb(
             input.coreDb!.dataRoot,
             environmentPackage.scope.workspaceId
           );
-          applyScopedMigrations(activeWorkspaceDb);
           const call = await startMcpCapabilityCall({
             capabilityId: 'mcp.list-tools',
             environmentPackage,
@@ -925,7 +928,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             throw await finishMcpHandlerFailure(error, call, activeWorkspaceDb);
           }
         } finally {
-          activeWorkspaceDb?.sqlite.close();
           releaseMutation();
           cancellation.release();
         }
@@ -949,11 +951,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             if (!releaseMutation) throw mcpDeniedError();
             let activeWorkspaceDb: WorkspaceDb | null = null;
             try {
-              activeWorkspaceDb = openWorkspaceDb(
+              activeWorkspaceDb = borrowWorkspaceReadDb(
                 input.coreDb!.dataRoot,
                 environmentPackage.scope.workspaceId
               );
-              applyScopedMigrations(activeWorkspaceDb);
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               return await callWorkerMcpTool({
                 interception,
@@ -969,7 +970,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 workspaceDb: activeWorkspaceDb,
               });
             } finally {
-              activeWorkspaceDb?.sqlite.close();
               releaseMutation();
             }
           };
@@ -1550,38 +1550,34 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   };
   let call: StartedCapabilityCall | null = null;
   if (!call) {
-    const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
-    const replay = (() => {
-      try {
-        return reader.sqlite
-          .prepare(
-            `SELECT
+    const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+    const replay = reader.sqlite.transaction(() => {
+      return reader.sqlite
+        .prepare(
+          `SELECT
            schema_version, workspace_id, thread_id, turn_id, item_id, agent_id, agent_session_id,
            package_snapshot_id, capability_id, family, operation, provider_ref, service_ref, status
          FROM capability_calls
          WHERE call_id = ?`
-          )
-          .get(requestCallId) as
-          | {
-              schema_version: number;
-              agent_id: string;
-              agent_session_id: string;
-              capability_id: string;
-              family: string;
-              item_id: string | null;
-              operation: string;
-              package_snapshot_id: string;
-              provider_ref: string | null;
-              service_ref: string | null;
-              status: string;
-              thread_id: string | null;
-              turn_id: string | null;
-              workspace_id: string;
-            }
-          | undefined;
-      } finally {
-        reader.sqlite.close();
-      }
+        )
+        .get(requestCallId) as
+        | {
+            schema_version: number;
+            agent_id: string;
+            agent_session_id: string;
+            capability_id: string;
+            family: string;
+            item_id: string | null;
+            operation: string;
+            package_snapshot_id: string;
+            provider_ref: string | null;
+            service_ref: string | null;
+            status: string;
+            thread_id: string | null;
+            turn_id: string | null;
+            workspace_id: string;
+          }
+        | undefined;
     })();
     if (replay) {
       readRetainedV1({ schemaVersion: replay.schema_version }, () => undefined);
@@ -1732,18 +1728,14 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       const capture = capturedInput(snapshot, policyDecision.decisionId);
       const duplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, capture);
       if (duplicate?.policyDecisionId) {
-        const reader = openWorkspaceReadDb(
+        const reader = borrowWorkspaceReadDb(
           input.workspaceDb.dataRoot,
           input.workspaceDb.workspaceId
         );
-        const oldRow = (() => {
-          try {
-            return reader.sqlite
-              .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-              .get(duplicate.policyDecisionId);
-          } finally {
-            reader.sqlite.close();
-          }
+        const oldRow = reader.sqlite.transaction(() => {
+          return reader.sqlite
+            .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
+            .get(duplicate.policyDecisionId);
         })();
         const previousRecord = oldRow ? readPermissionDecisionRowV1(oldRow) : undefined;
         const previous = previousRecord?.mediation;
@@ -2080,15 +2072,11 @@ export async function reviewCapturedMcpPolicy(input: {
     !input.catalog
   )
     return null;
-  const reader = openWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
-  const row = (() => {
-    try {
-      return reader.sqlite
-        .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
-        .get(record.policyDecisionId);
-    } finally {
-      reader.sqlite.close();
-    }
+  const reader = borrowWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+  const row = reader.sqlite.transaction(() => {
+    return reader.sqlite
+      .prepare('SELECT * FROM permission_decisions WHERE decision_id = ?')
+      .get(record.policyDecisionId);
   })();
   if (!row) return null;
   const source = readPermissionDecisionRowV1(row);
@@ -2193,8 +2181,9 @@ function currentWorkerMcpPermissions(
     return [];
   const document = readAdmittedPolicyDocument(input.coreDb!, configured);
   const db =
-    workspaceDb ?? openWorkspaceDb(input.coreDb!.dataRoot, environmentPackage.scope.workspaceId);
-  try {
+    workspaceDb ??
+    borrowWorkspaceReadDb(input.coreDb!.dataRoot, environmentPackage.scope.workspaceId);
+  return db.sqlite.transaction(() => {
     const authority = currentMcpPolicyAuthority({
       input,
       environmentPackage,
@@ -2212,9 +2201,7 @@ function currentWorkerMcpPermissions(
       },
       authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.coreDb!, userId),
     });
-  } finally {
-    if (!workspaceDb) db.sqlite.close();
-  }
+  })();
 }
 
 /** Captures actual current Kernel facts through the existing Worker admission owner. */
@@ -2662,7 +2649,20 @@ async function observeWorkerMcpTools(input: {
     )
   )
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-  const resolvedCredentials = await resolveWorkerMcpCredentials(input);
+  const resolvedCredentials = await resolveWorkerMcpCredentials({
+    ...input,
+    current: () =>
+      !input.signal.aborted &&
+      input.current?.() !== false &&
+      hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) &&
+      hasCurrentMcpWorkspaceAuthority(
+        input.input.coreDb!,
+        input.environmentPackage,
+        true,
+        'vault.use'
+      ) &&
+      hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage),
+  });
   if (
     !input.signal.aborted &&
     (input.current?.() === false ||
@@ -2795,6 +2795,8 @@ async function observeWorkerMcpTools(input: {
 
 /** Resolves every current Vault grant into the exact catalog-declared transport sink. */
 export async function resolveWorkerMcpCredentials(input: {
+  /** Rechecks the caller's existing live or captured authority after the Main writer hold settles. */
+  readonly current?: () => boolean;
   readonly call: Pick<StartedCapabilityCall, 'id'>;
   readonly environmentPackage: {
     readonly snapshotId: string;
@@ -2835,70 +2837,91 @@ export async function resolveWorkerMcpCredentials(input: {
   try {
     if (!input.input.vaultUnlockState && !input.input.vaultBackend)
       throw new Error('Vault is unavailable.');
-    for (const binding of input.resolved.credentialBindings) {
-      const grant = getVaultGrant(coreDb, binding.vaultGrantId);
-      const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
-      assertCurrentMcpVaultAuthority(input, grant, reference);
-      const planId = mcpVaultRecordId('plan', input, binding.slot, grant!.grantId);
-      const receiptId = mcpVaultRecordId('receipt', input, binding.slot, grant!.grantId);
-      const now = new Date().toISOString();
-      createVaultInjectionPlan(coreDb, {
-        backendCapabilityRequirement: `mcp-gateway:${input.resolved.transport.kind}`,
-        capabilityId: input.operation,
-        expirationBehavior: grant!.expiresAt ? `expires-at:${grant!.expiresAt}` : 'grant-lifetime',
-        grantId: grant!.grantId,
-        injectionVisibility: 'gateway-only',
-        packageSnapshotId: input.environmentPackage.snapshotId,
-        planId,
-        redactionRule: 'exact-resolved-material',
-        revocationBehavior: 'close-gateway-session',
-        now: () => now,
-      });
-      const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
-      if (
-        reference!.backendKind !== backend.kind ||
-        (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
-      )
-        throw new Error('Vault backend mismatch.');
-      const material = createVaultUseAuditedBackend({
-        agentSessionId: input.environmentPackage.scope.agentSessionId,
-        backend,
-        capabilityCallId: input.call.id,
-        db: input.resolved.scope === 'server' ? coreDb : input.workspaceDb,
-        grantId: grant!.grantId,
-        ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
-        planId,
-        resolvingPath: 'grant',
-        ...(input.resolved.scope === 'server'
-          ? {
-              consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
-              ...(input.environmentPackage.scope.triggerActor
-                ? { actor: input.environmentPackage.scope.triggerActor }
-                : {}),
-            }
-          : { workspaceId: input.environmentPackage.scope.workspaceId }),
-      }).resolve({
-        referenceId: reference!.referenceId,
-        version: reference!.currentVersion,
-      });
-      const value = vaultSecretMaterialToString(material);
-      if (binding.presentation === 'bearer') {
-        if (value.length === 0) throw new Error('Empty MCP bearer credential.');
-        bearer = value;
+    // VaultUse and its unrelated Audit keep their Main writer; product reads stay query-only.
+    const resume =
+      input.resolved.scope === 'server'
+        ? undefined
+        : await getControlStoreWorkerClient().pauseForDataRootBackup(
+            `workspace:${input.workspaceDb.sqlite.name}`
+          );
+    let auditDb: WorkspaceDb | undefined;
+    try {
+      if (resume) auditDb = openWorkspaceDb(coreDb.dataRoot, input.workspaceDb.workspaceId);
+      if (input.current?.() === false) throw mcpDeniedError();
+      assertCurrentSharedMcpBinding(input);
+      for (const binding of input.resolved.credentialBindings) {
+        const grant = getVaultGrant(coreDb, binding.vaultGrantId);
+        const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
+        assertCurrentMcpVaultAuthority(input, grant, reference);
+        const planId = mcpVaultRecordId('plan', input, binding.slot, grant!.grantId);
+        const receiptId = mcpVaultRecordId('receipt', input, binding.slot, grant!.grantId);
+        const now = new Date().toISOString();
+        createVaultInjectionPlan(coreDb, {
+          backendCapabilityRequirement: `mcp-gateway:${input.resolved.transport.kind}`,
+          capabilityId: input.operation,
+          expirationBehavior: grant!.expiresAt
+            ? `expires-at:${grant!.expiresAt}`
+            : 'grant-lifetime',
+          grantId: grant!.grantId,
+          injectionVisibility: 'gateway-only',
+          packageSnapshotId: input.environmentPackage.snapshotId,
+          planId,
+          redactionRule: 'exact-resolved-material',
+          revocationBehavior: 'close-gateway-session',
+          now: () => now,
+        });
+        const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
+        if (
+          reference!.backendKind !== backend.kind ||
+          (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
+        )
+          throw new Error('Vault backend mismatch.');
+        const material = createVaultUseAuditedBackend({
+          agentSessionId: input.environmentPackage.scope.agentSessionId,
+          backend,
+          capabilityCallId: input.call.id,
+          db: auditDb ?? coreDb,
+          grantId: grant!.grantId,
+          ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
+          planId,
+          resolvingPath: 'grant',
+          ...(input.resolved.scope === 'server'
+            ? {
+                consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
+                ...(input.environmentPackage.scope.triggerActor
+                  ? { actor: input.environmentPackage.scope.triggerActor }
+                  : {}),
+              }
+            : { workspaceId: input.environmentPackage.scope.workspaceId }),
+        }).resolve({
+          referenceId: reference!.referenceId,
+          version: reference!.currentVersion,
+        });
+        const value = vaultSecretMaterialToString(material);
+        if (binding.presentation === 'bearer') {
+          if (value.length === 0) throw new Error('Empty MCP bearer credential.');
+          bearer = value;
+        }
+        if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
+        if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
+          headers[binding.sink.name] = value;
+        }
+        if (binding.sink.kind === 'query') query[binding.sink.name] = value;
+        injections.push({
+          backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
+          grant,
+          injectedAt: now,
+          planId,
+          receiptId,
+          referenceVersion: reference!.currentVersion,
+        });
       }
-      if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
-      if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
-        headers[binding.sink.name] = value;
+    } finally {
+      try {
+        auditDb?.sqlite.close();
+      } finally {
+        resume?.();
       }
-      if (binding.sink.kind === 'query') query[binding.sink.name] = value;
-      injections.push({
-        backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
-        grant,
-        injectedAt: now,
-        planId,
-        receiptId,
-        referenceVersion: reference!.currentVersion,
-      });
     }
   } catch {
     try {
@@ -3251,19 +3274,15 @@ async function publishWorkerMcpItem(input: {
   readonly toolName: string;
   readonly workspaceDb: WorkspaceDb;
 }): Promise<void> {
-  const reader = openWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
-  const ledger = (() => {
-    try {
-      return reader.sqlite
-        .prepare(
-          `SELECT schema_version, started_at, completed_at FROM capability_calls WHERE call_id = ?`
-        )
-        .get(input.call.id) as
-        | { schema_version: number; completed_at: string | null; started_at: string | null }
-        | undefined;
-    } finally {
-      reader.sqlite.close();
-    }
+  const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  const ledger = reader.sqlite.transaction(() => {
+    return reader.sqlite
+      .prepare(
+        `SELECT schema_version, started_at, completed_at FROM capability_calls WHERE call_id = ?`
+      )
+      .get(input.call.id) as
+      | { schema_version: number; completed_at: string | null; started_at: string | null }
+      | undefined;
   })();
   if (ledger) readRetainedV1({ schemaVersion: ledger.schema_version }, () => undefined);
   const completedAt = ledger?.completed_at ?? new Date().toISOString();
@@ -3378,7 +3397,7 @@ function requireRawOutputCapabilityAdmission(
   workspaceDb: WorkspaceDb,
   environmentPackage: AgentEnvironmentPackage
 ): void {
-  const reader = openWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+  const reader = borrowWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
   try {
     requireWorkerRawOutputAvailable(reader, environmentPackage.scope);
   } catch (error) {
@@ -3392,8 +3411,6 @@ function requireRawOutputCapabilityAdmission(
         503
       );
     throw error;
-  } finally {
-    reader.sqlite.close();
   }
 }
 

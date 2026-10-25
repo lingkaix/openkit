@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -11,6 +12,9 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { WorkspaceDb } from '../storage/db.js';
 
 const TRACKING_SNAPSHOT_RETENTION = 8;
+// Cache query plans on their actual owner connection, never schema rows or Turn bindings.
+const currentSnapshotStatements = new WeakMap<Database.Database, Database.Statement>();
+const turnSnapshotStatements = new WeakMap<Database.Database, Database.Statement>();
 
 /** Only the original schema owner facts cross native preparation; the full AEP stays on Main. */
 export interface McpToolSchemaEnvironment {
@@ -439,8 +443,9 @@ export function readCurrentMcpToolSchemaSnapshot(input: {
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
 }): Pick<ExportableMcpToolSchemaSnapshot, 'schemaSnapshotId' | 'tools'> | null {
-  const row = input.workspaceDb.sqlite
-    .prepare(
+  let statement = currentSnapshotStatements.get(input.workspaceDb.sqlite);
+  if (!statement) {
+    statement = input.workspaceDb.sqlite.prepare(
       `SELECT schema_version AS schemaVersion, snapshot_id, tools_json
        FROM mcp_tool_schema_snapshots
        WHERE workspace_id = ?
@@ -449,13 +454,15 @@ export function readCurrentMcpToolSchemaSnapshot(input: {
          AND (? IS NULL OR snapshot_id = ?)
        ORDER BY captured_at DESC, snapshot_id DESC
        LIMIT 1`
-    )
-    .get(
-      input.workspaceId,
-      input.catalogEntryId,
-      input.pinnedSchemaSnapshotId,
-      input.pinnedSchemaSnapshotId
-    ) as { schemaVersion: unknown; snapshot_id: string; tools_json: string } | undefined;
+    );
+    currentSnapshotStatements.set(input.workspaceDb.sqlite, statement);
+  }
+  const row = statement.get(
+    input.workspaceId,
+    input.catalogEntryId,
+    input.pinnedSchemaSnapshotId,
+    input.pinnedSchemaSnapshotId
+  ) as { schemaVersion: unknown; snapshot_id: string; tools_json: string } | undefined;
 
   return row
     ? {
@@ -500,8 +507,9 @@ export function readTurnMcpToolSchemaSnapshot(input: {
   readonly workspaceDb: WorkspaceDb;
 }): ReturnType<typeof readCurrentMcpToolSchemaSnapshot> {
   const scope = input.environmentPackage.scope;
-  const bound = input.workspaceDb.sqlite
-    .prepare(`
+  let statement = turnSnapshotStatements.get(input.workspaceDb.sqlite);
+  if (!statement) {
+    statement = input.workspaceDb.sqlite.prepare(`
     SELECT schema_version AS schemaVersion, schema_snapshot_id FROM capability_calls
     WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
       AND agent_session_id = ? AND package_snapshot_id = ?
@@ -509,15 +517,17 @@ export function readTurnMcpToolSchemaSnapshot(input: {
       AND operation IN ('mcp.list-tools', 'mcp.call-tool')
       AND schema_snapshot_id IS NOT NULL
     ORDER BY started_at, call_id LIMIT 1
-  `)
-    .get(
-      scope.workspaceId,
-      scope.threadId,
-      scope.turnId,
-      scope.agentSessionId,
-      input.environmentPackage.snapshotId,
-      input.selected.id
-    ) as { schemaVersion: unknown; schema_snapshot_id: string } | undefined;
+  `);
+    turnSnapshotStatements.set(input.workspaceDb.sqlite, statement);
+  }
+  const bound = statement.get(
+    scope.workspaceId,
+    scope.threadId,
+    scope.turnId,
+    scope.agentSessionId,
+    input.environmentPackage.snapshotId,
+    input.selected.id
+  ) as { schemaVersion: unknown; schema_snapshot_id: string } | undefined;
   if (!bound) return null;
   readRetainedV1(bound, () => bound);
   const snapshot = readCurrentMcpToolSchemaSnapshot({

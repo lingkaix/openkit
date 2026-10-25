@@ -98,6 +98,7 @@ import {
   type ControlProductOwner,
   type ControlProductSnapshot,
   type ControlStoreProductReadHandle,
+  getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
@@ -1015,13 +1016,21 @@ export function readNativeProductEntries(
   }
 }
 
-/** Reads the addressed append heads without replaying unrelated immutable history. */
+const turnWriteHeadStatements = new WeakMap<
+  ControlStoreProductReadHandle,
+  { tail: Database.Statement; item: Database.Statement }
+>();
+
+/** Reads fresh addressed append heads on the retained Workspace reader; Server reads retain their owned lifetime. */
 export function readNativeTurnWriteHead(
   scope: NativeProductScope,
   turnId: string,
   itemId?: string
 ) {
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const reader =
+    scope.owner.kind === 'workspace'
+      ? getWorkspaceProductReadHandle(scope.path, scope.owner)
+      : openControlStoreProductReadHandle(scope.path, scope.owner);
   let snapshot: ControlProductSnapshot | undefined;
   let sequence = 0;
   let eventSequence = 0;
@@ -1030,17 +1039,23 @@ export function readNativeTurnWriteHead(
     reader.sqlite.transaction(() => {
       snapshot = readNativeProduct(scope, 'turn', turnId, reader);
       if (!snapshot) return;
-      const tail = reader.sqlite.prepare(
-        'SELECT max(sequence) AS sequence FROM control_product_entries WHERE kind=? AND turn_id=?'
-      );
+      let prepared = turnWriteHeadStatements.get(reader);
+      if (!prepared) {
+        prepared = {
+          tail: reader.sqlite.prepare(
+            'SELECT max(sequence) AS sequence FROM control_product_entries WHERE kind=? AND turn_id=?'
+          ),
+          item: reader.sqlite.prepare(
+            "SELECT turn_id,sequence FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+          ),
+        };
+        turnWriteHeadStatements.set(reader, prepared);
+      }
+      const { tail } = prepared;
       sequence = (tail.get('item', turnId) as { sequence: number | null }).sequence ?? 0;
       eventSequence = (tail.get('event', turnId) as { sequence: number | null }).sequence ?? 0;
       if (itemId) {
-        const row = reader.sqlite
-          .prepare(
-            "SELECT turn_id,sequence FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
-          )
-          .get(itemId) as { turn_id: string; sequence: number } | undefined;
+        const row = prepared.item.get(itemId) as { turn_id: string; sequence: number } | undefined;
         if (row) {
           if (row.turn_id !== turnId) throw new Error(`Item already exists: ${itemId}`);
           entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0];
@@ -1050,7 +1065,7 @@ export function readNativeTurnWriteHead(
       }
     })();
   } finally {
-    reader.close();
+    if (scope.owner.kind === 'server') reader.close();
   }
   if (!snapshot) return undefined;
   const metadata = StoredTurnV1Schema.parse(snapshot.record);

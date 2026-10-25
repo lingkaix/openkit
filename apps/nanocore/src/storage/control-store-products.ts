@@ -2314,6 +2314,7 @@ export function openControlStoreProductReadHandle(
   const sqlite = new Database(path, { readonly: true, fileMustExist: true });
   // Only the closed metadata-kind set is prepared; no canonical row survives a read.
   const prepared = new Map<ControlProductKind, Database.Statement>();
+  let entriesStatement: Database.Statement | undefined;
   try {
     sqlite.pragma('query_only = ON');
   } catch (error) {
@@ -2354,11 +2355,10 @@ export function openControlStoreProductReadHandle(
       )
         throw new ControlProductPreconditionError();
       if (!readProduct(sqlite, owner, 'turn', turnId, prepared)) return [];
-      const rows = sqlite
-        .prepare(
-          'SELECT schema_version,sequence,id,revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence>? ORDER BY sequence LIMIT ?'
-        )
-        .all(kind, turnId, after, limit) as {
+      entriesStatement ??= sqlite.prepare(
+        'SELECT schema_version,sequence,id,revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence>? ORDER BY sequence LIMIT ?'
+      );
+      const rows = entriesStatement.all(kind, turnId, after, limit) as {
         schema_version: number;
         sequence: number;
         id: string;

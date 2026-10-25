@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readRetainedV1 } from '@openkit/protocol';
 import { MAX_WORKER_RAW_OUTPUT_BYTES } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { StartedCapabilityCall } from '../capability/usage-ledger.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -45,6 +46,9 @@ interface Component {
   state: RawState;
 }
 
+// Statements follow their owning connection; aggregates and rows are always read again.
+const componentStatements = new WeakMap<Database.Database, Database.Statement>();
+
 /** Missing or contradictory authority cannot prove output coverage. */
 export class WorkerRawOutputAuthorityError extends Error {
   constructor() {
@@ -71,17 +75,20 @@ function components(db: WorkspaceDb, scope: WorkerRawOutputScope): Component[] {
   // The Turn's raw allowance bounds content, not call count. Iterate the ledger without allocating
   // an unbounded SQL result. A bounded proof inventory refusal cannot become a clean result.
   let bytes = 0;
-  for (const row of db.sqlite
-    .prepare(`SELECT schema_version, call_id, status,
+  let statement = componentStatements.get(db.sqlite);
+  if (!statement) {
+    statement = db.sqlite.prepare(`SELECT schema_version, call_id, status,
       CASE WHEN length(CAST(extensions_json AS BLOB)) <= ? THEN extensions_json ELSE NULL END AS extensions_json
       FROM capability_calls WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
-      AND service_ref = 'worker-inference-gateway' AND family = 'llm'`)
-    .iterate(
-      EXTENSION_BYTES,
-      scope.workspaceId,
-      scope.threadId,
-      scope.turnId
-    ) as Iterable<CallRow>) {
+      AND service_ref = 'worker-inference-gateway' AND family = 'llm'`);
+    componentStatements.set(db.sqlite, statement);
+  }
+  for (const row of statement.iterate(
+    EXTENSION_BYTES,
+    scope.workspaceId,
+    scope.threadId,
+    scope.turnId
+  ) as Iterable<CallRow>) {
     readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
     if (!row.extensions_json) throw new WorkerRawOutputAuthorityError();
     bytes += Buffer.byteLength(row.extensions_json);

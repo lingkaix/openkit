@@ -14,7 +14,11 @@ import {
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { prepareImmutableProductJson, readImmutableProductJson } from './immutable-content.js';
-import { nativeProductScope, readNativeProductEntries } from './workspace-file-records.js';
+import {
+  nativeProductScope,
+  readNativeProductEntries,
+  readNativeTurnWriteHead,
+} from './workspace-file-records.js';
 
 const observation = vi.hoisted(() => ({ readers: [] as import('better-sqlite3').Database[] }));
 
@@ -178,8 +182,19 @@ describe('retained native metadata reader lifetime', () => {
     const peer = new FsStore({ dataRoot: f.root });
     const { items: _items, ...expected } = f.store.getTurnById(f.turn.id);
     const readers = () => observation.readers.filter((sqlite) => sqlite.name === f.scope.path);
+    const cut = committedCut(f);
+    const itemHead = cut.items.filter((entry) => entry.id === f.item.id).at(-1)!;
+    const expectedHead = {
+      revision: cut.turn.revision,
+      metadata: cut.turn.record,
+      itemRevision: itemHead.revision,
+      itemSequence: cut.items.at(-1)!.sequence,
+      eventSequence: cut.events.at(-1)?.sequence ?? 0,
+      itemRevisions: [f.item],
+    };
     const prepared = vi.spyOn(Database.prototype, 'prepare');
     expect(f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(expected);
+    expect(readNativeTurnWriteHead(f.scope, f.turn.id, f.item.id)).toMatchObject(expectedHead);
 
     // COORD07:1x requires one readonly, query-only connection per Workspace DB and cached statements.
     const retained = readers().filter((sqlite) => sqlite.open);
@@ -192,6 +207,8 @@ describe('retained native metadata reader lifetime', () => {
     prepared.mockClear();
     for (const store of [f.store, peer, f.store, peer]) {
       expect(store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(expected);
+      // COORD13:1x extends retained connections and statements to addressed publication heads.
+      expect(readNativeTurnWriteHead(f.scope, f.turn.id, f.item.id)).toMatchObject(expectedHead);
       expect(reader.inTransaction).toBe(false);
     }
     expect(readers()).toHaveLength(opened);
@@ -202,6 +219,18 @@ describe('retained native metadata reader lifetime', () => {
       )
     ).toHaveLength(0);
     prepared.mockRestore();
+
+    // DX committed-read semantics: warmed heads must see both later Item and event ACKs.
+    const revised = { ...f.item, text: 'Committed after warming the addressed head' };
+    await expect(f.store.createItem(revised)).resolves.toEqual(revised);
+    await publishEvent(f, revised);
+    expect(readNativeTurnWriteHead(f.scope, f.turn.id, f.item.id)).toMatchObject({
+      itemRevisions: [revised],
+      itemRevision: itemHead.revision + 1,
+      itemSequence: expectedHead.itemSequence + 1,
+      eventSequence: expectedHead.eventSequence + 1,
+    });
+    expect(reader.inTransaction).toBe(false);
 
     // The same connection must see an acknowledged commit without a row cache or pinned snapshot.
     await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
