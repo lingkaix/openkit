@@ -12,6 +12,7 @@ This non-authorizing record summarizes the independent documentation audit that 
 - Roles: one primary context performs the Auditor function, which writes the findings and the dated records, and the Writer function, which writes the documentation corrections. Read-only inspector contexts collect G3 evidence. One fresh Reviewer context checks each group's diff.
 - Goals: G1 product vision to design, G2 Core against specifications, G3 specifications against implementation, G4 specification organization, and G5 writing rules under [Documentation Writing](../writing.md).
 - Branch: the session's designated branch is `audit/independent-docs-ag29v9`. The engineer's instruction named `audit/independent-docs-<yyyymmdd>`; the session harness fixed the branch name, so the date form was not used.
+- Supplement: a second audit session ran the same instruction from its own base and stopped when it found this audit. On the engineer's direction it added its unique findings: the [supplement record](20261025-independent_doc_audit_supplement.md) and the [G1 probe record](20261023-independent_doc_audit_g1_probe.md).
 
 ## Inventory At The Base SHA
 
@@ -265,6 +266,7 @@ The engineer ended the audit on 2026-10-25 after the fifteen open groups. Counts
 - Documentation corrections: 67 files under `docs/core/` and `docs/specs/` changed by audit commits, each correction citing its evidence, with no design rule changed (see each record's Semantic Preservation table).
 - Questions: Q-01 to Q-170; 8 were withdrawn after review, so 162 remain for the engineer.
 - G4: one section move in the foundation group (FND-G4-01); no archive transition was made.
+- Supplement: corrections in 30 Core documents and specifications, issues #522 to #529 (one blocking candidate), questions Q-171 to Q-201, and a G1 probe with 296 findings compared one by one against these records. Totals: 69 `doc-audit` issues, 18 blocking candidates, and 193 open questions.
 
 ## Remaining Work
 
@@ -280,13 +282,16 @@ The engineer stopped the audit after the open groups. This list states what the 
    - `apps/nanocore/README.md:487` and `packages/config-schema/README.md:31,89`: Thread visibility claims that issue #471 contradicts (policy record).
    - `docs/specs/20260528-core_client_boundary.md:161`: names the removed Goal supervise route (policy record, PO-PEM-02).
    - `docs/cookbooks/docker-app.md:104`: the missing `e2e:staging` call (issue #516).
-3. Archive check. A preliminary read-only pass over the 65 archived specifications and the two directory guides found complete lifecycle metadata and both reason sections in every file. Two kinds of `current-guidance` drift remain, and archived bytes may not change, so a new audit record must carry the current mapping:
+3. Archive check, deferred by the engineer on 2026-10-25 until a way to handle frozen archived documents is decided. A preliminary read-only pass over the 65 archived specifications and the two directory guides found complete lifecycle metadata and both reason sections in every file. Two kinds of `current-guidance` drift remain, and archived bytes may not change, so a new audit record must carry the current mapping:
    - Targets that no longer exist: `docs/core/permissions.md` and `docs/core/audit.md` (`superseded/20260513-core_protocol_model_notes.md`), and `docs/core/agent-workflow.md` (three files under `superseded/agent-workflow/`).
    - A target that is itself archived: `20260713-openkit_agent_skill_interface.md`, now under `retired/`, named by three superseded specifications.
    - Fourteen inbound links from active specifications are supersession pointers or marked background; the two in the test strategy Related Docs are in Q-168.
 4. Root `AGENTS.md`: the audit-only reading and its change proposals were not made. `docs/specs/AGENTS.md` proposals are Q-170.
 5. Engineer decisions: answer the 162 open questions (the table below), and triage the 17 blocking-candidate issues before `v0.1.0`. Questions that need the engineer by rule include Q-161 (local guide rule), Q-166 (engineering doctrine), Q-169 (public-repository redaction of a decision record), and Q-170 (local `AGENTS.md`).
 6. After the engineer answers, apply the accepted recommendations in their owners, and close or retitle the issues that an answer changes (for example #510 after Q-156).
+7. Supplement hand-offs: the held-group audit takes the 84 held probe findings from the G1 probe record and the former name "Permissions" in held documents; the supplement record lists them.
+8. Writing and organization (G4 and G5) were recorded as questions, not rewritten. After the rule questions are answered (Q-01, Q-23, Q-28, Q-189), rewrite in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
+9. Before triage, recheck the 69 `doc-audit` issues against current `main`, and group the open questions into a decision sheet so that one rule answers each repeated family.
 
 After the mediation group, `main` added `providerModel` to `20260704-capability_usage_gateway_foundation.md` (audited by the mediation group) and to the held `20260703-audit_usage_evidence_records.md`. The close-out recheck found the field in `apps/nanocore/src/capability/usage-ledger.ts` and the Gateway, and the mediation corrections still apply. No new finding. The held Audit specification was read only as the owner that issue #514 cites.
 
@@ -355,6 +360,14 @@ After the mediation group, `main` added `providerModel` to `20260704-capability_
 | #517 `[ci] L3 NanoCore e2e and L5 smoke jobs keep no failure evidence beyond the job log` | process | PR-TST-05 | ordinary (enhancement) |
 | #518 `[tests] The NanoCore e2e import-boundary check misses multi-line, dynamic, and .mjs imports` | process | PR-TST-07 | low |
 | #519 `[scripts] Documentation field checks still run as two validators instead of one validator plus the index generator` | process | PR-DFC-01 | low (enhancement) |
+| #522 `[workspace-import] Ordinary import keeps the exported private owner instead of binding private Threads to the importing user` | supplement (policy) | TVS | blocking candidate (authorization) |
+| #523 `[workspace-export] Workspace export fails for every non-administrator when the Workspace has any private Thread` | supplement (policy) | TVS | ordinary |
+| #524 `[deepseek] A native max_tokens stop is rejected before classification, so the Turn fails instead of reporting length` | supplement (agent-session) | DSK | ordinary |
+| #525 `[internal-agent] Two fixed system prompts live outside the shared built-in prompt source and its 3000-code-point test` | supplement (architecture) | IAR | low |
+| #526 `[internal-agent] Conversational objectives are not configurable, and the deadline is not checked against four times the objective` | supplement (architecture) | IAR | ordinary |
+| #527 `[internal-agent] A Tool-returned image fails the run instead of surviving the Gateway round trip` | supplement (architecture) | IAR | ordinary |
+| #528 `[opencode] The adapter does not configure the V2 tool output limits or image resizing` | supplement (agent-session) | OPC | ordinary |
+| #529 `[opencode] Each Turn reads the whole native conversation under one 16 MiB and 20-page bound, so a long Thread can stop accepting Turns` | supplement (agent-session) | OPC | ordinary (recovery effect) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -552,3 +565,34 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-168 | process | Process wording, numbers, labels, placement | As Q-28 |
 | Q-169 | process | Release-cadence decision path and host aliases | Redact the path |
 | Q-170 | process | Proposed changes to `docs/specs/AGENTS.md` | Join line breaks; point to the README |
+| Q-171 | supplement | Accept the Compute Neutrality Target before the freeze | Accept, or amend the decision |
+| Q-172 | supplement | Core owner of the Goal Coordinator role | `architecture.md` |
+| Q-173 | supplement | Restated and completed rules in `docs/core/AGENTS.md` | Point to the documentation model; standing rules |
+| Q-174 | supplement | Product vision name "Foundation" for `doctrine.md` | "Doctrine" |
+| Q-175 | supplement | Adapter-written native state that a resume reads | Record as retained families |
+| Q-176 | supplement | More than one Codex assistant message | Select `final_answer` after a probe |
+| Q-177 | supplement | Codex `contextWindowExceeded` as `length` proof | Treat as positive proof |
+| Q-178 | supplement | Codex inference-hint mapping in its specification | Add with a link to its owner |
+| Q-179 | supplement | Unrequested DeepSeek abort reported as completion | Record the pin limit; gate the template |
+| Q-180 | supplement | Pi protected environment and offline mode | List them in the Pi specification |
+| Q-181 | supplement | Pi "one adapter module" acceptance | Restate; move Pi names out of shared code |
+| Q-182 | supplement | Adapter diagnostic prefix owner | Per-Turn stderr prefix per adapter |
+| Q-183 | supplement | Pi native model representation and successor rule | State them |
+| Q-184 | supplement | Web disposition of the archive operations | Live, as the decision says |
+| Q-185 | supplement | Owner of the Core stream projection | One communication-owned stream specification |
+| Q-186 | supplement | Thread command surface | Closed operation set, revision, not-found code |
+| Q-187 | supplement | Producers and `stopReason` of a `cancelled` Turn | Decide with the runtime release; add the integrity row |
+| Q-188 | supplement | Pending Request winner and responsible user | Pending Requests owns them; register the kinds |
+| Q-189 | supplement | Canonical form of retained digests and derived ids | RFC 8785 JSON with SHA-256 in one owner |
+| Q-190 | supplement | Light App field removal and revision after restore | Disable removal; monotonic revision |
+| Q-191 | supplement | Deployment mode and authored configuration keys | One closed key list in the configuration contract |
+| Q-192 | supplement | Session-derived admin, email normalization, local bearer | State them exactly |
+| Q-193 | supplement | Workspace administrator and rights per association | State the table, or no tier |
+| Q-194 | supplement | Vault user scope and provider-subscription counts | Correct and home them |
+| Q-195 | supplement | Mediation rules that decide authorization | Decide each in its owner |
+| Q-196 | supplement | Mediation vocabularies and names | Close them; correct the names |
+| Q-197 | supplement | Readers of Server Knowledge and Knowledge rights | State readers and rights |
+| Q-198 | supplement | Knowledge retained shapes and lifecycle | State them in their owners |
+| Q-199 | supplement | AgentSession record and adapter probe facts | State fields, transitions, probe results |
+| Q-200 | supplement | Image promotion and release manifest keys | Release Management owns them |
+| Q-201 | supplement | Web inventory source and roadmap owners | Definition catalog; open items only |

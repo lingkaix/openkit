@@ -67,7 +67,37 @@ Each issue was checked against the open and closed issues first, and each cites 
 
 ## G1 Cross-Comparison
 
-In progress. Read-only inspectors compare each of the 296 probe findings with the summary record, the group records, and the current documents. This section will give each finding's disposition.
+Four read-only inspectors compared each of the 296 probe findings with the summary record, the fifteen group records, and the current documents on this branch. The auditor checked the quoted document evidence of every open finding at its cited line; all 73 quotes matched.
+
+| Module | Held | Covered | Fixed before | Invalid | Open |
+| --- | --- | --- | --- | --- | --- |
+| M1 | 6 | 10 | 0 | 0 | 14 |
+| M2 | 32 | 6 | 1 | 0 | 1 |
+| M3 | 4 | 28 | 2 | 2 | 9 |
+| M4 | 2 | 18 | 3 | 1 | 15 |
+| M5 | 10 | 15 | 0 | 0 | 5 |
+| M6 | 2 | 15 | 0 | 0 | 17 |
+| M7 | 22 | 8 | 0 | 1 | 5 |
+| M8 | 6 | 16 | 0 | 2 | 18 |
+| Total | 84 | 116 | 6 | 6 | 84 |
+
+The column meanings:
+
+- Held: the owning group or the only evidence is held under #440. The held-group audit takes these findings from the G1 probe record.
+- Covered: a group record item, a question, an issue, or a summary theme handles the same defect. Many retained-format findings are covered only by theme G1-CR-T1 and Question Q-01, so the answer to Q-01 decides them.
+- Fixed before: the audit or `main` already changed the text.
+- Invalid: the documents answer the probe. M3-G30 and M3-G45 rest on held text, M4-G30 on a MAY clause, M7-G13 on the expiry and invalidation rules, M8-G04 on `DESIGN.md`, which the probe export lacked, and M8-G38 on an engineer ruling.
+
+This supplement fixed five open findings:
+
+| Finding | Correction |
+| --- | --- |
+| M8-G01 | The Web specification's included-set count is 248 in the inclusion rule and the stack sentence; the audit had corrected six other places. |
+| M8-G02 | The Web acceptance bullet says twenty-nine roadmap operations, as the disposition table does. |
+| M8-G05 | The Web Consequences sentence no longer claims `Implemented` against the frontmatter `Partial`; the retired Repositories screen is removed from the workflow list, as the specification's own Owns section states. |
+| M7-G32 and M4-G22 | Internal Agent Resource Integration spells `knowledge.notebook-workspace.update` with a hyphen, as Notebook Editing, Core Mediation, the code, and the Operation Definition naming rule do. |
+
+The other 79 open findings are documentation contradictions or missing facts that no accepted record decides. Questions Q-185 to Q-201 group them by owner.
 
 ## Questions For The Engineer
 
@@ -173,20 +203,156 @@ The numbering continues the summary record. Each question states the context, th
 - Recommendation: A. The decision and the shipped screen agree; the guard is a projection.
 - Meanwhile: the operation names were corrected to catalog keys (SUP-S-08); the disposition is unchanged. The guard is a test, which this audit does not change.
 
+### Q-185. Which owner states the Core stream projection?
+
+- Findings: M1-G06, M1-G07, M1-G08, M1-G20, M1-G27.
+- Context: `communication.md:239` sends "Concrete live stream availability" to protocol and communication specifications, and `20260704-app_api_openapi_projection.md:107` sends cursor behavior to the packages, so no document states the HTTP and SSE route behavior. `protocol.md:484` requires `core.stream.cursor_expired` for an old cursor while the held layout specification treats `since=0` as never expired. `protocol.md:423` requires `workspaceId` in every envelope although `core-concepts.md:75` says a Server-owned Thread has no Workspace anchor. `protocol.md:439` requires a "UUID request ID" while the identifiers specification excludes request IDs and states no format. `20261021-protocol_identifiers_and_enums.md:194` bounds delta payloads without numbers.
+- Options: (A) The communication group owns one stream specification that states routes, `since` semantics including 0, frames, keep-alive, the Server-owned stream address, the `requestId` form, and delta bounds as current defaults. (B) Each existing owner adds its part.
+- Recommendation: A. One owner for one boundary keeps the cursor rule and the envelope rule from drifting apart.
+- Meanwhile: no change.
+
+### Q-186. What is the Thread command surface?
+
+- Findings: M1-G17, M1-G22, M1-G23.
+- Context: `protocol.md:197` lists create, list, get, resume, and archive; `protocol.md:538` adds update; `pending_requests.md:183` names Thread deletion as an invalidating event, while the held work-data specification says hard delete is not an operation. No Thread revision field or updatable-field list exists. `20261002-operation_definition.md:111` makes an inaccessible Thread a uniform not-found but names no code. `thread.share` (Thread Visibility line 59) has no confirmation format, which matters only after `v0.1.0`.
+- Options: (A) Core Concepts and Protocol state the closed Thread operation set, the revision field, and the not-found code; Pending Requests drops deletion until it exists. (B) Keep the text.
+- Recommendation: A. An invalidating event that names a non-existent operation cannot be tested.
+- Meanwhile: no change.
+
+### Q-187. Which paths produce a `cancelled` Turn, and with which `stopReason`?
+
+- Findings: M1-G09, M2-G29.
+- Context: `protocol.md:239` leaves the producer to "the owning accepted specification" and `protocol.md:265` requires a `stopReason`. The held reliability specification has no `cancelled` row, and the held work-data specification calls the split an open product decision. `20261012-product_integrity_check.md:147` treats `cancelled` as terminal, but its mapping at lines 155 to 161 has no `cancelled` row, so a lawful cancelled Turn has no admitted outcome.
+- Options: (A) Decide the producers and the reason, then add the integrity-check row. (B) Remove `cancelled` until a producer exists.
+- Recommendation: A, decided with the held runtime-model release; add the integrity-check row in the same change.
+- Meanwhile: no change.
+
+### Q-188. Which record decides a Pending Request and who may resolve it?
+
+- Findings: M1-G12, M1-G13, M1-G14, M1-G24, M7-G12, M3-G11.
+- Context: `20260715-multi_user_workspace_system.md:377` makes the first terminal `PermissionDecision` and its AuditEvent the Approval winner, while `20260930-pending_requests.md:268` makes the PendingRequest record authoritative. The responsible-user rule differs between `pending_requests.md:270` and `multi_user_workspace_system.md:376`, and `policy.md:94` points to a rule that no document states. The request id (`pending_requests.md:106`) and the Approval id have no row in the identifiers table. The captured-call digest (`pending_requests.md:112`) has no canonical form, and "readiness order" (line 197) has no field. The receipt stores the command name, but `pending_requests.md:152` gives two spellings.
+- Options: (A) Pending Requests owns the winner, the responsible-user derivation, and the request-id kind; Multi-User links them; the identifiers table registers the kinds. (B) Multi-User keeps the Approval winner and Pending Requests links it.
+- Recommendation: A. The later Pending Requests design already makes its record the single authority, and authorization needs one rule.
+- Meanwhile: no change.
+
+### Q-189. Which canonical form do retained digests and derived identities use?
+
+- Findings: M1-G10, M7-G36, M8-G15, M6-G18, M6-G09, M5-G23, M8-G12, M8-G21, M3-G07.
+- Context: retained values depend on hashes and derivation names that no document fixes: the receipt "canonical semantic-input hash" (`protocol.md:570`), the Generative Kernel semantic fingerprint (GKD line 231), the Knowledge `requestDigest` (`20260703-knowledge_store_implementation.md:209`), the `kp_` proposal id (KSI line 141, which also breaks the one-form rule of the identifiers specification), the session compatibility key (Agent Session Continuity line 98 and Session-Static Materialization line 396), the `{workspaceId}` text in the Light App id name (GKD line 229), the answer-source Item id (Generative UI line 223), and the Policy snapshot digest (Policy Enforcement Mapping lines 427 and 614). `20260703-worker_context_package.md:303` uses a sort-keys rule that differs from the RFC 8785 rule at KSI line 153.
+- Options: (A) The identifiers specification fixes one canonical form (RFC 8785 JSON with SHA-256) and each owner lists only its inputs. (B) Each owner states its own form.
+- Recommendation: A. A rebuilt server must reproduce these values to honor retained receipts and ids, and one rule cannot drift.
+- Meanwhile: no change.
+
+### Q-190. How does a Light App schema change and recover?
+
+- Findings: M8-G13, M8-G14, M8-G09, M8-G17, M8-G18.
+- Context: GKD line 98 permits "field removal" while line 172 requires a proof of exact prior-value recovery before a populated-field drop. A restore (line 104) can roll `schemaRevision` back while line 209 says it advances only on activation, so a revision number can repeat for a different schema. The held layout specification lists a `schema_revisions` table that the register (line 155) says does not exist. GKD line 49 points to a capability-owner extension "below" that no section defines, and the held backup specification defers the app package format back to GKD.
+- Options: (A) Disable populated-field removal until the recovery proof exists, make `schemaRevision` monotonic across restore, and settle the definition-history home with the storage release. (B) Accept removal with snapshot recovery only.
+- Recommendation: A. Field removal can lose data, and a repeated revision defeats the staleness check.
+- Meanwhile: no change.
+
+### Q-191. Which document states the deployment mode and the authored configuration keys?
+
+- Findings: M8-G28, M5-G29, M8-G39, M6-G23, M4-G21.
+- Context: `20260628-nanocore_config_identity_contract.md:137` keeps a strict `mode` enum, and lines 200 and 201 mention "mode defaults" and a 32-character secret, but no authoritative text gives the mode selector, its precedence, the per-mode bind and data-root defaults, or the secret source; `OPENKIT_CORE_MODE` appears only in a cookbook. The NanoHost identity and credential-reference keys are unnamed (line 82). The Discord endpoint and `channels.discord` keys exist only in the operator Skill manual. `knowledgeMounts` and `defaultKnowledgeBaseId` sit in the Workspace object (held file storage specification) while the configuration contract closes that object (line 139). The LLM Gateway provider allowlist (Policy Enforcement Mapping line 527) has no home or key.
+- Options: (A) The configuration contract lists every authored key with its owner, including mode selection and defaults. (B) Each owner states its own keys and the contract links them.
+- Recommendation: A. Authored configuration is retained data, and a wrong mode default fails open because local mode grants implicit authority.
+- Meanwhile: no change.
+
+### Q-192. Do the identity specifications state their account rules exactly?
+
+- Findings: M3-G15, M3-G27, M3-G19.
+- Context: `20260704-remote_auth_credential_bootstrap.md:109` requires a Better Auth session of a `server-admin` Token owner to carry deployment-admin authority, while line 179 says NanoCore MAY derive it. Email normalization (Multi-User line 205, Remote Auth line 156) has no algorithm or uniqueness rule. Bearer verification in local mode (Remote MCP Interface line 144 against Remote Auth line 202) is unstated.
+- Options: (A) State the derivation as a MUST, the normalization algorithm, and local-mode bearer handling. (B) Keep the text.
+- Recommendation: A. Stored accounts and administrator authority depend on these rules.
+- Meanwhile: no change.
+
+### Q-193. Who is a Workspace administrator, and which rights does each association hold?
+
+- Findings: M3-G40, M3-G17.
+- Context: `20260703-policy_enforcement_mapping.md:373` defines Workspace administration as "current authority to manage that Workspace Policy", while `policy.md:36` gives every active member the full operation set; nothing says who may change managed-boundary statements. Multi-User line 243 says one active-member association supplies the access-right set, and the PEM registry (lines 262 to 290) maps operations to rights but not associations to rights.
+- Options: (A) PEM states the association-to-rights table and the managed-boundary editor. (B) Keep the equal-member rule and state that no administrator tier exists.
+- Recommendation: A or an explicit B. Authorization needs a finite answer.
+- Meanwhile: no change.
+
+### Q-194. Do the Vault and provider-subscription specifications agree with themselves?
+
+- Findings: M3-G35, M3-G37.
+- Context: `vault.md:42` allows user-scoped Vault records, but Vault Secret Injection line 182 homes only Server and Workspace rows, and the `env:` reference gate (line 347) has no owner. Provider Subscription Accounts says "ten ordinary operations" at line 228 and "nine" at line 555, and names fixed window ids `primary` and `secondary` at line 414 while line 420 forbids primary or secondary position.
+- Options: (A) Correct the counts and the window wording, home user-scope rows, and name the `env:` owner. (B) Remove user scope.
+- Recommendation: A after a code check; the counts are projection facts.
+- Meanwhile: no change.
+
+### Q-195. Which mediation rules decide authorization?
+
+- Findings: M4-G12, M4-G07, M4-G08, M4-G06, M4-G14.
+- Context: MCP Catalog Management lists approval-required and denied Tool lists at line 55 but refuses them at line 176; Worker MCP Tool Supply says "deny-unless-enabled" at line 201 and "no default-deny rule" at line 198. Whether the capability plane is enabled for every package is stated three ways: Agent Environment Package line 321 and Agent Manifest line 386 disable it, Worker Runtime Communication line 284 enables it. No document names the listener that serves `/v1/*`, the local-mode authentication, or the effect of a read-only token on Gateway use (Gateway lines 71 and 133). Gateway line 232 invents no durable home for unattributed public calls, while the held Audit specification writes them to Server families. The idempotency key of a Server-owned capability call has no `workspaceId` (Capability Usage line 146).
+- Options: (A) Mediation decides each point in its owning specification. (B) Leave them to code.
+- Recommendation: A. Each point decides whether a call is allowed or recorded.
+- Meanwhile: no change.
+
+### Q-196. Should the mediation vocabularies and names be closed?
+
+- Findings: M4-G04, M4-G03, M4-G16, M4-G24, M4-G34, M4-G39, M4-G23, M7-G22, M7-G25, M4-G27.
+- Context: Capability Usage line 112 lists seven capability families while Worker Agent Capability lines 107 to 112 use others, and the family is part of the idempotency key. The ledger-failure status and the recovery codes are named only in the CUG projection (lines 240 and 298). Two producer names exist for derived calls (WAC line 160, Pending Requests line 128). `mediation.md:212` gives a verb vocabulary without saying it is closed, while `knowledge.ask` and `knowledge.tell` are canonical ids. `mediation.md:26` says product-visible calls "should" be item-backed and line 167 says "MUST". The README term index lists `AgentCapability`, which `mediation.md` never defines. Internal Agent Resource Integration line 16 calls the delegated configuration Tool `administration.configuration.apply`, which is the Policy action; the Tool is `administration.configuration.dispatch` (Operation Definition line 147). The Tool touch counter excludes unavailable Tools in IARI line 134 but includes refusing closures in the Internal Agent Runtime line 130, and the counter feeds the `toolOccurrence` identity. Worker Agent Capability line 149 describes a request envelope that the MCP route at Worker MCP Tool Supply line 132 does not use.
+- Options: (A) Close each vocabulary in its owner and correct the names. (B) Keep them open.
+- Recommendation: A. The family and the counter feed retained identities, and the names appear in evidence.
+- Meanwhile: no change; the naming conflicts are not obvious enough to fix without the owner.
+
+### Q-197. Who may read Server Knowledge, and with which rights?
+
+- Findings: M6-G06, M6-G07, M6-G13, M6-G33.
+- Context: Knowledge Manager runtime line 131 and Personal Memory line 84 let Workers address only their Task's Workspace Knowledge, while Worker MCP Tool Supply line 159 adds "currently admitted Server Knowledge". Policy Enforcement Mapping line 275 maps only `knowledge.read`; notebook mutation, forget, maintain, tell, `memory.*`, and proposal operations have no right. Server maintenance has "no Workspace anchor" (KMR line 80), but retrieval and traces require one (KSI line 193, `protocol.md:154`). The attribute that marks an explicit user state inspection (KSI line 197) is undefined.
+- Options: (A) Knowledge and Policy state the reader set, the operation-to-right rows, and the Server maintenance scope. (B) Keep Server Knowledge administrator-only and say so.
+- Recommendation: A, or B stated explicitly. This is a disclosure boundary.
+- Meanwhile: no change.
+
+### Q-198. Which Knowledge shapes and lifecycle rules must the specifications state?
+
+- Findings: M6-G03, M6-G10, M6-G11, M6-G27, M6-G29, M6-G28, M6-G22, M6-G25, M6-G30, M6-G32.
+- Context: the Scope Schema keys and default types (Governance line 96, KSI line 139), the Git author mapping and commit metadata (Notebook Editing line 64), the suppression row and its removal operation (Personal Memory line 104), Proposal ref retention and pruning (NBE line 68), the maintenance Thread identity (KMR line 67), the "weak evidence" predicate (KSI line 201), the index owner after a human edit (KSI line 86 against KMR line 149), the editing command set (NBE line 76), and the Memory export operation (Personal Memory line 114) are unstated. The v0.1 OKF snapshot still calls itself normative, while KSI line 80 targets v0.2.
+- Options: (A) State each in its owner; record that the v0.1 snapshot is historical in the documentation model's snapshot section. (B) Leave them to code.
+- Recommendation: A for the retained shapes and the user-visible operations; snapshots are not edited.
+- Meanwhile: no change.
+
+### Q-199. Which AgentSession and adapter facts must be stated before release?
+
+- Findings: M5-G11, M5-G17, M5-G20.
+- Context: `protocol.md:185` lists AgentSession statuses, but no document gives the record fields or the transition table (Agent Session Continuity line 70). Codex line 77 and the OpenCode and Pi specifications defer the credential carrier and Tool re-list behavior to "probe" without recording the result, which decides whether a Tool change needs a successor. Worker Control Protocol line 244 forbids a one-second header timer that the held NanoHost specification uses.
+- Options: (A) State the record fields and transitions, record each probe result, and settle the timer rule with the held release. (B) Keep them in code.
+- Recommendation: A. Restart compares stored AgentSession state, so its shape is retained data.
+- Meanwhile: no change.
+
+### Q-200. Do the release documents agree on image promotion and manifest keys?
+
+- Findings: M8-G32, M8-G35, M8-G31.
+- Context: Container Image Packaging line 628 says the release tag build pushes an untagged digest, while Release Management lines 190 and 198 say proved digests replace tag-stage rebuilding. The release manifest keys and the `SHA256SUMS` scope (Release Management lines 102 and 284) are not given, and the release cookbook disagrees on the scope. The public HTTP route set behind the proxy appears only in a cookbook.
+- Options: (A) Release Management owns promotion and the manifest keys; Image Packaging links it. (B) Keep both texts.
+- Recommendation: A. The later Release Management design states the current flow.
+- Meanwhile: no change; the cookbooks belong to the periphery.
+
+### Q-201. Who owns the Web operation inventory and its roadmap owners?
+
+- Findings: M8-G03, M8-G06.
+- Context: the Web specification does not own `PUBLIC_OPERATION_ACCESS` (line 32), Operation Definition line 286 says access keys are removed, and the inclusion rule (line 101) still depends on it. Line 202 names R008 as a capability owner although `docs/roadmap.md` marks R008 complete.
+- Options: (A) Name the definition catalog as the inclusion source and allow only open roadmap items as owners. (B) Keep the text.
+- Recommendation: A.
+- Meanwhile: no change.
+
 ## Semantic Preservation
 
 The inventory compares the 30 changed Core documents and specifications with the base `0bd8c542`.
 
 | Item class | Before | Present unchanged | Changed |
 | --- | --- | --- | --- |
-| Normative sentences | 2,582 | 2,569 | 13 |
-| Other sentences and table rows | 10,199 | 10,140 | 59 |
-| Numbers with units | 371 | 371 | 0 |
-| Backticked identifiers | 2,690 | 2,685 | 5 |
+| Normative sentences | 2,582 | 2,566 | 16 |
+| Other sentences and table rows | 10,199 | 10,137 | 62 |
+| Numbers with units | 371 | 370 | 1 |
+| Backticked identifiers | 2,690 | 2,683 | 7 |
 | Heading anchors | 824 | 824 | 0 |
 | Links | 491 | 491 | 0 |
 
-Every changed normative sentence is one of these: a "Permissions" name replaced by "Policy" or "Core Policy" (SUP-C-06), a Codex home sentence (SUP-S-01), a Web Automations statement (SUP-S-07), or a projection statement (SUP-S-03 to SUP-S-05). The five removed identifiers are client member names replaced by catalog keys (SUP-S-08). No anchor, number, or link was lost, so no inbound link needed repointing.
+Every changed normative sentence is one of these: a "Permissions" name replaced by "Policy" or "Core Policy" (SUP-C-06), a Codex home sentence (SUP-S-01), a Web Automations statement (SUP-S-07), a Web operation name (SUP-S-08), a Web count or workflow list (M8-G01, M8-G02, M8-G05), the notebook operation spelling (M7-G32), or a projection statement (SUP-S-03 to SUP-S-05). The changed number is the stale count 244 (M8-G01). The changed identifiers are five client member names and the underscore operation name, replaced by catalog keys, and the status word `Implemented` (M8-G05). No anchor or link was lost, and the two new links cite decision records, so no inbound link needed repointing.
 
 ## Review
 
@@ -194,4 +360,10 @@ Pending: one fresh independent Reviewer context checks this supplement's diff be
 
 ## Remaining Work
 
-The Remaining Work section of the summary record is the single list. This supplement adds the items it found there.
+The Remaining Work section of the summary record is the single list. This supplement adds these items to it:
+
+- The engineer deferred the archive check on 2026-10-25 until a way to handle frozen archived documents is decided. Both sessions' read-only passes agree on its result.
+- The held-group audit takes the 84 held probe findings from the G1 probe record, and renames "Permissions" to "Policy" in the held documents (SUP-C-06). Q-187, Q-190, and Q-199 also depend on held releases.
+- Writing and organization (G4 and G5) were recorded, not rewritten. After the engineer answers the rule questions (Q-01, Q-23, Q-28, Q-189), the rewrite runs in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
+- Before triage, recheck the 69 `doc-audit` issues against current `main`, because `main` moved after both audit bases.
+- A decision sheet over the open questions can group the repeated families so that one rule answers many questions.

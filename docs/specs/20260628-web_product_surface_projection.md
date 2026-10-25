@@ -98,7 +98,7 @@ The first shared-Thread resource Policy slice exposes `workspace.resource-access
 
 ### Inclusion and exclusions
 
-An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`, and whose operation definition does not admit only `worker-package` credentials. The count of that set is 244. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
+An ordinary-user Web operation is included when it is a `PUBLIC_OPERATION_ACCESS` key whose `scope` is `user` or `workspace` and whose `authentication` is not `gateway-actor`, and whose operation definition does not admit only `worker-package` credentials. The count of that set is 248. Inventory derivation MUST use `PUBLIC_OPERATION_ACCESS` together with generated App API OpenAPI and `@openkit/core-client`; it MUST NOT use screen titles as the source list.
 
 The following are excluded from ordinary-user Web and MUST NOT appear on a published ordinary-user route:
 
@@ -169,7 +169,7 @@ Debug lazily reads the selected Workspace's existing package snapshot and shows 
 
 ### Workflow-level projection
 
-Web MUST project included operations through product workflows such as account and sharing, conversation, Goal, Material, Action Center, Knowledge, repositories, Workspace Sync review-to-apply, portability, agents and recovery, and Workspace-authorized settings.
+Web MUST project included operations through product workflows such as account and sharing, conversation, Goal, Material, Action Center, Knowledge, Workspace Sync review-to-apply, portability, agents and recovery, and Workspace-authorized settings.
 
 A workflow MAY satisfy several operations when each operation's user-visible behavior, authoritative state, or named supporting read is reachable through that workflow. The coverage check records that mapping. Web MUST NOT add a generic operation runner, an operation-id index as a product destination, or a dedicated published page whose only purpose is to expose one catalog key.
 
@@ -337,7 +337,7 @@ Agent, Worker and resource catalog operations derive from the three browser-safe
 
 The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.
 
-The current Web implementation is a React and Vite SPA whose route catalog, app shell, sidebar, and unified Composer project NanoCore state through `@openkit/core-client`. TanStack Query owns server-state access, while Zustand remains limited to UI-only state. The existing 244-operation disposition contract and the accepted unified Composer projection are implemented.
+The current Web implementation is a React and Vite SPA whose route catalog, app shell, sidebar, and unified Composer project NanoCore state through `@openkit/core-client`. TanStack Query owns server-state access, while Zustand remains limited to UI-only state. The existing 248-operation disposition contract and the accepted unified Composer projection are implemented.
 
 - Live surfaces currently cover Workspace overview and Action Center rows, Chat and Task Threads, Goal planning and steering, Artifact Review, Artifact inventory/import/introduction, Knowledge page CRUD and the release-ready Knowledge Manager workflows, Agent catalog/detail/health, recovery and scheduler admission, Workspace Sync review-to-apply and recovery evidence, user-scoped import plus project-Workspace portability, first-run and Workspace creation, appearance and Workspace-authorized general settings, the Settings Debug component catalog and inspection reads, and selected-Workspace Usage and audit reads.
 - Goal plan approval and revision, steering input, Artifact Review decisions, Knowledge creation, Workspace creation, and Workspace rename use current Core Client operations. The single Settings gear opens the shared Settings shell directly; its Workspace group exposes General at `/workspace` only for a validated selection, and failed mutations preserve the last authoritative server projection rather than creating browser-owned workflow truth.
@@ -365,7 +365,7 @@ A raw API console or operation-id catalog was rejected because it would make Web
 
 ## Consequences
 
-The coverage check, not this document's prose, is the per-operation inventory and Tier-A admission evidence. This specification is `Implemented` because every included operation has a valid disposition and every `live` or `workflow` claim has reachable truthful UI backed by focused tests and independent actual-diff review. Later Web slices may publish a roadmap operation only after its owning capability becomes release-ready; they do not add kernel semantics or a generic renderer.
+The coverage check, not this document's prose, is the per-operation inventory and Tier-A admission evidence. Every included operation has a valid disposition, and every `live` or `workflow` claim has reachable truthful UI backed by focused tests and independent actual-diff review; the frontmatter `implementation` field states this specification's status. Later Web slices may publish a roadmap operation only after its owning capability becomes release-ready; they do not add kernel semantics or a generic renderer.
 
 ## Testing Strategy / Acceptance Criteria
 
@@ -374,7 +374,7 @@ The coverage check, not this document's prose, is the per-operation inventory an
 - Focused Web tests plus independent review of the actual diff MUST decide whether each `live` or `workflow` claim is reachable and truthful, including loading, empty, denied, failure, stale, success, and retry states that the workflow can actually produce, using Core Client calls rather than invented oracles. The guard MUST NOT be treated as that behavior verdict.
 - Package checks MUST show that no published Workspace route calls a server-scoped API or requires deployment-admin authority, and focused Configuration checks MUST prove its Token-input-free denied state, session-client read, file-tree projection, validation, revision-protected save, and explicit safe reload.
 - Automations MUST project the durable recurring lifecycle for the fixed-interval and bounded monthly UTC variants and the bounded occurrence/range history, without other calendar choices or admission-as-completion claims.
-- This specification's Current Implementation Projection MUST remain reconcilable with the actual Web diff, including the twenty-five deliberately unpublished roadmap operations.
+- This specification's Current Implementation Projection MUST remain reconcilable with the actual Web diff, including the twenty-nine deliberately unpublished roadmap operations.
 
 ## Resolved Decisions
 
