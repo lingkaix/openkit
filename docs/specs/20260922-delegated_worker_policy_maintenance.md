@@ -16,7 +16,7 @@ General Permissions, a new grant store, the internal agent loop, policy language
 
 ## Core References
 
-[Permissions](../core/policy.md), [Sandbox](../core/sandbox.md), [Architecture](../core/architecture.md), [Agent Capability](../core/mediation.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), [Storage](../core/storage.md), and [Doctrine](../core/doctrine.md).
+[Policy](../core/policy.md), [Sandbox](../core/sandbox.md), [Architecture](../core/architecture.md), [Agent Capability](../core/mediation.md), [Evidence](../core/evidence.md), [Vault](../core/vault.md), [Storage](../core/storage.md), and [Doctrine](../core/doctrine.md).
 
 ## Summary
 
@@ -32,13 +32,13 @@ A Git smart-HTTP refusal can arise from a sandbox policy mismatch or an upstream
 
 ## Decision
 
-Represent maintenance authority in existing Permissions/Policy assignments and evaluation context. Do not create a delegation-token service, grant database, maintenance journal or second configuration writer. The administration owners apply the finite exception below; every other configuration effect keeps its existing human-confirmed boundary.
+Represent maintenance authority in existing Policy assignments and evaluation context. Do not create a delegation-token service, grant database, maintenance journal or second configuration writer. The administration owners apply the finite exception below; every other configuration effect keeps its existing human-confirmed boundary.
 
 ## Contract / Expected Behavior
 
 ### Definition And Authority
 
-Delegation names target Agent/Workspace scope, permitted workload purposes, endpoint/port/protocol and method/resource limits, eligible actions, validity and revocation conditions. It permits independently selecting a correction inside that ceiling, never changing the ceiling itself. Current responsible-administrator authority is rechecked for each effect; local/server identity remains owned by Permissions. Source access and destination audience are independently enforced.
+Delegation names target Agent/Workspace scope, permitted workload purposes, endpoint/port/protocol and method/resource limits, eligible actions, validity and revocation conditions. It permits independently selecting a correction inside that ceiling, never changing the ceiling itself. Current responsible-administrator authority is rechecked for each effect; local/server identity remains owned by Policy. Source access and destination audience are independently enforced.
 
 The operator MUST NOT change its own authority, Vault grants, TLS verification, containment boundaries, resource audiences, arbitrary service control or other reserved effects. Git-read path repair cannot authorize push, unrestricted egress or injecting credentials into credential-free materialization. A template difference is not drift without a known intended baseline, and a template update cannot expand delegation.
 
@@ -50,7 +50,7 @@ Reuse the administration configuration capabilities: `administration.configurati
 
 Admit `administration.configuration.dispatch` as one additional fixed Tool in the private administration entry only for this candidate class. Its model input contains a command request identity and the exact existing candidate reference (Artifact identity, version and digest); it contains no caller-supplied actor, authorization decision, delegation ceiling or raw replacement file. It invokes the existing configuration application command and revision-protected file owner. App API and administrator CLI projections use that same semantic command. Existing Provider and Gateway candidates still require their exact human confirmation and cannot be applied through this delegated Tool. An inadmissible candidate returns a safe refusal without a write.
 
-The effect context is server-derived and binds the responsible currently authorized administrator, authenticated credential restrictions, internal entry and Thread/Turn, registered source identity and full affected scope, operation `administration.configuration.apply`, purpose `git-read`, exact candidate reference and base revision, originating failure, current Policy assignments and decision snapshot, and the current time. Existing Permissions/Policy must explicitly allow this actor, target, purpose, rule endpoints, ports, protocols, methods, paths, action and validity interval within the administrator-defined ceiling. Current administrator status, ordinary `api.call`, a template match, or model prose alone cannot supply that delegation. Missing, expired, revoked, conflicting or unevaluable mandatory facts fail closed. The Tool cannot write its own authority. No new delegation grant store, token, maintenance journal or generic policy language is admitted.
+The effect context is server-derived and binds the responsible currently authorized administrator, authenticated credential restrictions, internal entry and Thread/Turn, registered source identity and full affected scope, operation `administration.configuration.apply`, purpose `git-read`, exact candidate reference and base revision, originating failure, current Policy assignments and decision snapshot, and the current time. Existing Policy must explicitly allow this actor, target, purpose, rule endpoints, ports, protocols, methods, paths, action and validity interval within the administrator-defined ceiling. Current administrator status, ordinary `api.call`, a template match, or model prose alone cannot supply that delegation. Missing, expired, revoked, conflicting or unevaluable mandatory facts fail closed. The Tool cannot write its own authority. No new delegation grant store, token, maintenance journal or generic policy language is admitted.
 
 Recheck that context, exact candidate and source revision immediately before the existing command dispatches a mutation. This bounded Policy allow replaces per-candidate human confirmation only for the admitted Git-read correction. It cannot authorize Git push, unrestricted egress, TLS bypass, credential injection, containment or audience changes, service control, or changes to the operator's own Tools or authority. Configuration validation also checks the complete resulting source, preserving every unrelated authored field and existing denied route. A correction must not turn a Git read grant into a broader write grant.
 
@@ -76,7 +76,7 @@ No running AEP, process environment or historical failed Turn is rewritten. Veri
 
 ### Executable Policy Assignment Dependency
 
-Implementation of delegated application depends on the existing Permissions/Policy assignment owner providing an executable assignment and evaluation path for this exact actor, registered target, full affected scope, `git-read` purpose, action, rule bounds, and validity/revocation conditions. The executable assignment and adapter are owned by [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md#finite-worker-git-read-maintenance-assignment), not by this amendment. Until the owning mechanism can produce the exact current allow, delegated apply fails closed. Administrator status, ordinary `api.call`, a template comparison, model prose, and a parallel grant store are not substitutes.
+Implementation of delegated application depends on the existing Policy assignment owner providing an executable assignment and evaluation path for this exact actor, registered target, full affected scope, `git-read` purpose, action, rule bounds, and validity/revocation conditions. The executable assignment and adapter are owned by [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md#finite-worker-git-read-maintenance-assignment), not by this amendment. Until the owning mechanism can produce the exact current allow, delegated apply fails closed. Administrator status, ordinary `api.call`, a template comparison, model prose, and a parallel grant store are not substitutes.
 
 P12 owns shared schema/operation composition, P01 owns configuration persistence, and the administration caller owner owns its entry assembly. Register the bounded Worker candidate branch and its full-source validation in those existing owners before enabling the Tool. Existing Provider/Gateway candidates retain human confirmation. This named dependency blocks delegated execution only; diagnosis and candidate preparation may proceed through their current contracts.
 

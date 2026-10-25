@@ -254,7 +254,7 @@ They remain useful for implementation background, but this spec and the core ide
 
 - [Identity Model](../core/identity.md)
 - [Storage Model](../core/storage.md)
-- [Permissions Model](../core/policy.md)
+- [Policy Model](../core/policy.md)
 - [Vault Model](../core/vault.md)
 - [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
 - [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)

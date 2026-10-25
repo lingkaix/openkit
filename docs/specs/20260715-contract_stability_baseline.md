@@ -312,7 +312,7 @@ None. A future independently released API consumer or legal-isolation deployment
 - [Core Concepts](../core/core-concepts.md)
 - [Storage Model](../core/storage.md)
 - [Identity Model](../core/identity.md)
-- [Permissions Model](../core/policy.md)
+- [Policy Model](../core/policy.md)
 - [Evidence Model](../core/evidence.md)
 - [Core Protocol](../core/protocol.md)
 - [Core Client Boundary](./20260528-core_client_boundary.md)

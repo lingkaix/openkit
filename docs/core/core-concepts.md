@@ -58,7 +58,7 @@ A Workspace is not a folder, repository, thread, runtime session, tenant, or org
 
 Workspace is the default scope for threads, artifacts, knowledge, agent supply, vault references, permissions, sandbox policy, runtime resources, audit, and usage. The specialized owner defines the exact records and any justified non-workspace scope.
 
-Workspace ownership and membership are logical identity and authority relationships. Workspace storage must not depend on a user's physical namespace. Identity, Permissions, and Storage own the concrete membership, role, transfer, and storage-independence contracts.
+Workspace ownership and membership are logical identity and authority relationships. Workspace storage must not depend on a user's physical namespace. Identity, Policy, and Storage own the concrete membership, role, transfer, and storage-independence contracts.
 
 Cross-workspace execution, knowledge sharing, vault sharing, and artifact movement require explicit design and authority. An adapter, runtime session, manifest, or fallback must not cause them implicitly.
 
@@ -76,7 +76,7 @@ The operation attached to each field follows its natural owner: a scalar prefere
 
 A conversational Thread is addressed to exactly one conversational counterpart. In Chat Mode that counterpart is the Core Assistant. Its private Timeline and later Workspace-shared conversations retain distinct audiences ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)). A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
 
-A Thread has a durable visibility classification independent of its Workspace placement; Permissions resolves the actual audience from current identity and membership. Personal conversation is private to its initiating user by default; Task and Goal work is Workspace-shared. Permissions owns source and recipient eligibility, including private conversation inside a shared Workspace. Sharing publishes explicitly selected material through that owner and never implicitly changes prior history or grants execution authority.
+A Thread has a durable visibility classification independent of its Workspace placement; Policy resolves the actual audience from current identity and membership. Personal conversation is private to its initiating user by default; Task and Goal work is Workspace-shared. Policy owns source and recipient eligibility, including private conversation inside a shared Workspace. Sharing publishes explicitly selected material through that owner and never implicitly changes prior history or grants execution authority.
 
 Server-owned Threads are visible only under current Server administration authority. Workspace membership grants no access to them. A reference between owners supplies lineage, not authority or an implicit copy of history.
 
@@ -132,7 +132,7 @@ Artifact identity and lineage are anchored by item-backed artifact references. B
 
 ### ApprovalRequest
 
-`ApprovalRequest` is a blocking human authorization decision for permission, safety, budget, credential use, an irreversible operation, or an external side effect.
+`ApprovalRequest` is a human authorization decision that a governed effect needs before it executes. It covers permission, safety, budget, credential use, an irreversible operation, or an external side effect. It holds back that effect, not the Turn that raised it ([decision](../decisions/20260930-pending_tool_calls.md)).
 
 ApprovalRequest does not represent ordinary questions or choices. Human-attention mechanics and concrete item-backed materialization belong to the Work Model and Protocol.
 

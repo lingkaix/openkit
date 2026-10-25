@@ -38,6 +38,7 @@ Use these layers when deciding where content belongs:
 - `docs/app-api.md` is a platform reference containing calibrated App API judgments and direct owner and generated-projection link indexes; concrete endpoints, read models, and gateway APIs remain with their accepted specifications and executable owners.
 - `temp/research/` contains temporary external research evidence packages that are not committed. Durable findings must be promoted into specs, core docs, change records, or other canonical project documents with stable source citations.
 - `docs/changes/` contains material change lifecycle records and closeout summaries.
+- `docs/decisions/` contains decision records. A decision record states who decided a durable rule, when, why, and which alternatives were rejected. A Core document links the record beside the rule it supports.
 
 ## Canonical Definition Rules
 
@@ -105,7 +106,7 @@ The current required core aspect set contains 20 documents. Future merge or reti
 - `core-concepts.md` — shared vocabulary and object boundaries.
 - `architecture.md` — stable system architecture and layer boundaries.
 - `fault-tolerance.md` — fault model, durable execution, correctness properties under failure, collection before loss, proportional recovery, and guarantee limits.
-- `contract-evolution.md` — stability classes, stabilization mechanisms, breaking-change discipline, conformance dimensions, and fixture expectations.
+- `contract-evolution.md` — stability classes, stabilization mechanisms, retained data continuity, the closed core and open extension of owned data shapes, breaking-change discipline, the post-launch operation semantic promise, conformance dimensions, and fixture expectations.
 
 ### Work
 
@@ -147,21 +148,21 @@ This index routes readers to the owner of each canonical term family. The owner 
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | App, Core, Agent layer boundary, Agent Adapter, workspace service, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
 | Fault Source, Durable Execution, Acknowledgement Point, Collection Before Loss, Safe Point, Danger Window, End-To-End Owner, owning-scope failure and Workspace quarantine, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
-| Stability classes, stabilization mechanisms, contract evolution, strict parsing, conformance dimensions, fixture expectations | `contract-evolution.md` |
+| Stability classes, stabilization mechanisms, contract evolution, retained data continuity, closed core and open extension, operation semantic promise, strict parsing, conformance dimensions, fixture expectations | `contract-evolution.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection, Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence, Judgement, Candidate Set | `work-model.md` |
-| Personal Memory, Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
+| Personal Memory, Knowledge Store, Knowledge Page, Knowledge Source, Derived Representation, Knowledge Proposal, Knowledge Review, Knowledge Manager, Observation, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
 | Light App, Light App Catalog, Generative Kernel, Generative UI, agent-first data and presentation composition | `generative-apps.md` |
 | Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | AgentSession, continuity, exact reconnect, interruption, fresh-session fallback | `agent-session.md` |
-| Sandbox, sandbox scope, isolation area, sandbox summary, backend containment | `sandbox.md` |
+| Sandbox, sandbox scope, shared Sandbox, isolation level, isolation area, sandbox summary, backend containment | `sandbox.md` |
 | AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
-| Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization | `policy.md` |
+| Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization, AssistantReadScope, OutputAudience | `policy.md` |
 | Operation, mediation point, enforcement point, Capability Mediation Boundary, AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Storage, Layer 1 (System State And Work Data: scope-owned transactional control authority, immutable content, item log persistence, retention and deletion classes, format markers, Workspace portability), Layer 2 (User Data And The Storage Service: shared file storage, `contentRef`, Policy access leases, Knowledge package byte layout) | `storage.md` |
 | AuditEvent, audit projection, audit producer boundary, UsageRecord, capability-call usage units and attribution, System-wide measurement, Non-gateway measurement, Aggregation, Cost projection, Capture Coverage, Telemetry | `evidence.md` |
-| Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
+| Protocol records, entity-identifier grammar, scope-qualified object references, pending request, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
 | Client/Core communication, Core/agent communication, transport projections, communication planes, Proven Non-Receipt | `communication.md` |
 
 ## Reading Order

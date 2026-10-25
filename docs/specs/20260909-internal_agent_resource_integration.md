@@ -9,7 +9,7 @@ updated: 2026-09-30
 
 ## Owned Worker Environment Management
 
-Only the private administration entry acting under the current user's usable administrator authority under Permissions Core (a valid admin Token in server mode) may invoke the exact environment preparation/activation/status and whole-storageRef purge owners specified by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). This is a bounded Core command integration, not an internal shell, Docker client, generic Worker lifecycle API or Plugin-selected Tool. The existing runtime and authorization owners execute each effect; ordinary Assistant discovery still cannot enlarge its Tool array. Until those administration operations are cut over, this paragraph's administrator check is the contract. When they are cut over, the per-call administrator check moves into invocation under Operation Invocation.
+Only the private administration entry acting under the current user's usable administrator authority under Core Policy (a valid admin Token in server mode) may invoke the exact environment preparation/activation/status and whole-storageRef purge owners specified by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). This is a bounded Core command integration, not an internal shell, Docker client, generic Worker lifecycle API or Plugin-selected Tool. The existing runtime and authorization owners execute each effect; ordinary Assistant discovery still cannot enlarge its Tool array. Until those administration operations are cut over, this paragraph's administrator check is the contract. When they are cut over, the per-call administrator check moves into invocation under Operation Invocation.
 
 ## Delegated Git-Read Maintenance
 

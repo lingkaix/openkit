@@ -26,7 +26,7 @@ The kernel does not decide whether a retrieved claim is true. It does not publis
 
 - [Storage](../core/storage.md)
 - [Knowledge](../core/knowledge.md)
-- [Permissions](../core/policy.md)
+- [Policy](../core/policy.md)
 
 ## Storage Content And Derivation
 
@@ -128,7 +128,7 @@ Before a product query, NanoCore and the source adapters construct readable scop
 
 The adapter reconciles each admitted inventory with its scope generation before asserting freshness. Scope construction must separate distinct read eligibility from creation. If current authorization no longer covers a complete generation, rebuild that scope from current admitted records before opening it. If that cannot complete, fail the affected operation explicitly; do not silently drop a shared scope as the normal query path. A final hit check cannot substitute for this pre-ranking boundary.
 
-For Assistant use, NanoCore resolves both the source read scope and the destination audience under [Permissions](../core/policy.md#assistant-disclosure-authorization). It excludes sources that cannot reach that audience before the query supplies model context. Every concrete read and later publication retain their current permission checks.
+For Assistant use, NanoCore resolves both the source read scope and the destination audience under [Policy](../core/policy.md#assistant-disclosure-authorization). It excludes sources that cannot reach that audience before the query supplies model context. Every concrete read and later publication retain their current permission checks.
 
 For every query mode, the kernel resolves the caller's scope set before opening any generation or canonical scan text. BM25 document counts, document frequencies, field lengths, coverage counts, and scans operate only inside those named generations. It merges only their eligible hits. Unauthorized generations cannot become speculative candidates or contribute statistics. A scope Boolean clause over a mixed index and a post-filter over ranked hits are both insufficient.
 
@@ -152,7 +152,7 @@ The querying act owns one immutable file per trace under its Thread/Turn at the 
 
 The proposed tokenizer amendment applies to indexing, query analysis, and Knowledge Manager answer sufficiency together. The current answer rule requires two distinct query terms in the page, or a one-term query in the title. This revision keeps that sufficiency rule; finding a short term in a body is not by itself a sufficient answer. The same selected tokenizer must analyze query, title, and body.
 
-These mappings govern the required owner amendments listed below. Knowledge Governance, Core Permissions, the Policy Model, and their active-page, forgetting, conflict, confidentiality, and deterministic-selection rules remain binding.
+These mappings govern the required owner amendments listed below. Knowledge Governance, Core Policy, the Policy Model, and their active-page, forgetting, conflict, confidentiality, and deterministic-selection rules remain binding.
 
 ### Generic Digest-Window Scan
 
@@ -306,7 +306,7 @@ Each line identifies an existing owner and the accepted rule to retain or replac
 - [Work Resource Interaction](20260713-work_resource_interaction_model.md): supply canonical file identity for sidecars of unreadable Artifacts/uploads, keep readable Artifact/Material text direct, and define any missing upload identity through the Artifact/upload topic; retain exact versions, immutable origin, current audience, admission limits, and storage ownership. Arbitrary-file admission follows Work Resource Interaction. Authored description storage remains with its source owner, not new Kernel state.
 - [Deployment Host Requirements](20260909-deployment_host_requirements.md): include the target-matched supervised retrieval executable, dictionaries, and measured UTF-8 service resource requirements for amd64 and arm64; remove no existing qualification boundary and add no format extractor or conversion of resource advice into a hard minimum.
 
-Knowledge Governance, Core Permissions, Thread Visibility, the Policy Model, and Policy Enforcement Mapping remain binding. The large-file amendments preserve their confidentiality, source, active-page, conflict, forgetting, effect, and evidence boundaries. Session Materialization owns the read-only Turn view; Kernel indexing alone implies no mount or storage grant.
+Knowledge Governance, Core Policy, Thread Visibility, the Policy Model, and Policy Enforcement Mapping remain binding. The large-file amendments preserve their confidentiality, source, active-page, conflict, forgetting, effect, and evidence boundaries. Session Materialization owns the read-only Turn view; Kernel indexing alone implies no mount or storage grant.
 
 ## Open Decisions
 
