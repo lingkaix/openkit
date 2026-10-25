@@ -7,6 +7,7 @@ import {
 import {
   type ActorRef,
   type AuditEvent,
+  allocateEntityId,
   type GatewayRouteLineageEntry,
   REASONING_EFFORT_LEVELS,
   type ReasoningEffort,
@@ -852,6 +853,8 @@ function workerInferencePayloadTooLarge(): WorkerInferenceRouteError {
  * @throws WorkerInferenceRouteError when durable attribution cannot be established.
  */
 async function startWorkerInferenceCall(input: {
+  /** Existing call identity registered for cancellation before native publication. */
+  readonly callId: string;
   /** Optional Core database used to locate workspace storage. */
   readonly coreDb?: CoreDb;
   /** Authenticated Agent Environment Package. */
@@ -887,6 +890,7 @@ async function startWorkerInferenceCall(input: {
 
     const call = await startCapabilityCall({
       workspaceDb,
+      callId: input.callId,
       workspaceId: scope.workspaceId,
       initializeRaw: true,
 
@@ -1836,7 +1840,7 @@ export function registerWorkerInferenceRoutes({
         string,
         {
           controller: AbortController;
-          call: DurableLlmGatewayCall;
+          call: Pick<DurableLlmGatewayCall, 'rawOutputFailureCode'>;
           cover?: (force?: boolean) => Promise<void>;
         }
       >;
@@ -1936,17 +1940,6 @@ export function registerWorkerInferenceRoutes({
       } catch {
         logicalModel = null;
       }
-      const durableCall = await startWorkerInferenceCall({
-        ...(coreDb ? { coreDb } : {}),
-        cacheDegraded: false,
-        endpoint,
-        environmentPackage,
-        providerRef: null,
-        request: sanitized,
-        runtimeCacheLineageRef: null,
-        runtimeOriginRef,
-      });
-      durableCall.assertAuthority = assertAuthority;
       const scope = environmentPackage.scope;
       const rawKey = JSON.stringify([scope.workspaceId, scope.threadId, scope.turnId]);
       const rawGroup: NonNullable<ReturnType<typeof activeRawCalls.get>> = activeRawCalls.get(
@@ -1954,7 +1947,32 @@ export function registerWorkerInferenceRoutes({
       ) ?? { calls: new Map(), stopRequested: false };
       activeRawCalls.set(rawKey, rawGroup);
       const rawController = new AbortController();
-      rawGroup.calls.set(durableCall.call.id, { controller: rawController, call: durableCall });
+      const callId = allocateEntityId('cap');
+      const rawCall: Pick<DurableLlmGatewayCall, 'rawOutputFailureCode'> = {};
+      // Native publication can be visible before its ACK resumes this request.
+      rawGroup.calls.set(callId, { controller: rawController, call: rawCall });
+      let durableCall: Awaited<ReturnType<typeof startWorkerInferenceCall>>;
+      try {
+        durableCall = Object.assign(
+          rawCall,
+          await startWorkerInferenceCall({
+            callId,
+            ...(coreDb ? { coreDb } : {}),
+            cacheDegraded: false,
+            endpoint,
+            environmentPackage,
+            providerRef: null,
+            request: sanitized,
+            runtimeCacheLineageRef: null,
+            runtimeOriginRef,
+          })
+        );
+      } catch (error) {
+        rawGroup.calls.delete(callId);
+        if (!rawGroup.calls.size) activeRawCalls.delete(rawKey);
+        throw error;
+      }
+      durableCall.assertAuthority = assertAuthority;
       const rawSignal = AbortSignal.any([c.req.raw.signal, rawController.signal]);
       durableCall.onFinished = () => {
         rawGroup.calls.delete(durableCall.call.id);

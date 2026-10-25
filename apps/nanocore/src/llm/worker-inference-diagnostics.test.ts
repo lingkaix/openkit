@@ -786,6 +786,159 @@ it('flushes the exact crossing prefix before native stop and rejects the next so
   expect(await request).not.toContain(tail);
 });
 
+it('admits a same-Turn sibling while a committed native admission ACK is held', async () => {
+  const f = await fixture(true, undefined, true, 'controlled');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
+  f.resolveGatewayProvider.mockReturnValue({
+    id: 'provider',
+    displayName: 'Provider',
+    adapterId: 'admission-ack-fixture',
+    apiKey: 'synthetic',
+    baseUrl: 'https://provider.invalid/v1',
+    models: ['native-model'],
+    requiresApiKey: true,
+    gatewayCapabilities: { responses: 'bridged', chatCompletions: 'native' },
+    modelMetadata: { 'native-model': { limit: { context: 400_000, output: 32_000 } } },
+  });
+  const signals: AbortSignal[] = [];
+  f.dispatch.mockImplementation((provider, request, context: LLMGatewayDispatchContext) => {
+    signals.push(context.transport!.signal!);
+    return dispatcher.createChatCompletionStream(provider, request, context);
+  });
+  const textA = 'admission-A-λ';
+  const textB = 'admission-B-界';
+  const encode = (content: string, finishReason: string | null = null) =>
+    new TextEncoder().encode(
+      `data: ${JSON.stringify({
+        id: 'chat_admission_ack',
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: 'native-model',
+        choices: [{ index: 0, delta: { content }, finish_reason: finishReason }],
+      })}\n\n`
+    );
+  const sources: {
+    controller: ReadableStreamDefaultController<Uint8Array>;
+    closed: boolean;
+  }[] = [];
+  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    let source!: (typeof sources)[number];
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          source = { controller, closed: false };
+          sources.push(source);
+          controller.enqueue(encode(sources.length === 1 ? textA : textB));
+        },
+        cancel() {
+          source.closed = true;
+        },
+      }),
+      { headers: { 'content-type': 'text/event-stream' } }
+    );
+  });
+  let heldB: { callId: string; release: () => void } | undefined;
+  streamWriter.holdReply = (value, release) => {
+    const reply = value as { status?: unknown; operation?: unknown };
+    if (heldB || reply.status !== 'ok' || reply.operation !== 'capability') return false;
+    const calls = f.ledgerCalls();
+    if (calls.length !== 1 || calls[0]!.status !== 'running') return false;
+    // Hold an actual native success after its row is visible, never a manufactured result.
+    heldB = { callId: calls[0]!.id, release };
+    return true;
+  };
+  const pendingB = f.post(true, 'chat/completions');
+  const readingB = pendingB.then(async (response) => ({
+    status: response.status,
+    body: await response.text(),
+  }));
+  const settledB = readingB.then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  let readingA: Promise<string> | undefined;
+  let settledA: Promise<unknown> | undefined;
+  let callAId: string | undefined;
+  try {
+    await vi.waitFor(() => expect(heldB).toBeDefined());
+    const callB = f.ledgerCalls()[0]!;
+    expect(callB).toMatchObject({
+      id: heldB!.callId,
+      threadId: f.environmentPackage.scope.threadId,
+      turnId: f.turn.id,
+      status: 'running',
+      extensions: { 'openkit.worker/rawOutput': { byteLength: 0, coverage: 'pending' } },
+    });
+    expect(f.dispatch).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+
+    // Worker Raw-Output Accounting: a known pending same-process call is not lost proof.
+    const responseA = await f.post(true, 'chat/completions');
+    readingA = responseA.text();
+    settledA = readingA.then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(responseA.status, JSON.stringify(warn.mock.calls)).toBe(200);
+    expect(f.onRawOutputStop).not.toHaveBeenCalled();
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(signals[0]!.aborted).toBe(false);
+    const calls = f.ledgerCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.status === 'running')).toBe(true);
+    callAId = calls.find((call) => call.id !== heldB!.callId)!.id;
+
+    heldB!.release();
+    const responseB = await pendingB;
+    expect(responseB.status).toBe(200);
+    expect(f.dispatch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+    expect(f.onRawOutputStop).not.toHaveBeenCalled();
+  } finally {
+    streamWriter.holdReply = undefined;
+    heldB?.release();
+    await pendingB.catch(() => undefined);
+    for (const source of sources) {
+      if (source.closed) continue;
+      source.controller.enqueue(encode('', 'stop'));
+      source.controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+      source.controller.close();
+      source.closed = true;
+    }
+    await Promise.all([settledA, settledB]);
+  }
+  expect(await settledA).toBeUndefined();
+  expect(await settledB).toBeUndefined();
+  expect(await readingA).toContain(textA);
+  expect(await readingB).toMatchObject({ status: 200, body: expect.stringContaining(textB) });
+  const calls = f.ledgerCalls();
+  expect(calls).toHaveLength(2);
+  for (const [callId, text] of [
+    [callAId, textA],
+    [heldB!.callId, textB],
+  ] as const) {
+    expect(calls.find((call) => call.id === callId)).toMatchObject({
+      status: 'succeeded',
+      threadId: f.environmentPackage.scope.threadId,
+      turnId: f.turn.id,
+      extensions: {
+        'openkit.worker/rawOutput': { byteLength: Buffer.byteLength(text), coverage: 'complete' },
+      },
+    });
+  }
+  expect(f.rawOutput()).toEqual({
+    rawOutputBytes: Buffer.byteLength(textA) + Buffer.byteLength(textB),
+    exhausted: false,
+  });
+  expect(f.onRawOutputStop).not.toHaveBeenCalled();
+  expect(warn.mock.calls.map(([message]) => JSON.parse(message))).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ code: 'worker_raw_output_stopped' })])
+  );
+});
+
 it('keeps a pending sibling alive when a non-admission failure has no raw source', async () => {
   const f = await fixture(true, undefined, true, 'controlled');
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
