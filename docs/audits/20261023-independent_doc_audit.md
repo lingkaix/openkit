@@ -46,7 +46,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/sandbox.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/core/knowledge.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
-| `docs/core/generative-apps.md` | generative-apps | open, pending | — |
+| `docs/core/generative-apps.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
 | `docs/core/storage.md` | storage | held (#440) | — |
 | `docs/core/runtime-model.md` | runtime-model | held (#440) | — |
 | `docs/core/fault-tolerance.md` | fault-tolerance | held (#440) | — |
@@ -127,8 +127,8 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20261014-retrieval_kernel.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20260703-worker_context_package.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20260710-self_improvement_evaluation_loop.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
-| `docs/specs/20260908-generative_kernel_data_operations.md` | generative-apps | open, pending | — |
-| `docs/specs/20260908-generative_ui_interaction.md` | generative-apps | open, pending | — |
+| `docs/specs/20260908-generative_kernel_data_operations.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
+| `docs/specs/20260908-generative_ui_interaction.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
 | `docs/specs/20260529-test_strategy.md` | process | open, pending | — |
 | `docs/specs/20260529-l6_story_acceptance.md` | process | open, pending | — |
 | `docs/specs/20260719-verification_calibration.md` | process | open, pending | — |
@@ -311,6 +311,12 @@ Filled at close-out.
 | #507 `[knowledge] Notebook publisher does not auto-admit embedded raw files or rewrite referrers on raw rename` | knowledge | KN-NBE-02 | ordinary (enhancement) |
 | #508 `[knowledge] Scope Schema lacks owner, timestamps, rules, and review requirements, and schema changes have no reviewed migration flow` | knowledge | KN-GOV-02 | ordinary |
 | #509 `[web] Notebook UI has no page state selection` | knowledge | KN-NBE-03 | low (enhancement) |
+| #510 `[generative-kernel] Record list reads count and rows outside one transaction, and request and response size limits are missing` | generative-apps | GA-GKD-01, 02 | ordinary |
+| #511 `[generative-kernel] Callers can choose the stable ids of new collections and fields` | generative-apps | GA-GKD-03 | ordinary |
+| #512 `[generative-kernel] Conflict and validation errors omit revisions and paths, and capability discovery omits most limits` | generative-apps | GA-GKD-04, 06 | ordinary |
+| #513 `[generative-ui] Presentation admission keeps extra keys such as theme on the declaration messages, and refresh accepts event context` | generative-apps | GA-GUI-01, 02 | low |
+| #514 `[generative-kernel] Kernel AuditEvents name no collection or record ids and no affected-set digest` | generative-apps | GA-GKD-05 | ordinary |
+| #515 `[generative-kernel] Kernel receipt key includes the actor, so a reused request id from another actor does not get idempotency_key_conflict` | generative-apps | GA-GKD-11 | ordinary |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -486,3 +492,11 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-146 | knowledge | User editor update `requestId` | Add it to the shape |
 | Q-147 | knowledge | WCP projection and field rules | Align the layout, counting, sorts, and fields |
 | Q-148 | knowledge | Knowledge history, numbers, labels, placement | As Q-28 |
+| Q-149 | generative-apps | Withdrawn after review (decided by the Audit specification; issue #514) | — |
+| Q-150 | generative-apps | Withdrawn after review (decided by GKD and Core protocol; issue #515) | — |
+| Q-151 | generative-apps | What the native render result embeds | State the code behavior |
+| Q-152 | generative-apps | Web inspection of an uncertain submission | Fresh id after failure; name the inspection path |
+| Q-153 | generative-apps | GKD scope items that are deferred | Move them to Deferred |
+| Q-154 | generative-apps | Policy mapping for the extra Kernel and catalog operations | Add rows |
+| Q-155 | generative-apps | Generative-apps proposal wording, dates, numbers, labels | As Q-28 |
+| Q-156 | generative-apps | App get for an app id that was never created | `not_found`; no placeholder values |
