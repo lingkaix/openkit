@@ -163,7 +163,7 @@ The ledger lists every Core document and every active specification with its hom
 
 ### Archive Check
 
-The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: pending.
+The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: not completed. The engineer ended the audit after the open groups; a preliminary read-only result is under Remaining Work.
 
 ## Phase 0 Grouping
 
@@ -256,7 +256,39 @@ Raw candidate counts per module: domain 20, identity and Policy 34, Vault and me
 
 ## Statistics Per Goal
 
-Filled at close-out.
+The engineer ended the audit on 2026-10-25 after the fifteen open groups. Counts at close-out:
+
+- Coverage: 99 ledger rows audited (every open Core document and specification, plus the Core and specifications guides); 26 rows held under #440 and not audited.
+- Group records: fifteen, one per open group, each with an independent Reviewer verdict and its dispositions.
+- G1: seven top-down findings and six clean-room themes from 237 raw candidates; each open group verified the candidates it owns.
+- G2 and G3: 61 GitHub issues opened with the `doc-audit` label, 17 of them blocking candidates (retained data, security, authorization, credentials, data loss, or recovery).
+- Documentation corrections: 67 files under `docs/core/` and `docs/specs/` changed by audit commits, each correction citing its evidence, with no design rule changed (see each record's Semantic Preservation table).
+- Questions: Q-01 to Q-170; 8 were withdrawn after review, so 162 remain for the engineer.
+- G4: one section move in the foundation group (FND-G4-01); no archive transition was made.
+
+## Remaining Work
+
+The engineer stopped the audit after the open groups. This list states what the audit did not do and what it recommends next.
+
+1. Held groups, when #440 releases them: the storage, runtime-model, fault-tolerance, evidence, and work-model Core documents and the 26 held ledger rows. Carry these hand-offs into them:
+   - `20260902-agent_runtime_context_compaction.md`: the `contextManagement` projection drift that the mediation group corrected in the Gateway specification (agent-session record).
+   - `20261002-goal.md`: KN-WCP-01, a Goal-dispatched Task needs both `goalId` and `taskId` in code (knowledge record).
+   - `20261019-durable_execution_and_control_store.md`: `main` changed it after the process base (commit `5b5ada8`); it was indexed in the specifications README but not audited.
+   - The held part of the clean-room candidates, which no open group verified.
+2. Periphery group (app and package guides, manuals, cookbooks, and `docs/toolchain.md`), with these known items:
+   - `packages/core-client/README.md`: "eleven" provider-subscription operations and the Quick Chat name (communication record).
+   - `apps/nanocore/README.md:487` and `packages/config-schema/README.md:31,89`: Thread visibility claims that issue #471 contradicts (policy record).
+   - `docs/specs/20260528-core_client_boundary.md:161`: names the removed Goal supervise route (policy record, PO-PEM-02).
+   - `docs/cookbooks/docker-app.md:104`: the missing `e2e:staging` call (issue #516).
+3. Archive check. A preliminary read-only pass over the 65 archived specifications and the two directory guides found complete lifecycle metadata and both reason sections in every file. Two kinds of `current-guidance` drift remain, and archived bytes may not change, so a new audit record must carry the current mapping:
+   - Targets that no longer exist: `docs/core/permissions.md` and `docs/core/audit.md` (`superseded/20260513-core_protocol_model_notes.md`), and `docs/core/agent-workflow.md` (three files under `superseded/agent-workflow/`).
+   - A target that is itself archived: `20260713-openkit_agent_skill_interface.md`, now under `retired/`, named by three superseded specifications.
+   - Fourteen inbound links from active specifications are supersession pointers or marked background; the two in the test strategy Related Docs are in Q-168.
+4. Root `AGENTS.md`: the audit-only reading and its change proposals were not made. `docs/specs/AGENTS.md` proposals are Q-170.
+5. Engineer decisions: answer the 162 open questions (the table below), and triage the 17 blocking-candidate issues before `v0.1.0`. Questions that need the engineer by rule include Q-161 (local guide rule), Q-166 (engineering doctrine), Q-169 (public-repository redaction of a decision record), and Q-170 (local `AGENTS.md`).
+6. After the engineer answers, apply the accepted recommendations in their owners, and close or retitle the issues that an answer changes (for example #510 after Q-156).
+
+After the mediation group, `main` added `providerModel` to `20260704-capability_usage_gateway_foundation.md` (audited by the mediation group) and to the held `20260703-audit_usage_evidence_records.md`. The close-out recheck found the field in `apps/nanocore/src/capability/usage-ledger.ts` and the Gateway, and the mediation corrections still apply. No new finding. The held Audit specification was read only as the owner that issue #514 cites.
 
 ## Issues Opened
 
@@ -326,7 +358,7 @@ Filled at close-out.
 
 ## Decisions Awaiting Engineer Approval
 
-None yet.
+None. The audit made no archive transition and needed no decision record.
 
 ## Questions For The Engineer
 
