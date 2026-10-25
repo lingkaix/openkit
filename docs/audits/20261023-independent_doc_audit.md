@@ -44,7 +44,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/mediation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
 | `docs/core/agent-supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
 | `docs/core/sandbox.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
-| `docs/core/agent-session.md` | agent-session | open, pending | — |
+| `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/core/knowledge.md` | knowledge | open, pending | — |
 | `docs/core/generative-apps.md` | generative-apps | open, pending | — |
 | `docs/core/storage.md` | storage | held (#440) | — |
@@ -113,12 +113,12 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260922-delegated_worker_policy_maintenance.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/specs/20260703-workspace_synchronization.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
 | `docs/specs/20260629-worker_runtime_communication_model.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
-| `docs/specs/20260704-agent_session_continuity.md` | agent-session | open, pending | — |
-| `docs/specs/20260704-session_static_workspace_materialization.md` | agent-session | open, pending | — |
-| `docs/specs/20260716-codex_worker_adapter.md` | agent-session | open, pending | — |
-| `docs/specs/20260716-opencode_worker_adapter.md` | agent-session | open, pending | — |
-| `docs/specs/20260716-pi_worker_adapter.md` | agent-session | open, pending | — |
-| `docs/specs/20260930-deepseek_worker_adapter.md` | agent-session | open, pending | — |
+| `docs/specs/20260704-agent_session_continuity.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260704-session_static_workspace_materialization.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260716-codex_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260716-opencode_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260716-pi_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260930-deepseek_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/specs/20260702-knowledge_store_governance_rules.md` | knowledge | open, pending | — |
 | `docs/specs/20260703-knowledge_store_implementation.md` | knowledge | open, pending | — |
 | `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` | knowledge | open, pending | — |
@@ -300,6 +300,9 @@ Filled at close-out.
 | #493 `[sandbox] OpenShell policy projection merges or drops AEP network grants instead of failing launch` | sandbox | SB-FRE-01, SB-FRE-03 | ordinary |
 | #494 `[gateway] A disallowed worker logical model fails with worker_inference_lineage_mismatch instead of worker_logical_model_not_allowed` | sandbox | SB-WRC-02 | low |
 | #495 `[sync] Captured Workspace snapshot candidates never become a change set, a review, or a worker output manifest` | sandbox | SB-SYN-01 | ordinary (enhancement) |
+| #496 `[workspace] Default session layout puts Turn-cleared slots under retained /workspace, and inputs bind to slots without a compatibility check` | agent-session | AG-SSM-03, 04 | ordinary |
+| #497 `[opencode] Adapter does not inspect native automatic recovery or prove its isolation outcomes before startup admission` | agent-session | AG-OPC-01, 02, 03 | blocking candidate (recovery, authorization) |
+| #498 `[pi] Pi runtime host emits free-form failure reasons instead of the closed vocabulary the reader admits` | agent-session | AG-PI-01 | low |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -456,3 +459,9 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-127 | sandbox | Writable temporary root and `http`/`https` grants | Name the root; refuse non-`rest` at authoring |
 | Q-128 | sandbox | `implementation: Partial` on the Deprecated Cell specification | Set `N/A` in a governance-approved metadata change |
 | Q-129 | sandbox | Sandbox history, numbers, labels | As Q-28 |
+| Q-130 | agent-session | Withdrawn after review (decided by PI) | — |
+| Q-131 | agent-session | Withdrawn after review (decided by Core Agent Supply and AMR) | — |
+| Q-132 | agent-session | Withdrawn after review (catalog grammar makes it unreachable) | — |
+| Q-133 | agent-session | SSM skeleton and layout example | Rewrite to the NWB and VOL layout; drop `fuse-mount` |
+| Q-134 | agent-session | `allow-anthropic-api-key` carrier | Settle it absent; remove the launcher branch |
+| Q-135 | agent-session | Agent-session history, repetition, numbers, labels | As Q-28 |

@@ -252,6 +252,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261024-independent_doc_audit_protocol.md` — Independent Documentation Audit: Protocol Group
 - `docs/audits/20261024-independent_doc_audit_sandbox.md` — Independent Documentation Audit: Sandbox Group
 - `docs/audits/20261024-independent_doc_audit_vault.md` — Independent Documentation Audit: Vault Group
+- `docs/audits/20261025-independent_doc_audit_agent_session.md` — Independent Documentation Audit: Agent-Session Group
 
 ## Platform References
 
