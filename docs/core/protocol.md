@@ -402,7 +402,7 @@ Clients MUST choose approval UI or user-input UI from the request kind and the r
 
 Artifacts are durable user-visible outputs associated with a Workspace and, when produced or communicated through work, an exact Thread, Turn, and Item lineage.
 
-An Artifact produced in a private Thread retains that Thread's audience on independent lookup, communication and byte delivery. Workspace placement does not make it shared. Permissions governs explicit broader publication and current audience admission; source lineage and an opaque reference never grant access. Shared-resource mutations keep their own effect visibility independently of private discussion.
+An Artifact produced in a private Thread retains that Thread's audience on independent lookup, communication and byte delivery. Workspace placement does not make it shared. Policy governs explicit broader publication and current audience admission; source lineage and an opaque reference never grant access. Shared-resource mutations keep their own effect visibility independently of private discussion.
 
 Work-produced Artifact creation, every work-produced mutation, and every Thread communication MUST be represented by the exact Item-backed lineage defined by the owning specification. A governed Workspace-only import or registration MAY initially keep Thread and Turn null only when the Artifact carries the explicit immutable provenance defined by that specification; it MUST NOT masquerade as user or agent work output.
 

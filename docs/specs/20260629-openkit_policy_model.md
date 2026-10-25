@@ -164,7 +164,7 @@ The standard-aligned kernel target supports these element kinds:
 
 An agent Turn supplies the actual process context for the evaluated principal. A direct User request may omit process context; adapters MUST NOT invent a Turn. Processes are not policy elements. When a product request has process context, adapters MUST represent it through NGAC process-to-user facts and process-scoped restrictions rather than assigning a process into the policy element graph. The terms `userAttribute` and `objectAttribute` are inherited from NGAC. OpenKit-facing adapters may project friendlier names such as subject group, capability group, resource group, trust domain, or policy domain.
 
-For an agent principal, request facts MUST resolve the responsibility chain defined by [Permissions](../core/policy.md#subject). The Kernel MUST check that its terminal human remains current and authorized over the domain. A broken or no-longer-authorized chain suspends the agent's grants until human reassignment. This check supplies no inherited human rights and does not change the process-to-user relation.
+For an agent principal, request facts MUST resolve the responsibility chain defined by [Policy](../core/policy.md#subject). The Kernel MUST check that its terminal human remains current and authorized over the domain. A broken or no-longer-authorized chain suspends the agent's grants until human reassignment. This check supplies no inherited human rights and does not change the process-to-user relation.
 
 ### Assignment
 
@@ -240,11 +240,11 @@ Decision traces are required for development, tests, audit projection, and futur
 | Policy classes | Implement now | Represent as elements and implement the NGAC policy-class semantics required for derived privileges. |
 | Access request decision function | Implement now | Evaluate process or user, operation, object or policy element, required access rights, privileges, restrictions, and trace. |
 | Process context | Existing subset; Goal projection Not Started | Map the actual process to the evaluated principal's NGAC user element, outside the policy-element graph. Record the responsible human separately for accountability; that identity supplies no inherited rights. |
-| Agent principal accountability | Planned; Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Permissions; suspend grants on failure until human reassignment. |
+| Agent principal accountability | Planned; Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Policy; suspend grants on failure until human reassignment. |
 | Administrative operations | Native human Policy candidate path; broader routines Not Started | The pre-v0.1.0 `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
 | Obligations | Deferred after v0.1.0 | Future `react` participation may change Policy after successful access under the defining author's current authority; issue #375 tracks it. Commit obligations such as credential injection are not NGAC post-success Policy obligations. |
 | Dynamic policy mutation | Native human Policy update; other adapters Not Started | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
-| Delegated administration | Planned; Not Started | Plan approval creates a delegated Goal domain administered by the Coordinator under Permissions. This does not claim full standard delegated-administration support. |
+| Delegated administration | Planned; Not Started | Plan approval creates a delegated Goal domain administered by the Coordinator under Policy. This does not claim full standard delegated-administration support. |
 | Functional architecture entities | No current plan | Do not make PEP, PDP, PAP, PIP, RAP, or EPP public OpenKit product concepts unless a future product need requires it. |
 | Standards-level API and full conformance | No current plan | Do not claim complete ANSI/INCITS NGAC compatibility. Claim only the implemented NGAC subset that is verified against the standard. |
 

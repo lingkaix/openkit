@@ -78,7 +78,7 @@ The smallest complete V1 supports registered-user invitations, full active-membe
 - Do not add authorization caches before measurements demonstrate a need.
 - Do not make a shared Workspace a real-time document-collaboration system.
 - Do not add filesystem aliases, symlinks, hard links, per-user Workspace copies, or compatibility readers.
-- Do not add a second permission model for the deployment administrator. [Core Permissions](../core/policy.md) owns the one administrator eligibility rule.
+- Do not add a second permission model for the deployment administrator. [Core Policy](../core/policy.md) owns the one administrator eligibility rule.
 - Do not design future Federation or P2P behavior in this specification.
 
 ## Background
@@ -204,7 +204,7 @@ At most one effective pending invitation may exist for one `(workspace_id, invit
 
 An authorized active member supplies an exact email as the product input. NanoCore normalizes it and resolves one existing active canonical user before creating the invitation. The email is a lookup input, not the durable authority key. Absent, disabled, already-active, and otherwise ineligible targets return the same product-safe `invitee_unavailable` result.
 
-Invitation acceptance and decline by the bound invitee require a Better Auth session or the implicit local identity whose canonical user ID equals `invitee_user_id`. A currently usable administrator credential may accept or decline under the administrator eligibility rule in [Core Permissions](../core/policy.md), and the recorded actor is that administrator. Ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`, are not accepted for this user-scoped collection. V1 does not create a bearer invitation secret, send email, create an account, or expose a user directory.
+Invitation acceptance and decline by the bound invitee require a Better Auth session or the implicit local identity whose canonical user ID equals `invitee_user_id`. A currently usable administrator credential may accept or decline under the administrator eligibility rule in [Core Policy](../core/policy.md), and the recorded actor is that administrator. Ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`, are not accepted for this user-scoped collection. V1 does not create a bearer invitation secret, send email, create an account, or expose a user directory.
 
 The authenticated invitee discovers invitations through one user-scoped `list my invitations` operation. It selects only rows whose `invitee_user_id` equals the authenticated canonical user, accepts no caller-supplied user filter, and requires no active Workspace membership. It denies ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`. A currently usable administrator credential may list the authenticated administrator's own invitations under the administrator eligibility rule. Workspace-member invitation listing remains a separate Workspace-scoped `membership.manage` operation. Both projections reuse the same closed `WorkspaceInvitation` record and expose no email address or bearer secret.
 
@@ -222,7 +222,7 @@ Ownership remains one registry relationship for continuity, transfer-before-owne
 
 ### Projection And Supersession Boundary
 
-[Core Permissions](../core/policy.md) owns the equal-member eligibility doctrine. This section owns its concrete membership-to-rights projection and Workspace lifecycle integration. The Current Implementation Projection records execution facts. Historical pre-cutover migration evidence does not authorize a role ceiling. Target schema, lifecycle, and acceptance sections use active membership. All non-role constraints remain in force. No implementation may use this member-permissions direction alone to remove a data-loss check, switch a deletion recovery principal, broaden a token, bypass an exact human gate, or publish confidential data. The administrator eligibility rule is the separate authority for a currently usable administrator credential.
+[Core Policy](../core/policy.md) owns the equal-member eligibility doctrine. This section owns its concrete membership-to-rights projection and Workspace lifecycle integration. The Current Implementation Projection records execution facts. Historical pre-cutover migration evidence does not authorize a role ceiling. Target schema, lifecycle, and acceptance sections use active membership. All non-role constraints remain in force. No implementation may use this member-permissions direction alone to remove a data-loss check, switch a deletion recovery principal, broaden a token, bypass an exact human gate, or publish confidential data. The administrator eligibility rule is the separate authority for a currently usable administrator credential.
 
 The cutover removes obsolete editor/viewer fields and access-changing surfaces consistently across storage, public schemas, App API, administrator CLI, remote MCP, Web, and tests. Replace active-Workspace owner-only eligibility with current-member eligibility, without converting identity conditions such as transfer-before-owner-leave into permissions. A member-created deletion must bind its admitted initiating actor/request to the existing deletion lineage while preserving the exact recovery owner; the release-coupled payload and required initiating-user field are fixed in Equal-Member Deletion Attribution And Private Recovery Export below.
 
@@ -236,7 +236,7 @@ The cutover removes obsolete editor/viewer fields and access-changing surfaces c
 | Human decisions | Full membership-derived eligibility | Exact gate kind/resource/principal and current Policy |
 | User-private or deployment-scoped resources | No grant from Workspace membership | Their separate scope owner |
 | Removed member, invitee, or unrelated user without a currently usable administrator credential | No Workspace operation grant | No implicit content bypass |
-| Currently usable administrator credential | Every operation under the administrator eligibility rule in Core Permissions, including other users' resources | Truthful attribution, per-effect authority objects, credential limits, and the sandbox boundary |
+| Currently usable administrator credential | Every operation under the administrator eligibility rule in Core Policy, including other users' resources | Truthful attribution, per-effect authority objects, credential limits, and the sandbox boundary |
 
 ### Policy Kernel Projection
 
@@ -302,7 +302,7 @@ The effective authority of a Workspace token is the intersection of:
 
 `workspace-readonly` further caps the result to read operations. Removing a member or narrowing their current Policy authority affects the next request without rewriting every owned token.
 
-A currently usable administrator credential is eligible for every operation under the administrator eligibility rule in [Core Permissions](../core/policy.md), including starting and executing Tasks without membership and including other users' resources. Its owner must remain active, and its current scope, ownership, and usability must be rechecked. The rule does not manufacture membership. Existing request and effect audit retain the administrator as the actor, the exact credential reference, and the request lineage, and never impersonate the affected user.
+A currently usable administrator credential is eligible for every operation under the administrator eligibility rule in [Core Policy](../core/policy.md), including starting and executing Tasks without membership and including other users' resources. Its owner must remain active, and its current scope, ownership, and usability must be rechecked. The rule does not manufacture membership. Existing request and effect audit retain the administrator as the actor, the exact credential reference, and the request lineage, and never impersonate the affected user.
 
 Token administration may issue a Token to another exact active canonical `ownerUserId`. Any Workspace-bound Token issuance validates the target owner's active Workspace membership. A session whose User owns usable `server-admin` Token authority is a currently usable administrator credential for Workspace authorization under the same rule, and it receives no implicit membership.
 
@@ -820,7 +820,7 @@ The exact V1 operation surface is closed as follows:
 | `workspace.delete` | `POST /api/app/operations/workspace.delete` | current active member or current administrator for creation; exact initiating-user or administrator non-content retry after `deleting`; `workspace.lifecycle` | `200/202 { deletion }` |
 | `workspace.deleted-recover` | `POST /api/app/operations/workspace.deleted-recover` | original active owner from the deleted tombstone or current administrator; ordinary Workspace bearer denied | `{ recovery }` |
 
-The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and remote MCP project only the operations reachable through their current credential contract, while local mode may project both deletion operations through its implicit canonical user. `workspace.my-invitation-list`, `workspace.my-invitation-accept`, `workspace.my-invitation-decline`, the exact own-receipt form of `workspace.leave`, and deleted-Workspace recovery remain session-capable for an ordinary caller and are an explicit known-partial for an ordinary bearer on the administrator CLI and remote MCP. A currently usable administrator credential is eligible for them under the administrator eligibility rule in [Core Permissions](../core/policy.md). The current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close the ordinary-caller presentation gap.
+The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and remote MCP project only the operations reachable through their current credential contract, while local mode may project both deletion operations through its implicit canonical user. `workspace.my-invitation-list`, `workspace.my-invitation-accept`, `workspace.my-invitation-decline`, the exact own-receipt form of `workspace.leave`, and deleted-Workspace recovery remain session-capable for an ordinary caller and are an explicit known-partial for an ordinary bearer on the administrator CLI and remote MCP. A currently usable administrator credential is eligible for them under the administrator eligibility rule in [Core Policy](../core/policy.md). The current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close the ordinary-caller presentation gap.
 
 ## Testing Strategy And Acceptance Criteria
 
@@ -912,7 +912,7 @@ Deferred because the current system has no secure delivery owner and agent-visib
 
 ### Let Server Admin Read Every Workspace
 
-The earlier rejection, which separated deployment administration from Workspace content authority, is replaced by the administrator eligibility rule in [Core Permissions](../core/policy.md). A currently usable administrator credential may read every Workspace, including other users' private Threads. The read records the administrator and does not transfer ownership. The Policy Kernel later refines this authority.
+The earlier rejection, which separated deployment administration from Workspace content authority, is replaced by the administrator eligibility rule in [Core Policy](../core/policy.md). A currently usable administrator credential may read every Workspace, including other users' private Threads. The read records the administrator and does not transfer ownership. The Policy Kernel later refines this authority.
 
 ### Add CRDT Or Real-Time Coediting
 
