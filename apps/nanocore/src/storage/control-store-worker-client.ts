@@ -46,11 +46,12 @@ import {
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
-import type {
-  ControlProductTransition,
-  ControlPublicationInput,
-  ControlTerminalResult,
-  ControlTerminalTransition,
+import {
+  type ControlProductTransition,
+  type ControlPublicationInput,
+  type ControlTerminalResult,
+  type ControlTerminalTransition,
+  closeWorkspaceProductReadHandles,
 } from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
@@ -177,7 +178,8 @@ export function getControlStoreWorkerClient(): ControlStoreWorkerClient {
 
 /** Stops the existing process-local host without creating one; callers must finish shutdown before removing its database roots. */
 export async function shutdownControlStoreWorkerClient(): Promise<void> {
-  await singleton?.shutdown();
+  if (singleton) await singleton.shutdown();
+  else closeWorkspaceProductReadHandles();
 }
 
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
@@ -798,8 +800,12 @@ class ControlStoreWorkerClient {
   /** Closes a scope only after its previously accepted writes have finished. */
   async close(database: string): Promise<void> {
     const opening = this.openings.get(database);
-    await this.request({ operation: 'close', database });
-    if (this.openings.get(database) === opening) this.openings.delete(database);
+    try {
+      await this.request({ operation: 'close', database });
+      if (this.openings.get(database) === opening) this.openings.delete(database);
+    } finally {
+      if (opening) closeWorkspaceProductReadHandles(opening.path);
+    }
   }
 
   /**
@@ -869,6 +875,8 @@ class ControlStoreWorkerClient {
    * @returns After graceful shutdown or termination; never leaves a second live host.
    */
   shutdown(): Promise<void> {
+    // Read-only inspection can occur after this writer lifetime has already stopped.
+    if (this.closed) closeWorkspaceProductReadHandles();
     if (this.shutdownPromise !== undefined) return this.shutdownPromise;
     this.stopping = true;
     this.shutdownPromise = (async () => {
@@ -892,7 +900,11 @@ class ControlStoreWorkerClient {
             'Accepted control-store operations failed during shutdown.'
           );
       } finally {
-        await Promise.all(this.hosts.map((host) => host.worker?.terminate()));
+        try {
+          await Promise.all(this.hosts.map((host) => host.worker?.terminate()));
+        } finally {
+          closeWorkspaceProductReadHandles();
+        }
         for (const host of this.hosts) this.fail(host);
         this.materialBytes = 0;
         this.inputBytes = 0;

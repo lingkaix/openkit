@@ -24,6 +24,7 @@ import {
 } from '@openkit/config-schema';
 import { DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import { closeWorkspaceProductReadHandles } from './control-store-products.js';
 import { writeFileAtomic } from './workspace-file-records.js';
 
 /** File name for the data-root backup manifest. */
@@ -453,6 +454,7 @@ export function restoreDataRootBackup(
   copyDataRootTree(input.backupRoot, stagingRoot);
 
   try {
+    closeWorkspaceProductReadHandles(input.dataRoot);
     if (existsSync(input.dataRoot)) {
       renameSync(input.dataRoot, previousRoot);
     }

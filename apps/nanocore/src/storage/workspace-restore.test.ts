@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -378,6 +378,35 @@ describe('D0-2 same-deployment restore', () => {
     const f = await fixture(false, true);
     expect(f.capturedTurnId).toBeDefined();
     const dbPath = workspaceDbPath(f.dataRoot, workspaceId);
+    // Warm the public metadata path after fixture shutdown, without prescribing its connection owner.
+    const preparing = vi.spyOn(Database.prototype, 'prepare');
+    onTestFinished(() => preparing.mockRestore());
+    const before = f.store.getTurnMetadata(workspaceId, DEMO_THREAD_ID, f.capturedTurnId!);
+    const readers = [
+      ...new Set(
+        (preparing.mock.contexts as Database.Database[]).filter(
+          (sqlite) => sqlite.readonly && sqlite.name === dbPath
+        )
+      ),
+    ];
+    preparing.mockRestore();
+    expect(before.status).toBe('running');
+    expect(readers).toHaveLength(1);
+    const reader = readers[0]!;
+    const wasRetained = reader.open;
+    const original = statSync(dbPath);
+    let closedAt: { dev: number; ino: number } | undefined;
+    const close = Database.prototype.close;
+    const closing = vi.spyOn(Database.prototype, 'close').mockImplementation(function (
+      this: Database.Database
+    ) {
+      if (this === reader) {
+        const current = statSync(dbPath, { throwIfNoEntry: false });
+        if (current) closedAt = { dev: current.dev, ino: current.ino };
+      }
+      return close.call(this);
+    });
+    onTestFinished(() => closing.mockRestore());
     expect(rows(dbPath, 'pending_requests')).toEqual([]);
     const beforeTurns = rows(dbPath, 'control_turns');
     const beforeAdmissions = rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries');
@@ -385,6 +414,14 @@ describe('D0-2 same-deployment restore', () => {
     await expect(runCli(f.argv, () => {}, f)).resolves.toMatchObject({
       disposition: 'restored',
       workspaceId,
+    });
+    // COORD07:1x: retained readers close while the final path still names the predecessor.
+    expect(reader.open).toBe(false);
+    if (wasRetained) expect(closedAt).toEqual({ dev: original.dev, ino: original.ino });
+    const replacement = statSync(dbPath);
+    expect({ dev: replacement.dev, ino: replacement.ino }).not.toEqual({
+      dev: original.dev,
+      ino: original.ino,
     });
     const restored = readNativeTurnHistory(
       nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId }),
@@ -396,6 +433,13 @@ describe('D0-2 same-deployment restore', () => {
       threadId: DEMO_THREAD_ID,
       status: 'interrupted',
       completedAt: expect.any(String),
+    });
+    expect(f.store.getTurnMetadata(workspaceId, DEMO_THREAD_ID, f.capturedTurnId!)).toMatchObject({
+      id: f.capturedTurnId,
+      owner: { kind: 'workspace', workspaceId },
+      threadId: DEMO_THREAD_ID,
+      status: 'interrupted',
+      completedAt: restored.completedAt,
     });
     expect(rows(dbPath, 'control_turns')).toHaveLength(beforeTurns.length);
     expect(rows(dbPath, 'pending_requests')).toEqual([]);

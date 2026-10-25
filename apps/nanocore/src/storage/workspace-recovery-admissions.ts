@@ -5,6 +5,7 @@ import { RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { configureOwnedSqlite } from './control-store.js';
+import { closeWorkspaceProductReadHandles } from './control-store-products.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck } from './db.js';
 import { coreDbPath } from './fs-layout.js';
 import {
@@ -106,6 +107,8 @@ export async function withRecoveryRoot<T>(
   let core: CoreDb | undefined;
   try {
     lock = acquireDataRootLock(dataRoot, { bootId: randomUUID() });
+    // Restore and MOVE replace live paths only after excluding the live server.
+    closeWorkspaceProductReadHandles(dataRoot);
     const stat = lstatSync(coreDbPath(dataRoot), { throwIfNoEntry: false });
     if (!stat?.isFile() || stat.size === 0) refuseRecovery('source-unavailable');
     core = openExistingCoreDbWithIntegrityCheck(dataRoot);
@@ -115,6 +118,7 @@ export async function withRecoveryRoot<T>(
     if (error instanceof DataRootLockError) refuseRecovery('root-locked');
     return refuseRecovery('recovery-required');
   } finally {
+    if (lock) closeWorkspaceProductReadHandles(dataRoot);
     core?.sqlite.close();
     lock?.release();
   }

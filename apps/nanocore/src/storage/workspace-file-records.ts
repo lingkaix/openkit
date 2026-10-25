@@ -65,6 +65,7 @@ import {
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
 } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
@@ -858,6 +859,11 @@ export function nativeProductScope(
   };
 }
 
+const rawProductStatements = new WeakMap<
+  ControlStoreProductReadHandle,
+  Map<ControlProductKind, Database.Statement>
+>();
+
 /** Materializes one validated retained metadata row in a short read-only SQL snapshot. */
 export function readNativeProduct(
   scope: Pick<NativeProductScope, 'path' | 'owner'>,
@@ -876,7 +882,17 @@ export function readNativeProduct(
         turn: 'control_turns',
         'agent-session': 'control_agent_sessions',
       }[kind];
-      const raw = reader.sqlite.prepare(`SELECT record_json FROM ${table} WHERE id=?`).get(id) as {
+      let prepared = rawProductStatements.get(reader);
+      if (!prepared) {
+        prepared = new Map();
+        rawProductStatements.set(reader, prepared);
+      }
+      let statement = prepared.get(kind);
+      if (!statement) {
+        statement = reader.sqlite.prepare(`SELECT record_json FROM ${table} WHERE id=?`);
+        prepared.set(kind, statement);
+      }
+      const raw = statement.get(id) as {
         record_json: string;
       };
       return {

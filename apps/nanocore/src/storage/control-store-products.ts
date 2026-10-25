@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync, realpathSync } from 'node:fs';
 import { type FileHandle, link, open, realpath, unlink } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -2255,6 +2255,52 @@ export interface ControlStoreProductReadHandle {
     limit?: number
   ): ControlProductEntryView[];
   close(): void;
+}
+
+const workspaceProductReaders = new Map<
+  string,
+  {
+    owner: Extract<ControlProductOwner, { kind: 'workspace' }>;
+    identity: string;
+    reader: ControlStoreProductReadHandle;
+  }
+>();
+
+/** Reuses a Workspace metadata connection and statements, never rows or a SQL snapshot. */
+export function getWorkspaceProductReadHandle(
+  path: string,
+  owner: Extract<ControlProductOwner, { kind: 'workspace' }>
+): ControlStoreProductReadHandle {
+  path = resolve(path);
+  const cached = workspaceProductReaders.get(path);
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || realpathSync(dirname(path)) !== dirname(path))
+      throw new ControlProductPreconditionError();
+    const identity = `${file.dev}:${file.ino}`;
+    if (cached) {
+      if (!isDeepStrictEqual(cached.owner, owner) || cached.identity !== identity)
+        throw new ControlProductPreconditionError();
+      return cached.reader;
+    }
+    const reader = openControlStoreProductReadHandle(path, owner);
+    workspaceProductReaders.set(path, { owner: { ...owner }, identity, reader });
+    return reader;
+  } catch (error) {
+    if (cached) closeWorkspaceProductReadHandles(path);
+    throw error;
+  }
+}
+
+/** Releases retained readers before their database or containing root is closed or replaced. */
+export function closeWorkspaceProductReadHandles(root?: string): void {
+  const selected = root === undefined ? undefined : resolve(root);
+  for (const [path, { reader }] of workspaceProductReaders) {
+    if (selected !== undefined && path !== selected && !path.startsWith(`${selected}${sep}`))
+      continue;
+    workspaceProductReaders.delete(path);
+    if (reader.sqlite.open) reader.close();
+  }
 }
 
 /** Production-owned read handle; construction never opens writable authority or runs migrations. */

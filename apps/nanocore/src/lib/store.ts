@@ -158,7 +158,9 @@ import {
   type ControlProductMutation,
   type ControlProductOwner,
   type ControlTerminalTransition,
+  closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
+  getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-products.js';
 import {
@@ -2886,6 +2888,7 @@ export class FsStore {
       const root = this.workspaceRootPath(workspaceId);
       if (lstatSync(root, { throwIfNoEntry: false })) {
         assertCanonicalDirectory(root);
+        closeWorkspaceProductReadHandles(root);
         rmSync(root, { recursive: true });
       }
     }
@@ -2896,6 +2899,7 @@ export class FsStore {
   /** Removes one Workspace from process-local read models without touching its filesystem root. */
   public evictWorkspace(workspaceId: string): void {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
+    if (this.dataRoot) closeWorkspaceProductReadHandles(this.workspaceRootPath(workspaceId));
     const turnIds = new Set(
       [...this.turns.values()]
         .filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId)
@@ -4881,8 +4885,10 @@ export class FsStore {
     threadId: string,
     turnId: string
   ): Omit<Turn, 'items'> {
-    const record = this.dataRoot
-      ? readNativeProduct(this.nativeScope({ kind: 'workspace', workspaceId }), 'turn', turnId)
+    const owner = { kind: 'workspace', workspaceId } as const;
+    const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
+    const record = scope
+      ? readNativeProduct(scope, 'turn', turnId, getWorkspaceProductReadHandle(scope.path, owner))
           ?.record
       : this.turns.get(turnId);
     if (

@@ -2,8 +2,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
 import { openControlStoreProductReadHandle } from './control-store-products.js';
 import {
@@ -13,11 +16,29 @@ import {
 import { prepareImmutableProductJson, readImmutableProductJson } from './immutable-content.js';
 import { nativeProductScope, readNativeProductEntries } from './workspace-file-records.js';
 
+const observation = vi.hoisted(() => ({ readers: [] as import('better-sqlite3').Database[] }));
+
+// Observe actual Main read connections; all SQLite construction and effects pass through.
+vi.mock('better-sqlite3', async (load) => {
+  const actual = await load<{ default: typeof Database }>();
+  return {
+    ...actual,
+    default: class extends actual.default {
+      constructor(...args: ConstructorParameters<typeof actual.default>) {
+        super(...args);
+        if (this.readonly) observation.readers.push(this);
+      }
+    },
+  };
+});
+
 const roots: string[] = [];
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
+  observation.readers.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -148,5 +169,86 @@ describe('addressed retained Item required semantics', () => {
     expect.soft(outcome!.status).toBe('rejected');
     // Durable Execution, Commit Rule: refusal creates no Item/event reference or Turn revision.
     expect(committedCut(f)).toEqual(before);
+  });
+});
+
+describe('retained native metadata reader lifetime', () => {
+  it('reuses statements and fresh snapshots, then closes readers through complete and repeated shutdown', async () => {
+    const f = await fixture();
+    const peer = new FsStore({ dataRoot: f.root });
+    const { items: _items, ...expected } = f.store.getTurnById(f.turn.id);
+    const readers = () => observation.readers.filter((sqlite) => sqlite.name === f.scope.path);
+    const prepared = vi.spyOn(Database.prototype, 'prepare');
+    expect(f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(expected);
+
+    // COORD07:1x requires one readonly, query-only connection per Workspace DB and cached statements.
+    const retained = readers().filter((sqlite) => sqlite.open);
+    expect(retained).toHaveLength(1);
+    const reader = retained[0]!;
+    expect(reader.readonly).toBe(true);
+    expect(reader.pragma('query_only', { simple: true })).toBe(1);
+    expect(reader.inTransaction).toBe(false);
+    const opened = readers().length;
+    prepared.mockClear();
+    for (const store of [f.store, peer, f.store, peer]) {
+      expect(store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(expected);
+      expect(reader.inTransaction).toBe(false);
+    }
+    expect(readers()).toHaveLength(opened);
+    expect(readers().filter((sqlite) => sqlite.open)).toEqual([reader]);
+    expect(
+      (prepared.mock.contexts as Database.Database[]).filter(
+        (sqlite) => sqlite.readonly && sqlite.name === f.scope.path
+      )
+    ).toHaveLength(0);
+    prepared.mockRestore();
+
+    // The same connection must see an acknowledged commit without a row cache or pinned snapshot.
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    const { items: _currentItems, ...current } = new FsStore({ dataRoot: f.root }).getTurnById(
+      f.turn.id
+    );
+    expect(current.status).toBe('completed');
+    expect(f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(current);
+    expect(readers().filter((sqlite) => sqlite.open)).toEqual([reader]);
+    expect(reader.inTransaction).toBe(false);
+
+    // Shutdown includes readers opened while real Worker termination is still settling.
+    let reached!: () => void;
+    const terminating = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const terminate = Worker.prototype.terminate;
+    const heldTermination = vi.spyOn(Worker.prototype, 'terminate').mockImplementation(function (
+      this: Worker
+    ) {
+      return terminate.call(this).then(async (code) => {
+        reached();
+        await released;
+        return code;
+      });
+    });
+    const stopping = shutdownControlStoreWorkerClient();
+    try {
+      await terminating;
+      expect(f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(current);
+    } finally {
+      release();
+      try {
+        await stopping;
+      } finally {
+        heldTermination.mockRestore();
+      }
+    }
+    expect(readers().filter((sqlite) => sqlite.open)).toEqual([]);
+
+    // Read-only inspection can reopen a reader after shutdown; repeated cleanup closes it too.
+    expect(f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(current);
+    await shutdownControlStoreWorkerClient();
+    expect(readers().filter((sqlite) => sqlite.open)).toEqual([]);
   });
 });

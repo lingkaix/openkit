@@ -37,6 +37,7 @@ import { commandInputHash } from './runtime/idempotent-command.js';
 import { hasUnprovedNanoHostWorkspaceCleanup } from './runtime/nanohost-attempt-records.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
@@ -448,6 +449,7 @@ async function advanceWorkspaceDeletion(input: {
     if (sourceExists) {
       requireWorkspaceRootIdentity(source, input.workspaceId);
       mkdirPrivate(dirname(target));
+      closeWorkspaceProductReadHandles(source);
       renameSync(source, target);
       fsyncDirectory(dirname(source));
       fsyncDirectory(dirname(target));
