@@ -22,7 +22,10 @@ import {
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentWorkspaceAuthority,
+  isCurrentServerPolicyAuthor,
+} from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createMcpConfig, updateMcpBinding } from '../catalog/resource-catalog.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
@@ -757,7 +760,7 @@ describe('administration catalog configuration', () => {
             responsibleHumanId: f.actor.userId,
           },
         },
-        authorCurrent: (id) => policyConfiguration.isCurrentServerPolicyAuthor(f.coreDb, id),
+        authorCurrent: (id) => isCurrentServerPolicyAuthor(f.coreDb, id),
       });
     expect(select('future-tool')).toMatchObject([{ id: 'human-tool-condition', effect }]);
     expect(select('future-tool-typo')).toEqual([]);

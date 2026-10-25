@@ -15,6 +15,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 
 const ACCOUNT_STATUS: ProviderSubscriptionAccountSnapshot = {
   accountSlotId: 'default',
@@ -181,6 +182,8 @@ function createObservedProviderSubscriptionManager(coreDb: CoreDb) {
   });
   const manager = new ProviderSubscriptionAccountManager({
     coreDb,
+    onReferenceRevoked: (referenceId) =>
+      closeRevokedCredentialBindings({ coreDb }, { referenceId }),
     vaultBackend: vaultBackendAccess,
   });
   const observed = [

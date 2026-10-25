@@ -7,10 +7,11 @@ import type {
   WorkspaceSynchronizationBackendKind,
 } from '@openkit/app-api-schemas';
 import { workspaceSyncReviewPatchBytes } from '@openkit/app-api-schemas';
-import type {
-  AgentEnvironmentPackage,
-  SessionWorkspaceMaterializationPlan,
-  WorkerGovernanceBackendCapabilities,
+import {
+  type AgentEnvironmentPackage,
+  type SessionWorkspaceMaterializationPlan,
+  type WorkerGovernanceBackendCapabilities,
+  WorkerGovernanceBackendCapabilitiesSchema,
 } from '@openkit/config-schema';
 import {
   allocateEntityId,
@@ -18,6 +19,7 @@ import {
   GitFailureExplanationSchema,
   isEntityId,
   isSealedTurnTerminal,
+  readRetainedV1,
   responsibleUserIdForActor,
   type StopReason,
   workspaceIdForOwner,
@@ -67,6 +69,7 @@ import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
   type FsStore,
+  StoreRecordNotFoundError,
   type TerminalTurnPublication,
 } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
@@ -111,6 +114,7 @@ import {
 } from './aep-snapshot-ledger.js';
 import {
   type AgentEnvironmentPackagePreview,
+  assertCurrentWorkerCredentialAuthority,
   type PreparedWorkerContextPackage,
   type ResolveAgentEnvironmentBackendInput,
   type ResolvedAgentEnvironmentProviderCredential,
@@ -124,6 +128,7 @@ import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
   closeSchedulerExecutionAttemptWithoutEffects,
+  listOpenSchedulerExecutionAttempts,
   listSchedulerExecutionAttemptsForTurn,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
@@ -143,6 +148,7 @@ import type {
 } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
+import { drainNanoHostSandboxAdmission } from './nanohost-harness-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
   frozenPendingOutcomeInput,
@@ -165,6 +171,7 @@ import type {
 } from './types.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
+  listWorkerBackendSessions,
   markWorkerBackendSessionLaunching,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
@@ -1018,7 +1025,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly workerControlGateway: WorkerControlGateway | null;
   private readonly workspaceMutationAdmission: WorkspaceMutationAdmission | null;
   /** Live lifecycle ownership through cleanup and terminal publication; never restored. */
-  private readonly activeTurnExecutions = new Set<string>();
+  private readonly activeTurnExecutions = new Map<string, Promise<unknown>>();
 
   /**
    * Creates the governance-backed turn executor.
@@ -1874,17 +1881,173 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: string,
     context?: TurnStartRuntimeContext
   ): Promise<void> {
-    this.activeTurnExecutions.add(turnId);
+    const execution = this.executeTurn(store, turnId, input, context);
+    this.activeTurnExecutions.set(turnId, execution);
     try {
-      await this.executeTurn(store, turnId, input, context);
+      await execution;
     } finally {
-      this.activeTurnExecutions.delete(turnId);
+      if (this.activeTurnExecutions.get(turnId) === execution)
+        this.activeTurnExecutions.delete(turnId);
     }
   }
 
   /** Reports whether the live lifecycle owner still owns cleanup and outcome publication. */
   public isTurnExecutionActive(turnId: string): boolean {
     return this.activeTurnExecutions.has(turnId);
+  }
+
+  /**
+   * Fences credential-bearing residency, joins its current execution owners and requests exact Sandbox cleanup.
+   *
+   * @param store Existing AgentSession and Turn owner.
+   * @param agentSessionIds Sessions selected from the revoked grants' immutable injection lineage.
+   * @throws When current ownership or physical removal cannot be proved; revoked facts remain authoritative.
+   */
+  public async revokeCredentialBindings(
+    store: FsStore,
+    agentSessionIds: readonly string[]
+  ): Promise<void> {
+    if (!this.coreDb) throw new Error('Credential revocation requires Core runtime authority.');
+    const coreDb = this.coreDb;
+    type RevokedBinding = {
+      schemaVersion: unknown;
+      harnessSchemaVersion: unknown;
+      agentSessionId: string;
+      harnessBindingRef: string;
+      sandboxBindingRef: string;
+      originPhysicalEpoch: string;
+      runtimeTargetId: string;
+      workspaceId: string;
+      threadId: string;
+      currentTurnId: string | null;
+      currentAttemptId: string | null;
+    };
+    const bindings = new Map<string, RevokedBinding>();
+    // The Sandbox is the containment boundary; its other bindings cannot survive its deletion.
+    for (const agentSessionId of new Set(agentSessionIds)) {
+      const rows = coreDb.sqlite
+        .prepare(`SELECT b.schema_version AS schemaVersion,
+        h.schema_version AS harnessSchemaVersion,
+        b.agent_session_id AS agentSessionId, b.current_turn_id AS currentTurnId,
+        b.current_attempt_id AS currentAttemptId,
+        h.harness_binding_ref AS harnessBindingRef, s.sandbox_binding_ref AS sandboxBindingRef,
+        s.origin_physical_epoch AS originPhysicalEpoch, s.runtime_target_id AS runtimeTargetId,
+        b.workspace_id AS workspaceId, b.thread_id AS threadId
+        FROM agent_session_runtime_bindings b JOIN harness_instance_records h
+          ON h.harness_instance_id=b.harness_instance_id JOIN sandbox_runtime_records s
+          ON s.sandbox_runtime_id=h.sandbox_runtime_id
+        WHERE s.sandbox_runtime_id IN (SELECT target.sandbox_runtime_id
+          FROM agent_session_runtime_bindings source JOIN harness_instance_records target
+            ON target.harness_instance_id=source.harness_instance_id WHERE source.agent_session_id=?)`)
+        .all(agentSessionId) as RevokedBinding[];
+      for (const row of rows) {
+        readRetainedV1(row, () => row);
+        readRetainedV1({ schemaVersion: row.harnessSchemaVersion }, () => row);
+        bindings.set(row.agentSessionId, row);
+      }
+    }
+    const selectedSessions = new Set([...agentSessionIds, ...bindings.keys()]);
+    const anchors = listWorkerBackendSessions(coreDb);
+    const cleanups = new Map<string, WorkerBackendSessionRecord>();
+    for (const binding of bindings.values()) {
+      // The creator owns this physical Sandbox; a later no-effect package owns no resident cleanup.
+      const anchor = anchors.find(
+        (candidate) =>
+          candidate.sandboxBindingRef === binding.sandboxBindingRef &&
+          candidate.runtimeTargetId === binding.runtimeTargetId &&
+          candidate.originPhysicalEpoch === binding.originPhysicalEpoch
+      );
+      if (!anchor) throw new Error('Credential revocation has no exact physical cleanup lineage.');
+      cleanups.set(binding.sandboxBindingRef, anchor);
+    }
+    for (const [sandboxBindingRef, anchor] of cleanups)
+      drainNanoHostSandboxAdmission(coreDb, {
+        sandboxBindingRef,
+        originPhysicalEpoch: anchor.originPhysicalEpoch,
+      });
+    // Preparation can expose material before a binding or completion receipt exists. Revoke its
+    // exact admitted attempt before the first await, not only a currently active native Turn.
+    const attempts = listOpenSchedulerExecutionAttempts(coreDb)
+      .filter(
+        (attempt) => attempt.agentSessionId !== null && selectedSessions.has(attempt.agentSessionId)
+      )
+      .map((attempt) => ({
+        attempt,
+        closing:
+          attempt.phase === 'open'
+            ? markSchedulerExecutionAttemptClosing(coreDb, {
+                attemptId: attempt.attemptId,
+                cause: 'turn-cancelled',
+                now: this.now,
+              })
+            : attempt,
+        execution: this.activeTurnExecutions.get(attempt.turnId),
+      }));
+    const stopped = await Promise.allSettled([
+      ...attempts.map(async ({ attempt, closing, execution }) => {
+        if (!execution)
+          throw new Error('Credential revocation requires the existing live or recovery owner.');
+        // Already-closing work keeps its accepted closeout; no second cancellation or fresh effect.
+        if (attempt.phase === 'open' && closing.operationId)
+          acceptSchedulerExecutionObservation(
+            coreDb,
+            await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))
+          );
+      }),
+      ...[...selectedSessions].map(async (agentSessionId) => {
+        try {
+          store.getAgentSession(agentSessionId);
+        } catch (error) {
+          if (error instanceof StoreRecordNotFoundError) return;
+          throw error;
+        }
+        await store.updateAgentSession(agentSessionId, { stale: true, updatedAt: this.now() });
+      }),
+    ]);
+    // Original callers retain their execution errors; cleanup and exact absence decide revocation.
+    await Promise.all(attempts.map(({ execution }) => execution?.catch(() => undefined)));
+    const stopFailure = stopped.find((result) => result.status === 'rejected');
+    if (stopFailure?.status === 'rejected') throw stopFailure.reason;
+    for (const [sandboxBindingRef, anchor] of cleanups) {
+      const resident = () =>
+        coreDb.sqlite
+          .prepare(
+            'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=? AND origin_physical_epoch=?'
+          )
+          .get(sandboxBindingRef, anchor.originPhysicalEpoch);
+      // An owned closeout may already have removed this exact resident through proved cleanup.
+      if (resident())
+        await this.backend.cleanupSession(
+          {
+            agentSessionId: anchor.agentSessionId,
+            backendKind: WorkerGovernanceBackendCapabilitiesSchema.shape.kind.parse(
+              anchor.backendKind
+            ),
+            backendSessionId: anchor.backendSessionId,
+            deploymentId: anchor.deploymentId,
+            packageSnapshotId: anchor.packageSnapshotId,
+            runtimeTargetId: anchor.runtimeTargetId,
+            stagingDirectoryRef: anchor.stagingDirectoryRef,
+            transientProviderInstanceId: anchor.transientProviderInstanceId,
+          },
+          { failedCloseout: true, wholeSandbox: true }
+        );
+      if (resident()) throw new Error('Credential revocation has no exact physical removal proof.');
+    }
+    for (const agentSessionId of selectedSessions) {
+      let session: ReturnType<FsStore['getAgentSession']>;
+      try {
+        session = store.getAgentSession(agentSessionId);
+      } catch (error) {
+        if (error instanceof StoreRecordNotFoundError) continue;
+        throw error;
+      }
+      await store.updateAgentSession(agentSessionId, {
+        stale: true,
+        ...(['busy', 'idle'].includes(session.status) ? { status: 'closed' as const } : {}),
+        updatedAt: this.now(),
+      });
+    }
   }
 
   /** Executes the governed lifecycle while startTurn holds process-local recovery exclusion. */
@@ -2052,6 +2215,23 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       const timestamp = preparedWorkerContext ? turn.startedAt! : this.now();
+      // Backend support is admitted from secret-free metadata before any Vault material leaves.
+      const packageDiagnostics = await withLifecycleStageTelemetry(
+        {
+          ...launchEnvironmentPackage.scope,
+          packageSnapshotId: launchEnvironmentPackage.snapshotId,
+          workerKind: launchEnvironmentPackage.agent.runtimeKind,
+          stage: 'validation',
+        },
+        () => this.backend.validatePackage(launchEnvironmentPackage),
+        (diagnostics) => (diagnostics.length === 0 ? 'success' : 'rejected')
+      );
+      if (packageDiagnostics.length > 0) {
+        agentSessionId = null;
+        throw new DeterministicAgentPreparationError(
+          packageDiagnostics.map((diagnostic) => diagnostic.message).join(' ')
+        );
+      }
       const providerCredentials: ResolvedAgentEnvironmentProviderCredential[] = [];
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
@@ -2106,23 +2286,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             },
           }
         : resolvedEnvironmentPackage;
-      // Validate the complete package before publishing a session or attempting runtime effects.
-      const packageDiagnostics = await withLifecycleStageTelemetry(
-        {
-          ...environmentPackage.scope,
-          packageSnapshotId: environmentPackage.snapshotId,
-          workerKind: environmentPackage.agent.runtimeKind,
-          stage: 'validation',
-        },
-        () => this.backend.validatePackage(environmentPackage!),
-        (diagnostics) => (diagnostics.length === 0 ? 'success' : 'rejected')
-      );
-      if (packageDiagnostics.length > 0) {
-        agentSessionId = null;
-        throw new DeterministicAgentPreparationError(
-          packageDiagnostics.map((diagnostic) => diagnostic.message).join(' ')
-        );
-      }
       const workerLineage = {
         workspaceId: environmentPackage.scope.workspaceId,
         threadId: environmentPackage.scope.threadId,
@@ -2514,7 +2677,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           403
         );
       }
+      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       await this.backend.prepareLaunch(materialization);
+      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       preparedWorkerContext?.assertCurrentKnowledgeOverview();
       const submission = recordSchedulerExecutionOperation(this.coreDb!, {
         attemptId: context.attemptId!,
@@ -2556,6 +2721,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           turnId: turn.id,
           now: this.now(),
         });
+      // An original Stop may already own closing. Credential revocation still forbids late receipts.
+      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       // Credential material is delivered once at `session.open`; a reused binding receives none.
       if (!existingAgentSession) {
         for (const receipt of credentialReceipts) {
@@ -2787,11 +2954,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     session: WorkerBackendSessionRecord
   ): Promise<'cancelled' | 'completed' | 'failed' | 'interrupted'> {
     const turnId = environmentPackage.scope.turnId;
-    this.activeTurnExecutions.add(turnId);
+    const execution = this.closeAcceptedFinalStatus(store, environmentPackage, session);
+    this.activeTurnExecutions.set(turnId, execution);
     try {
-      return await this.closeAcceptedFinalStatus(store, environmentPackage, session);
+      return await execution;
     } finally {
-      this.activeTurnExecutions.delete(turnId);
+      if (this.activeTurnExecutions.get(turnId) === execution)
+        this.activeTurnExecutions.delete(turnId);
     }
   }
 

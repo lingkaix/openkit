@@ -27,6 +27,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { format } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   ListHumanAttentionResponseSchema,
@@ -6042,6 +6043,7 @@ describe('worker MCP routes', () => {
     ['bearer', 'imported-history'],
     ['raw', 'vault-denied-call'],
     ['raw', 'vault-denied-list'],
+    ['raw', 'vault-storage-failure'],
   ] as const)('enforces HTTP %s grant issuance %s and explicit replacement binding', async (presentation, issuance) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
     const upstreamOptions: { credentialListEcho?: string } = {};
@@ -6168,6 +6170,74 @@ describe('worker MCP routes', () => {
 
     try {
       await client.connect(transport);
+      if (issuance === 'vault-storage-failure') {
+        const privateCanary = 'credential-primary-message-canary /private/vault-cause-canary';
+        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+        const sinks = [
+          vi.spyOn(console, 'error').mockImplementation(() => undefined),
+          vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+          vi.spyOn(console, 'info').mockImplementation(() => undefined),
+        ];
+        const toolCallsBefore = upstream.observed.filter((request) =>
+          request.endsWith('|tools/call')
+        ).length;
+        coreDb.sqlite.exec(`
+          CREATE TRIGGER reject_mcp_credential_plan
+          BEFORE INSERT ON vault_injection_plans
+          BEGIN
+            SELECT RAISE(ABORT, 'credential-primary-message-canary /private/vault-cause-canary');
+          END
+        `);
+        try {
+          for (const cleanupFails of [false, true]) {
+            for (const sink of sinks) sink.mockClear();
+            const cleanup = cleanupFails
+              ? vi
+                  .spyOn(workerMcpGateway, 'closeServer')
+                  .mockRejectedValueOnce(new Error('credential-secondary-cleanup-canary'))
+              : null;
+            try {
+              const failure = await client
+                .callTool({ arguments: { message: 'storage-failure' }, name: 'echo' })
+                .catch((error: unknown) => error);
+              expect(failure).toMatchObject({
+                data: { code: cleanupFails ? 'recovery_required' : 'mcp-denied' },
+              });
+              const publicBytes = `${String(failure)} ${JSON.stringify(failure)}`;
+              expect(publicBytes).not.toContain('SQLITE_CONSTRAINT_TRIGGER');
+              expect(publicBytes).not.toContain(privateCanary);
+              expect(publicBytes).not.toContain(vaultCanary);
+
+              // Telemetry / Data Safety: retain the trusted primary code, never exception content.
+              const privateBytes = sinks
+                .flatMap((sink) => sink.mock.calls)
+                .map((args) => format(...args))
+                .join('\n');
+              expect(privateBytes).toContain('SQLITE_CONSTRAINT_TRIGGER');
+              for (const forbidden of [
+                privateCanary,
+                'credential-primary-message-canary',
+                'credential-secondary-cleanup-canary',
+                vaultCanary,
+                dataRoot,
+                'reject_mcp_credential_plan',
+              ])
+                expect(privateBytes).not.toContain(forbidden);
+              expect(resolve).not.toHaveBeenCalled();
+              expect(
+                upstream.observed.filter((request) => request.endsWith('|tools/call'))
+              ).toHaveLength(toolCallsBefore);
+            } finally {
+              cleanup?.mockRestore();
+            }
+          }
+        } finally {
+          coreDb.sqlite.exec('DROP TRIGGER IF EXISTS reject_mcp_credential_plan');
+          resolve.mockRestore();
+          for (const sink of sinks) sink.mockRestore();
+        }
+        return;
+      }
       if (issuance === 'imported-history') {
         coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
         importWorkspaceVaultGrants(coreDb, [grant]);

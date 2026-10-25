@@ -40,6 +40,7 @@ import {
   revokeVaultGrant,
   VaultGrantNarrowingError,
 } from '../vault/vault-grants.js';
+import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import {
   advanceActiveVaultReferenceVersion,
   createVaultReferenceWithInsertEvidence,
@@ -465,11 +466,20 @@ export function createServerMcpOperationImplementations(
           reference(input.referenceId);
           // Metadata first fences future use even when backend revocation or session cleanup fails.
           const result = revokeVaultReference(coreDb!, { referenceId: input.referenceId });
+          const failures: unknown[] = [];
           try {
             backend().revoke({ referenceId: input.referenceId });
-          } finally {
-            await dependencies.closeServerMcpSessions?.();
+          } catch (error) {
+            failures.push(error);
           }
+          const closures = await Promise.allSettled([
+            closeRevokedCredentialBindings(dependencies, { referenceId: input.referenceId }),
+            dependencies.closeServerMcpSessions?.(),
+          ]);
+          for (const closure of closures)
+            if (closure.status === 'rejected') failures.push(closure.reason);
+          if (failures.length)
+            throw failures.length === 1 ? failures[0] : new AggregateError(failures);
           return projectReference(result);
         },
         (id) => projectReference(reference(id)),

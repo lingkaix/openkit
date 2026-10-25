@@ -130,6 +130,7 @@ import { appendRecoveredTurnObservation } from './storage/work-observation-recov
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
 import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
+import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
@@ -545,6 +546,18 @@ const schedulerProviderCredentialResolver = createVaultProviderCredentialResolve
 const providerSubscriptionAccountManager = new ProviderSubscriptionAccountManager({
   coreDb,
   vaultBackend: () => activeVaultUnlockState.backend(),
+  onReferenceRevoked: (referenceId) =>
+    closeRevokedCredentialBindings(
+      {
+        coreDb: activeCoreDb,
+        store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
+        turnExecutor: requireBootValue(
+          workerLifecycleRuntime,
+          'Worker lifecycle runtime was not initialized.'
+        ).turnExecutor,
+      },
+      { referenceId }
+    ),
 });
 const providerCredentialConfigured = createProviderCredentialConfigured({
   coreDb,

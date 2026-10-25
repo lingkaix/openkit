@@ -45,7 +45,7 @@ export function createNativeTaskAdmissionFixture(
   store: FsStore,
   options: Pick<
     NonNullable<Parameters<typeof createConfiguredWorkerLifecycleRuntime>[0]>,
-    'readRuntimeConfig'
+    'readRuntimeConfig' | 'vaultBackend'
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
@@ -62,6 +62,7 @@ export function createNativeTaskAdmissionFixture(
       failedFinal: false,
       failFileExport: false,
       closeRefusal: undefined as 'cleanup_required' | 'conflict' | undefined,
+      failSandboxDelete: false,
       failedExportPaths: [] as string[],
     },
   }
@@ -137,6 +138,7 @@ export function createNativeTaskAdmissionFixture(
     store,
     fileAdmission,
     workerControlGateway,
+    ...(options.vaultBackend ? { vaultBackend: options.vaultBackend } : {}),
     env: {},
     readRuntimeConfig:
       options.readRuntimeConfig ??
@@ -233,6 +235,11 @@ export function createNativeTaskAdmissionFixture(
           };
         }
         if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+          if (request.kind === 'sandbox.delete' && peerFaults.failSandboxDelete)
+            throw new Error('Controlled native Sandbox deletion result loss.');
+          if (request.kind === 'sandbox.delete')
+            for (const harness of bindings.values())
+              for (const binding of harness.values()) binding.state = 'closed';
           outside.integrationBindingRef = undefined;
           return { state: 'deleted' };
         }
@@ -560,6 +567,7 @@ export function createNativeTaskAdmissionFixture(
         agentManifests: configuration.agentManifests,
         gatewayConfig: configuration.gatewayConfig,
         providerRegistry: configuration.providerRegistry,
+        workspaceConfigs: configuration.workspaceConfigs,
         workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
         maxDispatches: 1,
         createAttemptId: () => input.attemptId,

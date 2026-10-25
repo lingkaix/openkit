@@ -13,10 +13,12 @@ import {
 import type { StorageAccess } from '@openkit/storage';
 import type { z } from 'zod';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
-import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
-import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
-import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import {
+  authorizeWorkspace,
+  isCurrentServerPolicyAuthor,
+  requireCurrentDeploymentAdmin,
+} from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
   type RuntimeConfigFileService,
@@ -320,24 +322,6 @@ export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): Poli
   // The current authored collection, anchor and human authority remain the grant.
   // A historical decision alone never makes an absent statement active.
   return document;
-}
-
-/** Checks the current human Server root; it does not supply a caller's credential admission. */
-export function isCurrentServerPolicyAuthor(
-  coreDb: CoreDb,
-  humanId: string,
-  now = Date.now()
-): boolean {
-  if (!Number.isFinite(now)) return false;
-  const author = coreDb.sqlite.prepare('SELECT kind FROM users WHERE id = ?').get(humanId) as
-    | { kind: string }
-    | undefined;
-  if (!author || !['local', 'human'].includes(author.kind)) return false;
-  return (
-    isCanonicalUserActive(coreDb, humanId) &&
-    (author.kind === 'local' ||
-      resolveSessionDeploymentAdminTokenId(coreDb, humanId, new Date(now)) !== null)
-  );
 }
 
 /**

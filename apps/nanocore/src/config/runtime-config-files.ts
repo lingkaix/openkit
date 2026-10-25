@@ -101,7 +101,7 @@ export interface RuntimeConfigFileServiceOptions {
   /** Reads stale-session-aware runtime config status for API responses. */
   readRuntimeConfigStatus: () => RuntimeConfigStatus;
   /** Revokes a key profile reference through the existing Vault lifecycle before file removal. */
-  revokeProviderSecret?: (secretRef: string) => void;
+  revokeProviderSecret?: (secretRef: string) => void | Promise<void>;
   /** Optional hook for durable audit of authority-bearing catalog edits. */
   onDataSourceAuthorityChange?: (change: RuntimeConfigDataSourceAuthorityChange) => void;
 }
@@ -152,7 +152,7 @@ export class RuntimeConfigFileService {
   private readonly userId: string;
   private readonly runtimeConfigManager: RuntimeConfigManager;
   private readonly readRuntimeConfigStatus: () => RuntimeConfigStatus;
-  private readonly revokeProviderSecret: ((secretRef: string) => void) | undefined;
+  private readonly revokeProviderSecret: ((secretRef: string) => void | Promise<void>) | undefined;
   private readonly onDataSourceAuthorityChange:
     | ((change: RuntimeConfigDataSourceAuthorityChange) => void)
     | undefined;
@@ -354,7 +354,7 @@ export class RuntimeConfigFileService {
    * @param input Exact file identity and expected existing revision.
    * @throws RuntimeConfigFileServiceError for validation, revision or partial-effect failures.
    */
-  public deleteFile(input: RuntimeConfigFileDeleteRequest): void {
+  public async deleteFile(input: RuntimeConfigFileDeleteRequest): Promise<void> {
     const spec = this.resolveFileSpec(input.id, input.kind);
     if (!existsSync(spec.absolutePath)) {
       throw new RuntimeConfigFileServiceError(
@@ -385,7 +385,7 @@ export class RuntimeConfigFileService {
         );
       }
       try {
-        this.revokeProviderSecret(profile.secretRef);
+        await this.revokeProviderSecret(profile.secretRef);
       } catch (error) {
         if (error instanceof RuntimeConfigFileServiceError) throw error;
         throw new RuntimeConfigFileServiceError(
@@ -397,8 +397,15 @@ export class RuntimeConfigFileService {
         );
       }
     }
+    // Runtime closure may await. Preserve an authored edit made while the old key was revoked.
+    this.assertInsideConfigRoot(spec.absolutePath, false);
+    if (input.expectedRevision !== this.summaryForSpec(spec).revision)
+      throw new RuntimeConfigFileServiceError(
+        'config_revision_conflict',
+        `Runtime config file ${input.id} changed on disk.`,
+        409
+      );
     try {
-      this.assertInsideConfigRoot(spec.absolutePath, false);
       rmSync(spec.absolutePath);
     } catch {
       throw new RuntimeConfigFileServiceError(

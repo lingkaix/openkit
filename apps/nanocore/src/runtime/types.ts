@@ -150,6 +150,9 @@ export interface TurnExecutor {
    */
   interruptTurn(store: FsStore, turnId: string, context?: TurnCommandRuntimeContext): Promise<void>;
 
+  /** Stops and closes credential-exposed resident bindings through their current runtime owners. */
+  revokeCredentialBindings?(store: FsStore, agentSessionIds: readonly string[]): Promise<void>;
+
   /**
    * Sends one approval decision back to the active agent runtime.
    */

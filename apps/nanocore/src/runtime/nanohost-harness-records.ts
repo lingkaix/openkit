@@ -273,6 +273,10 @@ export function createNanoHostHarnessRuntime(
           readonly sandbox_binding_ref: string;
           readonly sandbox_compatibility_key: string;
           readonly sandbox_integration_binding_ref: string;
+          readonly lifecycle_state: string;
+          readonly health_state: string;
+          readonly drain_state: string;
+          readonly cleanup_state: string;
         }
       | undefined;
     const target = coreDb.sqlite
@@ -332,6 +336,14 @@ export function createNanoHostHarnessRuntime(
     ) {
       throw new Error('NanoHost retained Sandbox is incompatible with the requested Harness.');
     } else {
+      // A producer admitted before cleanup began must not create a fresh accepting Harness.
+      if (
+        sandbox.lifecycle_state !== 'open' ||
+        sandbox.health_state !== 'ready' ||
+        sandbox.drain_state !== 'accepting' ||
+        sandbox.cleanup_state !== 'clean'
+      )
+        throw new Error('NanoHost retained Sandbox is not admitting a new Harness.');
       const count = coreDb.sqlite
         .prepare(
           'SELECT COUNT(*) AS count FROM harness_instance_records WHERE sandbox_runtime_id = ?'
@@ -456,6 +468,31 @@ function drainNanoHostHarnessAdmissionInTransaction(
   if (update.changes !== 1) {
     throw new Error('NanoHost Harness admission fence changed concurrently.');
   }
+}
+
+/**
+ * Drains the exact resident and all its Harnesses without claiming unknown cleanup or changing occupancy.
+ *
+ * @param coreDb Existing runtime record owner.
+ * @param input Exact original physical Sandbox and Epoch.
+ */
+export function drainNanoHostSandboxAdmission(
+  coreDb: CoreDb,
+  input: { readonly sandboxBindingRef: string; readonly originPhysicalEpoch: string }
+): void {
+  coreDb.sqlite
+    .transaction(() => {
+      coreDb.sqlite
+        .prepare(`UPDATE sandbox_runtime_records SET drain_state = 'draining'
+      WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?`)
+        .run(input.sandboxBindingRef, input.originPhysicalEpoch);
+      coreDb.sqlite
+        .prepare(`UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'
+      WHERE sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
+        WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?)`)
+        .run(input.sandboxBindingRef, input.originPhysicalEpoch);
+    })
+    .immediate();
 }
 
 /** Fences one uncertain Sandbox and drains its Harness without changing scheduler capacity. */

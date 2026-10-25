@@ -16,6 +16,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { initializeTestCore } from '../test-support/store.js';
+import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
 const roots: string[] = [];
@@ -129,7 +130,12 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
     storeDir: join(dataRoot, 'server/vault'),
   });
   const backend = vault.unlock({ masterKey: Buffer.alloc(32, 21) });
-  const manager = new ProviderSubscriptionAccountManager({ coreDb, vaultBackend: () => backend });
+  const manager = new ProviderSubscriptionAccountManager({
+    coreDb,
+    vaultBackend: () => backend,
+    onReferenceRevoked: (referenceId) =>
+      closeRevokedCredentialBindings({ coreDb }, { referenceId }),
+  });
   const pair = { subscriptionProviderId: 'xai' as const, accountSlotId: 'kept' };
   await manager.createAccount(pair);
   const codexPair = { subscriptionProviderId: 'openai-codex' as const, accountSlotId: 'kept' };

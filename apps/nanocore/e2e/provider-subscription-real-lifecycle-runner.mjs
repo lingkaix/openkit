@@ -452,6 +452,12 @@ async function writePreparedCredential(authSourcePath, dataRoot, keyFilePath) {
     const manager = new ProviderSubscriptionAccountManager({
       coreDb,
       vaultBackend: () => vaultState.backend(),
+      onReferenceRevoked: async (referenceId) => {
+        const { closeRevokedCredentialBindings } = await nanoCoreModule(
+          'vault/vault-operation-implementations.js'
+        );
+        await closeRevokedCredentialBindings({ coreDb }, { referenceId });
+      },
     });
     await manager.createAccount(pair);
     const handle = await manager.getPairHandle(pair);

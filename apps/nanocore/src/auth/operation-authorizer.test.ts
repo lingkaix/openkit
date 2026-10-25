@@ -39,7 +39,9 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   acceptWorkspaceInvitation,
+  beginWorkspaceDeletion,
   createWorkspaceInvitation,
+  getWorkspaceRegistryLifecycleFact,
   leaveWorkspace,
 } from '../workspace-sharing.js';
 import {
@@ -714,6 +716,130 @@ describe('central Workspace operation authorizer', () => {
     expect(
       currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true)
     ).toBeNull();
+  });
+
+  it('evaluates retained Policy authors through current Kernel and shared failure handling', () => {
+    const userId = 'usr_00000000-0000-7241-80d8-0d46cb74b40d';
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      ownerUserId: userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const capture = vi.fn<(event: WorkspaceAuthorityEvaluation) => void>();
+    const options = {
+      retainedPolicyAuthor: true,
+      dependencyFailure: 'throw' as const,
+      onEvaluation: (event: WorkspaceAuthorityEvaluation) => capture(event),
+    };
+    const evaluate = () =>
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        { kind: 'user', id: userId },
+        'tool.use',
+        true,
+        undefined,
+        options
+      );
+
+    // Policy statement lifetime uses direct current human eligibility, without a request credential.
+    expect(evaluate()).toBe('administrator');
+    expect(capture).toHaveBeenLastCalledWith({
+      decision: expect.objectContaining({ effect: 'allow' }),
+      facts: {
+        workspaceId: fixture.workspace.id,
+        operation: 'tool.use',
+        responsibleUserId: userId,
+        relation: 'administrator',
+        presentedTokenId: null,
+        presentedTokenState: null,
+        membershipRevision: null,
+      },
+    });
+    const actualEvaluate = policyKernel.evaluateAccess;
+    const kernel = vi
+      .spyOn(policyKernel, 'evaluateAccess')
+      .mockImplementation((policy, request) =>
+        actualEvaluate({ ...policy, associations: [] }, request)
+      );
+    try {
+      expect(evaluate()).toBeNull();
+      expect(capture).toHaveBeenLastCalledWith(
+        expect.objectContaining({ decision: expect.objectContaining({ effect: 'deny' }) })
+      );
+    } finally {
+      kernel.mockRestore();
+    }
+    const failure = new Error('retained-author-capture-unavailable');
+    options.onEvaluation = () => {
+      throw failure;
+    };
+    expect(evaluate).toThrow(failure);
+  });
+
+  it('restricts a former Policy author to current membership and refuses an inactive Workspace', () => {
+    const userId = 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8';
+    const token = createOpenKitAccessTokenRecord(fixture.coreDb, {
+      ownerUserId: userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }).record;
+    expect(revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId)?.status).toBe('revoked');
+    const capture = vi.fn<(event: WorkspaceAuthorityEvaluation) => void>();
+    const options = {
+      retainedPolicyAuthor: true,
+      dependencyFailure: 'throw' as const,
+      onEvaluation: capture,
+    };
+    const evaluate = (id = userId) =>
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        { kind: 'user', id },
+        'tool.use',
+        true,
+        undefined,
+        options
+      );
+    expect(evaluate()).toBe('member');
+    expect(capture).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        facts: expect.objectContaining({
+          relation: 'member',
+          presentedTokenId: null,
+          presentedTokenState: null,
+          membershipRevision: expect.any(Number),
+        }),
+      })
+    );
+    const left = fixture.coreDb.sqlite.transaction(() =>
+      leaveWorkspace({
+        coreDb: fixture.coreDb,
+        workspaceId: fixture.workspace.id,
+        memberUserId: userId,
+        expectedRevision: capture.mock.lastCall![0].facts.membershipRevision!,
+      })
+    )();
+    expect(left.kind).toBe('removed');
+    capture.mockClear();
+    expect(evaluate()).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
+
+    // The Core registry lifecycle, rather than local Workspace display status, gates authority.
+    const registry = getWorkspaceRegistryLifecycleFact(fixture.coreDb, fixture.workspace.id)!;
+    const deleting = fixture.coreDb.sqlite.transaction(() =>
+      beginWorkspaceDeletion({
+        coreDb: fixture.coreDb,
+        workspaceId: fixture.workspace.id,
+        originalOwnerUserId: registry.ownerUserId,
+        expectedRegistryRevision: registry.registryRevision,
+      })
+    )();
+    expect(deleting.status).toBe('deleting');
+    expect(evaluate(registry.ownerUserId)).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
   });
 
   it.each([

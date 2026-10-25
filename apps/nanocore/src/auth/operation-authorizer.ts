@@ -104,6 +104,8 @@ export interface WorkspaceAuthorityEvaluation {
 
 /** Opt-in failure handling and actual evaluation capture for governed Workspace effects. */
 export interface WorkspaceAuthorityOptions {
+  /** Evaluates a retained human Policy author directly, without manufacturing request credentials. */
+  readonly retainedPolicyAuthor?: boolean;
   /** Propagates resolver and callback failures; omission keeps the existing transient refusal. */
   readonly dependencyFailure?: 'throw';
   /** Receives a real Kernel result and safe current facts; missing eligibility emits no event. */
@@ -317,6 +319,24 @@ export function isWorkspaceOperationAuthorized(
   return authorizeWorkspace(coreDb, actor, workspaceId, access) !== null;
 }
 
+/** Checks the current human Server root; it does not supply a caller's credential admission. */
+export function isCurrentServerPolicyAuthor(
+  coreDb: CoreDb,
+  humanId: string,
+  now = Date.now()
+): boolean {
+  if (!Number.isFinite(now)) return false;
+  const author = coreDb.sqlite.prepare('SELECT kind FROM users WHERE id = ?').get(humanId) as
+    | { kind: string }
+    | undefined;
+  if (!author || !['local', 'human'].includes(author.kind)) return false;
+  return (
+    isCanonicalUserActive(coreDb, humanId) &&
+    (author.kind === 'local' ||
+      resolveSessionDeploymentAdminTokenId(coreDb, humanId, new Date(now)) !== null)
+  );
+}
+
 /**
  * Composes current Workspace authority from one actor, active membership, policy operation, and caller-owned effect authority.
  *
@@ -353,7 +373,16 @@ export function currentWorkspaceAuthority(
       };
     let relation: WorkspaceAuthority;
     let responsibleUserId: string;
-    if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
+    if (
+      !requestActor &&
+      options?.retainedPolicyAuthor &&
+      actor.kind === 'user' &&
+      isCurrentServerPolicyAuthor(coreDb, actor.id)
+    ) {
+      if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) return null;
+      relation = 'administrator';
+      responsibleUserId = actor.id;
+    } else if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
       if (
         actor.kind !== 'user' ||
         actor.id !== requestActor.userId ||

@@ -29,6 +29,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { type CreateAppOptions, createApp } from './test-support/app.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 
 const NOW = '2026-07-24T00:00:00.000Z';
 const LOCAL_AUDIT_CONTEXT = {
@@ -438,6 +439,8 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
   });
   const manager = new ProviderSubscriptionAccountManager({
     coreDb,
+    onReferenceRevoked: (referenceId) =>
+      closeRevokedCredentialBindings({ coreDb }, { referenceId }),
     vaultBackend: vaultBackendAccess,
   });
   const credentialRead = vi.fn(async () => CODEX_CREDENTIAL).mockName('credentialRead');

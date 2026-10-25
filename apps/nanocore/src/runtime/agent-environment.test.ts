@@ -2211,7 +2211,7 @@ describe('agent environment package resolver', () => {
       referenceScope: { ownerScope: 'server' as const },
       triggerActor: USER_TRIGGER_ACTOR,
     },
-  ])('rejects a mismatched $name credential grant before sinks or injection records', async ({
+  ])('admits the complete declaration list before releasing a valid first credential: $name', async ({
     expectedError,
     grantTarget,
     name,
@@ -2229,8 +2229,17 @@ describe('agent environment package resolver', () => {
     const referenceId = testEntityId('vault', `vault_${declarationId}`);
     const grantId = testEntityId('grant', `grant_${declarationId}`);
     const runtimeEnvCredentials: string[] = [];
+    const receiptSink = vi.fn();
+    const firstReferenceId = testEntityId('vault', `valid_first_${name}`);
+    const firstGrantId = testEntityId('grant', `valid_first_${name}`);
 
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: USER_TRIGGER_ACTOR.id,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 23) });
     vaultUnlockState.backend().store({
       material: `secret_${name}`,
@@ -2257,12 +2266,45 @@ describe('agent environment package resolver', () => {
       vaultReferenceId: referenceId,
     });
 
+    vaultUnlockState.backend().store({
+      material: 'valid-first-credential-canary',
+      metadata: { ownerScope: 'server' },
+      referenceId: firstReferenceId,
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: `encrypted-file://server/vault/${firstReferenceId}`,
+      displayName: 'Valid first credential',
+      now: () => now,
+      ownerScope: 'server',
+      referenceId: firstReferenceId,
+      secretKind: 'provider-api-key',
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['runtime-env'],
+      grantId: firstGrantId,
+      lifetime: 'agent-session',
+      now: () => now,
+      ownerScope: 'server',
+      targetAgentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
+      vaultReferenceId: firstReferenceId,
+    });
+    const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+
     try {
+      const turn = await createTurnFixture(`Reject ${name} scope`, coreDb, triggerActor);
+      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e83-a452-cc477903d837');
       await expect(async () =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             credentialDeclarations: [
+              {
+                id: 'valid_first',
+                targetEnvVarName: 'VALID_FIRST_SECRET',
+                vaultGrantId: firstGrantId,
+                visibility: 'runtime-env',
+              },
               {
                 id: declarationId,
                 ...(name === 'user' || name === 'workspace'
@@ -2291,21 +2333,26 @@ describe('agent environment package resolver', () => {
           },
           coreDb,
           createdAt: now,
+          credentialReceiptSink: receiptSink,
           requestId: `req_scope_${name}`,
           runtimeEnvCredentialSink: (credential) =>
             runtimeEnvCredentials.push(credential.credentialValue),
-          turn: await createTurnFixture(`Reject ${name} scope`),
+          turn,
           triggerActor,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         })
       ).rejects.toThrow(expectedError);
+      // Worker Credential Declarations / Shared Resolution Rules: all entries precede release.
+      expect(resolve).not.toHaveBeenCalled();
+      expect(receiptSink).not.toHaveBeenCalled();
       expect(runtimeEnvCredentials).toEqual([]);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
+      resolve.mockRestore();
       coreDb.sqlite.close();
     }
   });

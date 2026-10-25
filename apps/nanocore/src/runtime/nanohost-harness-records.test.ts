@@ -20,6 +20,7 @@ import {
   deriveNanoHostAgentSessionCompatibilityKey,
   dispatchNanoHostHarnessOperation,
   drainNanoHostHarnessAdmission,
+  drainNanoHostSandboxAdmission,
   hasConsumedNanoHostHarnessResult,
   inspectNanoHostAgentSessionContinuity,
   listNanoHostMeasuredHarnessIdentities,
@@ -918,7 +919,7 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it('retains three compatibility-keyed Harnesses with opaque adapter ids in one Sandbox', () => {
+  it('retains three compatibility-keyed Harnesses and refuses a new Harness after exact Sandbox drain', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-multi-harness-records-')));
     try {
       applyMigrations(coreDb);
@@ -971,6 +972,65 @@ describe('private NanoHost Harness records', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT COUNT(h.harness_instance_id) AS count,
+          s.max_harnesses AS maxHarnesses FROM sandbox_runtime_records s
+          JOIN harness_instance_records h ON h.sandbox_runtime_id = s.sandbox_runtime_id
+          WHERE s.sandbox_runtime_id = ?`)
+          .get('sandbox-runtime-shared')
+      ).toEqual({ count: 3, maxHarnesses: 8 });
+      const readyTarget = coreDb.sqlite.prepare(`SELECT ready, fresh_empty AS freshEmpty,
+        predecessor_fenced AS predecessorFenced, physical_epoch AS physicalEpoch
+        FROM nanohost_runtime_targets WHERE target_id = ?`);
+      expect(readyTarget.get('nanohost-a1')).toEqual({
+        ready: 1,
+        freshEmpty: 1,
+        predecessorFenced: 1,
+        physicalEpoch,
+      });
+      // Sandbox termination stops admission across the Integration, including a new Harness.
+      drainNanoHostSandboxAdmission(coreDb, {
+        sandboxBindingRef: 'sandbox-binding-shared',
+        originPhysicalEpoch: physicalEpoch,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT lifecycle_state AS lifecycleState,
+        health_state AS healthState, drain_state AS drainState, cleanup_state AS cleanupState
+        FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?`)
+          .get('sandbox-runtime-shared')
+      ).toEqual({
+        lifecycleState: 'open',
+        healthState: 'ready',
+        drainState: 'draining',
+        cleanupState: 'clean',
+      });
+      const before = coreDb.sqlite.serialize();
+      expect(() =>
+        createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: '0.153.5',
+          harnessBindingRef: 'binding-harness-late',
+          harnessCompatibilityKey: '9'.repeat(64),
+          harnessInstanceId: 'harness-late',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: physicalEpoch,
+          sandboxBindingRef: 'sandbox-binding-shared',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding-shared',
+          sandboxRuntimeId: 'sandbox-runtime-shared',
+          runtimeTargetId: 'nanohost-a1',
+          timestamp: now,
+        })
+      ).toThrow();
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+      expect(readyTarget.get('nanohost-a1')).toEqual({
+        ready: 1,
+        freshEmpty: 1,
+        predecessorFenced: 1,
+        physicalEpoch,
+      });
     } finally {
       coreDb.sqlite.close();
     }

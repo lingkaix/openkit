@@ -31,11 +31,13 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
+import Database from 'better-sqlite3';
 import type { Hono } from 'hono';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
+  isCurrentServerPolicyAuthor,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
@@ -63,7 +65,7 @@ import {
   restoreControlCapabilityFailure,
 } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
-import { isCurrentServerPolicyAuthor, readAdmittedPolicyDocument } from './policy/configuration.js';
+import { readAdmittedPolicyDocument } from './policy/configuration.js';
 import type { GoalTaskPolicyService } from './policy/goal-task-policy.js';
 import {
   type InterceptionDecision,
@@ -81,7 +83,6 @@ import {
   recordProductPermissionDecision,
 } from './policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './policy/retained-records-v1.js';
-import { evaluateAdministratorWorkspaceAccess } from './policy/server-access.js';
 import {
   policyDigest,
   policyProposalDigest,
@@ -157,7 +158,7 @@ import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
 import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
-import { vaultSecretMaterialToString } from './vault/vault-backend.js';
+import { VaultBackendError, vaultSecretMaterialToString } from './vault/vault-backend.js';
 import { getVaultGrant, type VaultGrantRecord } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
@@ -2300,23 +2301,15 @@ function currentMcpBindingAuthor(
   const coreDb = input.input.coreDb!;
   const workspaceId = input.environmentPackage.scope.workspaceId;
   // A retained human author has current Policy eligibility, not a newly authenticated request.
-  const authority = isCurrentServerPolicyAuthor(coreDb, userId)
-    ? coreDb.sqlite
-        .prepare("SELECT 1 FROM workspace_registry WHERE workspace_id = ? AND status = 'active'")
-        .get(workspaceId) &&
-      evaluateAdministratorWorkspaceAccess({ userId, workspaceId, operation: 'tool.use' })
-        .effect === 'allow'
-      ? 'administrator'
-      : null
-    : currentWorkspaceAuthority(
-        coreDb,
-        workspaceId,
-        { kind: 'user', id: userId },
-        'tool.use',
-        true,
-        undefined,
-        { dependencyFailure: 'throw' }
-      );
+  const authority = currentWorkspaceAuthority(
+    coreDb,
+    workspaceId,
+    { kind: 'user', id: userId },
+    'tool.use',
+    true,
+    undefined,
+    { retainedPolicyAuthor: true, dependencyFailure: 'throw' }
+  );
   return (
     Boolean(authority) &&
     (!discloseInput ||
@@ -2793,6 +2786,23 @@ async function observeWorkerMcpTools(input: {
   };
 }
 
+/** Keeps trusted private failure identity separate from public denial and cleanup, without exception content. */
+function reportMcpCredentialFailure(error: unknown, stage: 'resolve' | 'cleanup'): void {
+  try {
+    const cause =
+      error instanceof Database.SqliteError
+        ? { errorClass: 'SqliteError', code: error.code }
+        : error instanceof ControlStoreWorkerError
+          ? { errorClass: 'ControlStoreWorkerError', code: error.code }
+          : error instanceof VaultBackendError
+            ? { errorClass: 'VaultBackendError', code: error.code }
+            : { errorClass: error instanceof OperationError ? 'OperationError' : 'other' };
+    console.error(JSON.stringify({ event: 'worker.mcp.credential-failure', stage, ...cause }));
+  } catch {
+    // Diagnostic sink failure cannot change credential denial or cleanup certainty.
+  }
+}
+
 /** Resolves every current Vault grant into the exact catalog-declared transport sink. */
 export async function resolveWorkerMcpCredentials(input: {
   /** Rechecks the caller's existing live or captured authority after the Main writer hold settles. */
@@ -2923,13 +2933,15 @@ export async function resolveWorkerMcpCredentials(input: {
         resume?.();
       }
     }
-  } catch {
+  } catch (error) {
+    reportMcpCredentialFailure(error, 'resolve');
     try {
       await input.input.workerMcpGateway.closeServer({
         server: input.resolved,
         workspaceId: input.environmentPackage.scope.workspaceId,
       });
-    } catch {
+    } catch (cleanupError) {
+      reportMcpCredentialFailure(cleanupError, 'cleanup');
       throw new WorkerControlGatewayError(
         'recovery_required',
         'MCP server cleanup recovery is required.',

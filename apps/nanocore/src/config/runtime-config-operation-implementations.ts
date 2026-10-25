@@ -71,8 +71,8 @@ export function createRuntimeConfigOperationImplementations(
         return files.updateFile(input);
       }),
     'runtime.file-delete': (input, context) =>
-      runConfigOperation(() => {
-        owner().filesForActor(publicOperationActor(context)).deleteFile(input);
+      runConfigOperation(async () => {
+        await owner().filesForActor(publicOperationActor(context)).deleteFile(input);
         return null;
       }),
     'runtime.schemas': (_input, context) =>
@@ -87,9 +87,9 @@ export function createRuntimeConfigOperationImplementations(
 }
 
 /** Classifies file-owner refusals where they originate; unexpected failures reach the shared entry error boundary. */
-function runConfigOperation<T>(operation: () => T): T {
+async function runConfigOperation<T>(operation: () => T): Promise<Awaited<T>> {
   try {
-    return operation();
+    return await operation();
   } catch (error) {
     if (error instanceof RuntimeConfigFileServiceError)
       throw new OperationError(error.code, error.message, error.status, { cause: error });

@@ -29,14 +29,16 @@ import {
 import { z } from 'zod';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import {
+  isCurrentServerPolicyAuthor,
+  requireCurrentDeploymentAdmin,
+} from '../auth/operation-authorizer.js';
 import {
   CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION,
   type FsStore,
   quickChatWorkspaceIdForUser,
 } from '../lib/store.js';
 import {
-  isCurrentServerPolicyAuthor,
   preparePolicyConfiguration,
   readAdmittedPolicyDocument,
   recordPolicyWriteDecision,

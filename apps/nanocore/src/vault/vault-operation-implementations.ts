@@ -19,8 +19,14 @@ import {
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { readVaultReferenceId } from '../providers/vault-credential-resolver.js';
-import { listExportableVaultInjectionPlans } from '../vault-injection-plans.js';
-import { listExportableVaultInjectionReceipts } from '../vault-injection-receipts.js';
+import {
+  getVaultInjectionPlan,
+  listExportableVaultInjectionPlans,
+} from '../vault-injection-plans.js';
+import {
+  listExportableVaultInjectionReceipts,
+  listVaultInjectionReceipts,
+} from '../vault-injection-receipts.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
 import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
 import { createVaultGrantRequestImplementations } from './vault-grant-requests.js';
@@ -60,6 +66,55 @@ const administrationStates = new WeakMap<
   { vaultUnlockFailuresByActor: Map<string, number[]>; providerApiKeyWrites: Set<string> }
 >();
 
+/** Joins possibly exposed bindings after metadata revocation, through the current runtime owner. */
+export async function closeRevokedCredentialBindings(
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'turnExecutor'>,
+  target: { grantId: string } | { referenceId: string }
+): Promise<void> {
+  const { coreDb } = dependencies;
+  try {
+    if (!coreDb) throw new Error('Core DB is unavailable for revocation inspection.');
+    const grantIds = new Set(
+      'grantId' in target
+        ? [target.grantId]
+        : listVaultGrants(coreDb)
+            .filter((grant) => grant.vaultReferenceId === target.referenceId)
+            .map((grant) => grant.grantId)
+    );
+    const agentSessionIds = new Set<string>();
+    let missingSession = false;
+    // VaultUse precedes private material delivery; a receipt follows acknowledged completion.
+    // Either can identify an affected owner, but neither proves physical exposure or removal.
+    for (const evidence of [
+      ...listVaultInjectionReceipts(coreDb),
+      ...listVaultUseRecords(coreDb),
+    ]) {
+      if (evidence.grantId === null || !grantIds.has(evidence.grantId)) continue;
+      const plan = evidence.planId ? getVaultInjectionPlan(coreDb, evidence.planId) : null;
+      // Only exact Gateway-only lineage proves that no runtime material was exposed.
+      if (plan?.grantId === evidence.grantId && plan.injectionVisibility === 'gateway-only')
+        continue;
+      if (evidence.agentSessionId) agentSessionIds.add(evidence.agentSessionId);
+      else missingSession = true;
+    }
+    if (agentSessionIds.size > 0) {
+      if (!dependencies.store || !dependencies.turnExecutor?.revokeCredentialBindings)
+        throw new Error('Runtime credential revocation is unavailable.');
+      await dependencies.turnExecutor.revokeCredentialBindings(dependencies.store, [
+        ...agentSessionIds,
+      ]);
+    }
+    if (missingSession) throw new Error('Runtime credential lineage requires inspection.');
+  } catch (error) {
+    throw new OperationError(
+      'recovery_required',
+      'Vault revocation requires runtime inspection before a new request.',
+      409,
+      { cause: error }
+    );
+  }
+}
+
 /** Joins Vault administration and redacted governance to their existing native owners. */
 export function createVaultOperationImplementations(
   dependencies: Pick<
@@ -68,6 +123,7 @@ export function createVaultOperationImplementations(
     | 'dataRoot'
     | 'repositoryWorkspaceDb'
     | 'store'
+    | 'turnExecutor'
     | 'vaultUnlockState'
     | 'pendingRequestServices'
   >
@@ -228,7 +284,7 @@ export function createVaultOperationImplementations(
     return vaultFailure(message, errorCode, status);
   }
 
-  /** Executes the existing synchronous Vault lifecycle and its private failure compensation. */
+  /** Executes the existing Vault lifecycle and awaits required runtime revocation outside SQL. */
   function mutate(
     input: {
       workspaceId: string;
@@ -244,7 +300,7 @@ export function createVaultOperationImplementations(
     },
     c: AdmittedOperationContext,
     action: 'grant' | 'revoke-grant'
-  ): WorkspaceVaultGrant;
+  ): Promise<WorkspaceVaultGrant>;
   function mutate(
     input: {
       workspaceId: string;
@@ -260,8 +316,8 @@ export function createVaultOperationImplementations(
     },
     c: AdmittedOperationContext,
     action: 'create' | 'rotate' | 'revoke'
-  ): VaultAdminWorkspaceReference;
-  function mutate(
+  ): Promise<VaultAdminWorkspaceReference>;
+  async function mutate(
     input: {
       workspaceId: string;
       referenceId?: string;
@@ -276,7 +332,7 @@ export function createVaultOperationImplementations(
     },
     c: AdmittedOperationContext,
     action: 'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant'
-  ): VaultAdminWorkspaceReference | WorkspaceVaultGrant {
+  ): Promise<VaultAdminWorkspaceReference | WorkspaceVaultGrant> {
     if (!isDeploymentAdminActor(publicOperationActor(c)))
       return vaultFailure('Vault administration is forbidden.', 'deployment_admin_required', 403);
     if (!coreDb || !vaultUnlockState)
@@ -307,10 +363,11 @@ export function createVaultOperationImplementations(
         const result = coreDb.sqlite.transaction(() =>
           revokeVaultGrant(coreDb, { grantId: grant.grantId })
         )();
+        await closeRevokedCredentialBindings(dependencies, { grantId: grant.grantId });
         audit('succeeded');
         return result as WorkspaceVaultGrant;
       }
-      if (backend.health().state !== 'available')
+      if (action !== 'revoke' && backend.health().state !== 'available')
         return vaultFailure('Vault backend is not available.', 'vault_backend_not_available', 423);
       if (action === 'create') {
         const referenceId = allocateEntityId('vault');
@@ -346,24 +403,53 @@ export function createVaultOperationImplementations(
         return vaultFailure('Vault reference not found.', 'vault_reference_not_found', 404);
       if (reference.status !== 'active')
         return vaultFailure('Vault reference is not active.', 'vault_reference_not_active', 409);
-      const inventory = backend
-        .listReferences({ ownerScope: 'workspace', workspaceId })
-        .find((entry) => entry.referenceId === referenceId);
-      if (
-        !inventory ||
-        inventory.revoked ||
-        inventory.currentVersion !== reference.currentVersion ||
-        inventory.backendKind !== reference.backendKind ||
-        reference.backendKind !== backend.kind ||
-        inventory.workspaceId !== workspaceId ||
-        inventory.userId !== undefined ||
-        inventory.providerSubscriptionAccount !== undefined ||
-        reference.userId !== null ||
-        reference.backendLocator !==
-          `${backend.kind}://workspace/${workspaceId}/vault/${referenceId}`
-      ) {
-        return vaultFailure('Vault storage requires inspection.', 'vault_recovery_required', 409);
+      /** Preserve exact backend ownership checks; revocation runs them after its Core fence. */
+      const validateInventory = () => {
+        const inventory = backend
+          .listReferences({ ownerScope: 'workspace', workspaceId })
+          .find((entry) => entry.referenceId === referenceId);
+        if (
+          !inventory ||
+          inventory.revoked ||
+          inventory.currentVersion !== reference.currentVersion ||
+          inventory.backendKind !== reference.backendKind ||
+          reference.backendKind !== backend.kind ||
+          inventory.workspaceId !== workspaceId ||
+          inventory.userId !== undefined ||
+          inventory.providerSubscriptionAccount !== undefined ||
+          reference.userId !== null ||
+          reference.backendLocator !==
+            `${backend.kind}://workspace/${workspaceId}/vault/${referenceId}`
+        ) {
+          return vaultFailure('Vault storage requires inspection.', 'vault_recovery_required', 409);
+        }
+      };
+      if (action === 'revoke') {
+        const result = revokeVaultReference(coreDb, { referenceId });
+        let backendFailure: { error: unknown } | undefined;
+        try {
+          validateInventory();
+          backend.revoke({ referenceId });
+        } catch (error) {
+          backendFailure = { error };
+        }
+        try {
+          await closeRevokedCredentialBindings(dependencies, { referenceId });
+        } catch (cleanupError) {
+          if (backendFailure)
+            throw new OperationError(
+              'recovery_required',
+              'Vault revocation requires runtime inspection before a new request.',
+              409,
+              { cause: new AggregateError([backendFailure.error, cleanupError]) }
+            );
+          throw cleanupError;
+        }
+        if (backendFailure) throw backendFailure.error;
+        audit('succeeded');
+        return projectReference(result);
       }
+      validateInventory();
       if (action === 'grant') {
         if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now())
           return vaultFailure('Grant expiry must be in the future.', 'invalid_request', 400);
@@ -396,17 +482,11 @@ export function createVaultOperationImplementations(
         audit('succeeded');
         return grant as WorkspaceVaultGrant;
       }
-      if (action === 'rotate') {
-        const rotated = backend.rotate({ referenceId, material: input.material! });
-        const result = advanceActiveVaultReferenceVersion(coreDb, {
-          referenceId,
-          currentVersion: rotated.currentVersion,
-        });
-        audit('succeeded');
-        return projectReference(result);
-      }
-      backend.revoke({ referenceId });
-      const result = revokeVaultReference(coreDb, { referenceId });
+      const rotated = backend.rotate({ referenceId, material: input.material! });
+      const result = advanceActiveVaultReferenceVersion(coreDb, {
+        referenceId,
+        currentVersion: rotated.currentVersion,
+      });
       audit('succeeded');
       return projectReference(result);
     } catch (error) {
@@ -1059,7 +1139,7 @@ export function createVaultOperationImplementations(
     'vault.secret-rotate': (input, c) => mutate(input, c, 'rotate'),
     'vault.secret-revoke': (input, c) => mutate(input, c, 'revoke'),
     'vault.grant-create': (input, c) => mutate(input, c, 'grant'),
-    'vault.grant-narrow': (input, c) => {
+    'vault.grant-narrow': async (input, c) => {
       const actor = publicOperationActor(c);
       if (!isDeploymentAdminActor(actor))
         return vaultFailure('Vault administration is forbidden.', 'deployment_admin_required', 403);
@@ -1090,7 +1170,7 @@ export function createVaultOperationImplementations(
       )
         return vaultFailure('Grant shape is not supported for narrowing.', 'invalid_request', 400);
       try {
-        return coreDb.sqlite.transaction(() => {
+        const result = coreDb.sqlite.transaction(() => {
           const result = narrowVaultGrant(coreDb, {
             grantId: source.grantId,
             replacementGrantId: allocateEntityId('grant'),
@@ -1110,7 +1190,10 @@ export function createVaultOperationImplementations(
           });
           return result as { revokedGrant: WorkspaceVaultGrant; grant: WorkspaceVaultGrant };
         })();
+        await closeRevokedCredentialBindings(dependencies, { grantId: source.grantId });
+        return result;
       } catch (error) {
+        if (error instanceof OperationError) throw error;
         if (error instanceof VaultGrantNarrowingError)
           return vaultFailure(
             error.message,

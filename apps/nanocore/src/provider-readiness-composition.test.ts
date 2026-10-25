@@ -29,6 +29,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -62,6 +63,8 @@ async function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
   });
   const accounts = new ProviderSubscriptionAccountManager({
     coreDb,
+    onReferenceRevoked: (referenceId) =>
+      closeRevokedCredentialBindings({ coreDb }, { referenceId }),
     vaultBackend: () => vault.backend(),
   });
   const warm = createTestAgentSetup({ agentId: 'agent_warm' }).manifest;

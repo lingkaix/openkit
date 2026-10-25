@@ -251,6 +251,8 @@ interface ProviderSubscriptionAccountManagerInput {
   readonly coreDb: CoreDb;
   /** Dynamic Vault backend getter resolved independently for every backend operation. */
   readonly vaultBackend: () => VaultBackend;
+  /** Awaits the application-owned closure of any already exposed runtime credential bindings. */
+  readonly onReferenceRevoked: (referenceId: string) => Promise<void>;
   /** Optional deterministic clock. */
   readonly now?: () => string;
   /** Optional deterministic fresh-reference factory. */
@@ -459,6 +461,8 @@ export class ProviderSubscriptionAccountManager {
 
   private readonly createReferenceId: () => string;
 
+  private readonly onReferenceRevoked: (referenceId: string) => Promise<void>;
+
   private readonly fences = new Map<string, Promise<void>>();
 
   private readonly handles = new Map<string, PairHandleState>();
@@ -471,11 +475,12 @@ export class ProviderSubscriptionAccountManager {
   /**
    * Creates one manager over a Core database and dynamic Vault projection.
    *
-   * @param input Core database, backend getter, and optional deterministic seams.
+   * @param input Core database, backend getter, required runtime revocation composition and optional deterministic seams.
    */
   public constructor(input: ProviderSubscriptionAccountManagerInput) {
     this.coreDb = input.coreDb;
     this.vaultBackend = input.vaultBackend;
+    this.onReferenceRevoked = input.onReferenceRevoked;
     this.now = input.now ?? (() => new Date().toISOString());
     this.createReferenceId = input.createReferenceId ?? (() => allocateEntityId('vault'));
   }
@@ -1857,6 +1862,8 @@ export class ProviderSubscriptionAccountManager {
       ) {
         throw persistenceError();
       }
+
+      await this.onReferenceRevoked(coreReference.referenceId);
 
       const state = this.handles.get(pairKey(pair));
       if (state) state.observation = undefined;

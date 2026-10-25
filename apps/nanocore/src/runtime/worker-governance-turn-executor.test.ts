@@ -129,7 +129,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
@@ -11310,14 +11313,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('passes vault-backed runtime files into backend-private materialization context', async () => {
+  it.each([
+    'fixture-runtime-file',
+    'nanohost-runtime-file',
+    'nanohost-provider',
+  ] as const)('admits backend credential support before resolving material: %s', async (mode) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-runtime-file-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
     });
-    const timestamp = '2026-07-05T00:00:00.000Z';
+    const timestamp =
+      mode === 'fixture-runtime-file' ? '2026-07-05T00:00:00.000Z' : new Date().toISOString();
 
     applyMigrations(coreDb);
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 10) });
@@ -11336,7 +11344,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => timestamp,
     });
     createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['runtime-file'],
+      allowedInjectionPaths:
+        mode === 'nanohost-provider'
+          ? ['runtime-env', 'backend-provider']
+          : ['runtime-env', 'runtime-file'],
       grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
       lifetime: 'agent-session',
       ownerScope: 'server',
@@ -11358,7 +11369,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Run Codex auth runtime file'
     );
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({
+    const fixtureExecutor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -11370,8 +11381,77 @@ describe('WorkerGovernanceTurnExecutor', () => {
       vaultBackend: () => vaultUnlockState.backend(),
     });
 
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const production =
+      mode === 'fixture-runtime-file'
+        ? null
+        : createConfiguredWorkerLifecycleRuntime({
+            coreDb,
+            store,
+            env: {},
+            fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+            vaultBackend: () => vaultUnlockState.backend(),
+            nanoHostSessionDispatch: {
+              async effect(connectionOrRequest, carriedRequest) {
+                const request =
+                  carriedRequest ?? (connectionOrRequest as NanoHostSessionEffectRequest);
+                effects.push(request);
+                throw new Error('Unsupported credentials must refuse before Native effects.');
+              },
+              async poll() {
+                return null;
+              },
+              async result() {},
+              async route() {
+                throw new Error('Unexpected semantic route.');
+              },
+            },
+          });
+    const executor = production?.turnExecutor ?? fixtureExecutor;
+    if (!(executor instanceof WorkerGovernanceTurnExecutor))
+      throw new Error('The credential fixture requires the governed Worker executor.');
+    const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+    const agentSetup = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      credentialDeclarations: [
+        ...(production
+          ? [
+              {
+                id: 'valid_first',
+                targetEnvVarName: 'VALID_FIRST_SECRET',
+                vaultGrantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
+                visibility: 'runtime-env' as const,
+              },
+            ]
+          : []),
+        ...(mode === 'nanohost-provider'
+          ? [
+              {
+                id: 'unsupported_provider',
+                provider: {
+                  credentialKey: 'PROVIDER_SECRET',
+                  instanceId: 'provider_unsupported',
+                  profileId: 'generic',
+                  type: 'generic',
+                },
+                vaultGrantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
+                visibility: 'sandbox-provider' as const,
+              },
+            ]
+          : [
+              {
+                id: 'codex_auth_json',
+                targetPath: '/sandbox/.codex/auth.json',
+                vaultGrantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
+                visibility: 'runtime-file' as const,
+              },
+            ]),
+      ],
+    });
+    admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+
     try {
-      await startWithExecutorAttempt(
+      const run = startWithExecutorAttempt(
         coreDb,
         executor,
         store,
@@ -11380,21 +11460,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
         timestamp,
         'Run Codex auth runtime file',
         {
-          agentSetup: createTestAgentSetup({
-            credentialDeclarations: [
-              {
-                id: 'codex_auth_json',
-                targetPath: '/sandbox/.codex/auth.json',
-                vaultGrantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
-                visibility: 'runtime-file',
-              },
-            ],
-          }),
+          agentSetup,
           requestId: '00000000-0000-4000-8000-000000000216',
           triggerActor: turn.triggerActor,
           workspaceRoots: [],
         }
       );
+
+      if (production) {
+        await expect(run).rejects.toBeInstanceOf(DeterministicAgentPreparationError);
+        // Declaration Shared Resolution Rules and Vault injection: known support precedes release.
+        expect(resolve).not.toHaveBeenCalled();
+        expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+        expect(listVaultUseRecords(coreDb)).toEqual([]);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(effects).toEqual([]);
+        return;
+      }
+      await run;
 
       expect(backend.lastContext?.runtimeFileCredentials).toEqual([
         {
@@ -11417,6 +11500,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ]);
       expect(JSON.stringify(backend.lastPackage)).not.toContain('codex_executor_secret');
     } finally {
+      resolve.mockRestore();
+      vaultUnlockState.lock();
       coreDb.sqlite.close();
     }
   });

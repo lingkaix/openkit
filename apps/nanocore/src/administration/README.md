@@ -34,3 +34,5 @@ Administration environment Tools use their `worker-environment.*` operation IDs.
 Server MCP binding authoring controls selected allowedTools supply only. Per-Tool prohibit and require_approval use the existing human full Policy candidate and confirmation, with exact Workspace selectors; no second MCP permission writer exists.
 
 Administration acknowledges the original `turn.interrupt` receipt and authenticated Audit with the live Turn before it signals cancellation. Acceptance proves no terminal outcome; the existing interruption path still waits for the retained interrupted result. The original `conversation.submit` receipt, response metadata and Audit commit with that conversation's own terminal tuple, including refusal and interruption, so replay does not write a receipt from Main.
+
+Server MCP reference revocation awaits the existing native credential revocation composition as well as Gateway session closure after its Core fence. This also covers valid retained direct Server runtime-env grants. Server grant revocation and narrowing remain restricted to their exact Gateway-only family.

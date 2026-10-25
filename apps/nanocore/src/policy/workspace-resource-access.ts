@@ -5,9 +5,9 @@ import {
 } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
 import type { PolicyDocumentV1 } from '@openkit/protocol';
+import { isCurrentServerPolicyAuthor } from '../auth/operation-authorizer.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
-import { isCurrentServerPolicyAuthor } from './configuration.js';
 import { WORKSPACE_MEMBER_OPERATIONS } from './workspace-access.js';
 
 /** Validates the activated Workspace subset without introducing another authored grammar. */

@@ -620,6 +620,7 @@ it('coalesces a pending same-call burst and releases only each immutable covered
   };
   let body = '';
   const delivered: string[] = [];
+  const firstDelivery = Promise.withResolvers<void>();
   const reading = f.post(true, 'chat/completions').then(async (response) => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -638,7 +639,10 @@ it('coalesces a pending same-call burst and releases only each immutable covered
           pending = pending.slice(end + 2);
           if (!frame.startsWith('data: {')) continue;
           const content = JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content;
-          if (typeof content === 'string' && content) delivered.push(content);
+          if (typeof content === 'string' && content) {
+            delivered.push(content);
+            firstDelivery.resolve();
+          }
         }
       }
     } finally {
@@ -659,7 +663,7 @@ it('coalesces a pending same-call burst and releases only each immutable covered
     // Reliability Raw-Output Accounting and R1842: a native commit alone is no delivered ACK.
     expect(held[0]!.frontier).toBe(firstBytes);
     expect(Atomics.load(commits, 1)).toBe(1);
-    expect(delivered).toEqual([]);
+    expect([...delivered]).toEqual([]);
     for (const content of burst) emit(content);
     await vi.waitFor(() => expect(observed.at(-1)).toBe(finalBytes));
     // COORD07:3x/R1842: native hooks can advance while the first same-call ACK is held.
@@ -671,7 +675,8 @@ it('coalesces a pending same-call burst and releases only each immutable covered
     expect(held[1]!.frontier).toBe(finalBytes);
     // All eight pending same-part observations share one maximum, after the first isolated commit.
     expect(Atomics.load(commits, 1)).toBe(2);
-    await vi.waitFor(() => expect(delivered).toEqual([first]));
+    await Promise.race([firstDelivery.promise, reading]);
+    expect([...delivered]).toEqual([first]);
     // R1842: new arrivals cannot move the first captured target or mutate its encoded content.
     expect(body).not.toContain(burst[0]!);
     expect(f.rawOutput()).toEqual({ rawOutputBytes: finalBytes, exhausted: false });

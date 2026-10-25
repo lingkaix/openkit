@@ -275,6 +275,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
     );
     const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
+    const executeTurn = executor.startTurn.bind(executor);
     const app = createApp({
       fileAdmission,
       coreDb,
@@ -311,12 +312,20 @@ describe('synthetic Skill Artifact/catalog component', () => {
     const start = async (agentId: string, input: string) => {
       const thread = await store.createThread(workspaceId, 'SYNTHETIC Skill candidate Task');
       const requestId = randomUUID();
+      const execution = Promise.withResolvers<{ turnId: string; completion: Promise<void> }>();
+      vi.spyOn(executor, 'startTurn').mockImplementationOnce((...args) => {
+        const completion = executeTurn(...args);
+        execution.resolve({ turnId: args[1], completion });
+        return completion;
+      });
       const response = await call('task.start', { threadId: thread.id, requestId, agentId, input });
       expect(response.status, await response.clone().text()).toBe(202);
       const result = await response.json();
-      await vi.waitFor(() => expect(store.getTurnById(result.turn.id).status).toBe('completed'), {
-        timeout: 10_000,
-      });
+      // Protocol admission is independent of completion; observe the real execution within this case's bound.
+      const admittedExecution = await execution.promise;
+      expect(admittedExecution.turnId).toBe(result.turn.id);
+      await admittedExecution.completion;
+      expect(store.getTurnById(result.turn.id).status).toBe('completed');
       const artifact = artifacts.find((value) => value.turnId === result.turn.id);
       expect(artifact).toBeDefined();
       expect(

@@ -99,6 +99,11 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
+import { createVaultReference, getVaultReference } from '../vault/vault-references.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultInjectionPlans } from '../vault-injection-plans.js';
+import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -173,7 +178,10 @@ import {
 } from './worker-backend-sessions.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  recordWorkerControlAcceptedRecord,
+} from './worker-control-records.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
 import {
   openShellFilesystemGrantsFromPackagePolicy,
@@ -2632,7 +2640,9 @@ describe('createConfiguredTurnExecutor', () => {
 
     await closeFactoryAttempt(
       coreDb,
-      options.attemptId ?? testEntityId('attempt', `lease_${label}`)
+      options.attemptId ?? testEntityId('attempt', `lease_${label}`),
+      null,
+      backend
     );
     expect(
       coreDb.sqlite
@@ -3569,17 +3579,14 @@ describe('createConfiguredTurnExecutor', () => {
         ],
       });
       // Wider retirement enters its existing durable drain before any physical contact.
-      const cleanupOwner = resident.backend as unknown as {
-        drainSandboxAdmission(bindingRef: string, physicalEpoch: string): void;
-      };
       const cleanupAnchor = getWorkerBackendSession(
         resident.coreDb,
         String(created.input.leaseId)
       )!;
-      cleanupOwner.drainSandboxAdmission(
-        cleanupAnchor.sandboxBindingRef,
-        cleanupAnchor.originPhysicalEpoch
-      );
+      harnessRecords.drainNanoHostSandboxAdmission(resident.coreDb, {
+        sandboxBindingRef: cleanupAnchor.sandboxBindingRef,
+        originPhysicalEpoch: cleanupAnchor.originPhysicalEpoch,
+      });
       // Invoke the existing wider-cleanup producer with the resident's actual identities.
       await (
         resident.backend as unknown as {
@@ -8384,6 +8391,767 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it.each([
+    { route: 'grant', binding: 'busy', cleanupUnknown: false },
+    { route: 'reference', binding: 'idle', cleanupUnknown: false },
+    { route: 'server-reference', binding: 'idle', cleanupUnknown: false },
+    { route: 'narrow', binding: 'idle', cleanupUnknown: false },
+    { route: 'grant', binding: 'idle', cleanupUnknown: true },
+    { route: 'grant', binding: 'launching', cleanupUnknown: false },
+    { route: 'grant', binding: 'idle-after-no-effect', cleanupUnknown: false },
+    { route: 'grant', binding: 'sibling-closeout', cleanupUnknown: false },
+    { route: 'grant', binding: 'sibling-late-drain', cleanupUnknown: false },
+    { route: 'grant', binding: 'idle-contradiction', cleanupUnknown: false },
+  ] as const)('closes runtime-env exposure through public $route revocation ($binding, unknown cleanup: $cleanupUnknown)', async ({
+    route,
+    binding,
+    cleanupUnknown,
+  }) => {
+    const coreDb = createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspaceId = DEMO_WORKSPACE_ID;
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+    const label = `credential-revoke-${route}-${binding}-${cleanupUnknown}`;
+    const serverReference = route === 'server-reference';
+    const owner = serverReference
+      ? { ownerScope: 'server' as const }
+      : { ownerScope: 'workspace' as const, workspaceId };
+    const referenceId = testEntityId('vault', label);
+    const grantId = testEntityId('grant', label);
+    const agentSessionId = testEntityId('as', label);
+    const attemptId = testEntityId('attempt', label);
+    const secret = 'private-runtime-revocation-canary';
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(coreDb.dataRoot, 'server', 'vault'),
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
+    vaultUnlockState.backend().store({
+      referenceId,
+      material: secret,
+      metadata: owner,
+    });
+    createVaultReference(coreDb, {
+      referenceId,
+      ...owner,
+      displayName: serverReference ? 'Shared MCP credential' : 'Runtime revocation fixture',
+      secretKind: serverReference ? 'mcp-credential' : 'github-token',
+      backendKind: 'encrypted-file',
+      backendLocator: serverReference
+        ? `encrypted-file://server/vault/${referenceId}`
+        : `encrypted-file://workspace/${workspaceId}/vault/${referenceId}`,
+    });
+    createVaultGrant(coreDb, {
+      grantId,
+      vaultReferenceId: referenceId,
+      ...owner,
+      allowedInjectionPaths: ['runtime-env'],
+      lifetime: serverReference ? 'agent-session' : 'workspace',
+      ...(serverReference ? { targetAgentSessionId: agentSessionId } : {}),
+    });
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const runtimeConfig = loadRuntimeConfig(coreDb.dataRoot);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...runtimeConfig,
+      agentManifests: [
+        {
+          ...setup.manifest,
+          sandbox: {
+            ...setup.manifest.sandbox,
+            credentialDeclarations: serverReference
+              ? [
+                  {
+                    id: 'revocable_token',
+                    vaultGrantId: grantId,
+                    visibility: 'runtime-env',
+                    targetEnvVarName: 'GITHUB_TOKEN',
+                  },
+                ]
+              : [
+                  {
+                    id: 'revocable_token',
+                    requirementId: 'revocable-token',
+                    purpose: 'Exercise Workspace credential revocation on a native resident.',
+                    required: true,
+                    visibility: 'runtime-env',
+                    targetEnvVarName: 'GITHUB_TOKEN',
+                  },
+                ],
+          },
+        },
+      ],
+      workspaceConfigs: [
+        ...runtimeConfig.workspaceConfigs.filter((entry) => entry.workspaceId !== workspaceId),
+        {
+          workspaceId,
+          path: join(coreDb.dataRoot, 'workspaces', workspaceId, 'workspace.yaml'),
+          config: WorkspaceConfigSchema.parse({
+            schemaVersion: 1,
+            workspace: {
+              name: 'Runtime revocation fixture',
+              agents: [
+                {
+                  agentId: setup.manifest.id,
+                  credentialBindings: serverReference
+                    ? []
+                    : [{ requirementId: 'revocable-token', vaultGrantId: grantId }],
+                },
+              ],
+            },
+          }),
+        },
+      ],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Revocation fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      openKitConfig: {
+        defaults: { defaultAgentId: setup.manifest.id },
+        ...(binding === 'sibling-closeout' || binding === 'sibling-late-drain'
+          ? { nanohost: { maxActiveTurnsPerSandbox: 2 } }
+          : {}),
+      },
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+      vaultBackend: () => vaultUnlockState.backend(),
+    });
+    const acceptCommand = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
+    const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      turnExecutor: native.executor,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: coreDb.dataRoot,
+        initialSnapshot: configuration,
+      }),
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
+      vaultUnlockState,
+    });
+    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    let originalBackendSessionId: string | undefined;
+    try {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${label}`,
+        requestId: testEntityId('tu', `request-${label}`).slice(3),
+        requestedAgentId: setup.manifest.id,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        turnId: testEntityId('tu', label),
+        turnInput: 'Keep the credential-bearing resident binding available.',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      if (binding === 'launching') {
+        const submitEntered = Promise.withResolvers<void>();
+        const allowSubmit = Promise.withResolvers<void>();
+        let held = false;
+        commands.mockImplementation(async (command) => {
+          const wire = await acceptCommand(command);
+          if (command.operation === 'turn.start' && !held) {
+            held = true;
+            submitEntered.resolve();
+            await allowSubmit.promise;
+          }
+          return wire;
+        });
+        const admission = native.admitTurn(entry, {
+          attemptId,
+          agentSessionId,
+          candidateAgentSessionId: agentSessionId,
+        });
+        void admission.catch(() => undefined);
+        let revocation: Promise<Response> | undefined;
+        try {
+          await Promise.race([
+            submitEntered.promise,
+            admission.then(() => {
+              throw new Error('The native submission did not reach the held boundary.');
+            }),
+          ]);
+          const opened = await commands.mock.results.find(
+            (result, index) =>
+              result.type === 'return' &&
+              commands.mock.calls[index]![0].operation === 'session.open'
+          )!.value;
+          expect(opened.body.runtimeEnvironment).toEqual({ GITHUB_TOKEN: secret });
+          expect(
+            [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+          ).toEqual([expect.objectContaining({ state: 'open' })]);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          const plans = listVaultInjectionPlans(coreDb);
+          expect(plans).toEqual([
+            expect.objectContaining({ grantId, injectionVisibility: 'runtime-env' }),
+          ]);
+          let successWithLiveExposure = false;
+          revocation = app
+            .request(
+              ...operationRequest(
+                'vault.grant-revoke',
+                {},
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ workspaceId, grantId }),
+                }
+              )
+            )
+            .then((response) => {
+              // Core Vault lifecycle 5/7: no receipt is not proof that the exposed binding is absent.
+              successWithLiveExposure =
+                response.ok &&
+                [...native.outside.bindings.values()].some((sessions) =>
+                  [...sessions.values()].some((session) => session.state !== 'closed')
+                );
+              return response;
+            });
+          void revocation.catch(() => undefined);
+          await vi.waitFor(() => expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked'));
+          allowSubmit.resolve();
+          // The peer can report its final only after it accepts start or records refusal.
+          await native.executionFor(entry.turnId).launched.promise.catch(() => undefined);
+          native.executionFor(entry.turnId).completion.resolve();
+          admitted = await admission.catch(() => undefined);
+          const response = await revocation;
+          await admitted?.execution.catch(() => undefined);
+          expect(successWithLiveExposure).toBe(false);
+          expect(
+            listVaultInjectionReceipts(coreDb).filter(
+              (receipt) => receipt.grantId === grantId && receipt.revocationStatus === 'active'
+            )
+          ).toEqual([]);
+          for (const { status: _projection, ...original } of plans)
+            expect(listVaultInjectionPlans(coreDb)).toEqual(
+              expect.arrayContaining([expect.objectContaining(original)])
+            );
+          if (response.ok) {
+            expect(
+              [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+            ).toEqual([expect.objectContaining({ state: 'closed' })]);
+            expect(
+              coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+            ).toEqual({ count: 0 });
+          } else {
+            expect(response.status).toBe(409);
+            await expect(response.clone().json()).resolves.toMatchObject({
+              code: 'recovery_required',
+            });
+          }
+          expect(
+            store.listThreadAgentSessions(workspaceId, DEMO_THREAD_ID).map((session) => session.id)
+          ).toEqual([agentSessionId]);
+          expect(JSON.stringify(await response.json())).not.toContain(secret);
+        } finally {
+          allowSubmit.resolve();
+          native.executionFor(entry.turnId).completion.resolve();
+          admitted ??= await admission.catch(() => undefined);
+          await revocation?.catch(() => undefined);
+        }
+        return;
+      }
+      admitted = await native.admitTurn(entry, {
+        attemptId,
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      await vi.waitFor(() => expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1));
+      const receipts = listVaultInjectionReceipts(coreDb);
+      expect(receipts).toEqual([
+        expect.objectContaining({ grantId, agentSessionId, revocationStatus: 'active' }),
+      ]);
+      const opened = await commands.mock.results.find(
+        (result, index) =>
+          result.type === 'return' && commands.mock.calls[index]![0].operation === 'session.open'
+      )!.value;
+      expect(opened.body.runtimeEnvironment).toEqual({ GITHUB_TOKEN: secret });
+      const idle =
+        binding === 'idle' ||
+        binding === 'idle-after-no-effect' ||
+        binding === 'idle-contradiction';
+      if (idle) {
+        await admitted.complete();
+        expect(store.getAgentSession(agentSessionId).status).toBe('idle');
+      } else expect(store.getAgentSession(agentSessionId).status).toBe('busy');
+      expect(
+        [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+      ).toEqual([expect.objectContaining({ state: idle ? 'completed' : 'running' })]);
+      if (binding === 'sibling-closeout' || binding === 'sibling-late-drain') {
+        const lateDrain = binding === 'sibling-late-drain';
+        const siblingThread = await store.createThread(
+          workspaceId,
+          'Owned revocation sibling',
+          testEntityId('th', `${label}-sibling`)
+        );
+        const storage = getWorkerStorageBinding(
+          coreDb,
+          store.getAgentSession(agentSessionId).retainedStorage!
+        )!;
+        const siblingAgentSessionId = testEntityId('as', `${label}-sibling`);
+        const siblingAttemptId = testEntityId('attempt', `${label}-sibling`);
+        const siblingEntry = createSchedulerAdmissionEntry(coreDb, {
+          ...entry,
+          queueEntryId: `queue:${label}-sibling`,
+          requestId: testEntityId('tu', `request-${label}-sibling`).slice(3),
+          threadId: siblingThread.id,
+          turnId: testEntityId('tu', `${label}-sibling`),
+          turnInput: 'Retain an independent cancellation and collection owner in the same Sandbox.',
+          workerStorageChoice: {
+            kind: 'selected',
+            storageRef: storage.storageRef,
+            expectedRevision: storage.revision,
+            purpose: 'work',
+            goalId: null,
+            taskId: null,
+          },
+        });
+        await publishFactoryAdmission(store, siblingEntry);
+        const sibling = await native.admitTurn(siblingEntry, {
+          attemptId: siblingAttemptId,
+          agentSessionId: siblingAgentSessionId,
+          candidateAgentSessionId: siblingAgentSessionId,
+        });
+        const backend = native.executor.executionBackend as WorkerGovernanceBackend;
+        const collect = backend.collectTranscript.bind(backend);
+        const firstCloseoutPaused = Promise.withResolvers<void>();
+        const siblingCollecting = Promise.withResolvers<void>();
+        const releaseFirst = Promise.withResolvers<void>();
+        const releaseSibling = Promise.withResolvers<void>();
+        const collection = vi
+          .spyOn(backend, 'collectTranscript')
+          .mockImplementation(async (...args) => {
+            if (args[0] === sibling.pkg.snapshotId) {
+              siblingCollecting.resolve();
+              await releaseSibling.promise;
+            }
+            const transcript = await collect(...args);
+            if (!lateDrain && args[0] === admitted!.pkg.snapshotId) {
+              firstCloseoutPaused.resolve();
+              await releaseFirst.promise;
+            }
+            return transcript;
+          });
+        const completeTurn = store.completeTurn.bind(store);
+        const publication = lateDrain
+          ? vi.spyOn(store, 'completeTurn').mockImplementation(async (...args) => {
+              const turn = await completeTurn(...args);
+              if (args[0] === entry.turnId) {
+                expect(store.getTurnById(entry.turnId).status).toBe('completed');
+                expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+                  state: 'cleaned',
+                  physicalCleanedAt: expect.any(String),
+                });
+                expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+                  phase: 'closing',
+                  fenceRef: null,
+                });
+                expect(
+                  coreDb.sqlite
+                    .prepare(`SELECT b.lifecycle_state AS lifecycleState,
+              b.cleanup_state AS cleanupState, b.native_handle_state AS nativeHandleState,
+              b.native_handle_digest AS nativeHandleDigest, b.current_attempt_id AS currentAttemptId,
+              s.drain_state AS sandboxDrain FROM agent_session_runtime_bindings b
+              JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+              JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+              WHERE b.agent_session_id = ?`)
+                    .get(agentSessionId)
+                ).toEqual({
+                  lifecycleState: 'open',
+                  cleanupState: 'clean',
+                  nativeHandleState: 'ready',
+                  nativeHandleDigest: expect.any(String),
+                  currentAttemptId: null,
+                  sandboxDrain: 'accepting',
+                });
+                // Ordinary cleanup and terminal publication precede this still-unreleased attempt.
+                firstCloseoutPaused.resolve();
+                await releaseFirst.promise;
+              }
+              return turn;
+            })
+          : undefined;
+        let firstSettled = false;
+        let firstCloseout: Promise<unknown> | undefined;
+        let revocation: Promise<Response> | undefined;
+        let publicResponse: Response | undefined;
+        try {
+          expect(
+            coreDb.sqlite
+              .prepare(`SELECT h.sandbox_runtime_id AS sandboxRuntimeId,
+            b.agent_session_id AS agentSessionId FROM agent_session_runtime_bindings b
+            JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+            ORDER BY b.agent_session_id`)
+              .all()
+          ).toEqual(
+            expect.arrayContaining([
+              { sandboxRuntimeId: expect.any(String), agentSessionId },
+              { sandboxRuntimeId: expect.any(String), agentSessionId: siblingAgentSessionId },
+            ])
+          );
+          expect(
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+          ).toEqual({ count: 1 });
+          const originalReceipts = listVaultInjectionReceipts(coreDb);
+          expect(originalReceipts.map((receipt) => receipt.agentSessionId).sort()).toEqual(
+            [agentSessionId, siblingAgentSessionId].sort()
+          );
+          firstCloseout = admitted.complete();
+          void firstCloseout.then(
+            () => {
+              firstSettled = true;
+            },
+            () => {
+              firstSettled = true;
+            }
+          );
+          await Promise.race([firstCloseoutPaused.promise, firstCloseout]);
+          expect(firstSettled).toBe(false);
+          await native.executor.interruptTurn(store, siblingEntry.turnId);
+          await Promise.race([siblingCollecting.promise, sibling.execution]);
+          const finalFor = (pkg: AgentEnvironmentPackage) =>
+            getWorkerControlAcceptedFinalStatus(coreDb, {
+              ...pkg.scope,
+              packageSnapshotId: pkg.snapshotId,
+            });
+          expect(finalFor(admitted.pkg)).toMatchObject({ status: 'completed' });
+          expect(finalFor(sibling.pkg)).toMatchObject({ status: 'interrupted' });
+          const effectsBefore = native.effects.length;
+          revocation = app
+            .request(
+              ...operationRequest(
+                'vault.grant-revoke',
+                {},
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ workspaceId, grantId }),
+                }
+              )
+            )
+            .then((response) => {
+              publicResponse = response;
+              return response;
+            });
+          void revocation.catch(() => undefined);
+          await vi.waitFor(() => {
+            expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked');
+            const resident = coreDb.sqlite
+              .prepare(`SELECT drain_state AS drainState
+              FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`)
+              .get(storage.currentSandboxBindingRef) as { drainState: string } | undefined;
+            expect(resident?.drainState === 'draining' || publicResponse !== undefined).toBe(true);
+          });
+          releaseFirst.resolve();
+          await firstCloseout;
+          // Sandbox lifecycle and Scheduler cleanup retain every sibling's collection exclusion.
+          expect(
+            native.effects
+              .slice(effectsBefore)
+              .filter(
+                (effect) => effect.kind === 'bridge.close' || effect.kind === 'sandbox.delete'
+              )
+          ).toEqual([]);
+          expect(attempts.requireSchedulerExecutionAttempt(coreDb, siblingAttemptId)).toMatchObject(
+            {
+              phase: 'closing',
+              fenceRef: null,
+            }
+          );
+          releaseSibling.resolve();
+          await Promise.allSettled([firstCloseout, sibling.execution]);
+          const response = await revocation;
+          expect(store.getTurnById(entry.turnId).status).toBe('completed');
+          expect(store.getTurnById(siblingEntry.turnId).status).toBe('interrupted');
+          expect(finalFor(admitted.pkg)).toMatchObject({ status: 'completed' });
+          expect(finalFor(sibling.pkg)).toMatchObject({ status: 'interrupted' });
+          // Vault Lifecycle And Failure Rules preserves runtime exposure as stale-session.
+          expect(listVaultInjectionReceipts(coreDb)).toEqual(
+            originalReceipts.map((receipt) => ({
+              ...receipt,
+              revocationStatus: 'stale-session',
+            }))
+          );
+          // Healthy exact owners must close runtime-env residency across either admission-drain window.
+          expect(response.status, await response.clone().text()).toBe(200);
+          expect(
+            [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+          ).toEqual([
+            expect.objectContaining({ state: 'closed' }),
+            expect.objectContaining({ state: 'closed' }),
+          ]);
+          expect(
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+          ).toEqual({ count: 0 });
+          for (const ownerAttemptId of [attemptId, siblingAttemptId])
+            expect(attempts.requireSchedulerExecutionAttempt(coreDb, ownerAttemptId)).toMatchObject(
+              {
+                phase: 'closed',
+                fenceRef: expect.any(String),
+              }
+            );
+          expect(
+            store.listThreadAgentSessions(workspaceId, DEMO_THREAD_ID).map((session) => session.id)
+          ).toEqual([agentSessionId]);
+          expect(
+            store
+              .listThreadAgentSessions(workspaceId, siblingThread.id)
+              .map((session) => session.id)
+          ).toEqual([siblingAgentSessionId]);
+          expect(JSON.stringify(await response.json())).not.toContain(secret);
+        } finally {
+          releaseFirst.resolve();
+          releaseSibling.resolve();
+          await firstCloseout?.catch(() => undefined);
+          await sibling.cleanup();
+          await revocation?.catch(() => undefined);
+          publication?.mockRestore();
+          collection.mockRestore();
+        }
+        return;
+      }
+      if (binding === 'idle-after-no-effect') {
+        const failedAttemptId = testEntityId('attempt', `${label}-later`);
+        const later = createSchedulerAdmissionEntry(coreDb, {
+          ...entry,
+          queueEntryId: `queue:${label}-later`,
+          requestId: testEntityId('tu', `request-${label}-later`).slice(3),
+          turnId: testEntityId('tu', `${label}-later`),
+          turnInput: 'Fail preparation after publication without touching the resident.',
+        });
+        await publishFactoryAdmission(store, later);
+        const backend = native.executor.executionBackend as WorkerGovernanceBackend;
+        const materialize = backend.materialize.bind(backend);
+        const failure = new Error('Controlled failure after backend anchor publication.');
+        let failedAtPublishedAnchor = false;
+        const preparation = vi
+          .spyOn(backend, 'materialize')
+          .mockImplementationOnce(async (pkg, context) =>
+            materialize(pkg, {
+              ...context,
+              beforeMaterialization: async () => {
+                await context?.beforeMaterialization?.();
+                expect(getWorkerBackendSession(coreDb, failedAttemptId)).toMatchObject({
+                  agentSessionId,
+                  packageSnapshotId: pkg.snapshotId,
+                });
+                failedAtPublishedAnchor = true;
+                throw failure;
+              },
+            })
+          );
+        try {
+          void native.executionFor(later.turnId).execution.catch(() => undefined);
+          await expect(
+            native.admitTurn(later, {
+              attemptId: failedAttemptId,
+              agentSessionId,
+              candidateAgentSessionId: testEntityId('as', `${label}-unused`),
+            })
+          ).rejects.toThrow();
+        } finally {
+          preparation.mockRestore();
+        }
+        expect(failedAtPublishedAnchor).toBe(true);
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, failedAttemptId)).toMatchObject({
+          agentSessionId,
+          phase: 'closed',
+          disposition: 'not_accepted',
+          operationId: null,
+          deadline: null,
+        });
+        expect(
+          Date.parse(getWorkerBackendSession(coreDb, failedAttemptId)!.createdAt)
+        ).toBeGreaterThan(Date.parse(getWorkerBackendSession(coreDb, attemptId)!.createdAt));
+        expect(
+          [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+        ).toEqual([expect.objectContaining({ state: 'completed' })]);
+      }
+      const releasesBefore = native.executor.releaseResults.filter(
+        (result) => result.state === 'released'
+      );
+      const attemptBefore = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      const retainedStorage = store.getAgentSession(agentSessionId).retainedStorage!;
+      const storageBefore = getWorkerStorageBinding(coreDb, retainedStorage)!;
+      if (cleanupUnknown) {
+        // Scheduler Attempt, Reconnect, And Cleanup permits ordinary release with a safe resident.
+        expect(attemptBefore).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+        expect(releasesBefore).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              attemptId,
+              state: 'released',
+              fenceRef: attemptBefore.fenceRef,
+            }),
+          ])
+        );
+        expect(storageBefore.state).toBe('attached');
+      }
+      const effectsBefore = native.effects.length;
+      if (binding === 'idle-contradiction') {
+        const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+        originalBackendSessionId = anchor.backendSessionId;
+        // Fault injection after real admission: retained physical identity contradicts its binding.
+        const wrongSandboxId = `${anchor.backendSessionId.slice(0, 3)}${anchor.backendSessionId[3] === 'a' ? 'b' : 'a'}${anchor.backendSessionId.slice(4)}`;
+        coreDb.sqlite
+          .prepare('UPDATE worker_backend_sessions SET backend_session_id = ? WHERE attempt_id = ?')
+          .run(wrongSandboxId, attemptId);
+        expect(getWorkerBackendSession(coreDb, attemptId)).toEqual({
+          ...anchor,
+          backendSessionId: wrongSandboxId,
+        });
+      }
+      native.peerFaults.closeRefusal = cleanupUnknown ? 'cleanup_required' : undefined;
+      native.peerFaults.failSandboxDelete = cleanupUnknown;
+      const operation = serverReference
+        ? 'vault.server-mcp-secret-revoke'
+        : route === 'reference'
+          ? 'vault.secret-revoke'
+          : route === 'narrow'
+            ? 'vault.grant-narrow'
+            : 'vault.grant-revoke';
+      const response = await app.request(
+        ...operationRequest(
+          operation,
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              ...(serverReference
+                ? { referenceId, requestId: testEntityId('tu', `${label}-revoke`).slice(3) }
+                : { workspaceId, ...(route === 'reference' ? { referenceId } : { grantId }) }),
+              ...(route === 'narrow'
+                ? { constraints: { targetAgentSessionId: agentSessionId } }
+                : {}),
+            }),
+          }
+        )
+      );
+      // Vault lifecycle rules: durable revocation and immutable completion survive either runtime outcome.
+      expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked');
+      if (route === 'reference' || serverReference)
+        expect(getVaultReference(coreDb, referenceId)?.status).toBe('revoked');
+      expect(listVaultInjectionReceipts(coreDb)).toEqual(
+        receipts.map((receipt) => ({ ...receipt, revocationStatus: 'stale-session' }))
+      );
+      if (cleanupUnknown) {
+        expect(response.ok).toBe(false);
+        await admitted.execution.catch(() => undefined);
+        for (const result of native.executor.releaseResults.filter(
+          (release) => release.state === 'released'
+        ))
+          expect(result).toMatchObject({ attemptId, fenceRef: attemptBefore.fenceRef });
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+          phase: 'closed',
+          fenceRef: attemptBefore.fenceRef,
+          outcomeRef: attemptBefore.outcomeRef,
+          terminalCause: attemptBefore.terminalCause,
+        });
+        expect(store.getTurnById(entry.turnId).status).toBe('completed');
+        expect(
+          native.effects.slice(effectsBefore).some((effect) => effect.kind === 'sandbox.delete')
+        ).toBe(true);
+        // Uncertain Sandbox cleanup fences residency and storage without rewriting prior Turn proof.
+        expect(
+          coreDb.sqlite
+            .prepare(`SELECT cleanup_state AS cleanupState, drain_state AS drainState,
+              health_state AS healthState, lifecycle_state AS lifecycleState
+              FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`)
+            .all(storageBefore.currentSandboxBindingRef)
+        ).toEqual([
+          {
+            cleanupState: 'unknown',
+            drainState: 'draining',
+            healthState: 'unknown',
+            lifecycleState: 'failed',
+          },
+        ]);
+        expect(
+          coreDb.sqlite
+            .prepare(`SELECT drain_state AS drainState, lifecycle_state AS lifecycleState
+              FROM harness_instance_records`)
+            .all()
+        ).toEqual([{ drainState: 'draining', lifecycleState: 'failed' }]);
+        expect(getWorkerStorageBinding(coreDb, retainedStorage)).toMatchObject({
+          state: 'unknown',
+          attachmentGeneration: storageBefore.attachmentGeneration,
+          currentSandboxBindingRef: storageBefore.currentSandboxBindingRef,
+        });
+        await expect(
+          (native.executor.executionBackend as WorkerGovernanceBackend)
+            .inspectMaterializationCapacity!(admitted.pkg)
+        ).resolves.toBe('capacity-saturated');
+        expect(
+          [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+        ).toEqual([expect.objectContaining({ state: 'completed' })]);
+      } else if (binding === 'idle-contradiction') {
+        // Vault lifecycle 9 and exact cleanup lineage forbid contacting a different physical Sandbox.
+        expect(response.status).toBe(409);
+        await expect(response.clone().json()).resolves.toMatchObject({ code: 'recovery_required' });
+        expect(
+          native.effects
+            .slice(effectsBefore)
+            .filter((effect) => effect.kind === 'bridge.close' || effect.kind === 'sandbox.delete')
+        ).toEqual([]);
+        expect(
+          [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+        ).toEqual([expect.objectContaining({ state: 'completed' })]);
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+          phase: 'closed',
+          fenceRef: attemptBefore.fenceRef,
+          outcomeRef: attemptBefore.outcomeRef,
+          terminalCause: attemptBefore.terminalCause,
+        });
+      } else {
+        expect(response.status, await response.clone().text()).toBe(200);
+        // Declaration Runtime Environment Visibility and Vault revocation acceptance require physical closure.
+        expect(
+          [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
+        ).toEqual([expect.objectContaining({ state: 'closed' })]);
+        expect(native.effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(true);
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        ).toEqual({ count: 0 });
+        await admitted.execution.catch(() => undefined);
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+          phase: 'closed',
+          fenceRef: expect.any(String),
+        });
+        expect(['closed', 'interrupted', 'failed']).toContain(
+          store.getAgentSession(agentSessionId).status
+        );
+        if (binding === 'busy') expect(store.getTurnById(entry.turnId).status).toBe('interrupted');
+      }
+      expect(
+        store.listThreadAgentSessions(workspaceId, DEMO_THREAD_ID).map((session) => session.id)
+      ).toEqual([agentSessionId]);
+      expect(JSON.stringify(await response.json())).not.toContain(secret);
+    } finally {
+      if (originalBackendSessionId !== undefined)
+        coreDb.sqlite
+          .prepare('UPDATE worker_backend_sessions SET backend_session_id = ? WHERE attempt_id = ?')
+          .run(originalBackendSessionId, attemptId);
+      native.peerFaults.closeRefusal = undefined;
+      native.peerFaults.failSandboxDelete = false;
+      await admitted?.cleanup();
+      commands.mockRestore();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('interrupts a NanoHost Turn only through its materialized Harness session', async () => {
     const coreDb = createFactoryCoreDb();
     try {
@@ -12515,7 +13283,6 @@ describe('createConfiguredTurnExecutor', () => {
           attemptId: lease.leaseId,
         });
         await runtime.cleanupBackendSession(backend.planSession(environmentPackage));
-        expect(backend.sessions.has(environmentPackage.snapshotId)).toBe(false);
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'cleanup-pending',
           toState: 'physical-cleaned',
@@ -12524,8 +13291,10 @@ describe('createConfiguredTurnExecutor', () => {
         await closeFactoryAttempt(
           coreDb,
           lease.leaseId,
-          `turn:${environmentPackage.scope.turnId}:completed`
+          `turn:${environmentPackage.scope.turnId}:completed`,
+          backend
         );
+        expect(backend.sessions.has(environmentPackage.snapshotId)).toBe(false);
         expect(
           observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === lease.leaseId)
             ?.phase
@@ -17579,11 +18348,12 @@ describe('createConfiguredTurnExecutor', () => {
   });
 });
 
-/** Establishes a positively fenced predecessor in backend-only fixtures whose external owners are modeled. */
+/** Establishes a positively fenced predecessor, using the native release owner when the fixture has live backend handles. */
 async function closeFactoryAttempt(
   db: ReturnType<typeof openCoreDb>,
   attemptId: string,
-  outcomeRef: string | null = null
+  outcomeRef: string | null = null,
+  releaseOwner: Pick<WorkerGovernanceBackend, 'release'> = new SimulatedTurnExecutor({ coreDb: db })
 ) {
   const native = getWorkerBackendSession(db, attemptId);
   if (native && native.state !== 'cleaned') {
@@ -17629,7 +18399,7 @@ async function closeFactoryAttempt(
     integrationDrain: true,
     routesRevoked: true,
   } as const;
-  const released = await new SimulatedTurnExecutor({ coreDb: db }).release({
+  const released = await releaseOwner.release({
     ...attempts.schedulerExecutionCorrelation(closing),
     proof,
   });

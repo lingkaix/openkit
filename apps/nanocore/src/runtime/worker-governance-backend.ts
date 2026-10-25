@@ -1090,13 +1090,13 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
   describeCapabilities(): Promise<WorkerGovernanceBackendCapabilities>;
 
   /**
-   * Validates one package against backend capabilities.
+   * Validates secret-free package metadata against backend capabilities before resolution.
    *
    * @param environmentPackage Package to validate.
    * @returns Validation diagnostics.
    */
   validatePackage(
-    environmentPackage: AgentEnvironmentPackage
+    environmentPackage: AgentEnvironmentPackagePreview
   ): Promise<AgentEnvironmentValidationDiagnostic[]>;
 
   /**
@@ -1141,7 +1141,7 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
    */
   cleanupSession(
     identity: WorkerGovernanceBackendSessionIdentity,
-    options?: { readonly failedCloseout: boolean }
+    options?: { readonly failedCloseout: boolean; readonly wholeSandbox?: boolean }
   ): Promise<void>;
 
   /**

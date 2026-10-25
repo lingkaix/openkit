@@ -23,6 +23,7 @@ import {
 import {
   type ActorRef,
   ActorRefSchema,
+  responsibleUserIdForActor,
   type TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
@@ -1301,7 +1302,9 @@ function resolveWorkerCredentialDeclarations(
 
   const coreDb = requireCoreDb(input);
 
-  for (const declaration of input.declarations) {
+  // Admit the complete list before any plan, material resolution or sink can expose a value.
+  // The same owner rechecks each use because an earlier sink may change current authority.
+  const admit = (declaration: AgentEnvironmentCredentialDeclaration) => {
     const grant = requireDeclarationGrant(coreDb, declaration);
     const reference = requireDeclarationReference(coreDb, grant);
     assertCredentialGrantMatchesDeclaration(input, declaration, grant, reference);
@@ -1312,9 +1315,6 @@ function resolveWorkerCredentialDeclarations(
       grant.issuance === 'target' &&
       (grant.approvalId === null ||
         (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
-    const injection = declarationInjectionTarget(declaration);
-    const planId = `plan_${input.packageSnapshotId}_${declaration.id}`;
-    const receiptId = `receipt_${input.packageSnapshotId}_${declaration.id}`;
     const turnLineage = {
       workspaceId: input.workspaceId,
       threadId: input.threadId,
@@ -1361,6 +1361,19 @@ function resolveWorkerCredentialDeclarations(
         403
       );
     }
+    return { declaration, grant, reference };
+  };
+  const admitted = input.declarations.map(admit);
+  if (input.credentialResolution === 'materialize') {
+    for (const { reference } of admitted)
+      assertCredentialBackendMatchesReference(requireVaultBackend(input), reference);
+  }
+  for (const candidate of admitted) {
+    const { declaration, grant, reference } =
+      input.credentialResolution === 'materialize' ? admit(candidate.declaration) : candidate;
+    const injection = declarationInjectionTarget(declaration);
+    const planId = `plan_${input.packageSnapshotId}_${declaration.id}`;
+    const receiptId = `receipt_${input.packageSnapshotId}_${declaration.id}`;
     if (input.credentialResolution === 'metadata-only') {
       appendCredentialDeclarationArtifacts({
         artifacts,
@@ -1476,7 +1489,10 @@ function requireDeclarationReference(
  * @throws Error when authorization metadata does not match the requested injection.
  */
 function assertCredentialGrantMatchesDeclaration(
-  input: ResolveWorkerCredentialDeclarationsInput,
+  input: Pick<
+    ResolveWorkerCredentialDeclarationsInput,
+    'agentId' | 'agentSessionId' | 'workspaceId' | 'responsibleUserId' | 'now'
+  >,
   declaration: AgentEnvironmentCredentialDeclaration,
   grant: VaultGrantRecord,
   reference: VaultReferenceRecord
@@ -1529,6 +1545,59 @@ function assertCredentialGrantMatchesDeclaration(
   }
   if (grant.expiresAt && grant.expiresAt <= input.now()) {
     throw new Error(`Vault grant has expired: ${declaration.id}`);
+  }
+}
+
+/**
+ * Rechecks the original package's current Vault authority after awaited preparation or delivery.
+ *
+ * @param coreDb Current grant, reference and execution authority.
+ * @param environmentPackage Exact admitted package, never reconstructed material.
+ * @param now Current clock at this effect boundary.
+ * @throws When revoked, expired or changed authority cannot authorize this use or receipt.
+ */
+export function assertCurrentWorkerCredentialAuthority(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage,
+  now: () => string = () => new Date().toISOString()
+): void {
+  const scope = environmentPackage.scope;
+  for (const declaration of environmentPackage.credentials.declarations) {
+    const grant = requireDeclarationGrant(coreDb, declaration);
+    const reference = requireDeclarationReference(coreDb, grant);
+    assertCredentialGrantMatchesDeclaration(
+      {
+        agentId: environmentPackage.agent.agentId,
+        agentSessionId: scope.agentSessionId,
+        workspaceId: scope.workspaceId,
+        responsibleUserId: responsibleUserIdForActor(scope.triggerActor),
+        now,
+      },
+      declaration,
+      grant,
+      reference
+    );
+    const effectAuthority =
+      grant.issuance === 'target' &&
+      (grant.approvalId === null ||
+        (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
+    if (
+      !currentWorkerLineageWorkspaceAuthority(
+        coreDb,
+        {
+          ...scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+        },
+        'vault.use',
+        effectAuthority
+      )
+    ) {
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+    }
   }
 }
 

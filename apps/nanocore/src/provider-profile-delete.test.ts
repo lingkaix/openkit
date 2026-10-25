@@ -15,6 +15,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { resolveLogicalModel } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import * as providerCredentialOwners from './providers/vault-credential-resolver.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -23,6 +24,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 import { createVaultReference, getVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 
@@ -139,6 +141,8 @@ async function fixture(subscription = false) {
   const accountManager = new ProviderSubscriptionAccountManager({
     coreDb,
     vaultBackend: () => backend,
+    onReferenceRevoked: (referenceId) =>
+      closeRevokedCredentialBindings({ coreDb }, { referenceId }),
   });
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
   const app = createApp({
@@ -188,7 +192,38 @@ async function fixture(subscription = false) {
 describe('provider profile removal', () => {
   it('revokes the key before removing the exact profile file', async () => {
     const f = await fixture();
-    const response = await f.deletion();
+    const runtimeClosureEntered = Promise.withResolvers<void>();
+    const finishRuntimeClosure = Promise.withResolvers<void>();
+    const revoke = providerCredentialOwners.revokeVaultProviderCredential;
+    const revocation = vi
+      .spyOn(providerCredentialOwners, 'revokeVaultProviderCredential')
+      .mockImplementation(async (...args) => {
+        await revoke(...args);
+        runtimeClosureEntered.resolve();
+        await finishRuntimeClosure.promise;
+      });
+    let returned = false;
+    const deletion = f.deletion().then((response) => {
+      returned = true;
+      return response;
+    });
+    let response: Response;
+    try {
+      await Promise.race([runtimeClosureEntered.promise, deletion]);
+      // Vault runtime revocation is part of removal; a pending cleanup cannot certify file deletion.
+      expect(returned).toBe(false);
+      expect(existsSync(join(f.dataRoot, 'config', f.id))).toBe(true);
+      expect(
+        getVaultReference(f.coreDb, 'vault_00000000-0000-7d1d-9a06-27e8a2468878')?.status
+      ).toBe('revoked');
+      expect(f.backend.listReferences()[0]?.revoked).toBe(true);
+      finishRuntimeClosure.resolve();
+      response = await deletion;
+    } finally {
+      finishRuntimeClosure.resolve();
+      await deletion.catch(() => undefined);
+      revocation.mockRestore();
+    }
     expect(response.status).toBe(204);
     expect(await response.text()).toBe('');
     expect(existsSync(join(f.dataRoot, 'config', f.id))).toBe(false);

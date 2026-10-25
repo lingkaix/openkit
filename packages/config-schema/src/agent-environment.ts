@@ -1444,12 +1444,12 @@ export function redactAgentEnvironmentPackageSnapshot(
 /**
  * Validates a package against backend capabilities before launch.
  *
- * @param value Parsed package to validate.
+ * @param value Secret-free package metadata needed for backend admission.
  * @param backend Backend capability declaration.
  * @returns Validation diagnostics; empty when the backend can attempt materialization.
  */
 export function validateAgentEnvironmentPackageForBackend(
-  value: AgentEnvironmentPackage,
+  value: Pick<AgentEnvironmentPackage, 'backend' | 'packageId'>,
   backend: WorkerGovernanceBackendCapabilities
 ): AgentEnvironmentValidationDiagnostic[] {
   const diagnostics: AgentEnvironmentValidationDiagnostic[] = [];

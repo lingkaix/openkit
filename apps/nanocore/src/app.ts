@@ -162,6 +162,7 @@ import {
 import {
   createProviderCredentialConfigured,
   createVaultProviderCredentialResolver,
+  readVaultReferenceId,
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
@@ -258,6 +259,7 @@ import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-ro
 import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
 import { interruptProductTurn } from './turn-routes.js';
+import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
 import {
   createWorkerEnvironmentActivation,
@@ -830,12 +832,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
   const llmPiAiClient = options.llmPiAiClient ?? new PiAiGatewayClient();
   const gatewayUsageTracker = options.gatewayUsageTracker ?? new GatewayUsageTracker();
-  const providerSubscriptionAccountManager =
+  const providerSubscriptionAccountManager: ProviderSubscriptionAccountManager | null =
     options.providerSubscriptionAccountManager ??
     (options.coreDb && vaultUnlockState
       ? new ProviderSubscriptionAccountManager({
           coreDb: options.coreDb,
           vaultBackend: () => vaultUnlockState.backend(),
+          onReferenceRevoked: (referenceId): Promise<void> =>
+            closeRevokedCredentialBindings(
+              { coreDb: options.coreDb, store: sharedStore, turnExecutor },
+              { referenceId }
+            ),
         })
       : null);
   const setupProviderSupply = {
@@ -1404,7 +1411,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
       readRuntimeConfigStatus: () => runtimeConfigManager.status(),
-      revokeProviderSecret: (secretRef) => {
+      revokeProviderSecret: async (secretRef) => {
         if (!options.coreDb || !vaultUnlockState) {
           throw new RuntimeConfigFileServiceError(
             'vault_storage_unavailable',
@@ -1412,10 +1419,30 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             503
           );
         }
-        revokeVaultProviderCredential(
-          { coreDb: options.coreDb, vaultBackend: () => vaultUnlockState.backend() },
-          secretRef
-        );
+        const failures: unknown[] = [];
+        let revoked = false;
+        try {
+          await revokeVaultProviderCredential(
+            { coreDb: options.coreDb, vaultBackend: () => vaultUnlockState.backend() },
+            secretRef
+          );
+          revoked = true;
+        } catch (error) {
+          failures.push(error);
+        }
+        const referenceId = readVaultReferenceId(secretRef);
+        if (revoked && referenceId) {
+          try {
+            await closeRevokedCredentialBindings(
+              { coreDb: options.coreDb, store, turnExecutor },
+              { referenceId }
+            );
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+        if (failures.length)
+          throw failures.length === 1 ? failures[0] : new AggregateError(failures);
       },
       ...(options.coreDb
         ? {

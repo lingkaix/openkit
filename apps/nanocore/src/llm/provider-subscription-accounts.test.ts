@@ -49,6 +49,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
+import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import {
   createVaultReference,
   getVaultReference,
@@ -336,9 +337,12 @@ function createTestClock(): TestClock {
 /**
  * Creates one migrated Core database and unlocked encrypted-file Vault fixture.
  *
+ * @param onReferenceRevoked External runtime effect when that effect is the test's subject.
  * @returns Real provider-subscription manager fixture.
  */
-function createFixture(): ProviderSubscriptionFixture {
+function createFixture(
+  onReferenceRevoked?: (referenceId: string) => Promise<void>
+): ProviderSubscriptionFixture {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-subscription-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -370,6 +374,9 @@ function createFixture(): ProviderSubscriptionFixture {
       },
       now: clock.now,
       vaultBackend: managerBackend,
+      onReferenceRevoked:
+        onReferenceRevoked ??
+        ((referenceId) => closeRevokedCredentialBindings({ coreDb }, { referenceId })),
     });
   const manager = createManager();
   const fixture: ProviderSubscriptionFixture = {
@@ -2324,8 +2331,53 @@ describe('ProviderSubscriptionAccountManager', () => {
     }
   });
 
+  it('waits for runtime revocation and preserves account binding when that cleanup refuses', async () => {
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let observedReferenceId: string | undefined;
+    let refuse = true;
+    const fixture = createFixture(async (referenceId) => {
+      observedReferenceId = referenceId;
+      entered.resolve();
+      await finish.promise;
+      if (refuse) throw new Error('Controlled affected runtime cleanup refusal.');
+    });
+    const pair = accountPair('runtime_closure_required');
+    const referenceId = testEntityId('vault', 'subscription_runtime_closure_required');
+    await createStoredPair(fixture, pair, referenceId);
+    const originalAccount = readAccountJson(fixture.dataRoot, pair);
+    let returned = false;
+    const deletion = fixture.manager.deleteAccount(pair).then(() => {
+      returned = true;
+    });
+    void deletion.catch(() => undefined);
+    try {
+      await Promise.race([entered.promise, deletion]);
+      // Vault lifecycle 7: a revoked reference cannot certify removal of still-exposed runtime material.
+      expect(observedReferenceId).toBe(referenceId);
+      expect(returned).toBe(false);
+      expect(getVaultReference(fixture.coreDb, referenceId)?.status).toBe('revoked');
+      expect(fixture.backend().listReferences()[0]?.revoked).toBe(true);
+      expect(readAccountJson(fixture.dataRoot, pair)).toEqual(originalAccount);
+      finish.resolve();
+      await expect(deletion).rejects.toBeDefined();
+      expect(readAccountJson(fixture.dataRoot, pair)).toEqual(originalAccount);
+      refuse = false;
+      await fixture.manager.deleteAccount(pair);
+      expect(existsSync(accountDirectory(fixture.dataRoot, pair))).toBe(false);
+      expect(getVaultReference(fixture.coreDb, referenceId)?.status).toBe('revoked');
+    } finally {
+      finish.resolve();
+      await deletion.catch(() => undefined);
+    }
+  });
+
   it('continues tombstoned credential and account removal and recreates only with a fresh reference', async () => {
-    const credentialFixture = createFixture();
+    // These manager-owned cascade controls model only the external runtime effect's exact target.
+    const credentialFixture = createFixture(async (referenceId) => {
+      expect(referenceId).toBe('vault_00000000-0000-714b-90e0-ad74e40d0547');
+      expect(getVaultReference(credentialFixture.coreDb, referenceId)?.status).toBe('revoked');
+    });
     const pair = accountPair('delete_and_recreate');
     const originalHandle = await createStoredPair(
       credentialFixture,
@@ -2458,7 +2510,12 @@ describe('ProviderSubscriptionAccountManager', () => {
       ])
     );
 
-    const revokedCredentialFixture = createFixture();
+    const revokedCredentialFixture = createFixture(async (referenceId) => {
+      expect(referenceId).toBe('vault_00000000-0000-77e9-8488-0253ad6dc8ef');
+      expect(getVaultReference(revokedCredentialFixture.coreDb, referenceId)?.status).toBe(
+        'revoked'
+      );
+    });
     const revokedCredentialPair = accountPair('credential_revoked_prefix');
     const revokedCredentialHandle = await createStoredPair(
       revokedCredentialFixture,
@@ -2501,7 +2558,10 @@ describe('ProviderSubscriptionAccountManager', () => {
       receipt: 'stale-session',
     });
 
-    const accountDeleteFixture = createFixture();
+    const accountDeleteFixture = createFixture(async (referenceId) => {
+      expect(referenceId).toBe('vault_00000000-0000-7896-a380-266fe3139fc2');
+      expect(getVaultReference(accountDeleteFixture.coreDb, referenceId)?.status).toBe('revoked');
+    });
     const accountDeletePair = accountPair('account_delete_tombstone');
     await createStoredPair(
       accountDeleteFixture,
@@ -5776,6 +5836,8 @@ describe('Codex settings and manual reset public behavior', () => {
     try {
       const manager = new ProviderSubscriptionAccountManager({
         coreDb: reopened,
+        onReferenceRevoked: (referenceId) =>
+          closeRevokedCredentialBindings({ coreDb: reopened }, { referenceId }),
         now: fixture.clock.now,
         vaultBackend: fixture.backend,
       });
