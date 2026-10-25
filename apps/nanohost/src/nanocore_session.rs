@@ -154,7 +154,8 @@ impl OuterRouteProjection {
             send_nested_status(&mut respond, StatusCode::METHOD_NOT_ALLOWED)?;
             return Err("sandbox route method rejected");
         }
-        let path = request
+        let path = request.uri().path().to_string();
+        let forwarded_path = request
             .uri()
             .path_and_query()
             .map(|value| value.as_str().to_string())
@@ -173,7 +174,8 @@ impl OuterRouteProjection {
             && (request.headers().contains_key(http::header::AUTHORIZATION)
                 || request
                     .headers()
-                    .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER))
+                    .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
+                || request.headers().contains_key("x-openkit-harness-binding"))
         {
             send_nested_status(&mut respond, StatusCode::BAD_REQUEST)?;
             return Err("sandbox Harness route supplied a forbidden header");
@@ -210,7 +212,7 @@ impl OuterRouteProjection {
             is_initial_harness_poll(&parts.method, &path, &parts.headers, &body);
         let mut builder = Request::builder()
             .method(parts.method)
-            .uri(format!("{}{path}", target.authority));
+            .uri(format!("{}{forwarded_path}", target.authority));
         for (name, value) in &parts.headers {
             builder = builder.header(name, value);
         }
@@ -361,6 +363,7 @@ fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, bod
         || path != HARNESS_POLL_PATH
         || headers.contains_key(http::header::AUTHORIZATION)
         || headers.contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
+        || headers.contains_key("x-openkit-harness-binding")
     {
         return false;
     }
@@ -4357,6 +4360,106 @@ mod tests {
             outer_driver.abort();
             outer_server.abort();
         }).await.expect("outer family reservation regression must settle");
+    }
+
+    /// Private route identity ignores queries and never accepts client binding authority.
+    #[tokio::test]
+    async fn harness_projection_rejects_client_headers_by_path_before_outer_dispatch() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let projection = OuterRouteProjection::new();
+            let (outer_client_io, outer_server_io) = tokio::io::duplex(64 * 1024);
+            let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+            let outer_server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(outer_server_io).await.unwrap();
+                while let Some(incoming) = connection.accept().await {
+                    let (mut request, mut respond) = incoming.unwrap();
+                    let seen_tx = seen_tx.clone();
+                    tokio::spawn(async move {
+                        while let Some(chunk) = request.body_mut().data().await {
+                            let chunk = chunk.unwrap();
+                            request.body_mut().flow_control()
+                                .release_capacity(chunk.len()).unwrap();
+                        }
+                        seen_tx.send((
+                            request.uri().path_and_query().unwrap().as_str().to_string(),
+                            request.headers().clone(),
+                        )).unwrap();
+                        respond.send_response(Response::builder()
+                            .status(StatusCode::NO_CONTENT).body(()).unwrap(), true).unwrap();
+                    });
+                }
+            });
+            let (outer_sender, outer_connection) = h2::client::handshake(outer_client_io)
+                .await.unwrap();
+            let outer_driver = tokio::spawn(outer_connection);
+            projection.bind("http://core.test", outer_sender).await;
+            let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+            let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+            let nested_server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                while let Some(incoming) = connection.accept().await {
+                    let (request, respond) = incoming.unwrap();
+                    let projection = projection.clone();
+                    let done_tx = done_tx.clone();
+                    tokio::spawn(async move {
+                        let result = projection.forward(
+                            RouteFamily::WorkerControl, request, respond, "trusted-bridge-binding",
+                        ).await;
+                        done_tx.send(result).unwrap();
+                    });
+                }
+            });
+            let (mut client, connection) = h2::client::handshake(client_io).await.unwrap();
+            let nested_driver = tokio::spawn(connection);
+            // Collect every bounded row so one query failure cannot hide the missing header guard.
+            let mut failures = Vec::new();
+            for route in [HARNESS_POLL_PATH, HARNESS_RESULT_PATH] {
+                for query in ["", "?proof=sec2a"] {
+                    let path = format!("{route}{query}");
+                    let request = Request::builder().method(Method::POST).uri(&path)
+                        .header("content-type", "application/json")
+                        .header("x-fixture-metadata", "preserved").body(()).unwrap();
+                    let (response, mut body) = client.send_request(request, false).unwrap();
+                    body.send_data(Bytes::from_static(br#"{"schemaVersion":2}"#), true).unwrap();
+                    let status = response.await.unwrap().status();
+                    let result = done_rx.recv().await.unwrap();
+                    let forwarded = seen_rx.try_recv().ok();
+                    let exact_projection = forwarded.is_some_and(|(forwarded_path, headers)| {
+                        forwarded_path == path
+                            && headers.get_all("x-openkit-integration-binding").iter().count() == 1
+                            && headers.get("x-openkit-integration-binding")
+                                .is_some_and(|value| value == "trusted-bridge-binding")
+                            && headers.get("x-fixture-metadata")
+                                .is_some_and(|value| value == "preserved")
+                            && !headers.contains_key("x-openkit-harness-binding")
+                            && !headers.contains_key(http::header::AUTHORIZATION)
+                    });
+                    if status != StatusCode::NO_CONTENT || result.is_err() || !exact_projection {
+                        failures.push(format!("{path}: clean projection status={status}, exact={exact_projection}"));
+                    }
+                }
+                for header in ["authorization", "x-openkit-integration-binding",
+                    "x-openkit-harness-binding"] {
+                    let request = Request::builder().method(Method::POST)
+                        .uri(format!("{route}?proof=sec2a"))
+                        .header("content-type", "application/json")
+                        .header(header, "client-supplied-binding").body(()).unwrap();
+                    let (response, mut body) = client.send_request(request, false).unwrap();
+                    body.send_data(Bytes::from_static(br#"{"schemaVersion":2}"#), true).unwrap();
+                    let status = response.await.unwrap().status();
+                    let result = done_rx.recv().await.unwrap();
+                    let contacted = seen_rx.try_recv().is_ok();
+                    if status != StatusCode::BAD_REQUEST || result.is_ok() || contacted {
+                        failures.push(format!("{route}?proof=sec2a client {header}: status={status}, contacted={contacted}"));
+                    }
+                }
+            }
+            nested_driver.abort();
+            nested_server.abort();
+            outer_driver.abort();
+            outer_server.abort();
+            assert!(failures.is_empty(), "private Harness projection violations: {failures:#?}");
+        }).await.expect("private Harness header refusal must settle");
     }
 
     #[tokio::test]

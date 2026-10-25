@@ -442,7 +442,10 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
   const { operationCatalog } = await import(cliModule);
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',
-    fetch: (input, init) => f.app.fetch(new Request(input, init)),
+    fetch: (input, init) =>
+      f.app.fetch(new Request(input, init), {
+        incoming: { socket: { remoteAddress: '127.0.0.1' } },
+      }),
   });
   const turn = await f.store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
@@ -1664,7 +1667,11 @@ describe('Workspace Thread Turn projection cutover', () => {
           { workspaceId: other.id, threadId: foreign.id },
           {
             kind: 'public',
-            actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            actor: {
+              kind: 'session',
+              userId: 'usr_00000000-0000-7000-8000-000000000001',
+              adminTokenId: issued.record.tokenId,
+            },
           }
         )
       ).toEqual(f.store.getThread(other.id, foreign.id));
@@ -1675,7 +1682,11 @@ describe('Workspace Thread Turn projection cutover', () => {
           { workspaceId: other.id, threadId: foreign.id },
           {
             kind: 'public',
-            actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            actor: {
+              kind: 'session',
+              userId: 'usr_00000000-0000-7000-8000-000000000001',
+              adminTokenId: issued.record.tokenId,
+            },
           }
         )
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });

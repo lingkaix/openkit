@@ -1,9 +1,11 @@
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
+import { allocateEntityId } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { finishMcpToolCall, type StartedCapabilityCall } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { OperationError } from '../operation-error.js';
 import {
+  prepareCapturedPermissionDecision,
   readCapturedMediationAllowInDb,
   readCapturedMediationSource,
 } from '../policy/permission-decisions.js';
@@ -340,6 +342,36 @@ export async function executeCapturedPendingCall(input: {
   const { record } = input;
   if (!input.executionCall)
     return { disposition: 'outcome-unknown', reason: 'execution-admission-missing', result: null };
+  const executionCall = input.executionCall;
+  // Retain the actual pre-contact refusal with its finish, without replacing the admitted allow.
+  const refuseSubmission = async (reason: string) => {
+    const source = readCapturedMediationSource(record, input.workspaceDb.sqlite);
+    const reviewed = source
+      ? readCapturedMediationAllowInDb(
+          record,
+          input.workspaceDb.sqlite,
+          source,
+          input.prepared?.mediation
+        )
+      : null;
+    await finishMcpToolCall(
+      executionCall,
+      input.workspaceDb,
+      {
+        status: 'failed',
+        errorCode: reason,
+        decision: prepareCapturedPermissionDecision(
+          record,
+          input.workspaceDb,
+          reviewed,
+          reason,
+          new Date(),
+          allocateEntityId('pd')
+        ),
+      },
+      false
+    );
+  };
   // Completed observations report evidence failure without changing a settled Tool outcome.
   const observeOutcome = async (
     outcome: CapturedPendingCallExecution
@@ -373,12 +405,7 @@ export async function executeCapturedPendingCall(input: {
     return outcome;
   };
   if (!record.serverId || !record.toolName || !record.canonicalArgumentsJson || !input.catalog) {
-    await finishMcpToolCall(
-      input.executionCall,
-      input.workspaceDb,
-      { status: 'failed', errorCode: 'binding-missing' },
-      false
-    );
+    await refuseSubmission('binding-missing');
     return observeOutcome({
       disposition: 'execution-error',
       reason: 'binding-missing',
@@ -389,12 +416,7 @@ export async function executeCapturedPendingCall(input: {
   try {
     resolved = resolveWorkspaceMcpServer({ catalog: input.catalog, serverId: record.serverId });
   } catch {
-    await finishMcpToolCall(
-      input.executionCall,
-      input.workspaceDb,
-      { status: 'failed', errorCode: 'tool-left-supply' },
-      false
-    );
+    await refuseSubmission('tool-left-supply');
     return observeOutcome({
       disposition: 'execution-error',
       reason: 'tool-left-supply',
@@ -405,12 +427,7 @@ export async function executeCapturedPendingCall(input: {
   try {
     const parsed = JSON.parse(record.canonicalArgumentsJson) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      await finishMcpToolCall(
-        input.executionCall,
-        input.workspaceDb,
-        { status: 'failed', errorCode: 'arguments-invalid' },
-        false
-      );
+      await refuseSubmission('arguments-invalid');
       return observeOutcome({
         disposition: 'execution-error',
         reason: 'arguments-invalid',
@@ -419,12 +436,7 @@ export async function executeCapturedPendingCall(input: {
     }
     args = parsed as Record<string, unknown>;
   } catch {
-    await finishMcpToolCall(
-      input.executionCall,
-      input.workspaceDb,
-      { status: 'failed', errorCode: 'arguments-invalid' },
-      false
-    );
+    await refuseSubmission('arguments-invalid');
     return observeOutcome({
       disposition: 'execution-error',
       reason: 'arguments-invalid',
@@ -432,9 +444,9 @@ export async function executeCapturedPendingCall(input: {
     });
   }
   if (
-    resolved.scope === 'server' &&
-    (resolved.catalogDigest !== record.catalogRevision ||
-      !credentialsStillValid(input.coreDb, resolved, record, input.prepared) ||
+    resolved.catalogDigest !== record.catalogRevision ||
+    !credentialsStillValid(input.coreDb, resolved, record, input.prepared) ||
+    (resolved.scope === 'server' &&
       resolved.credentialBindings.some((binding) => {
         const grant = input.coreDb ? getVaultGrant(input.coreDb, binding.vaultGrantId) : null;
         const reference =
@@ -447,12 +459,7 @@ export async function executeCapturedPendingCall(input: {
         }
       }))
   ) {
-    await finishMcpToolCall(
-      input.executionCall,
-      input.workspaceDb,
-      { status: 'failed', errorCode: 'credentials-invalid' },
-      false
-    );
+    await refuseSubmission('credentials-invalid');
     return observeOutcome({
       disposition: 'execution-error',
       reason: 'credentials-invalid',
@@ -465,12 +472,7 @@ export async function executeCapturedPendingCall(input: {
       ? 'policy-changed'
       : undefined);
   if (refusal) {
-    await finishMcpToolCall(
-      input.executionCall,
-      input.workspaceDb,
-      { status: 'failed', errorCode: refusal },
-      false
-    );
+    await refuseSubmission(refusal);
     return observeOutcome({ disposition: 'execution-error', reason: refusal, result: null });
   }
   let outcome: CapturedPendingCallExecution;

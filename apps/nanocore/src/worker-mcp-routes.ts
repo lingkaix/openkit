@@ -2658,11 +2658,28 @@ async function observeWorkerMcpTools(input: {
   snapshotId: string;
   snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
 }> {
+  if (
+    input.resolved.credentialBindings.length > 0 &&
+    !hasCurrentMcpWorkspaceAuthority(
+      input.input.coreDb!,
+      input.environmentPackage,
+      false,
+      'vault.use'
+    )
+  )
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   const resolvedCredentials = await resolveWorkerMcpCredentials(input);
   if (
     !input.signal.aborted &&
     (input.current?.() === false ||
       !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
+      (input.resolved.credentialBindings.length > 0 &&
+        !hasCurrentMcpWorkspaceAuthority(
+          input.input.coreDb!,
+          input.environmentPackage,
+          true,
+          'vault.use'
+        )) ||
       !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage))
   )
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
@@ -3003,6 +3020,16 @@ function assertCurrentMcpVaultBindings(
   injections: readonly PendingMcpVaultInjection[]
 ): void {
   assertCurrentSharedMcpBinding(input);
+  if (
+    input.resolved.credentialBindings.length > 0 &&
+    !hasCurrentMcpWorkspaceAuthority(
+      input.input.coreDb!,
+      input.environmentPackage,
+      false,
+      'vault.use'
+    )
+  )
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   for (const binding of input.resolved.credentialBindings) {
     const grant = getVaultGrant(input.input.coreDb!, binding.vaultGrantId);
     const reference = grant ? getVaultReference(input.input.coreDb!, grant.vaultReferenceId) : null;
@@ -3327,11 +3354,12 @@ function requireCurrentArtifactWorkspaceAuthority(
     throw mcpDeniedError();
 }
 
-/** Returns whether current Workspace authority still permits this AEP actor to use tools. */
+/** Rechecks the requested Tool or Vault right against this exact current Worker lineage. */
 function hasCurrentMcpWorkspaceAuthority(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage,
-  strict = false
+  strict = false,
+  operation: 'tool.use' | 'vault.use' = 'tool.use'
 ): boolean {
   return Boolean(
     currentWorkerLineageWorkspaceAuthority(
@@ -3344,7 +3372,7 @@ function hasCurrentMcpWorkspaceAuthority(
         packageSnapshotId: environmentPackage.snapshotId,
         triggerActor: environmentPackage.scope.triggerActor,
       },
-      'tool.use',
+      operation,
       true,
       strict ? { dependencyFailure: 'throw' } : undefined
     )

@@ -205,6 +205,32 @@ describe('authoritative NanoHost session dispatch', () => {
             byteLength: importBody.length,
             reference: importResult.reference,
           });
+          // Observe the real registrar and dispatcher: a query cannot select bearer routing.
+          const classified = vi.spyOn(dispatch, 'route');
+          try {
+            for (const operation of ['poll', 'result']) {
+              const path = `/worker-control/harness/${operation}`;
+              classified.mockClear();
+              const refused = await post(
+                `${path}?proof=sec2a`,
+                { schemaVersion: 0 },
+                {
+                  'x-openkit-integration-binding': 'unknown-sec2a-binding',
+                }
+              );
+              expect(refused.headers[':status']).toBe(409);
+              expect(classified).toHaveBeenCalledExactlyOnceWith(
+                expect.any(Object),
+                expect.objectContaining({
+                  path,
+                  family: 'worker-control',
+                  credentialClass: 'harness',
+                })
+              );
+            }
+          } finally {
+            classified.mockRestore();
+          }
         }
       }
     } finally {

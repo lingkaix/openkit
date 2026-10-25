@@ -77,6 +77,7 @@ import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './policy/
 import { PolicyInterception } from './policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest, preparePolicyDocument } from './policy/statements.js';
+import * as workspaceAccess from './policy/workspace-access.js';
 import { ProviderRegistry } from './providers/registry.js';
 import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -3203,6 +3204,8 @@ describe('worker MCP routes', () => {
     'unknown-effect',
     'no-contact',
     'credential-after-claim',
+    'catalog-after-claim',
+    'grant-after-claim',
   ] as const)('re-evaluates current authority before granting a captured MCP call: %s', {
     timeout: 60_000,
   }, async (change) => {
@@ -3478,13 +3481,14 @@ describe('worker MCP routes', () => {
           )
         );
       }
-      const executed = change !== 'deny' && change !== 'revoke';
+      const refusedAfterClaim = change === 'catalog-after-claim' || change === 'grant-after-claim';
+      const executed = change !== 'deny' && change !== 'revoke' && !refusedAfterClaim;
       const disposition =
         change === 'deny'
           ? 'denied-not-executed'
           : change === 'unknown-effect'
             ? 'outcome-unknown'
-            : ['known-error', 'no-contact', 'revoke'].includes(change)
+            : refusedAfterClaim || ['known-error', 'no-contact', 'revoke'].includes(change)
               ? 'execution-error'
               : 'approved-executed';
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
@@ -3544,6 +3548,32 @@ describe('worker MCP routes', () => {
               prepared,
               failure
             );
+            if (refusedAfterClaim) {
+              // The approval owner has claimed this exact call; prepared material is still private.
+              expect(readPendingRequest(workspaceDb.sqlite, captured.requestId)).toMatchObject({
+                claim: 'claimed',
+              });
+              expect(prepared).toMatchObject({
+                failed: false,
+                credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
+              });
+              if (change === 'catalog-after-claim') {
+                // The execution input can advance independently of the prepared Policy view.
+                context.catalog = {
+                  ...catalog,
+                  servers: [
+                    { ...catalog.servers[0]!, timeoutMs: catalog.servers[0]!.timeoutMs + 1 },
+                  ],
+                };
+                expect(
+                  resolveWorkspaceMcpServer({ catalog: context.catalog, serverId: 'echo' })
+                    .catalogDigest
+                ).not.toBe(captured.catalogRevision);
+              } else {
+                revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
+              }
+              expect(prepared?.mediation?.current()).toBe(true);
+            }
             return executionCall.refusal;
           },
           execute: (record) =>
@@ -3585,7 +3615,7 @@ describe('worker MCP routes', () => {
                       : disposition === 'outcome-unknown'
                         ? 'unknown'
                         : 'failed',
-                  ...(change === 'revoke' ? { upstreamContacted: false } : {}),
+                  ...(change === 'revoke' || refusedAfterClaim ? { upstreamContacted: false } : {}),
                 }),
               ]
         );
@@ -4433,7 +4463,10 @@ describe('worker MCP routes', () => {
         };
         const nativeClient = createCoreClient({
           baseUrl: 'http://nanocore.test',
-          fetch: (input, init) => app.fetch(new Request(input, init)),
+          fetch: (input, init) =>
+            app.fetch(new Request(input, init), {
+              incoming: { socket: { remoteAddress: '127.0.0.1' } },
+            }),
         });
         const replayResponse = await app.request(
           ...operationRequest(ownerCommand, {}, { body: JSON.stringify(replayInput) })
@@ -5928,6 +5961,8 @@ describe('worker MCP routes', () => {
     ['bearer', 'target'],
     ['raw', 'imported-history'],
     ['bearer', 'imported-history'],
+    ['raw', 'vault-denied-call'],
+    ['raw', 'vault-denied-list'],
   ] as const)('enforces HTTP %s grant issuance %s and explicit replacement binding', async (presentation, issuance) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
     const upstreamOptions: { credentialListEcho?: string } = {};
@@ -6077,6 +6112,44 @@ describe('worker MCP routes', () => {
           coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
         ).toEqual(receiptsBefore);
         resolve.mockRestore();
+        return;
+      }
+      if (issuance === 'vault-denied-call' || issuance === 'vault-denied-list') {
+        // Fault seam: deny the current Vault right while leaving real Tool evaluation unchanged.
+        // This tests enforcement of denial, not configured mixed-right Policy support.
+        const evaluate = workspaceAccess.evaluateWorkspaceMemberAccess;
+        const currentPolicy = vi
+          .spyOn(workspaceAccess, 'evaluateWorkspaceMemberAccess')
+          .mockImplementation((input) =>
+            evaluate({
+              operation:
+                input.operation === 'vault.use' ? 'sec2a-denied-vault-use' : input.operation,
+            })
+          );
+        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+        const upstreamBefore = upstream.observed.length;
+        const receiptsBefore = coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+          .get();
+        try {
+          expect(evaluate({ operation: 'tool.use' }).effect).toBe('allow');
+          const request =
+            issuance === 'vault-denied-list'
+              ? client.listTools()
+              : client.callTool({ arguments: { message: 'denied Vault right' }, name: 'echo' });
+          await expect(request).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+          expect(currentPolicy).toHaveBeenCalledWith(
+            expect.objectContaining({ operation: 'vault.use' })
+          );
+          expect(resolve).not.toHaveBeenCalled();
+          expect(upstream.observed).toHaveLength(upstreamBefore);
+          expect(
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+          ).toEqual(receiptsBefore);
+        } finally {
+          resolve.mockRestore();
+          currentPolicy.mockRestore();
+        }
         return;
       }
       const toolCallsBeforeCall = upstream.observed.filter((request) =>

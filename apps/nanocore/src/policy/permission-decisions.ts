@@ -1352,13 +1352,14 @@ export function readCapturedMediationAllowInDb(
   return { decision, actor: audit.actor };
 }
 
-/** Rebuilds the original captured outcome from the actual retained request and reviewed evaluation. */
+/** Rebuilds a captured outcome; a later refusal has its own ID and cannot replace the Approval winner. */
 export function prepareCapturedPermissionDecision(
   record: PendingRequestRecord,
   workspaceDb: WorkspaceDb,
   reviewed: ReturnType<typeof readCapturedMediationAllowInDb>,
   failure: string | undefined,
-  now: Date
+  now: Date,
+  decisionId?: string
 ) {
   const callId = executionCallIdForRequest(record.requestId);
   return prepareControlPermissionDecision({
@@ -1366,9 +1367,9 @@ export function prepareCapturedPermissionDecision(
     now,
     workspaceId: record.workspaceId,
     ownerScope: 'workspace',
-    decisionId: deriveEntityId('pd', ['pending_execution', record.requestId]),
+    decisionId: decisionId ?? deriveEntityId('pd', ['pending_execution', record.requestId]),
     action: 'tool.use',
-    approvalId: record.requestId,
+    approvalId: decisionId === undefined ? record.requestId : null,
     auditActor: reviewed?.actor ?? { kind: 'user', id: record.responsibleUserId },
     subjectSummary: reviewed?.decision.subjectSummary ?? {
       responsibleUserId: record.responsibleUserId,
@@ -1377,6 +1378,7 @@ export function prepareCapturedPermissionDecision(
     resourceSummary: { serverId: record.serverId, toolName: record.toolName },
     contextSummary: {
       capabilityCallId: callId,
+      ...(decisionId === undefined ? {} : { humanApprovalRequestId: record.requestId }),
       threadId: record.threadId,
       turnId: record.raisingTurnId,
       packageSnapshotId: record.packageDigest,

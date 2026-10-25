@@ -141,7 +141,10 @@ it('admits Server history only with current Server authority and never through a
     store,
     workspaceMutationAdmission: new WorkspaceMutationAdmission(),
   });
-  const session = { kind: 'public' as const, actor: { kind: 'session' as const, userId } };
+  const session = {
+    kind: 'public' as const,
+    actor: { kind: 'session' as const, userId, adminTokenId: admin.tokenId },
+  };
   expect(await invoke('thread.server.read', { threadId: thread.id }, session)).toMatchObject({
     thread: { id: thread.id, owner: { kind: 'server' } },
   });

@@ -74,7 +74,7 @@ export const CanonicalCapabilityCallExtensionsSchema = CapabilityCallExtensionsS
 
 /** Exportable capability call ledger record. */
 export interface CapabilityCallLedgerRecord extends CapabilityCall {
-  /** Proved no-contact refusal from the original Main submission decision; absence means unknown here. */
+  /** Proved no-contact refusal from a retained submission decision; absence means unknown here. */
   upstreamContacted?: false;
   /** Canonical optional content for storage and archives, never a live protocol projection. */
   extensions?: z.infer<typeof CanonicalCapabilityCallExtensionsSchema> | undefined;
@@ -543,7 +543,7 @@ function readCapabilityAdmissionAttribution(
  * A definite usage refusal needs a separate best-effort diagnostic because its savepoint rolled back.
  * @param call Original admitted call and immutable attribution.
  * @param workspaceDb Existing Workspace owner.
- * @param finish Original terminal outcome, optional Item clear and Goal escalation.
+ * @param finish Original terminal outcome, optional Item clear, Goal escalation and no-contact decision.
  * @param contacted Whether contact is not disproved and this invocation still needs usage accounting.
  */
 export async function finishMcpToolCall(
@@ -552,15 +552,21 @@ export async function finishMcpToolCall(
   finish: Pick<FinishCapabilityCallInput, 'status' | 'errorCode'> & {
     readonly clearItem?: boolean;
     readonly goalEscalationId?: string;
+    readonly decision?: Extract<
+      ControlCapabilityCommandInput,
+      { kind: 'usage-finish' }
+    >['decision'];
   },
   contacted = true
 ): Promise<void> {
   const now = new Date().toISOString();
+  const { decision, ...terminal } = finish;
   try {
     await getControlStoreWorkerClient().workspaceCapability(workspaceDb, {
       kind: 'usage-finish',
       workspaceId: workspaceDb.workspaceId,
       call: { id: call.id, inserted: call.inserted, context: call.context },
+      ...(decision ? { decision } : {}),
       ...(contacted
         ? {
             usage: {
@@ -576,7 +582,7 @@ export async function finishMcpToolCall(
             },
           }
         : {}),
-      finish: presentControlFacts({ ...finish, clearItem: finish.clearItem || undefined, now }),
+      finish: presentControlFacts({ ...terminal, clearItem: terminal.clearItem || undefined, now }),
     });
   } catch (error) {
     if (error instanceof ControlStoreWorkerError && error.commit === 'unknown') throw error;

@@ -107,6 +107,7 @@ async function owners(appRoot) {
     traces: 'storage/retrieval-traces.js',
     snapshotChain: 'runtime/workspace-snapshot-chain.js',
     jsonc: 'config/jsonc.js',
+    tokens: 'auth/access-token-store.js',
   };
   const loaded = Object.fromEntries(
     await Promise.all(Object.entries(modules).map(async ([name, path]) => [name, await load(path)]))
@@ -208,7 +209,7 @@ function artifact(o, selectors, body, file = false) {
   };
 }
 
-/** Opens only existing User authority; the helper cannot create, rename or replace an account. */
+/** Opens existing User authority with the selected release's current admin-Token projection, without account or Token mutation. */
 function context(o, dataRoot, userId, initialize = false) {
   if (!o.protocol.isEntityId('usr', userId))
     throw new Error('Corpus requires a canonical synthetic User.');
@@ -220,12 +221,20 @@ function context(o, dataRoot, userId, initialize = false) {
   }
   let userDb;
   try {
+    const adminTokenId =
+      user.kind === 'local' ? null : o.tokens.resolveSessionDeploymentAdminTokenId(coreDb, userId);
+    if (user.kind !== 'local' && !adminTokenId)
+      throw new Error('Corpus User requires current deployment administrator authority.');
     userDb = o.db.openUserDb(dataRoot, userId);
     if (initialize) o.migrate.applyScopedMigrations(userDb);
     return {
       coreDb,
       userDb,
-      actor: { kind: user.kind === 'local' ? 'local' : 'session', userId },
+      actor: {
+        kind: user.kind === 'local' ? 'local' : 'session',
+        userId,
+        ...(adminTokenId ? { adminTokenId } : {}),
+      },
       store: new o.store.FsStore({ dataRoot }),
       inflightCommands: new WeakMap(),
     };

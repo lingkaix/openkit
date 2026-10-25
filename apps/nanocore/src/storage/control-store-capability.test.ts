@@ -5,8 +5,17 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
+import {
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from '../capability/usage-ledger.js';
+import {
+  listExportableWorkspacePermissionDecisions,
+  prepareControlPermissionDecision,
+} from '../policy/permission-decisions.js';
 import { readWorkerRawOutput } from '../runtime/worker-raw-output.js';
+import { ControlCapabilityCommandInputSchema } from './control-store-capability.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -407,4 +416,135 @@ it('retains an exact binary Knowledge answer after reopen and refuses a corrupte
   const rejected = calls.find((call) => call.id === refused.id)!;
   expect(rejected.status).toBe('running');
   expect(rejected.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
+});
+
+it('commits a final no-contact refusal tuple and rolls it back on an actual native finish refusal', async () => {
+  const f = fixture();
+  const callId = allocateEntityId('cap');
+  const allowId = allocateEntityId('pd');
+  const refusalId = allocateEntityId('pd');
+  const actor = { kind: 'user' as const, id: allocateEntityId('usr') };
+  const now = new Date();
+  const preparedDecision = (result: 'allow' | 'deny', decisionId: string) =>
+    prepareControlPermissionDecision({
+      workspaceDb: f.db,
+      workspaceId: f.workspaceId,
+      ownerScope: 'workspace',
+      decisionId,
+      policyEngineVersion: 'native-refusal-fixture:v1',
+      policySnapshotId: 'native-refusal-policy',
+      subjectSummary: { responsibleUserId: actor.id },
+      action: 'tool.use',
+      resourceSummary: { serverId: 'echo', toolName: 'echo' },
+      contextSummary: {
+        capabilityCallId: callId,
+        ...(result === 'deny'
+          ? { upstreamContacted: false, originEvaluationDecisionId: allowId }
+          : {}),
+      },
+      result,
+      reasonCode:
+        result === 'deny' ? 'mcp_approval_submission_refused' : 'mcp_approval_grant_reauthorized',
+      enforcementPoint: 'approval.respond',
+      auditActor: actor,
+      now,
+    });
+  // Fault setup precedes the sole native writer. ABORT preserves savepoint isolation.
+  // The trigger fires only after this Call's actual terminal SQL update has executed.
+  f.db.sqlite.exec(`
+    CREATE TRIGGER sec2a_refuse_native_finish
+    AFTER UPDATE OF completed_at ON capability_calls
+    WHEN NEW.call_id = '${callId}' AND NEW.completed_at IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'sec2a native finish refusal'); END
+  `);
+  const writer = await f.open();
+  const admitted = await writer.capability(f.workspaceId, {
+    kind: 'admit',
+    workspaceId: f.workspaceId,
+    callId,
+    now: now.toISOString(),
+    decision: preparedDecision('allow', allowId),
+    context: {
+      authorityActor: actor,
+      family: 'mcp',
+      operation: 'mcp.call-tool',
+      capabilityId: 'mcp.call-tool',
+      redactionClass: 'metadata-only',
+      serviceRef: 'mcp-tool:echo',
+    },
+  });
+  if (!admitted || typeof admitted !== 'object' || !('context' in admitted))
+    throw new Error('Native MCP admission did not return its original Call.');
+  const tuple = () => ({
+    calls: listWorkspaceCapabilityCalls(f.db, f.workspaceId),
+    decisions: listExportableWorkspacePermissionDecisions(f.db, f.workspaceId),
+    audit: listWorkspaceAuditEvents(f.db, f.workspaceId),
+    usage: listWorkspaceUsageRecords(f.db, f.workspaceId),
+  });
+  const before = tuple();
+  expect(before.decisions).toEqual([
+    expect.objectContaining({ decisionId: allowId, result: 'allow' }),
+  ]);
+  const decision = preparedDecision('deny', refusalId);
+  const finish = async () =>
+    writer.capability(
+      f.workspaceId,
+      ControlCapabilityCommandInputSchema.parse({
+        kind: 'usage-finish',
+        workspaceId: f.workspaceId,
+        call: admitted,
+        decision,
+        finish: { status: 'failed', errorCode: 'credentials-invalid', now: now.toISOString() },
+      })
+    );
+  // The original schema rejects the new participant. After admission is implemented,
+  // only the actual native SQL constraint is sufficient proof of this rollback path.
+  await expect(finish()).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+  expect(tuple()).toEqual(before);
+
+  // The definite refusal permits a fresh submission. Exclude native writes during fault removal.
+  await writer.close(f.workspaceId);
+  f.db.sqlite.pragma('query_only = OFF');
+  f.db.sqlite.exec('DROP TRIGGER sec2a_refuse_native_finish');
+  // A second cut detects a separately committed Call when the decision is recorded later.
+  // Together the cuts prove rollback without prescribing the participant order.
+  f.db.sqlite.exec(`
+    CREATE TRIGGER sec2a_refuse_native_decision_audit
+    AFTER INSERT ON audit_events
+    WHEN NEW.permission_decision_id = '${refusalId}' AND NEW.action = 'permission.decision'
+    BEGIN SELECT RAISE(ABORT, 'sec2a native decision Audit refusal'); END
+  `);
+  f.db.sqlite.pragma('query_only = ON');
+  await f.open();
+  await expect(finish()).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+  expect(tuple()).toEqual(before);
+
+  await writer.close(f.workspaceId);
+  f.db.sqlite.pragma('query_only = OFF');
+  f.db.sqlite.exec('DROP TRIGGER sec2a_refuse_native_decision_audit');
+  f.db.sqlite.pragma('query_only = ON');
+  await f.open();
+  await expect(finish()).resolves.toBeNull();
+  const after = tuple();
+  expect(after.calls).toEqual([expect.objectContaining({ id: callId, status: 'failed' })]);
+  expect(after.usage).toEqual([]);
+  expect(after.decisions.find((row) => row.decisionId === allowId)).toEqual(before.decisions[0]);
+  expect(after.decisions).toHaveLength(2);
+  expect(after.decisions.find((row) => row.decisionId === refusalId)).toMatchObject({
+    result: 'deny',
+    contextSummary: { capabilityCallId: callId, upstreamContacted: false },
+  });
+  expect(after.audit.filter((row) => row.permissionDecisionId === allowId)).toEqual(
+    before.audit.filter((row) => row.permissionDecisionId === allowId)
+  );
+  expect(after.audit.filter((row) => row.permissionDecisionId === refusalId)).toEqual([
+    expect.objectContaining({
+      action: 'permission.decision',
+      capabilityCallId: callId,
+      outcome: 'denied',
+    }),
+  ]);
+  expect(after.audit.filter((row) => row.action === 'capability.finish')).toEqual([
+    expect.objectContaining({ capabilityCallId: callId, outcome: 'failed' }),
+  ]);
 });

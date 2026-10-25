@@ -263,6 +263,7 @@ const usageFinishCommand = z
     kind: z.literal('usage-finish'),
     workspaceId: WorkspaceIdSchema,
     call: startedCall,
+    decision: permissionDecision.optional(),
     usage: z
       .object({
         records: z.array(measurement),
@@ -276,7 +277,20 @@ const usageFinishCommand = z
   .strict()
   .refine(hasUsageOrFinish, {
     message: 'A usage/finish command requires an owned mutation.',
-  });
+  })
+  .refine(
+    (input) =>
+      !input.decision ||
+      (input.finish?.status === 'failed' &&
+        input.usage === undefined &&
+        input.decision.result === 'deny' &&
+        input.decision.reasonCode === 'mcp_approval_submission_refused' &&
+        input.decision.contextSummary.upstreamContacted === false &&
+        input.decision.contextSummary.capabilityCallId === input.call.id),
+    {
+      message: 'A terminal decision belongs to the same failed, uncontacted captured Call.',
+    }
+  );
 
 const mcpCaptureCommand = z
   .object({
@@ -764,6 +778,24 @@ export function applyControlCapabilityCommand(
   if (input.kind === 'finish' || input.kind === 'usage-finish') {
     if (input.kind === 'usage-finish' && input.call.context.workspaceId !== db.workspaceId)
       throw new WorkerRawOutputAuthorityError();
+    if (input.kind === 'usage-finish' && input.decision) {
+      const actual = db.sqlite
+        .prepare(
+          'SELECT schema_version, workspace_id, family, operation, completed_at FROM capability_calls WHERE call_id = ?'
+        )
+        .get(input.call.id) as Record<string, unknown> | undefined;
+      if (
+        !actual ||
+        actual.workspace_id !== db.workspaceId ||
+        actual.family !== 'mcp' ||
+        actual.operation !== 'mcp.call-tool'
+      )
+        throw new WorkerRawOutputAuthorityError();
+      readRetainedV1({ schemaVersion: actual.schema_version }, () => undefined);
+      // A repeated finish cannot append new refusal evidence to an already settled Call.
+      if (actual.completed_at !== null) return null;
+      recordControlPermissionDecision(db, input.decision);
+    }
     let ids: string[] | null = null;
     if (input.kind === 'usage-finish' && input.usage) {
       try {
