@@ -38,7 +38,7 @@ Use these layers when deciding where content belongs:
 - `docs/app-api.md` is a platform reference containing calibrated App API judgments and direct owner and generated-projection link indexes; concrete endpoints, read models, and gateway APIs remain with their accepted specifications and executable owners.
 - `temp/research/` contains temporary external research evidence packages that are not committed. Durable findings must be promoted into specs, core docs, change records, or other canonical project documents with stable source citations.
 - `docs/changes/` contains material change lifecycle records and closeout summaries.
-- `docs/decisions/` contains decision records. A decision record states who decided a durable rule, when, why, and which alternatives were rejected. A Core document links the record beside the rule it supports.
+- `docs/decisions/` contains [decision records](../documentation-model.md#decision-records). A Core document links the record beside the rule it supports.
 
 ## Canonical Definition Rules
 

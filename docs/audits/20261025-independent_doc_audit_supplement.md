@@ -28,12 +28,17 @@ Inputs:
 | ID | Finding | Evidence | Disposition |
 | --- | --- | --- | --- |
 | SUP-C-01 | The Relationships section of `doctrine.md` omits two of the twenty required aspects. | `docs/core/README.md` lists `fault-tolerance.md` and `generative-apps.md` in the required aspect set; `doctrine.md` Relationships names neither. | Fixed: one relationship line for each, using the opening of each document. |
-| SUP-C-02 | The Document Layers list of the Core README omits decision records, although Core documents link them beside their rules. | `docs/documentation-model.md` Decision Records. | Fixed: one bullet for `docs/decisions/`. |
+| SUP-C-02 | The Document Layers list of the Core README omits decision records, although Core documents link them beside their rules. | `docs/documentation-model.md` Decision Records. | Fixed: one bullet for `docs/decisions/`, which links the documentation model as the owner of the record content. |
 | SUP-C-03 | The aspect description and the term index row for `contract-evolution.md` omit three concepts that it owns. | `contract-evolution.md` boundary section owns retained data continuity, the closed core and open extension, and the post-launch operation semantic promise. | Fixed: the description and the index row name them. |
-| SUP-C-04 | The term index omits canonical terms of four aspect documents. | `knowledge.md` defines `Derived Representation` and `Observation`; `sandbox.md` defines isolation levels and the shared Sandbox; `protocol.md` owns the entity-identifier grammar, scope-qualified object references, and Pending Request Semantics; `policy.md` defines `AssistantReadScope` and `OutputAudience`. | Fixed: the five index rows name them. |
+| SUP-C-04 | The term index omits canonical terms of four aspect documents. | `knowledge.md` defines `Derived Representation` and `Observation`; `sandbox.md` defines isolation levels and the shared Sandbox; `protocol.md` owns the entity-identifier grammar, scope-qualified object references, and Pending Request Semantics; `policy.md` defines `AssistantReadScope` and `OutputAudience`. | Fixed: the four index rows name them. |
 | SUP-C-05 | `core-concepts.md` defines `ApprovalRequest` as "a blocking human authorization decision". A later accepted decision removed blocking gates, and `protocol.md` defines "blocking" as a derived display state of a pending request. | [Pending Tool Calls](../decisions/20260930-pending_tool_calls.md): "There is no blocking gate that pauses a Turn"; `protocol.md` Approval Semantics: "the raising Turn continues"; Pending Request Semantics defines "blocking". | Fixed: the definition says that the request holds back its effect, not the raising Turn, and cites the decision. The six covered kinds are unchanged. |
-| SUP-C-06 | Active documents call `policy.md` by its former name "Permissions": "Core Permissions", "Permissions Model", "Permissions Core", "[Permissions](../core/policy.md)", and "under Permissions". | `policy.md` is titled "Policy Model"; the Core README term index and `docs/glossary.md` have no "Permissions" aspect; the archived `superseded/20260513-core_protocol_model_notes.md` names the former `docs/core/permissions.md`. | Fixed: 53 replacements in `core-concepts.md`, `identity.md`, `protocol.md`, and 28 non-held specifications. "Core Permissions" became "Core Policy" so that it stays distinct from the Policy Model specification. Kept: decision titles, the generic noun in the Worker Context Package table, the statement kind in `policy.md`, "General Permissions" in Delegated Worker Policy Maintenance, and "the Permissions pipeline" in Policy Enforcement Mapping, because their meaning is not certainly the aspect. Held documents keep the former name for their own audit. |
+| SUP-C-06 | Active documents call `policy.md` by its former name "Permissions": "Core Permissions", "Permissions Model", "Permissions Core", "[Permissions](../core/policy.md)", and "under Permissions". | `policy.md` is titled "Policy Model"; the Core README term index and `docs/glossary.md` have no "Permissions" aspect; the archived `superseded/20260513-core_protocol_model_notes.md` names the former `docs/core/permissions.md`. | Fixed: 52 replacements in 24 documents, listed below this table. "Core Permissions" became "Core Policy" so that it stays distinct from the Policy Model specification. Kept: decision titles, the generic noun in the Worker Context Package table, the generic heading "Permissions And Accountability" in `generative-apps.md`, whose anchor a rename would change, the statement kind in `policy.md`, "General Permissions" in Delegated Worker Policy Maintenance, and "the Permissions pipeline" in Policy Enforcement Mapping, because their meaning is not certainly the aspect. Held documents keep the former name for their own audit, and `docs/cookbooks/persistent-live-acceptance.md` and `docs/roadmap.md` keep "Core Permissions" for the periphery audit. |
 | SUP-C-07 | `doctrine.md` states that agent-principal activation "remains unclaimed". | Summary Question Q-70 already asks the engineer. | No change; this record does not pre-empt Q-70. |
+
+SUP-C-06 changed these documents, with the number of replacements in each:
+
+- Core: `core-concepts.md` (3), `identity.md` (1), and `protocol.md` (1).
+- Specifications: `20260628-nanocore_config_identity_contract.md` (1), `20260629-openkit_policy_model.md` (3), `20260703-policy_enforcement_mapping.md` (1), `20260704-vault_backend_implementation.md` (2), `20260709-quick_chat_workspace.md` (1), `20260715-contract_stability_baseline.md` (1), `20260715-multi_user_workspace_system.md` (7), `20260908-generative_kernel_data_operations.md` (1), `20260908-generative_ui_interaction.md` (2), `20260909-internal_agent_resource_integration.md` (1), `20260909-knowledge_notebook_editing.md` (1), `20260909-persistent_deployment_acceptance.md` (1), `20260909-personal_memory_and_knowledge_learning.md` (3), `20260909-thread_visibility_and_sharing.md` (5), `20260910-agent_operator_skill.md` (1), `20260910-app_update_delivery.md` (2), `20260910-persistent_worker_volumes.md` (1), `20260922-delegated_worker_policy_maintenance.md` (5), `20261012-product_integrity_check.md` (3), `20261014-retrieval_kernel.md` (4), and `20261018-nanocore_interception_and_information_consolidation.md` (1).
 
 ## Specification Corrections
 
@@ -45,7 +50,7 @@ Inputs:
 | SUP-S-04 | DeepSeek Worker Adapter | The projection says that a prompt RPC error settles `failed` / `host_ended`. | `packages/worker-shim/src/adapters/deepseek.ts:236` returns `prompt_failed` when a correlated native error response set `promptFailed` (line 1732), before the `host_ended` check. | Fixed: both reasons and their conditions. |
 | SUP-S-05 | DeepSeek Worker Adapter | The projection says that the Turn consumer publishes the diagnostic map only on failures. | `turn.ts:563`, as in SUP-S-03. | Fixed. |
 | SUP-S-06 | Pi Worker Adapter | Native Output Mapping says that `agent_settled`, `message_end`, `turn_end`, and `agent_end` are historical JSON-mode names, "not the SDK product schema". | `packages/pi-runtime-host/src/outcome.ts:52-86` branches on these SDK events, and the pinned SDK declares `type: "agent_settled"` in `AgentSessionEvent`. | Fixed: the sentence states that the SDK host reads these SDK events. |
-| SUP-S-07 | Web Product Surface Projection | Three statements limit Automations to the fixed interval "without calendar choices". | [Monthly UTC Recurring Work](../decisions/20261017-monthly_utc_recurring_work.md) accepted the bounded monthly UTC variant; the Scheduler Recurring Event Triggers specification owns it; `apps/web/src/screens/automations/AutomationsScreen.tsx:36-50` offers it. | Fixed: the statements name both timing variants and cite the decision. |
+| SUP-S-07 | Web Product Surface Projection | The Current Implementation Projection calls Automations a "live fixed-interval" projection. The Recurring Workflow Projection, the acceptance, and the deferred work limit Automations to a fixed interval "without calendar choices". | `apps/web/src/screens/automations/AutomationsScreen.tsx:36-50,518` offers a fixed-interval and a monthly UTC cadence. [Monthly UTC Recurring Work](../decisions/20261017-monthly_utc_recurring_work.md) accepted the monthly variant, and the Scheduler Recurring Event Triggers specification owns it, but neither names Web, and that specification excludes Web presentation. | Fixed: the projection states the shipped cadences. The contract, acceptance, and deferral text are unchanged, because no accepted record decides the Web scope of the monthly variant; Question Q-202 asks. |
 | SUP-S-08 | Web Product Surface Projection | Two sentences name operations by client member names (`downloadWorkspaceExportArchive`, `draftKnowledgeProposal`, and three others) instead of catalog keys. | `packages/app-api-schemas/src/workspace-archive-operations.ts:8-36` and `knowledge-operation-definitions.ts:204,277`; the Web guard uses the keys. | Fixed: the catalog keys. The disposition of the archive operations is Question Q-184. |
 
 Other G3 report items were checked and need no record here: the summary record covers them (for example Q-17, Q-19, Q-27, Q-134, Q-135, #462, #497), or they belong to a held document, or the evidence did not hold. The DeepSeek projection still names a stale pnpm store hash for the resolved executable; Q-135 already asks whether such paths stay in specifications.
@@ -67,7 +72,7 @@ Each issue was checked against the open and closed issues first, and each cites 
 
 ## G1 Cross-Comparison
 
-Four read-only inspectors compared each of the 296 probe findings with the summary record, the fifteen group records, and the current documents on this branch. The auditor checked the quoted document evidence of every open finding at its cited line; all 73 quotes matched.
+Four read-only inspectors compared each of the 296 probe findings with the summary record, the fifteen group records, and the current documents on this branch. A script checked the 73 phrases that the inspectors quoted as document evidence of the open findings, each at its cited line, and all matched after two file names in the reports were corrected. Not every open finding has a quote, because a missing-fact finding cites the place where the fact belongs. The Disposition column of the module tables in the G1 probe record gives the disposition and the reference of each finding.
 
 | Module | Held | Covered | Fixed before | Invalid | Open |
 | --- | --- | --- | --- | --- | --- |
@@ -86,22 +91,22 @@ The column meanings:
 - Held: the owning group or the only evidence is held under #440. The held-group audit takes these findings from the G1 probe record.
 - Covered: a group record item, a question, an issue, or a summary theme handles the same defect. Many retained-format findings are covered only by theme G1-CR-T1 and Question Q-01, so the answer to Q-01 decides them.
 - Fixed before: the audit or `main` already changed the text.
-- Invalid: the documents answer the probe. M3-G30 and M3-G45 rest on held text, M4-G30 on a MAY clause, M7-G13 on the expiry and invalidation rules, M8-G04 on `DESIGN.md`, which the probe export lacked, and M8-G38 on an engineer ruling.
+- Invalid: the documents answer the probe. Held text answers M3-G30 and M3-G45, and the held-group audit reclassifies them if that text changes. A MAY clause answers M4-G30, the expiry and invalidation rules answer M7-G13, `DESIGN.md`, which the probe export lacked, answers M8-G04, and an engineer ruling answers M8-G38.
 
 This supplement fixed five open findings:
 
 | Finding | Correction |
 | --- | --- |
-| M8-G01 | The Web specification's included-set count is 248 in the inclusion rule and the stack sentence; the audit had corrected six other places. |
+| M8-G01 | The Web specification's included-set count is 248 in the inclusion rule and the stack sentence; the six other places already stated 248. |
 | M8-G02 | The Web acceptance bullet says twenty-nine roadmap operations, as the disposition table does. |
-| M8-G05 | The Web Consequences sentence no longer claims `Implemented` against the frontmatter `Partial`; the retired Repositories screen is removed from the workflow list, as the specification's own Owns section states. |
+| M8-G05 | The Web Consequences sentence no longer claims `Implemented` against the frontmatter `Partial`; the retired Repositories screen is removed from the workflow list, as the specification's own Owns section states. The claim that the unified Composer projection is implemented waits for the held work-model audit, because the held Unified Conversation Composer specification is `implementation: Partial`. |
 | M7-G32 and M4-G22 | Internal Agent Resource Integration spells `knowledge.notebook-workspace.update` with a hyphen, as Notebook Editing, Core Mediation, the code, and the Operation Definition naming rule do. |
 
 The other 79 open findings are documentation contradictions or missing facts that no accepted record decides. Questions Q-185 to Q-201 group them by owner.
 
 ## Questions For The Engineer
 
-The numbering continues the summary record. Each question states the context, the options, the recommendation with its reason, and what this supplement did meanwhile.
+The numbering continues the summary record. Each question states the context, the options, the recommendation with its reason, and what this supplement did meanwhile. Some questions name specifications by abbreviation: CUG is Capability Usage Gateway Foundation, GKD is Generative Kernel Data And Operations, IARI is Internal Agent Resource Integration, KMR is the Knowledge Manager Agent specification (`20260704-knowledge_manager_internal_agent_runtime.md`), KSI is the Knowledge Store Implementation Contract, NBE is Knowledge Notebook Editing And Publication, PEM is Policy Enforcement Mapping, and WAC is Worker Agent Capability. OKF is the OpenKit Knowledge Format.
 
 ### Q-171. Should the Compute Neutrality Target be accepted before the `v0.1.0` freeze?
 
@@ -126,7 +131,7 @@ The numbering continues the summary record. Each question states the context, th
 
 ### Q-174. Should the product vision call `doctrine.md` "Doctrine"?
 
-- Context: only the engineer may change `docs/product-vision.md`. It uses the link text "Foundation" for `./core/doctrine.md` five times; the document title is "Doctrine Model", and no other document uses that name.
+- Context: only the engineer may change `docs/product-vision.md`. It uses the link text "Foundation" for `./core/doctrine.md` five times; the document title is "Doctrine Model". No Core document or specification uses that link text, but nine change records do, for example `docs/changes/202609220000000001-engineering_quality_pilot/plan.md:18`.
 - Options: (A) Change the link text to "Doctrine". (B) Keep "Foundation" as a vision name and add it to the glossary.
 - Recommendation: A. One name for one document lets a reader find the owner without a mapping.
 - Meanwhile: no change.
@@ -170,7 +175,7 @@ The numbering continues the summary record. Each question states the context, th
 
 ### Q-180. Should the Pi specification state its protected native environment and offline mode?
 
-- Context: `packages/worker-protocol/src/native-environment.ts:127-128` protects `PI_CODING_AGENT_DIR`, `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, and `PI_TELEMETRY`, and the host forces offline mode, which stops native package installs and updates. The Agent manifest specification says each adapter owns its protected-name projection; no document names these variables.
+- Context: `packages/worker-protocol/src/native-environment.ts:127-128` protects `PI_CODING_AGENT_DIR`, `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, and `PI_TELEMETRY`, and the host forces offline mode, which stops native package installs and updates. The Agent manifest specification says each adapter owns its protected-name projection. Only `packages/pi-runtime-host/README.md:9,80` names these variables; no specification does.
 - Options: (A) List the protected names and the offline effect in the Pi specification. (B) Keep them in code.
 - Recommendation: A. The offline effect is observable to users.
 - Meanwhile: no change.
@@ -186,7 +191,7 @@ The numbering continues the summary record. Each question states the context, th
 
 - Context: Codex and Pi Native Output Mapping say that "the shared process runner retains" 16 KiB stdout and stderr prefixes. `packages/worker-shim/src/adapter-registry.ts:226-227` says that the per-Turn adapters were removed with per-Turn launch. Codex never uses stdout as a diagnostic (`codex-app-server.ts:210`), and Pi keeps one prefix for the host lifetime, never reset per Turn (`pi.ts:831-832,1141-1149`).
 - Options: (A) State that each resident adapter owns a per-Turn stderr prefix and that a protocol stdout is never a diagnostic. (B) Keep the text.
-- Recommendation: A, and fix the Pi per-host prefix if per-Turn is chosen.
+- Recommendation: A, because the shared runner that the text names no longer exists, and a prefix that is never reset fills during early Turns, so a later Turn reports earlier stderr. Fix the Pi per-host prefix if per-Turn is chosen.
 - Meanwhile: no change.
 
 ### Q-183. Should the Pi specification state the native model representation it owns?
@@ -318,7 +323,7 @@ The numbering continues the summary record. Each question states the context, th
 ### Q-199. Which AgentSession and adapter facts must be stated before release?
 
 - Findings: M5-G11, M5-G17, M5-G20.
-- Context: `protocol.md:185` lists AgentSession statuses, but no document gives the record fields or the transition table (Agent Session Continuity line 70). Codex line 77 and the OpenCode and Pi specifications defer the credential carrier and Tool re-list behavior to "probe" without recording the result, which decides whether a Tool change needs a successor. Worker Control Protocol line 244 forbids a one-second header timer that the held NanoHost specification uses.
+- Context: `protocol.md:185` lists AgentSession statuses, but no document gives the record fields or the transition table (Agent Session Continuity line 70). Codex line 77 still defers the Tool re-list declaration to a probe, although Codex line 296 records the answer: "Codex does not re-list tools at Turn start, so supply change requires a successor." The OpenCode (lines 134 and 144) and Pi (lines 163 and 173) specifications defer the Tool re-list and the native bearer carrier to a probe without recording the result, which decides whether a Tool change needs a successor. Worker Control Protocol line 244 forbids a one-second header timer that the held NanoHost specification uses.
 - Options: (A) State the record fields and transitions, record each probe result, and settle the timer rule with the held release. (B) Keep them in code.
 - Recommendation: A. Restart compares stored AgentSession state, so its shape is retained data.
 - Meanwhile: no change.
@@ -334,10 +339,17 @@ The numbering continues the summary record. Each question states the context, th
 ### Q-201. Who owns the Web operation inventory and its roadmap owners?
 
 - Findings: M8-G03, M8-G06.
-- Context: the Web specification does not own `PUBLIC_OPERATION_ACCESS` (line 32), Operation Definition line 286 says access keys are removed, and the inclusion rule (line 101) still depends on it. Line 202 names R008 as a capability owner although `docs/roadmap.md` marks R008 complete.
+- Context: the inclusion rule of the Web specification (line 101) depends on `PUBLIC_OPERATION_ACCESS`, which the specification does not own (line 32), and no document names its owner. The code now builds that catalog from the operation definitions (`apps/nanocore/src/auth/operation-access.ts:158`), and Operation Definition line 286 says that the access keys of the eleven Material definitions are removed. Line 202 names R008 as a capability owner although `docs/roadmap.md` marks R008 complete.
 - Options: (A) Name the definition catalog as the inclusion source and allow only open roadmap items as owners. (B) Keep the text.
-- Recommendation: A.
+- Recommendation: A, because the access catalog is a projection of the definitions that Operation Definition owns, and a completed roadmap item cannot own remaining work.
 - Meanwhile: no change.
+
+### Q-202. Does the Web Automations contract admit the monthly UTC cadence?
+
+- Context: [Monthly UTC Recurring Work](../decisions/20261017-monthly_utc_recurring_work.md) accepted a bounded monthly UTC variant of the existing recurring definition, and the Scheduler Recurring Event Triggers specification owns it. The decision names no Web owner, and that specification excludes Web presentation. The Web specification's Recurring Workflow Projection says "The initial surface configures a fixed interval", its acceptance says "without calendar choices", and its deferred work keeps calendar recurrence out of Automations. The shipped screen offers a monthly UTC cadence through the same five `automation.*` operations (`apps/web/src/screens/automations/AutomationsScreen.tsx:36-50,518`).
+- Options: (A) Amend the Web contract to admit the monthly UTC cadence: the day 1 to 28 and UTC time controls, the display of a monthly expired range, and the acceptance and deferral bullets. (B) Keep the fixed-interval contract and remove the monthly controls from the screen, which is an implementation issue.
+- Recommendation: A. The decision reuses the existing definition and operations, so the Web projection of that owner can cover both shapes, and the shipped screen already offers them. Web is not a named affected owner, so the engineer decides the scope.
+- Meanwhile: the Current Implementation Projection states the shipped cadences (SUP-S-07). The contract, acceptance, and deferral text are unchanged.
 
 ## Semantic Preservation
 
@@ -345,25 +357,56 @@ The inventory compares the 30 changed Core documents and specifications with the
 
 | Item class | Before | Present unchanged | Changed |
 | --- | --- | --- | --- |
-| Normative sentences | 2,582 | 2,566 | 16 |
-| Other sentences and table rows | 10,199 | 10,137 | 62 |
+| Normative sentences | 2,582 | 2,567 | 15 |
+| Other sentences and table rows | 10,199 | 10,138 | 61 |
 | Numbers with units | 371 | 370 | 1 |
 | Backticked identifiers | 2,690 | 2,683 | 7 |
 | Heading anchors | 824 | 824 | 0 |
 | Links | 491 | 491 | 0 |
 
-Every changed normative sentence is one of these: a "Permissions" name replaced by "Policy" or "Core Policy" (SUP-C-06), a Codex home sentence (SUP-S-01), a Web Automations statement (SUP-S-07), a Web operation name (SUP-S-08), a Web count or workflow list (M8-G01, M8-G02, M8-G05), the notebook operation spelling (M7-G32), or a projection statement (SUP-S-03 to SUP-S-05). The changed number is the stale count 244 (M8-G01). The changed identifiers are five client member names and the underscore operation name, replaced by catalog keys, and the status word `Implemented` (M8-G05). No anchor or link was lost, and the two new links cite decision records, so no inbound link needed repointing.
+Every changed normative sentence is one of these: a "Permissions" name replaced by "Policy" or "Core Policy" (SUP-C-06), a Codex home sentence (SUP-S-01), a Web operation name (SUP-S-08), a Web count or workflow list (M8-G01, M8-G02, M8-G05), the notebook operation spelling (M7-G32), or a projection statement (SUP-S-03 to SUP-S-05). The changed number is the stale count 244 (M8-G01). The changed identifiers are five client member names and the underscore operation name, replaced by catalog keys, and the status word `Implemented` (M8-G05). No anchor or link was lost. The two new link targets are the Pending Tool Calls decision (SUP-C-05) and the Decision Records section of the documentation model (SUP-C-02), so no inbound link needed repointing.
 
 ## Review
 
-Pending: one fresh independent Reviewer context checks this supplement's diff before the pull request.
+One fresh independent Reviewer context checked the diff from `0bd8c542` to `4b5e781` against the repository and the code at `547887980`. It ran the document model, index, and specification lifecycle validators, and they passed. It reported three blocking and seventeen non-blocking findings. This section gives each finding and its resolution.
+
+Blocking findings, all accepted:
+
+1. The SUP-C-06 count was wrong: the diff has 52 replacements in 24 documents. The row now gives that count, and a list gives each document and its count.
+2. SUP-S-07 added a Web MUST for the monthly UTC variant that no accepted record decides, because the decision names no Web owner and the scheduler specification excludes Web presentation. It also left the Recurring Workflow Projection and the Current Implementation Projection inconsistent. The contract, acceptance, and deferral text are restored, the Current Implementation Projection states the shipped cadences, and Question Q-202 asks the engineer.
+3. The G1 dispositions could not be traced: only 90 of the 296 findings had an ID in this record, and the held labels of the probe record disagreed with the counts. Each module table of the probe record now has a Disposition column, built from the four inspector reports, and the probe text separates its own group labels from the comparison result.
+
+Non-blocking findings, all accepted:
+
+1. "the current Policy Model" in App Update Delivery could name the Policy Model specification. It now links Core Policy.
+2. The new Core README bullet restated part of the documentation model. It now links the Decision Records section.
+3. SUP-C-04 changes four index rows, not five.
+4. The kept list now names the generic heading in `generative-apps.md`, and the periphery hand-off names the cookbook and the roadmap.
+5. M8-G05 now says that the Composer claim waits for the held work-model audit.
+6. M8-G01 now says that the six other places already stated 248.
+7. The probe derivation table no longer labels Quick Chat Workspace and Scheduler Recurring Event Triggers as held.
+8. The probe record now says that "Cross-cutting" names its own themes.
+9. The Invalid definition now says that held text answers M3-G30 and M3-G45.
+10. The quote statement now says what the 73 quotes cover and why a missing-fact finding has no quote.
+11. Q-174, Q-180, Q-199, and Q-201 are corrected against the cited evidence.
+12. Q-182 and Q-201 now give their reasons.
+13. Q-189 is a rule question because one answer fixes a form for many documents. The Remaining Work items now say what each rule question decides.
+14. Summary Remaining Work item 5 now gives the combined totals.
+15. The summary issue rows now point to the Issues Opened section of this record.
+16. The Questions section now spells out its abbreviations.
+17. The probe record has a blank line before its Method heading, and a finding with two types lists both.
+
+The Reviewer also named two points for the engineer:
+
+- The summary record was edited after its close-out. Pull request #521 is not merged, and on 2026-10-25 the engineer directed this session to add its findings to that audit, so the edit follows that direction. The pull request description names the edit.
+- Delegated Worker Policy Maintenance says that "local/server identity remains owned by Policy". The former text gave the same owner under the name "Permissions", so the rename does not change the claim. `policy.md` owns the derivation of administrator authority in each mode, and `identity.md` owns Identity; the engineer can decide which one the sentence means.
 
 ## Remaining Work
 
 The Remaining Work section of the summary record is the single list. This supplement adds these items to it:
 
 - The engineer deferred the archive check on 2026-10-25 until a way to handle frozen archived documents is decided. Both sessions' read-only passes agree on its result.
-- The held-group audit takes the 84 held probe findings from the G1 probe record, and renames "Permissions" to "Policy" in the held documents (SUP-C-06). Q-187, Q-190, and Q-199 also depend on held releases.
-- Writing and organization (G4 and G5) were recorded, not rewritten. After the engineer answers the rule questions (Q-01, Q-23, Q-28, Q-189), the rewrite runs in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
+- The held-group audit takes the 84 findings that the Disposition column of the G1 probe record marks Held, and renames "Permissions" to "Policy" in the held documents (SUP-C-06). The periphery audit takes the two periphery uses of "Core Permissions". Q-187, Q-190, and Q-199 also depend on held releases.
+- Writing and organization (G4 and G5) were recorded, not rewritten. After the engineer answers the questions that set one rule for many documents (Q-01 on shapes that only code defines, Q-23 on experience-chosen numbers, Q-28 on tracker labels, and Q-189 on canonical digests), the rewrite runs in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
 - Before triage, recheck the 69 `doc-audit` issues against current `main`, because `main` moved after both audit bases.
 - A decision sheet over the open questions can group the repeated families so that one rule answers many questions.

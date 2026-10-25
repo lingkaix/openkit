@@ -266,7 +266,7 @@ The engineer ended the audit on 2026-10-25 after the fifteen open groups. Counts
 - Documentation corrections: 67 files under `docs/core/` and `docs/specs/` changed by audit commits, each correction citing its evidence, with no design rule changed (see each record's Semantic Preservation table).
 - Questions: Q-01 to Q-170; 8 were withdrawn after review, so 162 remain for the engineer.
 - G4: one section move in the foundation group (FND-G4-01); no archive transition was made.
-- Supplement: corrections in 30 Core documents and specifications, issues #522 to #529 (one blocking candidate), questions Q-171 to Q-201, and a G1 probe with 296 findings compared one by one against these records. Totals: 69 `doc-audit` issues, 18 blocking candidates, and 193 open questions.
+- Supplement: corrections in 30 Core documents and specifications, issues #522 to #529 (one blocking candidate), questions Q-171 to Q-202, and a G1 probe with 296 findings compared one by one against these records. Totals: 69 `doc-audit` issues, 18 blocking candidates, and 194 open questions.
 
 ## Remaining Work
 
@@ -287,10 +287,10 @@ The engineer stopped the audit after the open groups. This list states what the 
    - A target that is itself archived: `20260713-openkit_agent_skill_interface.md`, now under `retired/`, named by three superseded specifications.
    - Fourteen inbound links from active specifications are supersession pointers or marked background; the two in the test strategy Related Docs are in Q-168.
 4. Root `AGENTS.md`: the audit-only reading and its change proposals were not made. `docs/specs/AGENTS.md` proposals are Q-170.
-5. Engineer decisions: answer the 162 open questions (the table below), and triage the 17 blocking-candidate issues before `v0.1.0`. Questions that need the engineer by rule include Q-161 (local guide rule), Q-166 (engineering doctrine), Q-169 (public-repository redaction of a decision record), and Q-170 (local `AGENTS.md`).
+5. Engineer decisions: answer the 194 open questions (the table below), and triage the 18 blocking-candidate issues before `v0.1.0`. Questions that need the engineer by rule include Q-161 (local guide rule), Q-166 (engineering doctrine), Q-169 (public-repository redaction of a decision record), and Q-170 (local `AGENTS.md`).
 6. After the engineer answers, apply the accepted recommendations in their owners, and close or retitle the issues that an answer changes (for example #510 after Q-156).
-7. Supplement hand-offs: the held-group audit takes the 84 held probe findings from the G1 probe record and the former name "Permissions" in held documents; the supplement record lists them.
-8. Writing and organization (G4 and G5) were recorded as questions, not rewritten. After the rule questions are answered (Q-01, Q-23, Q-28, Q-189), rewrite in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
+7. Supplement hand-offs: the held-group audit takes the 84 findings that the Disposition column of the G1 probe record marks Held, and the former name "Permissions" in held documents; the periphery audit takes two periphery uses of "Core Permissions". The supplement record lists them.
+8. Writing and organization (G4 and G5) were recorded as questions, not rewritten. After the questions that set one rule for many documents are answered (Q-01 on shapes that only code defines, Q-23 on experience-chosen numbers, Q-28 on tracker labels, and Q-189 on canonical digests), rewrite in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
 9. Before triage, recheck the 69 `doc-audit` issues against current `main`, and group the open questions into a decision sheet so that one rule answers each repeated family.
 
 After the mediation group, `main` added `providerModel` to `20260704-capability_usage_gateway_foundation.md` (audited by the mediation group) and to the held `20260703-audit_usage_evidence_records.md`. The close-out recheck found the field in `apps/nanocore/src/capability/usage-ledger.ts` and the Gateway, and the mediation corrections still apply. No new finding. The held Audit specification was read only as the owner that issue #514 cites.
@@ -360,14 +360,14 @@ After the mediation group, `main` added `providerModel` to `20260704-capability_
 | #517 `[ci] L3 NanoCore e2e and L5 smoke jobs keep no failure evidence beyond the job log` | process | PR-TST-05 | ordinary (enhancement) |
 | #518 `[tests] The NanoCore e2e import-boundary check misses multi-line, dynamic, and .mjs imports` | process | PR-TST-07 | low |
 | #519 `[scripts] Documentation field checks still run as two validators instead of one validator plus the index generator` | process | PR-DFC-01 | low (enhancement) |
-| #522 `[workspace-import] Ordinary import keeps the exported private owner instead of binding private Threads to the importing user` | supplement (policy) | TVS | blocking candidate (authorization) |
-| #523 `[workspace-export] Workspace export fails for every non-administrator when the Workspace has any private Thread` | supplement (policy) | TVS | ordinary |
-| #524 `[deepseek] A native max_tokens stop is rejected before classification, so the Turn fails instead of reporting length` | supplement (agent-session) | DSK | ordinary |
-| #525 `[internal-agent] Two fixed system prompts live outside the shared built-in prompt source and its 3000-code-point test` | supplement (architecture) | IAR | low |
-| #526 `[internal-agent] Conversational objectives are not configurable, and the deadline is not checked against four times the objective` | supplement (architecture) | IAR | ordinary |
-| #527 `[internal-agent] A Tool-returned image fails the run instead of surviving the Gateway round trip` | supplement (architecture) | IAR | ordinary |
-| #528 `[opencode] The adapter does not configure the V2 tool output limits or image resizing` | supplement (agent-session) | OPC | ordinary |
-| #529 `[opencode] Each Turn reads the whole native conversation under one 16 MiB and 20-page bound, so a long Thread can stop accepting Turns` | supplement (agent-session) | OPC | ordinary (recovery effect) |
+| #522 `[workspace-import] Ordinary import keeps the exported private owner instead of binding private Threads to the importing user` | supplement (policy) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | blocking candidate (authorization) |
+| #523 `[workspace-export] Workspace export fails for every non-administrator when the Workspace has any private Thread` | supplement (policy) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #524 `[deepseek] A native max_tokens stop is rejected before classification, so the Turn fails instead of reporting length` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #525 `[internal-agent] Two fixed system prompts live outside the shared built-in prompt source and its 3000-code-point test` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | low |
+| #526 `[internal-agent] Conversational objectives are not configurable, and the deadline is not checked against four times the objective` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #527 `[internal-agent] A Tool-returned image fails the run instead of surviving the Gateway round trip` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #528 `[opencode] The adapter does not configure the V2 tool output limits or image resizing` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #529 `[opencode] Each Turn reads the whole native conversation under one 16 MiB and 20-page bound, so a long Thread can stop accepting Turns` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary (recovery effect) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -596,3 +596,4 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-199 | supplement | AgentSession record and adapter probe facts | State fields, transitions, probe results |
 | Q-200 | supplement | Image promotion and release manifest keys | Release Management owns them |
 | Q-201 | supplement | Web inventory source and roadmap owners | Definition catalog; open items only |
+| Q-202 | supplement | Web scope of the monthly UTC Automations cadence | Amend the Web contract |
