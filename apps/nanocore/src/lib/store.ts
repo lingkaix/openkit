@@ -3292,7 +3292,8 @@ export class FsStore {
     owner: ControlProductOwner,
     turns: readonly string[],
     input: I,
-    prepare: (owned: I) => Promise<T>
+    prepare: (owned: I) => Promise<T>,
+    closeoutCallId?: string
   ): Promise<T> {
     if (!this.dataRoot) return prepare(input);
     const scope = this.nativeScope(owner);
@@ -3300,7 +3301,8 @@ export class FsStore {
       `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
       turns,
       input,
-      prepare
+      prepare,
+      closeoutCallId
     );
   }
 
@@ -5440,8 +5442,14 @@ export class FsStore {
    * @throws Error when lineage is invalid or a post-terminal write is not admitted.
    */
   public async createItem(...args: Parameters<FsStore['createItemPublication']>): Promise<Item> {
-    return this.publishTurn(args[0].owner, [args[0].turnId], args, (owned) =>
-      this.createItemPublication(...owned)
+    return this.publishTurn(
+      args[0].owner,
+      [args[0].turnId],
+      args,
+      (owned) => this.createItemPublication(...owned),
+      args[0].type === 'tool-call' && args[0].status !== 'in_progress'
+        ? (args[0].causationId ?? undefined)
+        : undefined
     );
   }
 

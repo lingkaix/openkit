@@ -85,6 +85,8 @@ export const CONTROL_WORKER_LIMITS = {
   batchTransitions: 32,
   batchWaitMs: 5,
   pendingTransitions: 1024,
+  /** Includes the active publication; one Turn cannot reserve the whole database budget. */
+  pendingTurnTransitions: 8,
   /** Process-wide envelopes and ordinary cloned backing, separate from binary/echo. */
   pendingBytes: 64 * 1024 * 1024,
   /** Binary input plus echoed range-text capacity also remains independently bounded. */

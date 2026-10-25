@@ -6,6 +6,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
+import { CONTROL_WORKER_LIMITS } from './storage/control-store-worker-protocol.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
@@ -3136,11 +3137,16 @@ describe('worker MCP routes', () => {
               code: 'operation_storage_unavailable',
               status: 503,
               message: expect.stringMatching(/inspect.*(original|request|outcome)/i),
+              commit: 'not-committed',
             },
           });
           const received = refusal as { message: string; data: { message: string } };
           expect(received.message).toContain(received.data.message);
-          const publicText = JSON.stringify({ message: received.message, data: received.data });
+          // DX pre-contact certainty is typed metadata; all other fields retain the no-retry oracle.
+          const publicText = JSON.stringify({
+            message: received.message,
+            data: { ...received.data, commit: undefined },
+          });
           expect(publicText).not.toContain(dataRoot);
           expect(publicText).not.toMatch(
             /SQLITE|database is locked|capability_calls|permission_decisions|audit_events|INSERT|DELETE|SELECT|not.?committed|roll.?back|safe.{0,12}retry|automatic.{0,12}retry|retry.{0,12}automatic/i
@@ -5461,7 +5467,7 @@ describe('worker MCP routes', () => {
       });
       await expect(
         echo.callTool({ arguments: { message: 'item-publication-failure' }, name: 'echo' })
-      ).resolves.toMatchObject({ content: [{ text: 'item-publication-failure' }] });
+      ).rejects.toMatchObject({ data: { code: 'policy_evidence_unavailable' } });
       createItem.mockRestore();
       expect(store.listAllItems()).toHaveLength(itemCountBeforePublicationFailure);
       const terminalDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -7143,6 +7149,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   }> = [];
   let onDiscovery: (() => Promise<void> | void) | undefined;
   let onTool: (() => Promise<void> | void) | undefined;
+  let onKnowledge: (() => Promise<void> | void) | undefined;
   let toolContacts = 0;
   const observe = (stage: string) => {
     const reader = openWorkspaceDb(dataRoot, workspaceId);
@@ -7190,6 +7197,19 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       store,
       interception,
       workerMcpGateway: gateway,
+      knowledgeAgent: {
+        ask: async () => {
+          await onKnowledge?.();
+          return {
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            answer: 'The credited answer has exact bytes: é.',
+            citations: [],
+            uncertainty: 'Fixture delivery only.',
+          };
+        },
+        maintain: vi.fn(),
+      },
       workerControlGateway: {
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
@@ -7221,32 +7241,52 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
     tool(callback: () => Promise<void> | void) {
       onTool = callback;
     },
+    knowledge(callback: () => Promise<void> | void) {
+      onKnowledge = callback;
+    },
     version(value: string) {
       serverVersion = value;
     },
     tools(value: typeof tools) {
       tools = value;
     },
-    async call(id = ++requestId) {
+    async call(id = ++requestId, kind: 'echo' | 'knowledge' = 'echo') {
       await openTestNativeWorkspace(db);
-      const response = await app.request('/api/worker-capabilities/mcp/echo', {
+      const response = await app.request(
+        `/api/worker-capabilities/mcp/${kind === 'echo' ? 'echo' : 'openkit-work'}`,
+        {
+          method: 'POST',
+          headers: {
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer fixture-package',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            method: 'tools/call',
+            params: {
+              name: kind === 'echo' ? 'echo' : operationToolName('knowledge.ask'),
+              arguments:
+                kind === 'echo'
+                  ? { message: 'commit observation' }
+                  : { question: 'What is known?' },
+            },
+          }),
+        }
+      );
+      return response.json();
+    },
+    async listServers() {
+      await openTestNativeWorkspace(db);
+      return app.request('/api/worker-capabilities/mcp/_list-servers', {
         method: 'POST',
         headers: {
-          accept: 'application/json, text/event-stream',
           authorization: 'Bearer fixture-package',
           'content-type': 'application/json',
         },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id,
-          method: 'tools/call',
-          params: {
-            name: 'echo',
-            arguments: { message: 'commit observation' },
-          },
-        }),
+        body: '{}',
       });
-      return response.json();
     },
     async reopen() {
       await shutdownControlStoreWorkerClient();
@@ -7366,6 +7406,426 @@ describe('MCP physical commit contract', () => {
   });
 });
 
+describe('MCP native admission and original closeout', () => {
+  it('projects proved native admission refusal as not-committed before contact', async () => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const hold = Promise.withResolvers<void>();
+    const pending: Promise<unknown>[] = [];
+    try {
+      // Each selector is distinct: this saturates the shared database count, not one Turn.
+      for (let index = 0; index < 1024; index += 1)
+        pending.push(
+          client
+            .runTurnPublication(database, [`pressure-${index}`], {}, () => hold.promise)
+            .catch((error: unknown) => error)
+        );
+      const response = await f.call(9100);
+      expect(f.gateway.listTools).not.toHaveBeenCalled();
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([]);
+      expect(response).toMatchObject({
+        error: { data: { code: 'operation_storage_unavailable', commit: 'not-committed' } },
+      });
+    } finally {
+      hold.resolve();
+      await Promise.allSettled(pending);
+      await f.close();
+    }
+  });
+
+  it('projects direct server-list native admission refusal after its count credit', async () => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const hold = Promise.withResolvers<void>();
+    const pending: Promise<unknown>[] = [];
+    try {
+      // Leave one slot for the list invocation's credit; its separate durable admit must refuse.
+      for (let index = 0; index < 1023; index += 1)
+        pending.push(
+          client
+            .runTurnPublication(database, [`pressure-${index}`], {}, () => hold.promise)
+            .catch((error: unknown) => error)
+        );
+      const response = await f.listServers();
+      const body = await response.json();
+      expect(f.gateway.getServerHealth).not.toHaveBeenCalled();
+      expect(f.gateway.listTools).not.toHaveBeenCalled();
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([]);
+      expect(response.status).toBe(503);
+      expect(body).toMatchObject({
+        error: { data: { code: 'operation_storage_unavailable', commit: 'not-committed' } },
+      });
+    } finally {
+      hold.resolve();
+      await Promise.allSettled(pending);
+      await f.close();
+    }
+  });
+
+  it.each([
+    { kind: 'echo', pool: 'count' },
+    { kind: 'knowledge', pool: 'count' },
+    { kind: 'echo', pool: 'bytes' },
+    { kind: 'knowledge', pool: 'bytes' },
+  ] as const)('commits the original $kind closeout while new work fills $pool capacity', async ({
+    kind,
+    pool,
+  }) => {
+    const f = await createMcpCommitFixture();
+    const publicationErrors: unknown[] = [];
+    const createItem = f.store.createItem.bind(f.store);
+    const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (...args) => {
+      try {
+        return await createItem(...args);
+      } catch (error) {
+        // Observe the original exception without changing the publication or its failure.
+        publicationErrors.push(error);
+        throw error;
+      }
+    });
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const siblingId = testEntityId('ws', 'mcp-pressure');
+    const sibling = openWorkspaceDb(f.dataRoot, siblingId);
+    applyScopedMigrations(sibling);
+    await openTestNativeWorkspace(sibling);
+    const siblingDatabase = `workspace:${join(f.dataRoot, 'workspaces', siblingId, 'db', 'workspace.sqlite')}`;
+    const materialCall = await startCapabilityCall({
+      workspaceDb: sibling,
+      workspaceId: siblingId,
+      authorityActor: f.environmentPackage.scope.triggerActor,
+      family: 'knowledge',
+      operation: 'knowledge.ask',
+      capabilityId: 'knowledge.ask',
+      redactionClass: 'none',
+    });
+    const entered = Promise.withResolvers<void>();
+    const effect = Promise.withResolvers<void>();
+    const pressure = Promise.withResolvers<void>();
+    const pending: Promise<unknown>[] = [];
+    let resume: (() => void) | undefined;
+    let original: ReturnType<typeof f.call> | undefined;
+    let serial = 0;
+    const offer = (text: string) => {
+      const result = client.runTurnPublication(
+        database,
+        [`pressure-${serial++}`],
+        text,
+        () => pressure.promise
+      );
+      pending.push(result.catch((error: unknown) => error));
+      return result;
+    };
+    try {
+      if (kind === 'echo') expect(await f.call()).toHaveProperty('result');
+      const contact = async () => {
+        entered.resolve();
+        await effect.promise;
+      };
+      if (kind === 'echo') f.tool(contact);
+      else f.knowledge(contact);
+      original = f.call(9200, kind);
+      await entered.promise;
+      const originalId = deriveEntityId('cap', [
+        'mcp',
+        f.environmentPackage.snapshotId,
+        kind === 'echo' ? 'echo' : 'openkit-work',
+        'mcp.call-tool',
+        9200,
+      ]);
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+        expect.objectContaining({ id: originalId, status: 'running' })
+      );
+      // Pressure is admitted after real contact. A sibling posting hold cannot block the original finish.
+      if (pool === 'bytes') {
+        resume = await client.pauseForDataRootBackup(siblingDatabase);
+        const materialFinish = finishCapabilityCall({
+          workspaceDb: sibling,
+          callId: materialCall.id,
+          status: 'succeeded',
+          deliveredKnowledgeAnswer: 'x'.repeat(CONTROL_WORKER_LIMITS.materialPendingBytes),
+        });
+        pending.push(materialFinish.catch((error: unknown) => error));
+        expect(
+          await Promise.race([
+            materialFinish.then(
+              () => 'settled',
+              () => 'refused'
+            ),
+            new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
+          ])
+        ).toBe('held');
+        // Prove material pressure before envelope pressure can mask this refusal.
+        await expect(
+          finishCapabilityCall({
+            workspaceDb: sibling,
+            callId: materialCall.id,
+            status: 'succeeded',
+            deliveredKnowledgeAnswer: 'ordinary material',
+          })
+        ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+        // Reach envelope pressure through its public producer admission, without changing private counters.
+        offer('x'.repeat(CONTROL_WORKER_LIMITS.pendingBytes - 8192));
+        await Promise.resolve();
+        for (const size of [4096, 256, 1]) {
+          for (let index = 0; index < 128; index += 1) {
+            const result = offer('x'.repeat(size));
+            const outcome = await Promise.race([
+              result.then(
+                () => 'settled',
+                () => 'refused'
+              ),
+              new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
+            ]);
+            if (outcome === 'refused') break;
+            expect(outcome).toBe('held');
+          }
+        }
+      } else {
+        for (let index = 0; index < 1024; index += 1) offer('');
+      }
+      // COORD21:55: ordinary work must refuse before it can consume protected closeout capacity.
+      await expect(offer('ordinary new work')).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      effect.resolve();
+      const response = await original;
+      expect(response).toHaveProperty('result');
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+        expect.objectContaining({ id: originalId, status: 'succeeded' })
+      );
+      if (kind === 'echo') {
+        // DX:113 protects this existing MCP Item publication through original settlement.
+        // Worker Capability MCP Item Identifier Name fixes its identity; Core Protocol owns completion.
+        // Builtin Knowledge instead retains exact delivered answer bytes in its CapabilityCall below.
+        const itemId = deriveEntityId('it', [
+          'mcp',
+          f.environmentPackage.snapshotId,
+          'echo',
+          'echo',
+          9200,
+        ]);
+        expect
+          .soft(
+            f.store
+              .listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
+              .filter((item) => item.id === itemId),
+            format('Original terminal Item publication exceptions: %o', publicationErrors)
+          )
+          .toEqual([
+            expect.objectContaining({
+              id: itemId,
+              owner: { kind: 'workspace', workspaceId: f.workspaceId },
+              threadId: f.environmentPackage.scope.threadId,
+              turnId: f.environmentPackage.scope.turnId,
+              type: 'tool-call',
+              status: 'completed',
+            }),
+          ]);
+      }
+      if (pool === 'count') {
+        // The invocation has settled: its one credit must be available to ordinary work again.
+        const replacement = offer('');
+        expect(
+          await Promise.race([
+            replacement.then(
+              () => 'settled',
+              () => 'refused'
+            ),
+            new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
+          ])
+        ).toBe('held');
+        await expect(offer('')).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+      }
+      if (kind === 'knowledge') {
+        const retained = listWorkspaceCapabilityCalls(f.db, f.workspaceId).find(
+          (call) => call.id === originalId
+        )!;
+        expect(JSON.parse(retained.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
+          response.result
+        );
+      } else {
+        expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toContainEqual(
+          expect.objectContaining({ capabilityCallId: originalId, unit: 'tool_calls', quantity: 1 })
+        );
+      }
+    } finally {
+      effect.resolve();
+      pressure.resolve();
+      resume?.();
+      await original;
+      await Promise.allSettled(pending);
+      publication.mockRestore();
+      sibling.sqlite.close();
+      await f.close();
+    }
+  });
+
+  it('commits the admitted terminal Item behind eight same-Turn pending publications', async () => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const turnId = f.environmentPackage.scope.turnId;
+    const itemId = deriveEntityId('it', [
+      'mcp',
+      f.environmentPackage.snapshotId,
+      'echo',
+      'echo',
+      9300,
+    ]);
+    const entered = Promise.withResolvers<void>();
+    const effect = Promise.withResolvers<void>();
+    const pressure = Promise.withResolvers<void>();
+    const publicationEntered = Promise.withResolvers<void>();
+    const publicationErrors: unknown[] = [];
+    const createItem = f.store.createItem.bind(f.store);
+    const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (...args) => {
+      if (args[0].id === itemId) publicationEntered.resolve();
+      try {
+        return await createItem(...args);
+      } catch (error) {
+        publicationErrors.push(error);
+        throw error;
+      }
+    });
+    const pending: Promise<unknown>[] = [];
+    let original: ReturnType<typeof f.call> | undefined;
+    try {
+      f.tool(async () => {
+        entered.resolve();
+        await effect.promise;
+      });
+      original = f.call(9300);
+      await entered.promise;
+      // COORD01:57Z: eight bounds new admissions; this exact admitted effect still owns closeout.
+      for (let index = 0; index < 8; index += 1)
+        pending.push(client.runTurnPublication(database, [turnId], {}, () => pressure.promise));
+      await expect(
+        client.runTurnPublication(database, [turnId], {}, async () => undefined)
+      ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+      effect.resolve();
+      await publicationEntered.promise;
+      // Closeout retains the same-Turn causal prefix instead of returning before its Item commits.
+      expect
+        .soft(
+          await Promise.race([
+            original.then(() => 'settled'),
+            new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
+          ]),
+          format('Original terminal Item publication exceptions: %o', publicationErrors)
+        )
+        .toBe('held');
+      pressure.resolve();
+      expect(await original).toHaveProperty('result');
+      expect(
+        f.store.listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
+      ).toContainEqual(
+        expect.objectContaining({ id: itemId, type: 'tool-call', status: 'completed' })
+      );
+      expect(f.contacts()).toBe(1);
+    } finally {
+      effect.resolve();
+      pressure.resolve();
+      await original;
+      await Promise.allSettled(pending);
+      publication.mockRestore();
+      await f.close();
+    }
+  });
+
+  it('surfaces native terminal Item failure without rewriting the completed effect', async () => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const callId = deriveEntityId('cap', [
+      'mcp',
+      f.environmentPackage.snapshotId,
+      'echo',
+      'mcp.call-tool',
+      9400,
+    ]);
+    const itemId = deriveEntityId('it', [
+      'mcp',
+      f.environmentPackage.snapshotId,
+      'echo',
+      'echo',
+      9400,
+    ]);
+    const privateCanary = 'private Item publication failure /private/mcp-item-canary';
+    const failure = new Database.SqliteError(privateCanary, 'SQLITE_IOERR');
+    const products = client.products.bind(client);
+    let injected = 0;
+    const nativePublication = vi
+      .spyOn(client, 'products')
+      .mockImplementation(async (key, input) => {
+        if (
+          key === database &&
+          input.entries.some(
+            (entry) => entry.kind === 'item' && entry.turnId === f.environmentPackage.scope.turnId
+          ) &&
+          listWorkspaceCapabilityCalls(f.db, f.workspaceId).some(
+            (call) => call.id === callId && call.status === 'succeeded'
+          )
+        ) {
+          injected += 1;
+          throw failure;
+        }
+        return products(key, input);
+      });
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const response = await f.call(9400);
+      // COORD01:57Z: publication failure is explicit; it cannot erase or replay the settled effect.
+      expect.soft(injected).toBe(1);
+      expect.soft(response).not.toHaveProperty('result');
+      expect.soft(response).toMatchObject({
+        error: {
+          data: { code: 'policy_evidence_unavailable' },
+          message: expect.stringMatching(/completed/i),
+        },
+      });
+      expect.soft(response.error?.data?.commit).not.toBe('not-committed');
+      expect(f.contacts()).toBe(1);
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+        expect.objectContaining({ id: callId, status: 'succeeded' })
+      );
+      expect(
+        listWorkspaceUsageRecords(f.db, f.workspaceId).filter(
+          (row) => row.capabilityCallId === callId
+        )
+      ).toEqual([expect.objectContaining({ quantity: 1, unit: 'tool_calls' })]);
+      expect(
+        listWorkspaceAuditEvents(f.db, f.workspaceId).filter(
+          (row) => row.capabilityCallId === callId && row.action === 'capability.finish'
+        )
+      ).toHaveLength(1);
+      expect(
+        f.store
+          .listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
+          .filter((item) => item.id === itemId)
+      ).toEqual([]);
+      const privateBytes = diagnostics.mock.calls.map((args) => format(...args)).join('\n');
+      expect.soft(privateBytes).toContain(callId);
+      expect.soft(privateBytes).toContain('SqliteError');
+      expect.soft(privateBytes).toContain('SQLITE_IOERR');
+      for (const bytes of [JSON.stringify(response), privateBytes]) {
+        expect.soft(bytes).not.toContain(privateCanary);
+        expect.soft(bytes).not.toContain(f.dataRoot);
+      }
+      expect.soft(JSON.stringify(response)).not.toContain('SQLITE_IOERR');
+    } finally {
+      diagnostics.mockRestore();
+      nativePublication.mockRestore();
+      await f.close();
+    }
+  });
+});
+
 describe('MCP commit crash boundaries', () => {
   it.each([
     'before-intent-commit',
@@ -7404,6 +7864,8 @@ describe('MCP commit crash boundaries', () => {
       const response = await f.call(9001);
       expect(reached).toBe(true);
       expect(response).toHaveProperty('error');
+      if (cut === 'after-tool-before-outcome' || cut === 'after-outcome-commit-before-ack')
+        expect(response.error.data?.commit).not.toBe('not-committed');
       const physicalCommits = f.trace.commits.length;
       f.trace.restore();
       const reopened = await f.reopen();

@@ -42,6 +42,7 @@ import type { ControlAdmission, ControlAdmissionResult } from './control-store-a
 import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
+  type ControlCapabilityWireInput,
   controlCapabilityText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
@@ -136,6 +137,14 @@ interface PendingCohort {
   remaining: number;
 }
 
+/** One exact call's closeout count, retained by its original accepted producer. */
+interface CapabilityCloseoutCredit {
+  readonly database: string;
+  readonly callId: string;
+  active: boolean;
+  borrowing: boolean;
+}
+
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly counted: boolean;
@@ -149,6 +158,7 @@ interface Pending {
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly inputBytes: number;
+  readonly closeout?: CapabilityCloseoutCredit | undefined;
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
   readonly reject: (error: ControlStoreWorkerError | PendingRequestCommandError) => void;
@@ -189,11 +199,12 @@ class ControlStoreWorkerClient {
     () => ({ worker: undefined, failed: false, materialBytes: 0, inputBytes: 0, pending: 0 })
   );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
-  private readonly turnTails = new Map<string, Promise<unknown>>();
+  private readonly turnTails = new Map<string, { tail: Promise<unknown>; pending: number }>();
   private readonly operationContext = new AsyncLocalStorage<{
     active: boolean;
     publication: ControlPublicationIdentity | undefined;
     reservation: string | undefined;
+    closeout: CapabilityCloseoutCredit | undefined;
   }>();
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
@@ -252,15 +263,33 @@ class ControlStoreWorkerClient {
 
   /** Retains an accepted producer, including asynchronous preparation, until its own closeout settles.
    * @param publication Optional exact initial product identity, never retry authority.
+   * @param reservation Existing publication count, or the exact invocation credit borrowed through terminal Item acknowledgement.
+   * @param closeout Exact capability call whose serial closeout retains one count credit.
    * @returns The original producer result after its own closeout.
    */
   async runOperation<T>(
     operation: () => Promise<T>,
     publication?: ControlPublicationIdentity,
-    reservation?: string
+    reservation?:
+      | string
+      | { readonly database: string; readonly closeout: CapabilityCloseoutCredit },
+    closeout?: { readonly database: string; readonly callId: string }
   ): Promise<T> {
     this.assertAccepting();
-    const context = { active: true, publication, reservation };
+    if (
+      closeout &&
+      (this.outstanding.get(closeout.database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions
+    )
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    const credit = closeout && { ...closeout, active: true, borrowing: false };
+    if (credit)
+      this.outstanding.set(credit.database, (this.outstanding.get(credit.database) ?? 0) + 1);
+    const context = {
+      active: true,
+      publication,
+      reservation: typeof reservation === 'string' ? reservation : reservation?.database,
+      closeout: credit ?? (typeof reservation === 'object' ? reservation.closeout : undefined),
+    };
     // Register before invoking the producer: its synchronous Core commit may expose this identity.
     const promise = this.operationContext.run(context, () => Promise.resolve().then(operation));
     this.operations.set(promise, publication);
@@ -269,29 +298,56 @@ class ControlStoreWorkerClient {
     } finally {
       context.active = false;
       this.operations.delete(promise);
+      if (credit) {
+        credit.active = false;
+        // An unawaited descendant still owns its actual native backing until its reply or disposal.
+        if (!credit.borrowing) this.releaseOutstanding(credit.database);
+      }
     }
   }
 
-  /** Owns bounded JSON input before same-Turn head capture, through its original native ACK. */
+  /** Owns JSON input before same-Turn head capture through ACK; only an exact terminal Item borrows its invocation credit. */
   async runTurnPublication<I, T>(
     database: string,
     turns: readonly string[],
     input: I,
-    prepare: (owned: I) => Promise<T>
+    prepare: (owned: I) => Promise<T>,
+    closeoutCallId?: string
   ): Promise<T> {
     this.assertAccepting();
+    const context = this.operationContext.getStore();
+    const credit = context?.closeout;
+    const closeout =
+      context?.active &&
+      credit?.active &&
+      !credit.borrowing &&
+      credit.database === database &&
+      credit.callId === closeoutCallId
+        ? credit
+        : undefined;
     const json = JSON.stringify(input);
     const bytes = Buffer.byteLength(json) + 64;
     if (
-      (this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions ||
-      bytes > CONTROL_WORKER_LIMITS.pendingBytes - this.inputBytes
+      !closeout &&
+      ((this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions ||
+        bytes > CONTROL_WORKER_LIMITS.pendingBytes - this.inputBytes)
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     const physical = realpathSync(database.slice(database.indexOf(':') + 1));
-    const keys = turns.map((turn) => JSON.stringify([physical, turn]));
-    const predecessors = keys.map((key) => this.turnTails.get(key));
+    const keys = [...new Set(turns)].map((turn) => JSON.stringify([physical, turn]));
+    // Check the complete selector set before reserving any member or installing its tail.
+    if (
+      !closeout &&
+      keys.some(
+        (key) =>
+          (this.turnTails.get(key)?.pending ?? 0) >= CONTROL_WORKER_LIMITS.pendingTurnTransitions
+      )
+    )
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    const predecessors = keys.map((key) => this.turnTails.get(key)?.tail);
     this.inputBytes += bytes;
-    this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
+    if (closeout) closeout.borrowing = true;
+    else this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
     const result = this.runOperation(
       async () => {
         try {
@@ -302,15 +358,25 @@ class ControlStoreWorkerClient {
         return prepare(JSON.parse(json) as I);
       },
       undefined,
-      database
+      closeout ? { database, closeout } : database
     );
-    for (const key of keys) this.turnTails.set(key, result);
+    for (const key of keys)
+      this.turnTails.set(key, {
+        tail: result,
+        pending: (this.turnTails.get(key)?.pending ?? 0) + 1,
+      });
     try {
       return await result;
     } finally {
       this.inputBytes -= bytes;
-      this.releaseOutstanding(database);
-      for (const key of keys) if (this.turnTails.get(key) === result) this.turnTails.delete(key);
+      if (closeout) {
+        closeout.borrowing = false;
+        if (!closeout.active) this.releaseOutstanding(database);
+      } else this.releaseOutstanding(database);
+      for (const key of keys) {
+        const entry = this.turnTails.get(key)!;
+        if (--entry.pending === 0) this.turnTails.delete(key);
+      }
     }
   }
 
@@ -658,7 +724,10 @@ class ControlStoreWorkerClient {
       const text = controlCapabilityText(input);
       if (
         text !== undefined &&
-        Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
+        (Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes ||
+          (!this.closeoutCredit(database, input) &&
+            Buffer.byteLength(text) >
+              CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes))
       )
         throw new ControlStoreWorkerError('busy', 'not-committed');
       const transfer = prepareControlCapabilityTransfer(input);
@@ -695,6 +764,25 @@ class ControlStoreWorkerClient {
       }
       throw error;
     }
+  }
+
+  /** Only the exact call's serial terminal command may borrow its original count and byte priority. */
+  private closeoutCredit(
+    database: string,
+    input: ControlCapabilityCommandInput | ControlCapabilityWireInput
+  ): CapabilityCloseoutCredit | undefined {
+    if (input.kind !== 'finish' && !(input.kind === 'usage-finish' && input.finish))
+      return undefined;
+    const context = this.operationContext.getStore();
+    const credit = context?.closeout;
+    const callId = input.kind === 'finish' ? input.callId : input.call.id;
+    return context?.active &&
+      credit?.active &&
+      !credit.borrowing &&
+      credit.database === database &&
+      credit.callId === callId
+      ? credit
+      : undefined;
   }
 
   /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */
@@ -930,7 +1018,20 @@ class ControlStoreWorkerClient {
     }
     const database = 'database' in command ? command.database : undefined;
     const context = this.operationContext.getStore();
-    const borrowed = database !== undefined && context?.active && context.reservation === database;
+    const closeout =
+      command.operation === 'capability'
+        ? this.closeoutCredit(command.database, command.input)
+        : undefined;
+    const borrowed =
+      closeout !== undefined ||
+      (database !== undefined && context?.active && context.reservation === database);
+    // The exact Item's preparation owns this serial borrow until its covering native ACK.
+    const creditedPublication =
+      context?.active &&
+      context.reservation === database &&
+      context.closeout?.borrowing &&
+      context.closeout.database === database &&
+      (command.operation === 'products' || command.operation === 'publication');
     const opening = database === undefined ? undefined : this.openings.get(database);
     const host = target ?? opening?.host;
     // An ACK may be validated before older scope reactions run. They keep their prefix.
@@ -969,6 +1070,8 @@ class ControlStoreWorkerClient {
     // One fixed shutdown message per owned host must still drain accepted work at saturation.
     if (
       command.operation !== 'shutdown' &&
+      !closeout &&
+      !creditedPublication &&
       this.inputBytes + inputBytes > CONTROL_WORKER_LIMITS.pendingBytes
     )
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
@@ -987,7 +1090,9 @@ class ControlStoreWorkerClient {
       materialBytes = size.byteLength + size.replyByteLength;
       if (
         !Number.isSafeInteger(materialBytes) ||
-        materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes
+        materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes ||
+        (!closeout &&
+          materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes)
       )
         return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
       if (materialParts?.length) {
@@ -1045,6 +1150,7 @@ class ControlStoreWorkerClient {
       this.materialBytes += materialBytes;
       host.materialBytes += materialBytes;
       host.pending += 1;
+      if (closeout) closeout.borrowing = true;
       const entry: Pending = {
         counted: !borrowed,
         host,
@@ -1054,6 +1160,7 @@ class ControlStoreWorkerClient {
         ready: ready === undefined,
         materialBytes,
         inputBytes,
+        closeout,
         resolve,
         reject,
       };
@@ -1165,6 +1272,10 @@ class ControlStoreWorkerClient {
     entry.host.pending -= 1;
     if (entry.counted && 'database' in entry.command)
       this.releaseOutstanding(entry.command.database);
+    if (entry.closeout) {
+      entry.closeout.borrowing = false;
+      if (!entry.closeout.active) this.releaseOutstanding(entry.closeout.database);
+    }
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
     if (entry.host.pending === 0) entry.host.worker?.unref();

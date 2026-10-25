@@ -64,7 +64,7 @@ Internal Chat, administration and Goal planning calls keep private cache scope a
 
 [`src/operation-invocation.ts`](src/operation-invocation.ts) joins the shared release-authored operation definitions to existing domain handlers and performs native admission and output validation. The migrated Kernel pair derives HTTP, Core Client, selected Worker MCP and retained CLI projections from one table. The existing Kernel receipt, audit and replay owners remain authoritative. [`src/operation-projections.test.ts`](src/operation-projections.test.ts) composes those real projections over isolated SQLite records and checks the result, replay, credential, child and lineage invariants. The administration provenance proof uses the actual fixed internal Tool assembly in `src/administration/operation-invocation.test.ts`.
 
-Worker MCP capability-call admission preserves the shared safe storage-contention code, semantic status and original-outcome inspection message before SDK handling. It records no failed call when ledger admission did not return, and adds no retry or rollback promise.
+Worker MCP capability-call admission preserves the shared safe storage-contention code, semantic status and original-outcome inspection message before SDK handling. Only a trusted definite pre-contact native refusal adds `commit: 'not-committed'`; missing acknowledgements and post-contact SQL failures retain uncertainty. Each original MCP invocation retains one exact-call closeout count credit. Its serial finish charges actual bytes while ordinary new work yields under byte pressure; cold opening, admission and child discovery remain separately counted. It records no failed call when ledger admission did not return and never retries an effect automatically.
 
 ## Scope
 

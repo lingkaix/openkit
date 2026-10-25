@@ -1057,6 +1057,154 @@ describe('control writer parent admission', () => {
     await expect(f.client.write('user', sql)).resolves.toHaveLength(1);
   });
 
+  // COORD21:55 r2-FIX-3 P1: eight TOTAL pending per physical database/Turn, including preparation.
+  it('bounds a physical Turn before preparation while peer Turns and effect admission keep service', async () => {
+    const f = await productPoolFixture();
+    const database = `workspace:${workspaceDbPath(f.root, f.workspaces[0]!.id)}`;
+    const sibling = `workspace:${workspaceDbPath(f.root, f.workspaces[1]!.id)}`;
+    const aliasPath = join(f.root, 'publication-alias.sqlite');
+    symlinkSync(workspaceDbPath(f.root, f.workspaces[0]!.id), aliasPath);
+    const alias = `workspace:${aliasPath}`;
+    const turn = allocateEntityId('tu');
+    let resume!: () => void;
+    const held = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    let entered!: () => void;
+    const preparing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const prepare = vi.fn(async (input: { id: string }) => {
+      if (input.id === 'hot-0') {
+        entered();
+        await held;
+      }
+      return f.client.write(database, nativeRequest(input.id));
+    });
+    const accepted = [f.client.runTurnPublication(database, [turn], { id: 'hot-0' }, prepare)];
+    const settled: Promise<unknown>[] = [Promise.allSettled(accepted)];
+    let excess: Promise<unknown> | undefined;
+    try {
+      await preparing;
+      for (let index = 1; index < 8; index += 1)
+        accepted.push(
+          f.client.runTurnPublication(
+            index % 2 ? alias : database,
+            [turn],
+            { id: `hot-${index}` },
+            prepare
+          )
+        );
+      settled.push(Promise.allSettled(accepted));
+      const rejectedPrepare = vi.fn(async () => f.client.write(database, nativeRequest('excess')));
+      excess = f.client.runTurnPublication(alias, [turn], {}, rejectedPrepare).then(
+        () => ({ code: 'unexpected-accept' }),
+        (error: unknown) => error
+      );
+      const disposition = await Promise.race([
+        excess,
+        nextTurn().then(() => ({ code: 'still-pending' })),
+      ]);
+      expect.soft(disposition).toMatchObject({ code: 'busy', commit: 'not-committed' });
+      expect.soft(rejectedPrepare).not.toHaveBeenCalled();
+      expect.soft(prepare).toHaveBeenCalledTimes(1);
+      await f.client.runTurnPublication(
+        database,
+        [allocateEntityId('tu')],
+        { id: 'peer' },
+        prepare
+      );
+      await f.client.runTurnPublication(sibling, [turn], {}, () =>
+        f.client.write(sibling, nativeRequest('sibling'))
+      );
+      const workspaceId = f.workspaces[0]!.id;
+      const call = await f.client.capability(database, {
+        kind: 'admit',
+        workspaceId,
+        now: new Date().toISOString(),
+        context: {
+          authorityActor: null,
+          family: 'knowledge',
+          operation: 'knowledge.ask',
+          capabilityId: 'knowledge.ask',
+          redactionClass: 'metadata-only',
+        },
+      });
+      expect(call).toHaveProperty('context');
+      expect(nativeRequests(database.slice('workspace:'.length))).toEqual(['peer']);
+      expect(nativeRequests(sibling.slice('workspace:'.length))).toEqual(['sibling']);
+    } finally {
+      resume();
+      await Promise.all(settled);
+      await excess;
+    }
+    await expect(Promise.all(accepted)).resolves.toHaveLength(8);
+    expect.soft(nativeRequests(database.slice('workspace:'.length))).not.toContain('excess');
+    // Refusal must not install a rejected tail that poisons later valid work.
+    await expect(
+      f.client.runTurnPublication(database, [turn], { id: 'later' }, prepare)
+    ).resolves.toHaveLength(1);
+    expect(nativeRequests(database.slice('workspace:'.length))).toContain('later');
+  });
+
+  // P1 checks distinct affected Turns atomically; a refused tuple cannot consume or poison its free selector.
+  it('admits distinct multi-Turn selectors atomically without double charging repeated selectors', async () => {
+    const f = await poolFixture(1);
+    const database = f.scope(0).database;
+    const hot = allocateEntityId('tu'),
+      cold = allocateEntityId('tu');
+    let resume!: () => void;
+    const held = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const hotPrepare = vi.fn(async (id: string) => {
+      await held;
+      return f.client.write(database, nativeRequest(id));
+    });
+    const hotWork = Array.from({ length: 8 }, (_, index) =>
+      f.client.runTurnPublication(database, [hot], `hot-${index}`, hotPrepare)
+    );
+    const hotSettled = Promise.allSettled(hotWork);
+    const rejectedPrepare = vi.fn(async () => {
+      throw new Error('A refused tuple must not prepare.');
+    });
+    const candidate = f.client.runTurnPublication(database, [cold, hot], {}, rejectedPrepare).then(
+      () => ({ code: 'unexpected-accept' }),
+      (error: unknown) => error
+    );
+    const coldPrepare = vi.fn(async (id: string) => {
+      await held;
+      return f.client.write(database, nativeRequest(id));
+    });
+    const coldWork = Array.from({ length: 8 }, (_, index) =>
+      f.client.runTurnPublication(database, [cold, cold], `cold-${index}`, coldPrepare)
+    );
+    const coldSettled = Promise.allSettled(coldWork);
+    const overflowPrepare = vi.fn(async () => f.client.write(database, nativeRequest('overflow')));
+    const overflow = f.client.runTurnPublication(database, [cold], {}, overflowPrepare).then(
+      () => ({ code: 'unexpected-accept' }),
+      (error: unknown) => error
+    );
+    try {
+      expect
+        .soft(await Promise.race([candidate, nextTurn().then(() => ({ code: 'still-pending' }))]))
+        .toMatchObject({ code: 'busy', commit: 'not-committed' });
+      expect
+        .soft(await Promise.race([overflow, nextTurn().then(() => ({ code: 'still-pending' }))]))
+        .toMatchObject({ code: 'busy', commit: 'not-committed' });
+      expect.soft(hotPrepare).toHaveBeenCalledTimes(1);
+      expect.soft(coldPrepare).toHaveBeenCalledTimes(1);
+      expect.soft(rejectedPrepare).not.toHaveBeenCalled();
+      expect.soft(overflowPrepare).not.toHaveBeenCalled();
+    } finally {
+      resume();
+      await Promise.all([hotSettled, coldSettled, candidate, overflow]);
+    }
+    expect((await hotSettled).map((result) => result.status)).toEqual(Array(8).fill('fulfilled'));
+    expect((await coldSettled).map((result) => result.status)).toEqual(Array(8).fill('fulfilled'));
+    expect(nativeRequests(f.scope(0).path)).toHaveLength(16);
+  });
+
   it('never acknowledges a write held before COMMIT', async () => {
     const f = await fixture('before');
     let acknowledged = false;
