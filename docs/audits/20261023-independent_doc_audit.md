@@ -129,14 +129,16 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260710-self_improvement_evaluation_loop.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/specs/20260908-generative_kernel_data_operations.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
 | `docs/specs/20260908-generative_ui_interaction.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
-| `docs/specs/20260529-test_strategy.md` | process | open, pending | — |
-| `docs/specs/20260529-l6_story_acceptance.md` | process | open, pending | — |
-| `docs/specs/20260719-verification_calibration.md` | process | open, pending | — |
-| `docs/specs/20260729-documentation_field_contract.md` | process | open, pending | — |
-| `docs/specs/20260811-execution_residue_measurement.md` | process | open, pending | — |
-| `docs/specs/20260829-release_management.md` | process | open, pending | — |
-| `docs/specs/20260909-persistent_deployment_acceptance.md` | process | open, pending | — |
-| `docs/specs/20260711-evaluation_harness_design.md` | process | open, pending | — |
+| `docs/specs/20260529-test_strategy.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260529-l6_story_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260719-verification_calibration.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260729-documentation_field_contract.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260811-execution_residue_measurement.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260829-release_management.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260909-persistent_deployment_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260711-evaluation_harness_design.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/README.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/AGENTS.md` | process | audited (proposals only) | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260703-storage_layout_record_ownership.md` | storage | held (#440) | — |
 | `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | held (#440) | — |
 | `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | held (#440) | — |
@@ -217,7 +219,7 @@ Each row is finding P0-G4-NN. The chosen home decides only the audit group; it c
 
 ### Phase 0 Finding
 
-- P0-G2-01 (G2/G4, no action yet): eight active `process` specifications have no Core home: test strategy, L6 story acceptance, verification calibration, documentation field contract, execution residue measurement, release management, persistent deployment acceptance, and evaluation harness design. Core owns product semantics, so the missing home is expected. The finding is that no governance document indexes these method owners as one family. Disposition is decided in the process group.
+- P0-G2-01 (G2/G4, no action yet): eight active `process` specifications have no Core home: test strategy, L6 story acceptance, verification calibration, documentation field contract, execution residue measurement, release management, persistent deployment acceptance, and evaluation harness design. Core owns product semantics, so the missing home is expected. The finding is that no governance document indexes these method owners as one family. Disposition: SPX-06 in the [process](20261025-independent_doc_audit_process.md) record; the specifications README index lists them, and no further action is taken.
 
 ## G1 Whole-System Findings
 
@@ -317,6 +319,10 @@ Filled at close-out.
 | #513 `[generative-ui] Presentation admission keeps extra keys such as theme on the declaration messages, and refresh accepts event context` | generative-apps | GA-GUI-01, 02 | low |
 | #514 `[generative-kernel] Kernel AuditEvents name no collection or record ids and no affected-set digest` | generative-apps | GA-GKD-05 | ordinary |
 | #515 `[generative-kernel] Kernel receipt key includes the actor, so a reused request id from another actor does not get idempotency_key_conflict` | generative-apps | GA-GKD-11 | ordinary |
+| #516 `[web] The Web staging e2e script e2e:staging does not exist, but the Docker app e2e script still calls it` | process | PR-TST-01 | low |
+| #517 `[ci] L3 NanoCore e2e and L5 smoke jobs keep no failure evidence beyond the job log` | process | PR-TST-05 | ordinary (enhancement) |
+| #518 `[tests] The NanoCore e2e import-boundary check misses multi-line, dynamic, and .mjs imports` | process | PR-TST-07 | low |
+| #519 `[scripts] Documentation field checks still run as two validators instead of one validator plus the index generator` | process | PR-DFC-01 | low (enhancement) |
 
 ## Decisions Awaiting Engineer Approval
 
@@ -500,3 +506,17 @@ Each group record states the full context, options, recommendation, and interim 
 | Q-154 | generative-apps | Policy mapping for the extra Kernel and catalog operations | Add rows |
 | Q-155 | generative-apps | Generative-apps proposal wording, dates, numbers, labels | As Q-28 |
 | Q-156 | generative-apps | App get for an app id that was never created | `not_found`; no placeholder values |
+| Q-157 | process | CI job and dispatch names in the test strategy | Domain terms in the contract; identifiers in the projection |
+| Q-158 | process | What the release gate runs | Cover the `verify:release` composition as admitted shards |
+| Q-159 | process | NanoHost installer gate on pull requests | Name it as a PR exception |
+| Q-160 | process | Worker MCP smoke placement | Move the Task proof to L3 |
+| Q-161 | process | Per-package `AGENTS.md` requirement | README required; `AGENTS.md` optional |
+| Q-162 | process | Real-provider runner terms | Define "run"; one vocabulary owner; accept the port default |
+| Q-163 | process | Story review on contract change | Review practice in the stories guide |
+| Q-164 | process | Verification calibration cadences | Audit-selected; remove from Owns |
+| Q-165 | process | Seeded-defect role | A function of the Auditor role |
+| Q-166 | process | Delegation premise falsifiability anchor | Add one doctrine sentence (governance) |
+| Q-167 | process | Five-file collection contract | Restate as an inventory assertion |
+| Q-168 | process | Process wording, numbers, labels, placement | As Q-28 |
+| Q-169 | process | Release-cadence decision path and host aliases | Redact the path |
+| Q-170 | process | Proposed changes to `docs/specs/AGENTS.md` | Join line breaks; point to the README |

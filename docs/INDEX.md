@@ -255,6 +255,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261025-independent_doc_audit_agent_session.md` — Independent Documentation Audit: Agent-Session Group
 - `docs/audits/20261025-independent_doc_audit_generative_apps.md` — Independent Documentation Audit: Generative-Apps Group
 - `docs/audits/20261025-independent_doc_audit_knowledge.md` — Independent Documentation Audit: Knowledge Group
+- `docs/audits/20261025-independent_doc_audit_process.md` — Independent Documentation Audit: Process Group
 
 ## Platform References
 
