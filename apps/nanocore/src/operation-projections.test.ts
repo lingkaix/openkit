@@ -49,7 +49,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
-import { type CreateAppOptions, createApp } from './test-support/app.js';
+import { type CreateAppOptions, createApp, createLoopbackAppFetch } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -442,10 +442,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
   const { operationCatalog } = await import(cliModule);
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',
-    fetch: (input, init) =>
-      f.app.fetch(new Request(input, init), {
-        incoming: { socket: { remoteAddress: '127.0.0.1' } },
-      }),
+    fetch: createLoopbackAppFetch(f.app),
   });
   const turn = await f.store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
@@ -1328,7 +1325,7 @@ async function publicJourneyProjections(
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
     headers,
-    fetch: (input, init) => app.fetch(new Request(input, init)),
+    fetch: createLoopbackAppFetch(app),
   });
   const { operationCatalog } = await import(
     new URL('../../../skills/openkit-operations.mjs', import.meta.url).href

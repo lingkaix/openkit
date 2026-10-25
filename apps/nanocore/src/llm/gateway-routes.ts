@@ -19,6 +19,7 @@ import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
+import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   currentWorkerLineageWorkspaceAuthority,
@@ -578,6 +579,8 @@ function readPublicLlmGatewayLineage(metadata: unknown): PublicLlmGatewayLineage
 function publicGatewayAuthorityDenied(input: {
   /** Fresh authenticated actor responsible for the pending provider effect. */
   actor: ActorRef;
+  /** Actual authenticated credential, preserved for every live authority recheck. */
+  requestActor: Actor;
   /** Optional Core database containing current Workspace authority. */
   coreDb?: CoreDb;
   /** OpenAI-compatible request metadata. */
@@ -587,26 +590,30 @@ function publicGatewayAuthorityDenied(input: {
 }): boolean {
   const lineage = readPublicLlmGatewayLineage(input.metadata);
 
+  if (!lineage) return false;
+  const authority = input.coreDb
+    ? currentWorkspaceAuthority(
+        input.coreDb,
+        lineage.workspaceId,
+        input.actor,
+        'llm.gateway.use',
+        true,
+        input.requestActor
+      )
+    : null;
   return Boolean(
-    lineage &&
-      (!input.coreDb ||
-        !currentWorkspaceAuthority(
-          input.coreDb,
-          lineage.workspaceId,
-          input.actor,
-          'llm.gateway.use',
-          true
-        ) ||
-        (lineage.threadId &&
-          lineage.turnId &&
-          (!input.store ||
-            input.actor.kind !== 'user' ||
-            !isThreadIdVisible(
-              input.store,
-              lineage.workspaceId,
-              lineage.threadId,
-              input.actor.id
-            ))))
+    !authority ||
+      (lineage.threadId &&
+        lineage.turnId &&
+        (!input.store ||
+          input.actor.kind !== 'user' ||
+          !isThreadIdVisible(
+            input.store,
+            lineage.workspaceId,
+            lineage.threadId,
+            input.actor.id,
+            authority === 'administrator'
+          )))
   );
 }
 
@@ -3176,6 +3183,7 @@ export function registerLlmGatewayRoutes({
       !isGatewayEnabled() ||
       publicGatewayAuthorityDenied({
         actor,
+        requestActor: context.get('actor'),
         ...(coreDb ? { coreDb } : {}),
         metadata,
         ...(requestStore ? { store: requestStore(context) } : {}),
@@ -3321,6 +3329,7 @@ export function registerLlmGatewayRoutes({
       if (
         publicGatewayAuthorityDenied({
           actor: authorityActor,
+          requestActor: c.get('actor'),
           ...(coreDb ? { coreDb } : {}),
           metadata: (input as { metadata?: unknown }).metadata,
           ...(requestStore ? { store: requestStore(c) } : {}),
@@ -3508,6 +3517,7 @@ export function registerLlmGatewayRoutes({
       if (
         publicGatewayAuthorityDenied({
           actor: authorityActor,
+          requestActor: c.get('actor'),
           ...(coreDb ? { coreDb } : {}),
           metadata: (input as { metadata?: unknown }).metadata,
           ...(requestStore ? { store: requestStore(c) } : {}),

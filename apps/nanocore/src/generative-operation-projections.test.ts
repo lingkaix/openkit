@@ -11,7 +11,7 @@ import { openExistingAppDb } from './storage/app-db.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createApp, createLoopbackAppFetch } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -228,7 +228,7 @@ it('keeps native revisions, replay and atomic batch outcomes through the typed c
   );
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',
-    fetch: (input, init) => f.app.fetch(new Request(input, init)),
+    fetch: createLoopbackAppFetch(f.app),
   });
   const cli = async (id: string, input: unknown) => {
     const row = operationCatalog.find((entry: { id: string }) => entry.id === id);
@@ -354,7 +354,7 @@ it('preserves publication, JSON resources, refresh and conditional action receip
   const { createOpenKitAccessTokenRecord } = await import('./auth/access-token-store.js');
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',
-    fetch: (input, init) => f.app.fetch(new Request(input, init)),
+    fetch: createLoopbackAppFetch(f.app),
   });
   const token = createOpenKitAccessTokenRecord(f.coreDb, {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

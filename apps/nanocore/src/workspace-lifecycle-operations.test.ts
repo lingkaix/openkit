@@ -22,7 +22,10 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
-import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import {
+  createAppWithLocalIdentity as createApp,
+  createTestSessionActor,
+} from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -367,13 +370,15 @@ it.each([
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const actor: Actor = {
-      kind,
-      userId: testEntityId('usr', 'target'),
-      ...(kind === 'token'
-        ? { tokenId: admin.record.tokenId, tokenScope: 'server-admin' as const }
-        : {}),
-    };
+    const actor: Actor =
+      kind === 'session'
+        ? createTestSessionActor(f.coreDb, testEntityId('usr', 'target'))
+        : {
+            kind,
+            userId: testEntityId('usr', 'target'),
+            tokenId: admin.record.tokenId,
+            tokenScope: 'server-admin',
+          };
     const requestId = randomUUID();
     const input = {
       workspaceId: f.workspaceId,

@@ -50,6 +50,7 @@ import { listWorkspaceAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
+  verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
 import {
@@ -154,7 +155,10 @@ import {
 } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import {
+  createAppWithLocalIdentity as createApp,
+  createLoopbackAppFetch,
+} from './test-support/app.js';
 import { createDemoStore, createRetainedDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -231,15 +235,40 @@ function recordMcpWorkerLineage(
 }
 
 describe('worker MCP routes', () => {
-  it('mediates seeded I16 calls through admitted Policy before credentials and upstream effects', async () => {
+  it.each([
+    'member',
+    'nonmember admin revoked',
+    'nonmember admin disabled',
+  ] as const)('mediates seeded I16 calls through admitted Policy before credentials and upstream effects: %s', async (authorityCase) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-i16-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    let userId = 'usr_00000000-0000-7000-8000-000000000001';
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+    if (authorityCase !== 'member') {
+      const auth = createBetterAuth(coreDb, {
+        mode: 'server',
+        env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
+      });
+      const registered = await auth.handler(
+        new Request('http://nanocore.test/api/auth/sign-up/email', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'I16 administrator',
+            email: 'i16-admin@example.invalid',
+            password: randomUUID(),
+          }),
+        })
+      );
+      expect(registered.status).toBe(200);
+      const { user } = (await registered.json()) as { user: { id: string } };
+      userId = user.id;
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId)).toBeNull();
+    }
     const turn = await store.createTurn(
       workspaceId,
       'th_00000000-0000-7000-8000-000000000001',
@@ -262,12 +291,15 @@ describe('worker MCP routes', () => {
       agentId: 'agent_codex_host',
       status: 'running',
     });
-    const token = createOpenKitAccessTokenRecord(coreDb, {
+    const issued = createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: userId,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
-    }).record;
+    });
+    const token = issued.record;
+    const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+    if (!verified) throw new Error('I16 administrator bearer must authenticate.');
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server/vault'),
@@ -435,7 +467,15 @@ describe('worker MCP routes', () => {
       });
       recordPolicyWriteDecision({
         coreDb,
-        actor: { kind: 'local', userId },
+        actor:
+          authorityCase === 'member'
+            ? { kind: 'local', userId }
+            : {
+                kind: 'token',
+                userId: verified.ownerUserId,
+                tokenId: verified.tokenId,
+                tokenScope: verified.scope,
+              },
         candidate: {
           artifactId: testEntityId('ar', 'i16_policy'),
           contentDigest: policyDigest(prepared.document),
@@ -623,6 +663,27 @@ describe('worker MCP routes', () => {
     try {
       await client.connect(transport('echo'));
       await approvalClient.connect(transport('echo-approval'));
+      if (authorityCase !== 'member') {
+        await client.listTools();
+        const start = decisions().length;
+        expect(await call()).toMatchObject({ content: [{ text: 'completed' }] });
+        // Policy author lifetime and exact binding selection must survive request-origin hardening.
+        assertRecords(start, 'allow', 'completed');
+        expect(invoke).toHaveBeenCalledTimes(1);
+        expect(gateway.callTool).toHaveBeenCalledTimes(1);
+        expect(credentialRead).toHaveBeenCalled();
+        if (authorityCase === 'nonmember admin revoked')
+          expect(revokeOpenKitAccessTokenRecord(coreDb, token.tokenId)?.status).toBe('revoked');
+        else
+          expect(
+            coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, userId))()?.changed
+          ).toBe(true);
+        const refusedBoundary = boundaryCounts();
+        await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(boundaryCounts()).toEqual(refusedBoundary);
+        expect(invoke).toHaveBeenCalledTimes(1);
+        return;
+      }
       await client.listTools();
       const beforeDiscoveryPolicy = document;
       let enteredCleanup!: () => void;
@@ -2866,11 +2927,12 @@ describe('worker MCP routes', () => {
   });
 
   it.each([
-    'revocation',
-    'lineage',
-  ] as const)('uses the admitted admin bearer for nonmember tool calls and denies revocation or lineage drift: %s', {
+    { fault: 'revocation', credential: 'bearer' },
+    { fault: 'lineage', credential: 'bearer' },
+    { fault: 'revocation', credential: 'session' },
+  ] as const)('uses the admitted admin credential for nonmember tool calls and denies revocation or lineage drift: $credential $fault', {
     timeout: 60_000,
-  }, async (fault) => {
+  }, async ({ fault, credential }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2952,12 +3014,13 @@ describe('worker MCP routes', () => {
         initialSnapshot: runtimeConfig,
       }),
     });
+    let cookie = '';
     const task = (secret: string, requestId: string) => {
       const [path, init] = operationRequest(
         'task.start',
         { workspaceId, threadId },
         {
-          headers: { authorization: `Bearer ${secret}` },
+          headers: credential === 'session' ? { cookie } : { authorization: `Bearer ${secret}` },
           body: JSON.stringify({ input: 'Call MCP as admin', requestId }),
         }
       );
@@ -2990,9 +3053,19 @@ describe('worker MCP routes', () => {
         })
       );
       expect(registered.status).toBe(200);
+      if (credential === 'session') {
+        const setCookie = registered.headers.get('set-cookie');
+        if (!setCookie) throw new Error('Administrator fixture must authenticate a Web session.');
+        cookie = setCookie.split(';')[0]!;
+      }
       const { user } = (await registered.json()) as { user: { id: string } };
       expect(isCanonicalUserActive(coreDb, user.id)).toBe(true);
       expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+      if (credential === 'session') {
+        // The same authenticated ordinary session has no administrator authority before issuance.
+        expect((await task('', '0190f4c8-0000-7000-8000-000000000743')).status).toBe(403);
+        expect(submitObservation).not.toHaveBeenCalled();
+      }
       const issued = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2099-01-01T00:00:00.000Z',
         ownerUserId: user.id,
@@ -3104,6 +3177,11 @@ describe('worker MCP routes', () => {
         ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
         expect(callTool).toHaveBeenCalledTimes(1);
         expect(echoUsage()).toEqual(usage);
+        if (credential === 'session') {
+          const submissions = submitObservation.mock.calls.length;
+          expect((await task('', '0190f4c8-0000-7000-8000-000000000744')).status).toBe(403);
+          expect(submitObservation).toHaveBeenCalledTimes(submissions);
+        }
       }
       first.completion.resolve();
       const closeouts = await Promise.allSettled(
@@ -4463,10 +4541,7 @@ describe('worker MCP routes', () => {
         };
         const nativeClient = createCoreClient({
           baseUrl: 'http://nanocore.test',
-          fetch: (input, init) =>
-            app.fetch(new Request(input, init), {
-              incoming: { socket: { remoteAddress: '127.0.0.1' } },
-            }),
+          fetch: createLoopbackAppFetch(app),
         });
         const replayResponse = await app.request(
           ...operationRequest(ownerCommand, {}, { body: JSON.stringify(replayInput) })

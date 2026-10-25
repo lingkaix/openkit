@@ -3,11 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
+import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
+import type { Actor } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
@@ -15,6 +17,22 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
 import { admitTestNativeEnvironment } from './native-environment.js';
 
 export type { CreateAppOptions } from '../app.js';
+
+/** Supplies the explicit physical peer of a local in-process test transport without adding credentials. */
+export function createLoopbackAppFetch(
+  app: Pick<ReturnType<typeof createNanoCoreApp>, 'fetch'>
+): typeof fetch {
+  return async (input, init) =>
+    app.fetch(new Request(input, init), {
+      incoming: { socket: { remoteAddress: '127.0.0.1' } },
+    });
+}
+
+/** Projects a fixture's newly authenticated session through the current Token owner without minting authority. */
+export function createTestSessionActor(coreDb: CoreDb, userId: string): Actor {
+  const adminTokenId = resolveSessionDeploymentAdminTokenId(coreDb, userId);
+  return { kind: 'session', userId, ...(adminTokenId ? { adminTokenId } : {}) };
+}
 
 /** Supplies only explicit fixture identity; all production runtime and configuration defaults stay active. */
 export function createAppWithLocalIdentity(

@@ -13,6 +13,7 @@ import type { Actor } from '../auth/identity.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestSessionActor } from '../test-support/app.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
 import {
@@ -244,6 +245,7 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     };
     expect(() => pinScopedNotebook(input)).toThrow('Scoped notebook access denied.');
     const admin = f.admin();
+    input.actor = createTestSessionActor(f.coreDb, bob);
     expect(pinScopedNotebook(input).read().files['index.md']).toBe(DEFAULT_NOTEBOOK_INDEX);
     revokeOpenKitAccessTokenRecord(f.coreDb, admin.tokenId!);
     expect(() => pinScopedNotebook(input)).toThrow('Scoped notebook access denied.');

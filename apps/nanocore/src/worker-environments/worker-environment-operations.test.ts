@@ -20,6 +20,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestSessionActor } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -146,7 +147,7 @@ async function createFixture(
     ...effectOverride,
   };
   return {
-    actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    actor: createTestSessionActor(coreDb, 'usr_00000000-0000-7000-8000-000000000001'),
     binding,
     coreDb,
     operations: createWorkerEnvironmentOperations({ coreDb, runtimeEffects, store }),
@@ -536,7 +537,7 @@ describe('Worker environment operations', () => {
     expect(
       fixture.operations.list(
         {
-          actor: { kind: 'session', userId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+          actor: createTestSessionActor(fixture.coreDb, 'usr_00000000-0000-73d4-904a-d4c4b905df7c'),
           workspaceId: fixture.workspaceId,
         },
         { limit: 50 }

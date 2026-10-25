@@ -116,9 +116,11 @@ export async function startProductTurn(input: StartProductTurnInput) {
           responsibleUserId: input.triggerActor.responsibleUserId,
         };
   const presentedServerAdminTokenId =
-    input.requestActor?.kind === 'token' && input.requestActor.tokenScope === 'server-admin'
-      ? (input.requestActor.tokenId ?? null)
-      : null;
+    input.requestActor?.kind === 'session'
+      ? (input.requestActor.adminTokenId ?? null)
+      : input.requestActor?.kind === 'token' && input.requestActor.tokenScope === 'server-admin'
+        ? (input.requestActor.tokenId ?? null)
+        : null;
   if (
     !currentWorkspaceAuthority(
       input.coreDb,

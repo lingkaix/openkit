@@ -9,7 +9,7 @@ import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createApp, createLoopbackAppFetch } from './test-support/app.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -28,7 +28,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',
     fetch: async (url, init) => {
-      const response = await app.request(new Request(url, init));
+      const response = await createLoopbackAppFetch(app)(url, init);
       responses.push(response.clone());
       return response;
     },

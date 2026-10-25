@@ -13,7 +13,10 @@ import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import {
+  createAppWithLocalIdentity as createApp,
+  createLoopbackAppFetch,
+} from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -144,7 +147,7 @@ describe('resource catalog operations', () => {
       };
       const client = createCoreClient({
         baseUrl: 'http://nanocore.test',
-        fetch: (input, init) => f.app.fetch(new Request(input, init)),
+        fetch: createLoopbackAppFetch(f.app),
       });
       const { operationCatalog } = await import(
         new URL('../../../../skills/openkit-operations.mjs', import.meta.url).href

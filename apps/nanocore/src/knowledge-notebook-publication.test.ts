@@ -11,7 +11,7 @@ import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createApp, createLoopbackAppFetch } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import {
   ensureLocalUser,
@@ -36,7 +36,7 @@ async function restrictSourceThread(
   });
   const client = createCoreClient({
     baseUrl: 'http://test.invalid',
-    fetch: (input, init) => app.fetch(new Request(input, init)),
+    fetch: createLoopbackAppFetch(app),
   });
   const decision = await f.store.createThread(DEMO_WORKSPACE_ID, 'Source policy decision');
   const owner = { kind: 'workspace' as const, workspaceId: DEMO_WORKSPACE_ID };

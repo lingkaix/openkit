@@ -9,9 +9,19 @@ import {
 } from '@earendil-works/pi-ai';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listWorkspaceAuditEvents } from './audit-events.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import { createAuthMiddleware } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
-import { listServerCapabilityCalls } from './capability/usage-ledger.js';
+import {
+  listServerCapabilityCalls,
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from './capability/usage-ledger.js';
 import type { ProviderProfile } from './config/providers-loader.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -37,7 +47,10 @@ import { openTestNativeWorkspace } from './test-support/store.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import {
+  recordWorkspaceOwnerMembership,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-membership.js';
 
 /**
  * Creates runtime app options for one Gateway provider fixture.
@@ -1164,50 +1177,187 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it.each([
-    '/v1/chat/completions',
-    '/v1/responses',
-  ])('rejects foreign private Turn capture hints on %s before dispatch', async (path) => {
+    { path: '/v1/chat/completions', credential: 'ordinary' },
+    { path: '/v1/responses', credential: 'ordinary' },
+    { path: '/v1/chat/completions', credential: 'admin bearer' },
+    { path: '/v1/responses', credential: 'admin bearer' },
+    { path: '/v1/chat/completions', credential: 'admin session' },
+    { path: '/v1/responses', credential: 'admin session' },
+  ] as const)('checks current private Turn attribution on $path with $credential', async ({
+    path,
+    credential,
+  }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const localUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Private capture');
+    const privateOwnerUserId = localUserId;
     const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
       visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      privateOwnerUserId,
     });
     const turn = await store.createTurn(workspace.id, thread.id, 'Private prompt', {
       kind: 'user',
-      id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      id: privateOwnerUserId,
     });
-    const upstream = vi.fn();
+    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+    applyScopedMigrations(workspaceDb);
+    const baseUrl = 'http://localhost';
+    const auth = createBetterAuth(coreDb, {
+      mode: 'server',
+      env: {
+        BETTER_AUTH_URL: baseUrl,
+        BETTER_AUTH_SECRET: 'gateway-fixture-auth-secret-2430-owner-test-only',
+      },
+    });
+    let administratorTokenId: string | undefined;
+    let revokeAfterEffect = false;
+    const withheld = 'GATEWAY_REVOKED_RESULT_CANARY';
+    const upstream = vi.fn(async () => {
+      if (revokeAfterEffect)
+        expect(revokeOpenKitAccessTokenRecord(coreDb, administratorTokenId!)?.status).toBe(
+          'revoked'
+        );
+      return path === '/v1/chat/completions'
+        ? {
+            object: 'chat.completion',
+            id: 'chatcmpl_gateway_authority',
+            created: 1,
+            model: 'claude-sonnet-4-5',
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: withheld },
+                finish_reason: 'stop',
+              },
+            ],
+          }
+        : {
+            object: 'response',
+            id: 'resp_gateway_authority',
+            status: 'completed',
+            model: 'claude-sonnet-4-5',
+            output: [
+              {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: withheld }],
+              },
+            ],
+          };
+    });
     try {
-      recordLocalGatewayAuthority(coreDb, workspace.id);
       const app = createApp({
         coreDb,
         dataRoot,
         store,
+        mode: 'server',
+        auth,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: {
           createChatCompletion: upstream,
           createResponses: upstream,
         } as unknown as LLMGatewayProviderDispatcher,
       });
-      const response = await app.request(path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-5',
-          messages: [{ role: 'user', content: 'spoof' }],
-          input: 'spoof',
-          metadata: {
-            openkit: { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id },
-          },
-        }),
+      const body = JSON.stringify({
+        model: 'claude-sonnet-4-5',
+        messages: [{ role: 'user', content: 'spoof' }],
+        input: 'spoof',
+        metadata: {
+          openkit: { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id },
+        },
       });
-      expect(response.status).toBe(403);
+      const registered = await auth.handler(
+        new Request(`${baseUrl}/api/auth/sign-up/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Gateway administrator',
+            email: 'gateway-admin@example.invalid',
+            password: 'gateway-fixture-password-2430',
+          }),
+        })
+      );
+      expect(registered.status).toBe(200);
+      const { user } = (await registered.json()) as { user: { id: string } };
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: workspace.id,
+        ownerUserId: credential === 'ordinary' ? user.id : localUserId,
+      });
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, user.id)).toBe(
+        credential === 'ordinary' ? 'owner' : null
+      );
+      const setCookie = registered.headers.get('set-cookie');
+      if (!setCookie) throw new Error('Gateway fixture must authenticate a Web session.');
+      const cookie = setCookie.split(';')[0]!;
+      const ordinary = await app.request(new URL(path, baseUrl).toString(), {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body,
+      });
+      expect(ordinary.status).toBe(403);
       expect(upstream).not.toHaveBeenCalled();
+      expect(listWorkspaceCapabilityCalls(workspaceDb, workspace.id)).toHaveLength(0);
+      if (credential === 'ordinary') return;
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: user.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      administratorTokenId = issued.tokenId;
+      const headers = {
+        'content-type': 'application/json',
+        ...(credential === 'admin bearer'
+          ? { authorization: `Bearer ${issued.secret}` }
+          : { cookie }),
+      };
+      const allowed = await app.request(new URL(path, baseUrl).toString(), {
+        method: 'POST',
+        headers,
+        body,
+      });
+      expect(allowed.status, await allowed.text()).toBe(200);
+      expect(upstream).toHaveBeenCalledTimes(1);
+      expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, user.id)).toBeNull();
+      const allowedCall = listWorkspaceCapabilityCalls(workspaceDb, workspace.id).find(
+        (call) => call.status === 'succeeded'
+      );
+      expect(allowedCall).toMatchObject({ threadId: thread.id, turnId: turn.id });
+      expect(listWorkspaceAuditEvents(workspaceDb, workspace.id)).toContainEqual(
+        expect.objectContaining({
+          actor: { kind: 'user', id: user.id },
+          capabilityCallId: allowedCall!.id,
+        })
+      );
+      // A dispatched effect stays truthful, but current audience must fence its late result.
+      revokeAfterEffect = true;
+      const lostAudience = await app.request(new URL(path, baseUrl).toString(), {
+        method: 'POST',
+        headers,
+        body,
+      });
+      expect(lostAudience.ok).toBe(false);
+      const refusedText = await lostAudience.text();
+      expect(refusedText).not.toContain(withheld);
+      expect(JSON.parse(refusedText)).toMatchObject({ error: { code: expect.any(String) } });
+      expect(upstream).toHaveBeenCalledTimes(2);
+      const retainedCalls = listWorkspaceCapabilityCalls(workspaceDb, workspace.id);
+      const retainedUsage = listWorkspaceUsageRecords(workspaceDb, workspace.id);
+      const revoked = await app.request(new URL(path, baseUrl).toString(), {
+        method: 'POST',
+        headers,
+        body,
+      });
+      expect(revoked.status).toBe(credential === 'admin bearer' ? 401 : 403);
+      expect(upstream).toHaveBeenCalledTimes(2);
+      expect(listWorkspaceCapabilityCalls(workspaceDb, workspace.id)).toEqual(retainedCalls);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspace.id)).toEqual(retainedUsage);
     } finally {
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });

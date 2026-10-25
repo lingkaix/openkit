@@ -325,7 +325,7 @@ export function isWorkspaceOperationAuthorized(
  * @param actor Immutable actor responsible for the effect.
  * @param operation Concrete product operation, including unknown values that must fail closed.
  * @param effectAuthority Whether the caller's existing effect-specific authority remains valid.
- * @param requestActor Optional authenticating request actor; a presented usable server-admin bearer grants administrator eligibility without membership.
+ * @param requestActor Actual authenticating actor; only its presented bearer or explicit administrator-session Token projection grants administrator eligibility without membership.
  * @param options Optional actual evaluation capture and propagation of dependency failures.
  * @returns The current effective Workspace eligibility, or null when any authority component denies the effect.
  * @throws The original dependency or capture error when strict failure handling is requested.
@@ -343,6 +343,14 @@ export function currentWorkspaceAuthority(
     if (!effectAuthority) {
       return null;
     }
+    // Preserve only the credential explicitly projected by session authentication, never infer one from a User.
+    if (requestActor?.kind === 'session' && requestActor.adminTokenId !== undefined)
+      requestActor = {
+        kind: 'token',
+        userId: requestActor.userId,
+        tokenId: requestActor.adminTokenId,
+        tokenScope: 'server-admin',
+      };
     let relation: WorkspaceAuthority;
     let responsibleUserId: string;
     if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
@@ -380,11 +388,10 @@ export function currentWorkspaceAuthority(
       if (relation === 'member' && !member) {
         throw new Error('Workspace authority evaluation lost its canonical membership facts.');
       }
+      const tokenId = requestActor?.kind === 'token' ? requestActor.tokenId : null;
       const token =
         requestActor?.kind === 'token'
-          ? listOpenKitAccessTokenRecords(coreDb).find(
-              (record) => record.tokenId === requestActor.tokenId
-            )
+          ? listOpenKitAccessTokenRecords(coreDb).find((record) => record.tokenId === tokenId)
           : null;
       if (requestActor?.kind === 'token' && !token) {
         throw new Error('Workspace authority evaluation lost its presented Token facts.');

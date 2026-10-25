@@ -36,8 +36,6 @@ import type { AuthVariables } from './auth/middleware.js';
 import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
-  DeploymentAdminRequiredError,
-  requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
 import {
@@ -82,6 +80,7 @@ import {
   recordProductPermissionDecision,
 } from './policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './policy/retained-records-v1.js';
+import { evaluateAdministratorWorkspaceAccess } from './policy/server-access.js';
 import {
   policyDigest,
   policyProposalDigest,
@@ -2311,31 +2310,26 @@ function currentMcpBindingAuthor(
   userId: string,
   discloseInput = false
 ): boolean {
-  let requestActor: import('./auth/identity.js').Actor | undefined;
-  try {
-    const administrator = requireCurrentDeploymentAdmin(input.input.coreDb!, {
-      kind: 'session',
-      userId,
-    });
-    if (administrator.tokenId)
-      requestActor = {
-        kind: 'token',
-        userId,
-        tokenId: administrator.tokenId,
-        tokenScope: 'server-admin',
-      };
-  } catch (error) {
-    if (!(error instanceof DeploymentAdminRequiredError)) throw error;
-  }
-  const authority = currentWorkspaceAuthority(
-    input.input.coreDb!,
-    input.environmentPackage.scope.workspaceId,
-    { kind: 'user', id: userId },
-    'tool.use',
-    true,
-    requestActor,
-    { dependencyFailure: 'throw' }
-  );
+  const coreDb = input.input.coreDb!;
+  const workspaceId = input.environmentPackage.scope.workspaceId;
+  // A retained human author has current Policy eligibility, not a newly authenticated request.
+  const authority = isCurrentServerPolicyAuthor(coreDb, userId)
+    ? coreDb.sqlite
+        .prepare("SELECT 1 FROM workspace_registry WHERE workspace_id = ? AND status = 'active'")
+        .get(workspaceId) &&
+      evaluateAdministratorWorkspaceAccess({ userId, workspaceId, operation: 'tool.use' })
+        .effect === 'allow'
+      ? 'administrator'
+      : null
+    : currentWorkspaceAuthority(
+        coreDb,
+        workspaceId,
+        { kind: 'user', id: userId },
+        'tool.use',
+        true,
+        undefined,
+        { dependencyFailure: 'throw' }
+      );
   return (
     Boolean(authority) &&
     (!discloseInput ||
