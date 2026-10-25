@@ -602,7 +602,11 @@ describe('administrator runtime cleanup view', () => {
         new Date(NOW)
       )
     ).toBe(true);
-    input.actor = { kind: 'session', userId: input.actor.userId };
+    input.actor = {
+      kind: 'session',
+      userId: input.actor.userId,
+      adminTokenId: input.token.tokenId,
+    };
     expect((await read(input)).items).toHaveLength(5);
     expect(
       input.coreDb.sqlite

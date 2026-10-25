@@ -132,7 +132,7 @@ describe('execution operation authority', () => {
       });
       actor =
         kind === 'session'
-          ? { kind, userId: localUserId }
+          ? { kind, userId: localUserId, adminTokenId: token.record.tokenId }
           : {
               kind,
               userId: localUserId,

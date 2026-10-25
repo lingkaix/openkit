@@ -1391,6 +1391,7 @@ describe('central Workspace operation authorizer', () => {
       tokenId: 'token_current_admin',
       workspaceIds: [],
     });
+    fixture.actorState.current.adminTokenId = 'token_current_admin';
     const withAdmin = await send();
     fixture.coreDb.sqlite
       .prepare(

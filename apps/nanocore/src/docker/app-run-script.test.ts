@@ -111,6 +111,7 @@ describe('app run script', () => {
     expect(providerConfig).toContain('"secretRef": "env:OPENROUTER_API_KEY"');
     expect(providerConfig).toContain('"defaultModel": "z-ai/glm-4.5-air:free"');
     expect(() => OpenKitConfigSchema.parse(JSON.parse(serverConfig))).not.toThrow();
+    expect(JSON.parse(serverConfig)).toMatchObject({ mode: 'server' });
     expect(() => ProviderProfileSchema.parse(JSON.parse(providerConfig))).not.toThrow();
     expect(() => GatewayConfigSchema.parse(JSON.parse(gatewayConfig))).not.toThrow();
     expect(() =>
@@ -263,14 +264,46 @@ describe('app run script', () => {
     expect(output).toContain('secretRef');
   });
 
-  it('bind-mounts the sibling data-root backup directory on docker run', async () => {
+  it.each([
+    {
+      label: 'valid process secret',
+      source: 'process',
+      secret: 'fixture-signing-secret-32-characters-long',
+      launch: true,
+    },
+    {
+      label: 'valid secrets-file secret',
+      source: 'file',
+      secret: 'fixture-signing-secret-32-characters-long',
+      launch: true,
+    },
+    { label: 'missing signing secret', source: 'process', secret: '', launch: false },
+    {
+      label: 'short signing secret',
+      source: 'process',
+      secret: 'short-fixture-secret',
+      launch: false,
+    },
+    { label: 'seed-only without signing secret', source: 'seed', secret: '', launch: false },
+  ])('preserves safe app launch and backup mounts with $label', async ({
+    source,
+    secret,
+    launch,
+  }) => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
     const bin = await mkdtemp(join(tmpdir(), 'openkit-app-bin-'));
     const argvPath = join(bin, 'docker-argv');
+    const effectsPath = join(bin, 'docker-effects');
+    const envFile = join(dataRoot, 'secrets', 'openkit.env');
+    if (source === 'file') {
+      mkdirSync(dirname(envFile), { recursive: true });
+      writeFileSync(envFile, `BETTER_AUTH_SECRET='${secret}'\n`, { mode: 0o600 });
+    }
     writeFileSync(
       join(bin, 'docker'),
       `#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\\0' "$@" >> "\${DOCKER_EFFECTS_FILE}"
 if [[ "\${1:-}" == image && "\${2:-}" == inspect ]]; then
   exit 0
 fi
@@ -279,6 +312,7 @@ if [[ "\${1:-}" == rm ]]; then
 fi
 if [[ "\${1:-}" == run ]]; then
   printf '%s\\0' "$@" > "\${DOCKER_ARGV_FILE}"
+  [[ "\${BETTER_AUTH_SECRET:-}" == "\${OPENKIT_TEST_EXPECTED_AUTH_SECRET}" ]] || exit 98
   exit 0
 fi
 exit 99
@@ -294,6 +328,11 @@ exit 99
         ...process.env,
         PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
         DOCKER_ARGV_FILE: argvPath,
+        DOCKER_EFFECTS_FILE: effectsPath,
+        BETTER_AUTH_SECRET: source === 'process' ? secret : '',
+        OPENKIT_TEST_EXPECTED_AUTH_SECRET: secret,
+        OPENKIT_APP_ENV_FILE: envFile,
+        OPENKIT_APP_SEED_ONLY: source === 'seed' ? '1' : '0',
         OPENKIT_APP_DATA_ROOT: dataRoot,
         OPENKIT_APP_IMAGE: 'openkit/app:fixture',
         OPENKIT_APP_CONTAINER: 'openkit-app-fixture',
@@ -301,8 +340,30 @@ exit 99
       },
     });
 
-    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
+    const output = `${result.stderr}\n${result.stdout}`;
+    if (secret) expect(output).not.toContain(secret);
+    if (!launch) {
+      if (source === 'seed') {
+        expect(result.status, output).toBe(0);
+        expect(result.stdout).toContain('Seed-only mode complete.');
+      } else {
+        expect(result.status, output).not.toBe(0);
+        expect(output).toContain('BETTER_AUTH_SECRET');
+      }
+      expect(existsSync(effectsPath)).toBe(false);
+      expect(existsSync(argvPath)).toBe(false);
+      return;
+    }
+    expect(result.status, output).toBe(0);
     const args = readFileSync(argvPath, 'utf8').split('\0').filter(Boolean);
+    expect(args).toContain('OPENKIT_CORE_MODE=server');
+    const authOriginIndex = args.indexOf('BETTER_AUTH_URL=http://127.0.0.1:18099');
+    expect(authOriginIndex).toBeGreaterThan(0);
+    expect(args[authOriginIndex - 1]).toBe('--env');
+    const signingNameIndex = args.indexOf('BETTER_AUTH_SECRET');
+    expect(signingNameIndex).toBeGreaterThan(0);
+    expect(args[signingNameIndex - 1]).toBe('--env');
+    expect(args.join(' ')).not.toContain(secret);
     expect(args).toContain(`${dataRoot}:/data/openkit`);
     expect(args).toContain(`${dataRoot}.backups:/data/openkit.backups`);
     expect(existsSync(`${dataRoot}.backups`)).toBe(true);

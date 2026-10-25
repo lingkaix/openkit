@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
@@ -466,6 +467,47 @@ describe('Discord to native Pending Request seam', () => {
     expect(f.nativeCalls).toHaveLength(1);
     expect(f.record()).toEqual(settled);
     expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, f.target.thread)).toHaveLength(1);
+  });
+
+  it('does not carry session administrator authority through a real signed Discord response', async () => {
+    const f = await fixture();
+    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: actor.userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      mode: 'server',
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    // Ordinary authenticated session administration remains valid for this same user.
+    await expect(
+      invoke(
+        'token.list',
+        {},
+        {
+          kind: 'public',
+          actor: { ...actor, adminTokenId: admin.record.tokenId },
+          delivery: 'human',
+        }
+      )
+    ).resolves.toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ tokenId: admin.record.tokenId })]),
+    });
+
+    await f.pair();
+    const disclosure = await f.disclose();
+    expect(text(await f.send('deny', { ...f.target, disclosure }))).toContain('accepted');
+    expect(f.nativeCalls).toHaveLength(1);
+    const channelActor = f.nativeCalls[0]!.actor;
+    expect(channelActor.userId).toBe(actor.userId);
+    await expect(
+      invoke('token.list', {}, { kind: 'public', actor: channelActor, delivery: 'human' })
+    ).rejects.toMatchObject({ code: 'deployment_admin_required', status: 403 });
+    expect(f.record()).toMatchObject({ state: 'resolved', resolution: 'denied' });
   });
 
   it('keeps approval grants in the App without invoking the native response owner', async () => {

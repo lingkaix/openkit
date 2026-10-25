@@ -133,7 +133,7 @@ function serverConfig() {
   return `${JSON.stringify(
     {
       schemaVersion: 1,
-      mode: 'local',
+      mode: 'server',
       defaults: {
         defaultAgentId: 'agent_codex_host',
       },
@@ -282,6 +282,13 @@ if [[ "${SEED_ONLY}" == "1" ]]; then
   exit 0
 fi
 
+# Server bootstrap still requires the existing deployment signing secret.
+if ! node -e 'if ((process.env.BETTER_AUTH_SECRET ?? "").trim().length < 32) process.exit(1)'; then
+  echo "BETTER_AUTH_SECRET must contain at least 32 characters in server mode." >&2
+  exit 1
+fi
+export BETTER_AUTH_SECRET
+
 require_command docker
 require_command curl
 
@@ -296,7 +303,9 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 mkdir -p "${DATA_ROOT}.backups"
 chmod 700 "${DATA_ROOT}.backups"
 docker_env_args=(
-  --env OPENKIT_CORE_MODE=local
+  --env OPENKIT_CORE_MODE=server
+  --env BETTER_AUTH_SECRET
+  --env "BETTER_AUTH_URL=http://127.0.0.1:${PORT}"
   --env OPENKIT_DATA_ROOT=/data/openkit
 )
 

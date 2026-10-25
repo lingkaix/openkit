@@ -127,6 +127,40 @@ test('routes container signals through the supervising entrypoint exactly once',
   assert.doesNotMatch(source, /ENTRYPOINT \["tini", "-g"/u);
 });
 
+test('starts the App image in server mode with a public frontend when no mode is selected', async () => {
+  const image = await readFile(dockerfile, 'utf8');
+  const imageMode = image.match(/^ENV\s+OPENKIT_CORE_MODE=["']?([^"'\s]+)/mu)?.[1];
+  assert.equal(imageMode, 'server', 'the runtime image must supply the server-mode default');
+  const result = await runEntrypoint({
+    coreMode: imageMode,
+    caddyBindHost: '127.0.0.1',
+    readiness: 'immediate',
+    signal: 'SIGTERM',
+  });
+  assert.equal(result.coreMode, 'server\n', result.output);
+  assert.equal(result.caddyBindHost, '0.0.0.0\n', result.output);
+});
+
+test('forces the local image frontend to loopback despite a supplied public bind', async () => {
+  const result = await runEntrypoint({
+    caddyBindHost: '0.0.0.0',
+    coreMode: 'local',
+    readiness: 'immediate',
+    signal: 'SIGTERM',
+  });
+  assert.equal(result.coreMode, 'local\n', result.output);
+  assert.equal(result.caddyBindHost, '127.0.0.1\n', result.output);
+});
+
+test('uses the mode-derived frontend bind with a loopback fallback in Caddy configuration', async () => {
+  const source = await readFile(caddyfile, 'utf8');
+  // Configuration evidence only: the process fixture does not start a real Caddy listener.
+  assert.match(
+    source,
+    /:\{\$CADDY_HTTP_PORT:8080\}\s*\{\s*bind\s+\{\$CADDY_BIND_HOST:127\.0\.0\.1\}/u
+  );
+});
+
 test('waits for NanoCore through the App health endpoint and stops both processes on INT', async () => {
   const result = await runEntrypoint({
     readiness: 'after-30',
@@ -183,6 +217,8 @@ for (const nodeExit of ['0', '19']) {
 /** Runs one isolated entrypoint lifecycle. */
 async function runEntrypoint({
   caddyExit = '',
+  caddyBindHost = '',
+  coreMode = '',
   nodeExit = '',
   readiness,
   signal,
@@ -191,11 +227,13 @@ async function runEntrypoint({
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'openkit-app-entrypoint-'));
   const binRoot = join(fixtureRoot, 'bin');
   const caddyRecord = join(fixtureRoot, 'caddy-argv.txt');
+  const caddyBindRecord = join(fixtureRoot, 'caddy-bind.txt');
   const caddyStopRecord = join(fixtureRoot, 'caddy-stop.txt');
   const curlCount = join(fixtureRoot, 'curl-count.txt');
   const curlRecord = join(fixtureRoot, 'curl-argv.txt');
   const curlStarted = join(fixtureRoot, 'curl-started.txt');
   const nodeStopRecord = join(fixtureRoot, 'node-stop.txt');
+  const coreModeRecord = join(fixtureRoot, 'core-mode.txt');
   const httpPort = '44321';
   const healthUrl = `http://127.0.0.1:${httpPort}/api/health`;
   await mkdir(binRoot);
@@ -203,6 +241,7 @@ async function runEntrypoint({
     writeExecutable(
       join(binRoot, 'node'),
       `#!/bin/sh
+printf '%s\n' "$OPENKIT_CORE_MODE" > "$OPENKIT_TEST_CORE_MODE_RECORD"
 trap 'printf "stopped\\n" > "$OPENKIT_TEST_NODE_STOP_RECORD"; exit 0' TERM INT
 if [ -n "$OPENKIT_TEST_NODE_EXIT" ]; then
   while [ ! -f "$OPENKIT_TEST_CADDY_RECORD" ]; do /bin/sleep 0.01; done
@@ -243,6 +282,7 @@ done
     writeExecutable(
       join(binRoot, 'caddy'),
       `#!/bin/sh
+printf '%s\n' "$CADDY_BIND_HOST" > "$OPENKIT_TEST_CADDY_BIND_RECORD"
 printf '%s\n' "$@" > "$OPENKIT_TEST_CADDY_RECORD"
 if [ -n "$OPENKIT_TEST_CADDY_EXIT" ]; then
   exit "$OPENKIT_TEST_CADDY_EXIT"
@@ -259,9 +299,13 @@ done
     detached: true,
     env: {
       ...process.env,
+      CADDY_BIND_HOST: caddyBindHost,
       CADDY_HTTP_PORT: '8080',
+      OPENKIT_CORE_MODE: coreMode,
       OPENKIT_DATA_ROOT: join(fixtureRoot, 'data'),
+      OPENKIT_TEST_CORE_MODE_RECORD: coreModeRecord,
       OPENKIT_HTTP_PORT: httpPort,
+      OPENKIT_TEST_CADDY_BIND_RECORD: caddyBindRecord,
       OPENKIT_TEST_CADDY_RECORD: caddyRecord,
       OPENKIT_TEST_CADDY_STOP_RECORD: caddyStopRecord,
       OPENKIT_TEST_CADDY_EXIT: caddyExit,
@@ -295,6 +339,8 @@ done
 
   try {
     return {
+      coreMode: await readFile(coreModeRecord, 'utf8').catch(() => null),
+      caddyBindHost: await readFile(caddyBindRecord, 'utf8').catch(() => null),
       caddyArguments: await readLines(caddyRecord),
       caddyStop: await readFile(caddyStopRecord, 'utf8').catch(() => null),
       close,

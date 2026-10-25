@@ -423,7 +423,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
         // The proof binds an account, never a bearer or selected administrator credential.
         const actor: Actor = {
           userId: resolvedActor.userId,
-          kind: resolvedActor.kind === 'local' ? 'local' : 'session',
+          kind: 'session',
         };
         const target = {
           workspaceId: values.workspace!,

@@ -120,6 +120,22 @@ export function createAuthMiddleware(
 
     // Remote MCP always requires a presented Token, including on a local-mode listener.
     if (mode === 'local' && c.req.path !== '/mcp') {
+      const env = c.env as { incoming?: unknown; server?: { incoming?: unknown } } | undefined;
+      const incoming = env?.incoming ?? env?.server?.incoming;
+      const peer =
+        incoming === undefined
+          ? new URL(c.req.url).hostname
+          : ((incoming as { socket?: { remoteAddress?: string } } | null)?.socket?.remoteAddress ??
+            '');
+      // Forwarding may reduce local trust, never establish it instead of the physical peer.
+      if (
+        !isLoopbackHost(peer) ||
+        c.req
+          .header('x-forwarded-for')
+          ?.split(',')
+          .some((address) => !isLoopbackHost(address.trim()))
+      )
+        return unauthorized(c);
       if (!options.localUserId) return unauthorized(c);
       const actor = actorFromRequest(c.req.raw, mode, options.localUserId);
       if (options.canonicalUserActive && !(await options.canonicalUserActive(actor.userId))) {

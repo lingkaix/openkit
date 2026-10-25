@@ -79,3 +79,5 @@ Kernel-backed permission records retain their matched association and prohibitio
 The agent Policy provider derives prompt-cache and call addressing from the admitted Turn's explicit Workspace owner. It uses the canonical Work record family; Server work supplies no Workspace selector or membership.
 
 `goalDomainSupportError` shares the native action, resource-reference, and Goal-anchor support predicate between proposal capture and publication. Proposal checks grant no authority; publication still checks the deciding credential, lifetime, and current Plan.
+
+Current retained human Policy authorship checks canonical User and administrator Token eligibility directly. It does not manufacture a request session or bypass the authenticated credential projection required at an administration entry.

@@ -13,9 +13,15 @@ fi
 export CADDY_HTTP_PORT="${CADDY_HTTP_PORT:-8080}"
 export OPENKIT_HTTP_PORT="${OPENKIT_HTTP_PORT:-${PORT:-4317}}"
 export PORT="${OPENKIT_HTTP_PORT}"
-export OPENKIT_CORE_MODE="${OPENKIT_CORE_MODE:-local}"
+export OPENKIT_CORE_MODE="${OPENKIT_CORE_MODE:-server}"
 export OPENKIT_BIND_HOST="${OPENKIT_BIND_HOST:-127.0.0.1}"
 export OPENKIT_DATA_ROOT="${OPENKIT_DATA_ROOT:-/data/openkit}"
+# Local identity is reachable only inside the container's loopback boundary.
+if [[ "${OPENKIT_CORE_MODE}" == "local" ]]; then
+  export CADDY_BIND_HOST=127.0.0.1
+else
+  export CADDY_BIND_HOST=0.0.0.0
+fi
 
 nanocore_pid=""
 caddy_pid=""

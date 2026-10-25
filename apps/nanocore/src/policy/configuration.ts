@@ -13,12 +13,10 @@ import {
 import type { StorageAccess } from '@openkit/storage';
 import type { z } from 'zod';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
+import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
-import {
-  authorizeWorkspace,
-  DeploymentAdminRequiredError,
-  requireCurrentDeploymentAdmin,
-} from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
   type RuntimeConfigFileService,
@@ -335,17 +333,11 @@ export function isCurrentServerPolicyAuthor(
     | { kind: string }
     | undefined;
   if (!author || !['local', 'human'].includes(author.kind)) return false;
-  try {
-    requireCurrentDeploymentAdmin(
-      coreDb,
-      { kind: author.kind === 'local' ? 'local' : 'session', userId: humanId },
-      new Date(now)
-    );
-    return true;
-  } catch (error) {
-    if (error instanceof DeploymentAdminRequiredError) return false;
-    throw error;
-  }
+  return (
+    isCanonicalUserActive(coreDb, humanId) &&
+    (author.kind === 'local' ||
+      resolveSessionDeploymentAdminTokenId(coreDb, humanId, new Date(now)) !== null)
+  );
 }
 
 /**

@@ -652,7 +652,11 @@ describe('finite delegated Worker Git-read application', () => {
   ])('rechecks a distinct Policy issuer before mutation: revoked=%s', async (revoked) => {
     const f = await fixture(1, true);
     expect(f.issuerId).not.toBe(f.actor.userId);
-    const issuer = { kind: 'session' as const, userId: f.issuerId };
+    const issuer = {
+      kind: 'session' as const,
+      userId: f.issuerId,
+      adminTokenId: f.issuerTokenId!,
+    };
     expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(true);
     expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(
       policy([f.issuedAssignment])

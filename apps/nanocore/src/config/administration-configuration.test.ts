@@ -1274,7 +1274,7 @@ describe('administration catalog configuration', () => {
     const f = await fixture();
     const session = createAdministrationConfiguration({
       ...f,
-      actor: { kind: 'session', userId: f.actor.userId },
+      actor: { kind: 'session', userId: f.actor.userId, adminTokenId: f.token.tokenId },
     });
     const proposal = await session.propose(f.request, f.home);
     expect(JSON.stringify(session.read('provider', 'codex'))).not.toContain('accountSlotId');

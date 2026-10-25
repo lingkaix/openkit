@@ -9,6 +9,14 @@ const appDockerfile = join(repoRoot, 'containers', 'app', 'Dockerfile');
 const imageManifest = join(repoRoot, 'containers', 'images.json');
 
 describe('app Dockerfile', () => {
+  it('selects local mode explicitly for its local App smoke', () => {
+    const smoke = readFileSync(join(repoRoot, 'containers', 'app', 'smoke.sh'), 'utf8');
+    // This observes the packaged launch configuration, not real image execution.
+    expect(smoke).toMatch(
+      /^OPENKIT_CORE_MODE=["']?local["']?\s+OPENKIT_DATA_ROOT=.*\/usr\/local\/bin\/openkit-app-entrypoint/m
+    );
+  });
+
   it('delegates workspace dependency order to pnpm', () => {
     const dockerfile = readFileSync(appDockerfile, 'utf8');
 

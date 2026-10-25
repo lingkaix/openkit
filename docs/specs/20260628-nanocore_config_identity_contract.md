@@ -65,7 +65,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 
 Local mode is optimized for single-user development and dogfooding. Its implicit local human is a projection of the Core `User` record family with `kind = local`, not a separate identity type. Product surfaces should still carry explicit workspace and user-facing state where the App API requires it.
 
-When NanoCore runs as a desktop-embedded Core, every Core endpoint MUST bind only to a loopback interface. `OPENKIT_BIND_HOST` and `server.bind.host` may select a loopback address, but neither is authority to widen that boundary; startup MUST reject any desktop-embedded configuration that resolves to a non-loopback address.
+When NanoCore runs in local mode or as a desktop-embedded Core, its Core endpoints MUST bind only to loopback. `OPENKIT_BIND_HOST` and `server.bind.host` cannot widen that boundary. Startup MUST reject a non-loopback local bind even when TLS material is configured. The implicit local actor requires a loopback peer; a known non-loopback forwarded caller MUST be refused. Forwarded headers cannot establish local trust.
 
 Server mode is the path for authenticated product operation. It uses Better Auth-backed session behavior today, and protected product APIs should enforce the server-mode auth contract.
 

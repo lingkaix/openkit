@@ -2,10 +2,9 @@
 set -euo pipefail
 
 IMAGE="${OPENKIT_APP_IMAGE:-openkit/app:dev}"
-PORT="${OPENKIT_APP_SMOKE_PORT:-18080}"
 CONTAINER_NAME="${OPENKIT_APP_SMOKE_CONTAINER:-openkit-app-persistence-smoke-$$}"
 WORKSPACE_NAME="${OPENKIT_APP_SMOKE_WORKSPACE:-OpenKit app persistence smoke $$}"
-BASE_URL="http://127.0.0.1:${PORT}"
+BASE_URL="http://127.0.0.1:8080"
 DATA_ROOT_CREATED="0"
 CHECK_FAILURES=0
 
@@ -224,7 +223,6 @@ start_container() {
   docker run \
     --detach \
     --name "${CONTAINER_NAME}" \
-    --publish "127.0.0.1:${PORT}:8080" \
     --volume "${DATA_ROOT}:/data/openkit" \
     --volume "${DATA_ROOT}.backups:/data/openkit.backups" \
     --env OPENKIT_CORE_MODE=local \
@@ -235,7 +233,7 @@ wait_for_url() {
   local url="$1"
 
   for attempt in $(seq 1 60); do
-    if curl -fsS "${url}" >/dev/null 2>&1; then
+    if docker exec "${CONTAINER_NAME}" curl -fsS "${url}" >/dev/null 2>&1; then
       return 0
     fi
 
@@ -263,7 +261,7 @@ create_workspace() {
       'process.stdout.write(JSON.stringify({ name: process.env.WORKSPACE_NAME }));'
   )"
 
-  curl -fsS \
+  docker exec "${CONTAINER_NAME}" curl -fsS \
     --request POST \
     --header 'content-type: application/json' \
     --header "x-openkit-request-id: $(node -e 'process.stdout.write(crypto.randomUUID())')" \
@@ -297,7 +295,7 @@ seed_server_config "${DATA_ROOT}"
 start_container
 wait_for_url "${BASE_URL}/api/health"
 
-root_html="$(curl -fsS "${BASE_URL}/")"
+root_html="$(docker exec "${CONTAINER_NAME}" curl -fsS "${BASE_URL}/")"
 if [[ "${root_html}" != *"<html"* ]]; then
   record_failure "http spa root" "expected HTML from ${BASE_URL}/"
 else
@@ -317,7 +315,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null
 start_container
 wait_for_url "${BASE_URL}/api/health"
 
-workspace_list="$(curl -fsS --request POST --header 'content-type: application/json' --data '{}' "${BASE_URL}/api/app/operations/workspace.list")"
+workspace_list="$(docker exec "${CONTAINER_NAME}" curl -fsS --request POST --header 'content-type: application/json' --data '{}' "${BASE_URL}/api/app/operations/workspace.list")"
 if assert_workspace_exists "${workspace_list}" "${workspace_id}"; then
   record_pass "api workspace persisted"
 else

@@ -1,3 +1,4 @@
+import { isLoopbackHost } from '../auth/middleware.js';
 import type { CoreMode } from './mode.js';
 import type { OpenKitConfig } from './openkit-config.js';
 
@@ -18,17 +19,19 @@ interface BindHostEnv {
  * @param mode Resolved NanoCore runtime mode.
  * @param config Loaded operator configuration.
  * @returns Bind host. Local mode defaults to loopback.
+ * @throws Error when local mode selects a non-loopback host, regardless of TLS configuration.
  */
 export function resolveBindHost(
   env: BindHostEnv,
   mode: CoreMode,
   config: Pick<OpenKitConfig, 'server'> = {}
 ): string {
-  if (env.OPENKIT_BIND_HOST) {
-    return env.OPENKIT_BIND_HOST;
-  }
-
-  return config.server?.bind?.host ?? (mode === 'local' ? '127.0.0.1' : '0.0.0.0');
+  const host =
+    env.OPENKIT_BIND_HOST ||
+    (config.server?.bind?.host ?? (mode === 'local' ? '127.0.0.1' : '0.0.0.0'));
+  if (mode === 'local' && !isLoopbackHost(host))
+    throw new Error('Local mode requires a loopback bind host.');
+  return host;
 }
 
 /**

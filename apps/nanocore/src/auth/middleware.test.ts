@@ -49,6 +49,59 @@ describe('createAuthMiddleware', () => {
     });
   });
 
+  it.each([
+    {
+      name: 'direct non-loopback plaintext',
+      peer: '203.0.113.10',
+      encrypted: false,
+      forwarded: undefined,
+    },
+    {
+      name: 'direct non-loopback TLS',
+      peer: '203.0.113.10',
+      encrypted: true,
+      forwarded: undefined,
+    },
+    {
+      name: 'non-loopback peer claiming loopback forwarding',
+      peer: '203.0.113.10',
+      encrypted: false,
+      forwarded: '127.0.0.1',
+    },
+    {
+      name: 'loopback proxy carrying a non-loopback caller',
+      peer: '127.0.0.1',
+      encrypted: false,
+      forwarded: '203.0.113.10',
+    },
+  ])('refuses implicit local authority for $name', async ({ peer, encrypted, forwarded }) => {
+    const app = new Hono();
+    let protectedHandlerReached = false;
+    app.use(
+      '/api/*',
+      createAuthMiddleware('local', undefined, {
+        localUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    app.get('/api/private', (c) => {
+      protectedHandlerReached = true;
+      return c.json(c.get('actor'));
+    });
+
+    // A loopback Host never grants authority to a network peer or forwarded caller.
+    const response = await app.request(
+      new Request(`${encrypted ? 'https' : 'http'}://127.0.0.1/api/private`, {
+        headers: forwarded === undefined ? {} : { 'x-forwarded-for': forwarded },
+      }),
+      undefined,
+      { incoming: { socket: { remoteAddress: peer, encrypted } } }
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ code: 'core.auth.unauthenticated' });
+    expect(protectedHandlerReached).toBe(false);
+  });
+
   it('authenticates server-mode bearer access tokens without exposing token material', async () => {
     const token = 'okt_test_token';
     const app = new Hono();

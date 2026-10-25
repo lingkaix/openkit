@@ -53,7 +53,7 @@ export function createChannelServices(input: {
   const localUserId = input.mode === 'local' ? getLocalUserId(coreDb) : undefined;
   const ordinaryActor = (userId: string): Actor | null =>
     isCanonicalUserActive(coreDb, userId) && (input.mode !== 'local' || userId === localUserId)
-      ? { kind: input.mode === 'local' ? 'local' : 'session', userId }
+      ? { kind: 'session', userId }
       : null;
 
   /** Loads one exact, currently visible source before disclosure, decision, or external attention. */

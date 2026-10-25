@@ -123,7 +123,7 @@ trap 'exit 130' INT
 
 mkdir -p "${smoke_root}/data/config"
 printf '%s\n' '{"schemaVersion":1,"mode":"local"}' >"${smoke_root}/data/config/server.jsonc"
-OPENKIT_DATA_ROOT="${smoke_root}/data" /usr/local/bin/openkit-app-entrypoint >"${smoke_root}/startup.log" 2>&1 &
+OPENKIT_CORE_MODE=local OPENKIT_DATA_ROOT="${smoke_root}/data" /usr/local/bin/openkit-app-entrypoint >"${smoke_root}/startup.log" 2>&1 &
 app_pid="$!"
 
 ready=0

@@ -182,7 +182,10 @@ export function requireCurrentDeploymentAdmin(
     return { tokenId: null, userId: actor.userId };
   }
   if (actor.kind === 'session') {
-    const tokenId = resolveSessionDeploymentAdminTokenId(coreDb, actor.userId, now);
+    // Only actual session authentication projects this eligibility; channel pairing does not.
+    const tokenId = actor.adminTokenId
+      ? resolveSessionDeploymentAdminTokenId(coreDb, actor.userId, now)
+      : null;
     if (tokenId) {
       return { tokenId, userId: actor.userId };
     }

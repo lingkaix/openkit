@@ -4,7 +4,7 @@ The `containers/app/Dockerfile` image is the app deployment contract for single-
 
 It builds `@openkit/protocol`, `@openkit/core-client`, `nanocore`, and `web`, then ships built NanoCore files, production NanoCore dependencies, Drizzle migrations, data templates, web SPA assets, Caddy, and `tini`.
 
-The image exposes only the public Caddy HTTP port.
+The image defaults to server mode and exposes the Caddy HTTP port. Use the existing server bootstrap admission to establish administrator access.
 
 NanoCore's App HTTP/1.1 listener stays loopback-only and is exposed through Caddy. A configured private NanoHost HTTP/2 listener uses a different local port and is never published or proxied by the app image.
 
@@ -28,13 +28,15 @@ The pre-release execution-authority replacement rewrites the Core `0000` baselin
 
 ## Run
 
+Before starting server mode, supply a stable deployment-specific `BETTER_AUTH_SECRET` with at least 32 characters after trimming. The helper loads it from its existing private environment file or the calling shell and forwards its name to Docker, without putting its value in arguments. Keep the same secret across restarts. Set `BETTER_AUTH_URL` or `server.publicBaseUrl` to the browser origin; the helper supplies its published loopback origin automatically. Bootstrap establishes administrator access; it does not replace this signing-secret prerequisite.
+
 For the standard local dogfooding setup, use the repo-level helper:
 
 ```bash
 pnpm run app:run
 ```
 
-The helper creates `~/nano-data` when it does not exist, loads `~/nano-data/secrets/openkit.env` when that file exists, seeds deployment defaults in `config/server.jsonc`, an OpenRouter profile in `config/providers/openrouter.provider.jsonc`, a logical route in `config/gateway.jsonc`, and `config/internal-role-profiles.jsonc`, mounts that data root into the app container, and serves the web UI at `http://127.0.0.1:7080`.
+The helper starts server mode and creates `~/nano-data` when it does not exist, loads `~/nano-data/secrets/openkit.env` when that file exists, seeds deployment defaults in `config/server.jsonc`, an OpenRouter profile in `config/providers/openrouter.provider.jsonc`, a logical route in `config/gateway.jsonc`, and `config/internal-role-profiles.jsonc`, mounts that data root into the app container, and serves the web UI at `http://127.0.0.1:7080`.
 
 Rebuild the app image before starting it with:
 
@@ -49,8 +51,10 @@ If you use several Provider accounts, give each Provider file its own `secretRef
 Existing app provider entries that still contain inline credential fields such as `apiKey` fail clearly and must be changed to `secretRef`.
 
 ```bash
-docker run --rm -it -p 8080:8080 -v /tmp/openkit-data:/data/openkit openkit/app:dev
+docker run --rm -it --env BETTER_AUTH_SECRET --env BETTER_AUTH_URL=http://localhost:8080 -p 8080:8080 -v /tmp/openkit-data:/data/openkit openkit/app:dev
 ```
+
+Explicit local mode confines Caddy to container loopback. Published Docker ports do not expose that listener; use server mode for access from outside the container. TLS does not authorize a non-loopback local NanoCore bind.
 
 Caddy serves the SPA from `/srv/web`, proxies ordinary `/api/*`, `/internal/*`, and exact `/mcp` requests to the NanoCore App HTTP/1.1 listener on loopback without stripping route prefixes, returns `404` for `/api/nanohost/transport/*`, and disables gzip plus enables immediate flushing for turn SSE routes.
 
@@ -62,7 +66,7 @@ When a Linux host already has the restricted App-update identity configured, in-
 scripts/docker/smoke-image.sh app
 ```
 
-The smoke command reports Node, pnpm, and Caddy versions, checks recovery packaging, and starts the ordinary App entrypoint with a disposable Data Root. It requires `/api/health` through Caddy within 60 seconds and checks the SPA root, then stops the server and removes its temporary data. This catches startup failures in the production `pnpm deploy` dependency layout.
+The smoke command reports Node, pnpm, and Caddy versions, checks recovery packaging, and starts the ordinary App entrypoint in explicit local mode with a disposable Data Root. Its requests stay inside the container. It requires `/api/health` through Caddy within 60 seconds and checks the SPA root, then stops the server and removes its temporary data. This catches startup failures in the production `pnpm deploy` dependency layout.
 
 The stopped-server recovery packaging probe uses only disposable bind mounts and never starts NanoCore or Caddy:
 
@@ -80,15 +84,14 @@ Run the host-side persistence smoke after building the app image:
 scripts/docker/app-persistence-smoke.sh
 ```
 
-The script starts `openkit-app` with a temporary host directory mounted at `/data/openkit`, seeds a minimal `config/server.jsonc` when no server config exists, verifies `/api/health` and the SPA root through the public Caddy route, creates a Workspace through `POST /api/app/operations/workspace.create`, writes smoke-owned runtime and log markers, restarts the container with the same mount, and reads the definition-derived `workspace.list` JSON binding to verify the Workspace plus the canonical data-root layout survived.
+The script starts explicit local mode and sends HTTP requests from inside the disposable container, through its loopback Caddy listener. It starts `openkit-app` with a temporary host directory mounted at `/data/openkit`, seeds a minimal `config/server.jsonc` when no server config exists, verifies `/api/health` and the SPA root through the public Caddy route, creates a Workspace through `POST /api/app/operations/workspace.create`, writes smoke-owned runtime and log markers, restarts the container with the same mount, and reads the definition-derived `workspace.list` JSON binding to verify the Workspace plus the canonical data-root layout survived.
 
 The PASS summary covers `server/db/core.sqlite`, `config/server.jsonc`, `server/files`, `server/runtime`, `server/vendor`, the personal `users/<recordedUserId>` subtree, the canonical `workspaces/<workspaceId>` subtree, an agent resolved-snapshot marker, and server and Workspace log markers.
 
-Override the image, host port, or data root when needed:
+Override the image or data root when needed:
 
 ```bash
 OPENKIT_APP_IMAGE=openkit/app:dev \
-OPENKIT_APP_SMOKE_PORT=18080 \
 OPENKIT_APP_SMOKE_DATA_ROOT=/tmp/openkit-data \
 scripts/docker/app-persistence-smoke.sh
 ```
@@ -120,7 +123,7 @@ scripts/docker/e2e-app.sh
 | --- | --- | --- |
 | `CADDY_HTTP_PORT` | `8080` | Public HTTP port served by Caddy. |
 | `OPENKIT_HTTP_PORT` | `4317` | App-image alias for the internal NanoCore HTTP port; the entrypoint exports it to NanoCore's `PORT`. |
-| `OPENKIT_CORE_MODE` | `local` | NanoCore mode for app. |
+| `OPENKIT_CORE_MODE` | `server` | NanoCore mode. Explicit local mode confines both listeners to loopback. |
 | `OPENKIT_BIND_HOST` | `127.0.0.1` | NanoCore bind host, kept on loopback unless explicitly overridden. |
 | `OPENKIT_DATA_ROOT` | `/data/openkit` | Mounted persistent data root for SQLite, config, server runtime, personal user state, and canonical Workspace state. |
 
