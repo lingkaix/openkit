@@ -158,19 +158,21 @@ namespace_command() {
     --ro-bind /usr/bin /usr/bin
     --ro-bind /bin /bin
     --ro-bind /lib /lib
+    # Ubuntu 26.04 coreutils symlinks need their target directory before stub mounts.
+    --ro-bind-try /usr/lib/cargo/bin/coreutils /usr/lib/cargo/bin/coreutils
     --ro-bind "$LIB_ARCH_DIR" "$LIB_ARCH_DIR"
     --ro-bind "$PYTHON_STDLIB" "$PYTHON_STDLIB"
     --proc /proc --dev /dev
     --ro-bind /sys/fs/cgroup /sys/fs/cgroup
     --ro-bind "$STUBS/pid1" /proc/1/comm
     --bind "$CASE_ROOT" "$CASE_ROOT"
-    --ro-bind "$STUBS/containerd" /usr/bin/containerd
-    --ro-bind "$STUBS/dockerd" /usr/bin/dockerd
-    --ro-bind "$STUBS/docker" /usr/bin/docker
-    --ro-bind "$STUBS/git" /usr/bin/git
-    --ro-bind "$STUBS/slirp4netns" /usr/bin/slirp4netns
-    --ro-bind "$STUBS/uname" /usr/bin/uname
-    --ro-bind "$STUBS/systemd-analyze" /usr/bin/systemd-analyze
+    --ro-bind "$STUBS/containerd" "$(readlink -f /usr/bin/containerd)"
+    --ro-bind "$STUBS/dockerd" "$(readlink -f /usr/bin/dockerd)"
+    --ro-bind "$STUBS/docker" "$(readlink -f /usr/bin/docker)"
+    --ro-bind "$STUBS/git" "$(readlink -f /usr/bin/git)"
+    --ro-bind "$STUBS/slirp4netns" "$(readlink -f /usr/bin/slirp4netns)"
+    --ro-bind "$STUBS/uname" "$(readlink -f /usr/bin/uname)"
+    --ro-bind "$STUBS/systemd-analyze" "$(readlink -f /usr/bin/systemd-analyze)"
     --chdir "$BUNDLE"
   )
   if [[ -d /lib64 ]]; then args+=(--ro-bind /lib64 /lib64); fi
