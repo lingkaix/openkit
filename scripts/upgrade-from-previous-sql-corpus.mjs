@@ -1725,6 +1725,7 @@ async function seedTaskReceipts(o, core, user, workspace, store, sql) {
 
 /** Seeds deployment-local channel history through native owners, using only in-memory synthetic signing material. */
 async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threadId, turnId }) {
+  const { canonicalJsonText } = await o.loadPackage('@openkit/protocol');
   const keys = generateKeyPairSync('ed25519');
   const publicKey = keys.publicKey
     .export({ type: 'spki', format: 'der' })
@@ -1759,7 +1760,7 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
         threadId,
         pendingRequestId: record.requestId,
         turnId,
-        content: o.pending.canonicalJsonText(record.governedIntent),
+        content: canonicalJsonText(record.governedIntent),
         responseAllowed: true,
       };
     },
@@ -2280,6 +2281,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     workspace.dataRoot,
     join(workspaceRoot, 'evidence', 'backend', sql.restrictedBody.bundleId, 'raw', 'content')
   );
+  const { canonicalJsonText } = await o.loadPackage('@openkit/protocol');
   const tools = [{ name: 'synthetic_inspect', inputSchema: { type: 'object', properties: {} } }];
   sql.mcpSchemaSnapshotId = 'mcp_upgrade-corpus';
   o.mcp.importMcpToolSchemaSnapshots(workspace, [
@@ -2287,6 +2289,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
       capturedAt: NOW,
       catalogEntryId: 'synthetic-mcp',
       contentDigest: o.mcp.mcpToolSchemaContentDigest(tools),
+      toolsJson: canonicalJsonText(o.mcp.canonicalMcpToolSchemas(tools)),
       schemaSnapshotId: sql.mcpSchemaSnapshotId,
       serverVersion: 'synthetic',
       source: 'aep',

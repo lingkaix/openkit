@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { canonicalJsonText } from '@openkit/protocol';
 import { z } from 'zod';
 import { McpHttpEndpointSchema, WorkspaceMcpCredentialBindingSchema } from './mcp-credentials.js';
 
@@ -190,7 +191,7 @@ export function digestMcpConfig(declaration: unknown, packageRootDigest: string 
   return `sha256:${createHash('sha256')
     .update(Buffer.from(OPENKIT_MCP_CONFIG_DIGEST_FORMAT, 'ascii'))
     .update(Buffer.from([0]))
-    .update(Buffer.from(stableJson({ declaration, packageRootDigest }), 'utf8'))
+    .update(Buffer.from(canonicalJsonText({ declaration, packageRootDigest }), 'utf8'))
     .digest('hex')}`;
 }
 
@@ -216,7 +217,7 @@ export function resolveWorkspaceMcpServer(input: {
   if (!server.enabled) throw new Error(`Workspace MCP server disabled: ${input.serverId}`);
   return {
     ...server,
-    catalogDigest: `sha256:${createHash('sha256').update(stableJson(server)).digest('hex')}`,
+    catalogDigest: `sha256:${createHash('sha256').update(canonicalJsonText(server)).digest('hex')}`,
   };
 }
 
@@ -250,16 +251,4 @@ export function mcpCatalogContainsRawSecret(value: unknown): boolean {
 /** Returns true when a catalog subtree contains a recognizable raw credential value. */
 function containsRawSecret(value: unknown): boolean {
   return mcpCatalogContainsRawSecret(value);
-}
-
-/** Serializes values with stable object-key ordering for entry digests. */
-export function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

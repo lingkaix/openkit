@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { canonicalJsonText } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
@@ -39,7 +41,6 @@ import {
 } from './pending-request-flow.js';
 import {
   answerPendingRequest,
-  canonicalJsonText,
   deletePendingRequest,
   freezeReadyOutcomes,
   frozenPendingOutcomeInput,
@@ -227,6 +228,96 @@ function approvalRaise(
 }
 
 describe('pending requests', () => {
+  it('retains historical captured argument bytes through reopen, validation and qualified replay', async () => {
+    const { coreDb, store, dataRoot } = await openPendingApp();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const turn = await store.createTurn(
+      workspaceId,
+      threadId,
+      'Retain captured arguments',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      },
+      null,
+      { agentId: 'agent_demo' }
+    );
+    let db = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(db);
+    const args = { nested: { z: 'last', a: 'first' }, 10: 'ten', 2: 'two' };
+    // Captured pre-switch canonical JSON uses ECMAScript enumeration for integer-looking keys.
+    const historical = '{"2":"two","10":"ten","nested":{"a":"first","z":"last"}}';
+    const historicalDigest = `sha256:${createHash('sha256').update(historical).digest('hex')}`;
+    const base = approvalRaise(turn.id, 'ap_retained_argument_bytes', 'initial');
+    const input = {
+      ...base,
+      call: {
+        ...base.call!,
+        canonicalArgumentsJson: canonicalJsonText(args),
+        argumentsDigest: mcpToolArgumentsContentDigest(args),
+      },
+    };
+    try {
+      await store.createItem({
+        id: input.requestItemId,
+        owner: { kind: 'workspace', workspaceId },
+        threadId,
+        turnId: turn.id,
+        type: 'approval-request',
+        status: 'completed',
+        approvalRequestId: input.requestId,
+        title: input.approval!.title,
+        description: input.approval!.description,
+        kind: 'permission',
+        createdAt: NOW,
+        completedAt: NOW,
+      });
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
+      await shutdownControlStoreWorkerClient();
+      // Restore a captured historical preimage on this owner's valid record, retaining all identities.
+      db.sqlite
+        .prepare(`UPDATE pending_requests SET canonical_arguments_json = ?, arguments_digest = ?
+        WHERE request_id = ?`)
+        .run(historical, historicalDigest, input.requestId);
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, workspaceId);
+      const retained = readPendingRequest(db.sqlite, input.requestId)!;
+      expect(
+        validateCanonicalLoad(retained, store.listThreadTurns(workspaceId, threadId))
+      ).toBeNull();
+      expect(retained).toMatchObject({
+        canonicalArgumentsJson: historical,
+        argumentsDigest: historicalDigest,
+      });
+      expect(raisePendingRequest(db.sqlite, input)).toMatchObject({
+        created: false,
+        record: { requestId: input.requestId },
+      });
+      const changed = { ...args, 2: 'changed' };
+      expect(() =>
+        raisePendingRequest(db.sqlite, {
+          ...input,
+          call: {
+            ...input.call,
+            canonicalArgumentsJson: canonicalJsonText(changed),
+            argumentsDigest: mcpToolArgumentsContentDigest(changed),
+          },
+        })
+      ).toThrow(expect.objectContaining({ code: 'idempotency_key_conflict' }));
+      // Schema Evolution, Canonical Structured Values And Exact Bytes preserves the original proof.
+      expect(
+        db.sqlite
+          .prepare('SELECT canonical_arguments_json, arguments_digest FROM pending_requests')
+          .all()
+      ).toEqual([{ canonical_arguments_json: historical, arguments_digest: historicalDigest }]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('retains v1 handoff meaning and original annotations across replay and reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-v1-'));
     onTestFinished(() => rmSync(dataRoot, { force: true, recursive: true }));

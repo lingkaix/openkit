@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { CoreDb } from '../storage/db.js';
 import type {
   WorkerControlSequenceRecorder,
@@ -49,7 +50,17 @@ export function acceptWorkerControlSequence(
     ) as { fingerprint: string } | undefined;
 
   if (existing) {
-    if (existing.fingerprint !== input.fingerprint) {
+    // Stored JSON is original evidence; replay compares its complete value without rewriting it.
+    let duplicate = false;
+    try {
+      duplicate = isDeepStrictEqual(
+        JSON.parse(existing.fingerprint),
+        JSON.parse(input.fingerprint)
+      );
+    } catch {
+      // A malformed retained fingerprint cannot establish an accepted replay.
+    }
+    if (!duplicate) {
       return {
         code: 'worker_control_sequence_conflict',
         message: `Worker control ${input.operation} sequence already accepted with different content: ${input.sequence}`,

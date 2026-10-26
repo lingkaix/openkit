@@ -10,8 +10,8 @@ import {
   LightAppDefinitionVersionRecordSchema,
   type ResourceCatalogDocument,
   ResourceCatalogIdSchema,
-  stableJson,
 } from '@openkit/config-schema';
+import { canonicalJsonText } from '@openkit/protocol';
 import { z } from 'zod';
 import { admitLightAppDefinition } from '../generative-kernel/schema.js';
 import {
@@ -113,7 +113,7 @@ export function importWorkspaceLightAppDefinition(
           }),
         }
       : input.definition;
-    return stableJson(admitLightAppDefinition(definition, previous));
+    return canonicalJsonText(admitLightAppDefinition(definition, previous));
   });
   const digest = definitionDigest(definitionJson);
   const retained = current.lightApps.versions.find(
@@ -230,7 +230,7 @@ export function importWorkspaceLightAppDefinitionHistory(
       const definition = JSON.parse(version.definitionJson) as LightAppSchemaInput;
       // The retained definition is its own identity base: missing IDs fail instead of being allocated.
       const admitted = admitLightAppDefinition(definition, definition);
-      if (stableJson(admitted) !== version.definitionJson) {
+      if (canonicalJsonText(admitted) !== version.definitionJson) {
         throw new Error(
           `Light App history definition is not normalized: ${version.entryId}/${version.digest}`
         );

@@ -422,6 +422,7 @@ const ExportedMcpToolSchemaSnapshotSchema = z
     serverVersion: z.string().min(1).nullable(),
     source: z.enum(['aep', 'live']),
     sourceRef: z.string().min(1).nullable(),
+    toolsJson: z.string().optional(),
     tools: z.array(
       z
         .object({

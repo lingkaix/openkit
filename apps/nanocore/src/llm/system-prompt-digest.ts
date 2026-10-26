@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
-
-import { readRetainedV1, SystemPromptDigestSchema } from '@openkit/protocol';
+import { canonicalJsonText, readRetainedV1, SystemPromptDigestSchema } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
@@ -8,25 +7,23 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 export type LlmSystemPromptEndpoint = 'chat_completions' | 'responses';
 
 /**
- * Canonicalizes one JSON value so grouping keys ignore object-key order and unicode composition.
+ * Normalizes prompt string values to NFC before the shared canonical encoder selects member order.
  *
  * @param value Arbitrary JSON-like value from a pre-adapter request.
- * @returns NFC-normalised strings, arrays in order, and objects with sorted keys.
+ * @returns NFC-normalised strings with the original array and object structure.
  */
-function canonicalizeJsonValue(value: unknown): unknown {
+function normalizeSystemPromptStrings(value: unknown): unknown {
   if (typeof value === 'string') {
     return value.normalize('NFC');
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => canonicalizeJsonValue(entry));
+    return value.map((entry) => normalizeSystemPromptStrings(entry));
   }
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    const canonical: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      canonical[key] = canonicalizeJsonValue(record[key]);
-    }
-    return canonical;
+    return Object.fromEntries(
+      Object.entries(record).map(([key, entry]) => [key, normalizeSystemPromptStrings(entry)])
+    );
   }
   return value;
 }
@@ -81,8 +78,8 @@ function canonicalizeLlmSystemPrompt(input: {
       return canonical ? [canonical] : [];
     });
 
-    return JSON.stringify(
-      canonicalizeJsonValue({
+    return canonicalJsonText(
+      normalizeSystemPromptStrings({
         endpoint: 'chat_completions',
         presence: systemPrompt.length > 0 ? 'present' : 'absent',
         ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
@@ -91,8 +88,8 @@ function canonicalizeLlmSystemPrompt(input: {
   }
 
   const hasInstructions = Object.hasOwn(request, 'instructions');
-  return JSON.stringify(
-    canonicalizeJsonValue({
+  return canonicalJsonText(
+    normalizeSystemPromptStrings({
       endpoint: 'responses',
       presence: hasInstructions ? 'present' : 'absent',
       ...(hasInstructions ? { systemPrompt: request.instructions ?? null } : {}),
@@ -112,9 +109,7 @@ export function digestLlmSystemPrompt(input: {
   /** Pre-adapter Chat Completions or Responses request. */
   readonly request: unknown;
 }): string {
-  return SystemPromptDigestSchema.parse(
-    `sha256:${createHash('sha256').update(canonicalizeLlmSystemPrompt(input)).digest('hex')}`
-  );
+  return SystemPromptDigestSchema.parse(`sha256:${sha256Hex(canonicalizeLlmSystemPrompt(input))}`);
 }
 
 /** Writes Workspace attribution through the native owner; Core attribution keeps its existing SQL owner. */

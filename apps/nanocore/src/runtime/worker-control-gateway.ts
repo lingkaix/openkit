@@ -4,6 +4,7 @@ export { WorkerControlGatewayError } from '../operation-error.js';
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { canonicalJsonText } from '@openkit/protocol';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   type WorkerControlHeartbeatStatus as ProtocolWorkerControlHeartbeatStatus,
@@ -712,7 +713,7 @@ export class WorkerControlGateway {
     const state: WorkerControlSessionState = {
       environmentPackage: input.environmentPackage ?? null,
       eventFingerprintsBySequence: new Map(
-        events.map((event) => [event.sequence, stableJson(event)])
+        events.map((event) => [event.sequence, canonicalJsonText(event)])
       ),
       highestEventSequence:
         events.length === 0 ? null : Math.max(...events.map((event) => event.sequence)),
@@ -1335,7 +1336,7 @@ export class WorkerControlGateway {
     record: WorkerCanonicalEventRecord
   ): { readonly duplicate: boolean } {
     const receipt = workerControlEventReceipt(record);
-    const fingerprint = stableJson(receipt);
+    const fingerprint = canonicalJsonText(receipt);
     const observationEvent =
       record.event.type === 'observation.recorded' ||
       record.event.type === 'observation.content.chunk';
@@ -1837,12 +1838,12 @@ function acceptSequencedControlOperation(
  */
 function sequencedControlFingerprint(payload: unknown): string {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return stableJson(payload);
+    return canonicalJsonText(payload);
   }
 
   const canonicalPayload = { ...payload } as Record<string, unknown>;
   delete canonicalPayload.authorization;
-  return stableJson(canonicalPayload);
+  return canonicalJsonText(canonicalPayload);
 }
 
 /**
@@ -1916,38 +1917,6 @@ function nextExpectedOperationSequence(
  */
 function cloneCanonicalEventRecord(record: WorkerCanonicalEventRecord): WorkerCanonicalEventRecord {
   return structuredClone(record);
-}
-
-/**
- * Serializes JSON-compatible data with stable object key ordering.
- *
- * @param value JSON-compatible value.
- * @returns Stable JSON string.
- */
-function stableJson(value: unknown): string {
-  return JSON.stringify(sortJsonValue(value));
-}
-
-/**
- * Sorts object keys recursively for semantic retry comparison.
- *
- * @param value JSON-compatible value.
- * @returns Value with object keys sorted recursively.
- */
-function sortJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortJsonValue);
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entryValue]) => [key, sortJsonValue(entryValue)])
-    );
-  }
-
-  return value;
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   type TurnStatus,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import {
   WORKER_CONTROL_EVENT_APPEND_MAX_BYTES,
   WORKER_OBSERVATION_SOURCE_MAX_BYTES,
@@ -176,9 +177,7 @@ export function workerObservationRecordId(
   packageSnapshotId: string,
   observationId: string
 ): string {
-  return `obs_runtime_${createHash('sha256')
-    .update(JSON.stringify([packageSnapshotId, observationId]))
-    .digest('hex')}`;
+  return `obs_runtime_${sha256CanonicalJson([packageSnapshotId, observationId])}`;
 }
 
 /**

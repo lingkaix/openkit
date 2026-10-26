@@ -23,6 +23,7 @@ import {
   type ActorRef,
   allocateEntityId,
   CapabilityCallStatusSchema,
+  canonicalJsonText,
   deriveEntityId,
   ItemSchema,
   isSealedTurnTerminal,
@@ -118,7 +119,6 @@ import {
 import { approvalCardCopy } from './runtime/pending-request-disclosure.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import {
-  canonicalJsonText,
   executionCallIdForRequest,
   type PendingRequestRecord,
   type RaisePendingRequestInput,

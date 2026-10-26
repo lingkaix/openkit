@@ -19,6 +19,30 @@ import {
 const DEFAULT_LITERAL = 'You are a helpful assistant.';
 
 describe('digestLlmSystemPrompt', () => {
+  it('uses canonical integer-looking member order after the prompt domain NFC projection', () => {
+    // Schema Evolution, Canonical Structured Values And Exact Bytes requires UTF-16 member order.
+    // The prompt domain retains NFC values before that shared encoding boundary.
+    const canonical =
+      '{"endpoint":"chat_completions","presence":"present","systemPrompt":[{"content":[{"10":"café","2":"two","type":"text"}],"role":"system"}]}';
+    expect(
+      digestLlmSystemPrompt({
+        endpoint: 'chat_completions',
+        request: {
+          messages: [{ content: [{ 2: 'two', 10: 'cafe\u0301', type: 'text' }], role: 'system' }],
+        },
+      })
+    ).toBe(`sha256:${createHash('sha256').update(canonical).digest('hex')}`);
+  });
+
+  it('keeps system and developer roles distinct at the pre-adapter boundary', () => {
+    const digest = (role: 'system' | 'developer') =>
+      digestLlmSystemPrompt({
+        endpoint: 'chat_completions',
+        request: { messages: [{ content: DEFAULT_LITERAL, role }] },
+      });
+    expect(digest('system')).not.toBe(digest('developer'));
+  });
+
   it('groups by Core-intended system prompts and keeps absent distinct from an explicit default literal', () => {
     const absentChat = digestLlmSystemPrompt({
       endpoint: 'chat_completions',

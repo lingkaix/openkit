@@ -3,8 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { stableJson } from '@openkit/config-schema';
-import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
+import { allocateEntityId, canonicalJsonText, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import {
@@ -254,7 +253,7 @@ describe('Light App definition catalog', () => {
     const before = readFileSync(path, 'utf8');
     const exported = exportWorkspaceLightAppDefinition({ ...input, entryId: 'admissions' });
     const admitted = JSON.parse(first.version.definitionJson) as LightAppSchemaInput;
-    const definitionJson = stableJson({
+    const definitionJson = canonicalJsonText({
       ...admitted,
       collections: [
         { ...admitted.collections[0], indexes: [{ fields: ['missing'], unique: true }] },

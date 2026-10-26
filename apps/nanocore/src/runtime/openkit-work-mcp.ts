@@ -8,6 +8,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
+  canonicalJsonText,
   deriveEntityId,
   isSealedTurnTerminal,
   MAX_ARTIFACT_FILE_BYTES,
@@ -65,7 +66,6 @@ import {
 } from './openkit-work-supply.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './pending-request-flow.js';
 import {
-  canonicalJsonText,
   PendingRequestCommandError,
   preflightPendingRequest,
   type RaisePendingRequestInput,

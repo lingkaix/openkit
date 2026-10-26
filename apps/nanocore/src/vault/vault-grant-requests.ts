@@ -9,6 +9,7 @@ import {
   type ActorRef,
   AgentSessionIdSchema,
   allocateEntityId,
+  canonicalJsonText,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
   ThreadIdSchema,
@@ -44,7 +45,6 @@ import {
   requireUsableRecord,
 } from '../runtime/pending-request-flow.js';
 import {
-  canonicalJsonText,
   listThreadPendingRequests,
   PendingRequestCommandError,
   type PendingRequestRecord,

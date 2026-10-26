@@ -1,5 +1,5 @@
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { finishMcpToolCall, type StartedCapabilityCall } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -291,8 +291,8 @@ export function evaluateCapturedPendingCall(input: {
     schemaCurrent = Boolean(
       currentTool &&
         capturedTool &&
-        JSON.stringify(canonicalMcpToolSchemas([currentTool])) ===
-          JSON.stringify(canonicalMcpToolSchemas([capturedTool]))
+        canonicalJsonText(canonicalMcpToolSchemas([currentTool])) ===
+          canonicalJsonText(canonicalMcpToolSchemas([capturedTool]))
     );
   }
   return {

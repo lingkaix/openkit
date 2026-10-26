@@ -3,6 +3,7 @@ import {
   ApprovalRequestSchema,
   type AssistantHandoff,
   AssistantHandoffSchema,
+  canonicalJsonText,
   deriveEntityId,
   type Item,
   ItemIdSchema,
@@ -17,6 +18,7 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { refuseScope } from '../bootstrap/readiness.js';
@@ -24,7 +26,6 @@ import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { CommandRequestRecord } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import { commandInputHash } from './idempotent-command.js';
-import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
@@ -593,16 +594,6 @@ export function pendingRequestItemId(
     | 'invalidation'
 ): string {
   return deriveEntityId('it', [requestId, role]);
-}
-
-/**
- * Canonical JSON text with sorted object keys and preserved array order.
- *
- * @param value JSON value.
- * @returns Canonical JSON text.
- */
-export function canonicalJsonText(value: unknown): string {
-  return JSON.stringify(canonicalJsonValue(value));
 }
 
 /**
@@ -1556,8 +1547,7 @@ export function validateCanonicalLoad(
         !args ||
         typeof args !== 'object' ||
         Array.isArray(args) ||
-        canonicalJsonText(args) !== record.canonicalArgumentsJson ||
-        mcpToolArgumentsContentDigest(args as Record<string, unknown>) !== record.argumentsDigest
+        `sha256:${sha256Hex(record.canonicalArgumentsJson)}` !== record.argumentsDigest
       )
         return { requestId: record.requestId, reason: 'captured-arguments' };
     } catch {
@@ -2100,10 +2090,40 @@ function sameRaiseIdentity(record: PendingRequestRecord, input: RaisePendingRequ
     record.requesterKind === input.requesterKind &&
     record.responsibleUserId === input.responsibleUserId &&
     record.agentId === (input.agentId ?? null) &&
-    record.argumentsDigest === (input.call?.argumentsDigest ?? input.questionDigest ?? null) &&
+    (input.call
+      ? sameCapturedArguments(record, input.call)
+      : record.argumentsDigest === (input.questionDigest ?? null)) &&
     canonicalJsonText(record.governedIntent) === canonicalJsonText(input.governedIntent ?? null) &&
     canonicalJsonText(record.assistantHandoff) === canonicalJsonText(input.assistantHandoff ?? null)
   );
+}
+
+/** Compares complete captured arguments while preserving each original byte proof and binding. */
+function sameCapturedArguments(
+  record: PendingRequestRecord,
+  call: NonNullable<RaisePendingRequestInput['call']>
+): boolean {
+  if (
+    !record.canonicalArgumentsJson ||
+    record.argumentsDigest !== `sha256:${sha256Hex(record.canonicalArgumentsJson)}` ||
+    call.argumentsDigest !== `sha256:${sha256Hex(call.canonicalArgumentsJson)}`
+  )
+    return false;
+  try {
+    const retained = JSON.parse(record.canonicalArgumentsJson);
+    const incoming = JSON.parse(call.canonicalArgumentsJson);
+    return (
+      retained !== null &&
+      typeof retained === 'object' &&
+      !Array.isArray(retained) &&
+      incoming !== null &&
+      typeof incoming === 'object' &&
+      !Array.isArray(incoming) &&
+      isDeepStrictEqual(retained, incoming)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function sameQualifiedBinding(
@@ -2124,7 +2144,7 @@ function sameQualifiedBinding(
     record.catalogRevision === input.call.catalogRevision &&
     record.schemaSnapshotId === input.call.schemaSnapshotId &&
     record.toolName === input.call.toolName &&
-    record.argumentsDigest === input.call.argumentsDigest &&
+    sameCapturedArguments(record, input.call) &&
     record.agentId === (input.agentId ?? null) &&
     record.responsibleUserId === input.responsibleUserId
   );
@@ -2310,16 +2330,6 @@ function parseJson(value: string): unknown {
       409
     );
   }
-}
-
-function canonicalJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJsonValue);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, child]) => [key, canonicalJsonValue(child)])
-  );
 }
 
 /** Validates retained non-secret credential identity before it can re-enter current authorization. */

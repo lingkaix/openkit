@@ -45,7 +45,12 @@ import {
   WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
-import { deriveEntityId, PolicyDocumentV1Schema, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  canonicalJsonText,
+  deriveEntityId,
+  PolicyDocumentV1Schema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { applyEdits, modify, parse } from 'jsonc-parser';
@@ -103,6 +108,7 @@ import {
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
 import {
+  canonicalMcpToolSchemas,
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
   mcpToolSchemaContentDigest,
@@ -3763,6 +3769,7 @@ describe('worker MCP routes', () => {
             capturedAt: '2099-01-01T00:00:00.000Z',
             catalogEntryId,
             contentDigest: mcpToolSchemaContentDigest(tools),
+            toolsJson: canonicalJsonText(canonicalMcpToolSchemas(tools)),
             schemaSnapshotId: id,
             serverVersion: '1.0.0',
             source: 'aep' as const,

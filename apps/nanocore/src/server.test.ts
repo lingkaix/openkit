@@ -55,6 +55,7 @@ import {
   parseWorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import {
+  canonicalJsonText,
   deriveEntityId,
   entityIdPattern,
   MetaResponseSchema,
@@ -126,7 +127,10 @@ import {
 } from './runtime/filesystem-workspace-sync.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
-import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
+import {
+  canonicalMcpToolSchemas,
+  mcpToolSchemaContentDigest,
+} from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
@@ -5210,7 +5214,7 @@ describe('nanocore server', () => {
           'mcp/github',
           '1.0.0',
           schemaDigest,
-          JSON.stringify(schemaTools),
+          canonicalJsonText(canonicalMcpToolSchemas(schemaTools)),
           'live',
           '2026-07-06T00:07:00.000Z'
         );

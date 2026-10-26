@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { EMPTY_RESOURCE_CATALOG, stableJson } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { EMPTY_RESOURCE_CATALOG } from '@openkit/config-schema';
+import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
 import { expect, it } from 'vitest';
 import { CatalogIntegrityError, validateLightAppDefinitionCatalog } from './resource-catalog.js';
 
@@ -31,7 +31,7 @@ it('refuses retained catalog definition bytes with an omitted meaning-reference 
       },
     ],
   };
-  const definitionJson = stableJson(definition);
+  const definitionJson = canonicalJsonText(definition);
   catalog.lightApps.entries.push({
     id: 'meaning-notes',
     displayName: 'Notes',
@@ -47,7 +47,7 @@ it('refuses retained catalog definition bytes with an omitted meaning-reference 
     definitionJson,
   });
   expect(() => validateLightAppDefinitionCatalog(catalog)).toThrow(CatalogIntegrityError);
-  const finalJson = stableJson({ ...definition, references: [] });
+  const finalJson = canonicalJsonText({ ...definition, references: [] });
   catalog.lightApps.versions[0]!.definitionJson = finalJson;
   catalog.lightApps.versions[0]!.digest =
     `sha256:${createHash('sha256').update(finalJson).digest('hex')}`;

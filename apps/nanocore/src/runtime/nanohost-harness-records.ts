@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import {
   canonicalNativeEnvironment,
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
@@ -189,19 +190,15 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
     throw new Error('NanoHost SessionCompatibilityKey is invalid.');
   }
   requireIdentity(input.threadId, 'Thread');
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        nativeConversation: {
-          adapterId: input.adapterId,
-          adapterVersion: input.adapterVersion,
-          harnessCompatibilityKey: input.harnessCompatibilityKey,
-        },
-        sessionCompatibilityKey: input.sessionCompatibilityKey,
-        threadId: input.threadId,
-      })
-    )
-    .digest('hex');
+  return sha256CanonicalJson({
+    nativeConversation: {
+      adapterId: input.adapterId,
+      adapterVersion: input.adapterVersion,
+      harnessCompatibilityKey: input.harnessCompatibilityKey,
+    },
+    sessionCompatibilityKey: input.sessionCompatibilityKey,
+    threadId: input.threadId,
+  });
 }
 
 /** Raw durable Harness row used by checked transitions. */
@@ -1024,7 +1021,7 @@ export function queueNanoHostHarnessOperation(
           command.operationId,
           input.operation,
           commandBodyJson,
-          sha256(commandBodyJson),
+          sha256Hex(commandBodyJson),
           input.timestamp,
           input.harnessInstanceId,
           command.sequence
@@ -1103,17 +1100,14 @@ export function dispatchNanoHostHarnessOperation(
       !harness.operation ||
       !harness.operation_id ||
       !harness.command_body_json ||
-      sha256(harness.command_body_json) !== harness.command_fingerprint
+      sha256Hex(harness.command_body_json) !== harness.command_fingerprint
     ) {
       throw new Error('NanoHost Harness queued operation is incomplete or corrupt.');
     }
     const durableBody = readJsonObject(harness.command_body_json);
     const body = requireDurableHarnessBody(harness.operation, durableBody);
-    if (
-      harness.operation_id !==
-      harnessOperationId(harness, harness.operation, harness.next_sequence, durableBody)
-    )
-      throw new Error('NanoHost Harness prepared operation identity conflicts.');
+    // The committed command tuple owns native correlation; a current encoder cannot rename it.
+    requireSha256(harness.operation_id, 'recorded operation identity');
     requireOperationLineage(coreDb, harness, harness.operation, body);
     if (harness.operation === 'turn.start') {
       const attemptId = body.leaseId as string;
@@ -1241,7 +1235,7 @@ export function settleNanoHostHarnessOperation(
       input.result.harnessInstanceId
     );
     // Verify the retained representation before parsing or comparing a descriptive view.
-    if (harness.result_json && sha256(harness.result_json) !== harness.result_fingerprint)
+    if (harness.result_json && sha256Hex(harness.result_json) !== harness.result_fingerprint)
       throw new Error('NanoHost Harness retained result fingerprint conflicts.');
     const retained = harness.result_json ? readJsonObject(harness.result_json) : null;
     const isPriorReceipt =
@@ -1313,16 +1307,12 @@ export function settleNanoHostHarnessOperation(
     if (harness.operation === 'session.close') {
       if (
         !harness.command_body_json ||
-        sha256(harness.command_body_json) !== harness.command_fingerprint
+        sha256Hex(harness.command_body_json) !== harness.command_fingerprint
       )
         throw new Error('NanoHost close command fingerprint conflicts before Core consumption.');
       const closeBody = readJsonObject(harness.command_body_json);
       requireDurableHarnessBody('session.close', closeBody);
-      if (
-        harness.operation_id !==
-        harnessOperationId(harness, 'session.close', input.result.sequence, closeBody)
-      )
-        throw new Error('NanoHost close operation identity conflicts before Core consumption.');
+      requireSha256(harness.operation_id, 'recorded close operation identity');
     }
     const consumerContext =
       harness.operation === 'session.close'
@@ -1353,7 +1343,7 @@ export function settleNanoHostHarnessOperation(
             harnessBindingRef: harness.harness_binding_ref,
             operationId: input.result.operationId,
             sequence: input.result.sequence,
-            resultFingerprint: sha256(
+            resultFingerprint: sha256Hex(
               canonicalJson(input.result as unknown as Record<string, unknown>)
             ),
           };
@@ -1381,7 +1371,7 @@ export function settleNanoHostHarnessOperation(
             AND operation_id = ? AND operation_sequence = ?`)
         .run(
           resultJson,
-          sha256(resultJson),
+          sha256Hex(resultJson),
           harness.harness_instance_id,
           input.result.operationId,
           input.result.sequence
@@ -1403,7 +1393,7 @@ export function settleNanoHostHarnessOperation(
         )
         .run(
           resultJson,
-          sha256(resultJson),
+          sha256Hex(resultJson),
           input.timestamp,
           harness.harness_instance_id,
           input.result.operationId,
@@ -1811,10 +1801,11 @@ function redactHarnessWireBody(
     delete body.inferenceToken;
     delete body.workerControlToken;
   } else if (operation === 'session.open') {
-    body.capabilityLoopbackCredentialHash = hashLoopbackCredential(
+    // Hash the encoded 43 UTF-8 bytes, exactly as the collection scanner compares its windows.
+    body.capabilityLoopbackCredentialHash = sha256Hex(
       requireRouteToken(body.capabilityLoopbackCredential as string)
     );
-    body.inferenceLoopbackCredentialHash = hashLoopbackCredential(
+    body.inferenceLoopbackCredentialHash = sha256Hex(
       requireRouteToken(body.inferenceLoopbackCredential as string)
     );
     delete body.capabilityLoopbackCredential;
@@ -1831,7 +1822,7 @@ function harnessOperationId(
   sequence: number,
   body: Readonly<Record<string, unknown>>
 ): string {
-  return sha256(
+  return sha256Hex(
     canonicalJson({ body, harnessBindingRef: harness.harness_binding_ref, operation, sequence })
   );
 }
@@ -1856,7 +1847,7 @@ function readHarnessResultReceipt(harness: HarnessRow): {
       throw new Error('NanoHost Harness result fingerprint has no receipt.');
     return null;
   }
-  if (sha256(harness.result_json) !== harness.result_fingerprint)
+  if (sha256Hex(harness.result_json) !== harness.result_fingerprint)
     throw new Error('NanoHost Harness retained result fingerprint conflicts.');
   const retained = readJsonObject(harness.result_json);
   const original = { ...retained };
@@ -1865,7 +1856,7 @@ function readHarnessResultReceipt(harness: HarnessRow): {
   const result = HarnessResultEnvelopeReaderSchema.parse(original);
   if (result.harnessInstanceId !== harness.harness_instance_id)
     throw new Error('NanoHost Harness retained result owner conflicts.');
-  return { retained, result, resultFingerprint: sha256(canonicalJson(original)) };
+  return { retained, result, resultFingerprint: sha256Hex(canonicalJson(original)) };
 }
 
 /** Exact existing Workspace-step or Core idle-binding consumer identity. */
@@ -2172,7 +2163,7 @@ export function acknowledgeNanoHostHarnessResult(
       harness.operation_sequence !== incoming.sequence ||
       !harness.operation ||
       !harness.command_body_json ||
-      sha256(harness.command_body_json) !== harness.command_fingerprint
+      sha256Hex(harness.command_body_json) !== harness.command_fingerprint
     )
       throw new Error('NanoHost Harness consumer command binding is stale.');
     if (!('turnId' in consumer))
@@ -2205,7 +2196,7 @@ export function acknowledgeNanoHostHarnessResult(
           AND operation_id = ? AND operation_sequence = ?`)
       .run(
         resultJson,
-        sha256(resultJson),
+        sha256Hex(resultJson),
         harness.harness_instance_id,
         harness.result_fingerprint,
         incoming.operationId,
@@ -2383,7 +2374,10 @@ function readJsonObject(value: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-/** Returns stable JSON for bounded flat private envelopes. */
+/**
+ * Preserves the retained Harness envelope and consumption-proof ordering until the final #532 format correction.
+ * Recorded native identities remain opaque; changing this ordering earlier would invalidate retained receipts.
+ */
 function canonicalJson(value: Readonly<Record<string, unknown>>): string {
   return JSON.stringify(
     Object.fromEntries(
@@ -2397,19 +2391,6 @@ function canonicalJson(value: Readonly<Record<string, unknown>>): string {
         ])
     )
   );
-}
-
-/** Returns a lowercase SHA-256 identity. */
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-/**
- * Digests one session loopback credential over its 43 encoded UTF-8 bytes, the form the
- * collection scan compares against every 43-byte window of the credential alphabet.
- */
-export function hashLoopbackCredential(credential: string): string {
-  return createHash('sha256').update(credential, 'utf8').digest('hex');
 }
 
 /** Writes one immutable binding-time digest copy that survives Sandbox deletion. */

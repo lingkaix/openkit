@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CHANNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { OpenKitConfig } from '@openkit/config-schema';
+import { canonicalJsonText } from '@openkit/protocol';
 import { type Actor, getLocalUserId } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
@@ -24,7 +25,6 @@ import { OperationError } from './operation-error.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { requireUsableRecord } from './runtime/pending-request-flow.js';
 import {
-  canonicalJsonText,
   listThreadPendingRequests,
   type PendingRequestRecord,
 } from './runtime/pending-requests.js';

@@ -144,3 +144,5 @@ An omitted internal-role limits object uses a 600-second deadline for Assistant,
 MCP binding, effective-server and AEP supply shapes retain only allowedTools. Current Policy owns per-Tool prohibition and human approval. Retained catalog readers refuse retired approvalRequiredTools and deniedTools authority fields while preserving descriptive annotations; no predecessor conversion is provided.
 
 `validateAgentEnvironmentPackageForBackend` reads only the package identity and backend requirement metadata, so runtime admission can validate a secret-free preview before resolving credentials. It does not create capture admission, credential material or a dispatchable AEP; the existing exact AEP schema still validates final construction.
+
+MCP declaration and configuration digests reuse Protocol canonical JSON while retaining their domain prefix and NUL separator. This replaces the private code-unit serializer without changing valid retained JSON declaration bytes. Catalog consumers import the encoder directly from Protocol; locale-dependent Source and Session compatibility digest correction stays with #532.

@@ -1,4 +1,5 @@
 import type { ApprovalEffectPreview } from '@openkit/app-api-schemas';
+import { canonicalJsonText } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
@@ -11,7 +12,7 @@ import { readMemorySuppressions } from '../knowledge/memory-maintenance.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import { userMemoryRoot } from '../storage/fs-layout.js';
-import { canonicalJsonText, type PendingRequestRecord } from './pending-requests.js';
+import type { PendingRequestRecord } from './pending-requests.js';
 
 /** Inclusive encoded presentation limits, independent of capture and delivery limits. */
 export const APPROVAL_DETAIL_BYTES = 524_288;

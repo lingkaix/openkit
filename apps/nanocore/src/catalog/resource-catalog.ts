@@ -34,12 +34,11 @@ import {
   SkillEntryRecordSchema,
   type SkillVersionRecord,
   SkillVersionRecordSchema,
-  stableJson,
   type WorkspaceMcpServer,
   type WorkspaceMcpServerCatalog,
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
 import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout, resolveDataRootPath } from '../storage/fs-layout.js';
@@ -154,7 +153,7 @@ export function validateLightAppDefinitionCatalog(catalog: ResourceCatalogDocume
         throw new Error('Retained Light App definitions require an explicit references list.');
       }
       if (
-        stableJson(definition) !== version.definitionJson ||
+        canonicalJsonText(definition) !== version.definitionJson ||
         `sha256:${createHash('sha256').update(version.definitionJson, 'utf8').digest('hex')}` !==
           version.digest
       ) {

@@ -18,6 +18,7 @@ import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
   ArtifactSchema,
   ArtifactVersionRecordSchema,
+  canonicalJsonText,
   PROTOCOL_VERSION,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -62,6 +63,7 @@ import {
   snapshotDigest,
 } from '../runtime/aep-snapshot-ledger.js';
 import {
+  canonicalMcpToolSchemas,
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
   mcpToolSchemaContentDigest,
@@ -2304,6 +2306,7 @@ describe('workspace auxiliary lineage reminting', () => {
           capturedAt: timestamp,
           catalogEntryId: 'mcp_source',
           contentDigest: mcpToolSchemaContentDigest(tools),
+          toolsJson: canonicalJsonText(canonicalMcpToolSchemas(tools)),
           schemaSnapshotId: 'mcp_snapshot_source',
           serverVersion: '1.0.0',
           source: 'live',

@@ -1041,6 +1041,13 @@ describe('captured pending MCP schema identity at grant', () => {
     importMcpToolSchemaSnapshots(f.db, captured);
     const current = tools();
     current[1]!.inputSchema = { type: 'object', description: 'Unrelated drift.' };
+    const properties = current[0]!.inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const message = properties.message!;
+    // Tracking compares complete schema values, including annotations, independently of member order.
+    properties.message = { examples: message.examples, ...message };
     await f.retain(current);
     expect(await f.grant()).toMatchObject({ disposition: 'approved-executed', claim: 'finished' });
     expect(f.callTool).toHaveBeenCalledTimes(1);
