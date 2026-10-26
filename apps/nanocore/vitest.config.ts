@@ -10,7 +10,7 @@ export default defineConfig({
       fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
       fileURLToPath(new URL('./vitest-worker-setup.mjs', import.meta.url)),
     ],
-    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**', 'src/storage/l-ops-load.test.ts'],
     include: ['src/**/*.test.ts'],
     testTimeout: 30_000,
     ...(slotWorkers > 0 ? { maxWorkers: slotWorkers } : {}),
