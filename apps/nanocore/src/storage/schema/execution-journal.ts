@@ -83,6 +83,12 @@ export const controlExecutionSteps = sqliteTable(
       table.executionId,
       table.ordinal
     ),
+    // Core-only additive migration: pending residents address originals without scanning history.
+    index('control_execution_steps_idle_resident_idx')
+      .on(sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`)
+      .where(sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-idle-cleanup/v1'
+        AND json_extract(${table.invocationJson}, '$.carriage.operation') IN ('bridge.close', 'sandbox.delete')
+        AND json_extract(${table.controlJson}, '$.kind') <> 'consume-receipt'`),
     foreignKey({
       columns: [table.executionId, table.parentStepId],
       foreignColumns: [table.executionId, table.stepId],

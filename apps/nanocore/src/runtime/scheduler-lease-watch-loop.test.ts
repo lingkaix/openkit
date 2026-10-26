@@ -56,7 +56,8 @@ function fixture() {
     executionBackend,
     cleanupBackendSession,
     projectRecoveredTurn,
-    prepareBackendCleanup: vi.fn(),
+    reconcileExecutions: async () => {},
+    prepareBackendCleanup: vi.fn(() => false),
     restoreBackendSession: vi.fn(async () => {}),
     reconcileAcceptedFinalStatus: vi.fn(async () => {}),
   };
@@ -199,7 +200,7 @@ describe('Native attempt liveness and recovery', () => {
       expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-scheduler-canary');
       expect(JSON.stringify(warn.mock.calls)).not.toContain('/private/scheduler-canary');
     } finally {
-      service.stop();
+      await service.stop();
       inspect.mockRestore();
       warn.mockRestore();
       f.close();
@@ -255,7 +256,7 @@ describe('Native attempt liveness and recovery', () => {
       expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-scan-canary');
       expect(JSON.stringify(warn.mock.calls)).not.toContain('/private/scan-canary');
     } finally {
-      service.stop();
+      await service.stop();
       scan.mockRestore();
       warn.mockRestore();
       f.close();
@@ -364,7 +365,7 @@ describe('Native attempt liveness and recovery', () => {
       });
       expect(failures).toEqual([failure]);
     } finally {
-      service.stop();
+      await service.stop();
       f.close();
     }
   });

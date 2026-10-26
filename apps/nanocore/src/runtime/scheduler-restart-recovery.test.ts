@@ -695,14 +695,18 @@ function recoveryCostInput(f: FailedStartFixture) {
     cleanupBackendSession: vi.fn(async () => {
       throw new Error('Recovery must not replay backend cleanup.');
     }),
-    prepareBackendCleanup: vi.fn(),
     restoreBackendSession: vi.fn(async () => {}),
     reconcileAcceptedFinalStatus: vi.fn(async () => {}),
   };
   const backendSpies = (['submit', 'inspect', 'cancel', 'release'] as const).map((method) =>
     vi.spyOn(f.input.executionBackend, method)
   );
-  const input = testRecoveryInput(f.coreDb, { ...f.input, ...effects });
+  const input = testRecoveryInput(f.coreDb, {
+    ...f.input,
+    ...effects,
+    prepareBackendCleanup: () => false,
+    reconcileExecutions: async () => {},
+  });
   return {
     input,
     assertNoEffects: () => {
@@ -2460,7 +2464,8 @@ function testRecoveryInput(
   return {
     executionBackend: new SimulatedTurnExecutor({ coreDb }),
     cleanupBackendSession: async () => {},
-    prepareBackendCleanup: () => {},
+    reconcileExecutions: async () => {},
+    prepareBackendCleanup: () => false,
     restoreBackendSession: async () => {},
     reconcileAcceptedFinalStatus: async () => {},
     ...input,
@@ -2987,6 +2992,7 @@ describe('scheduler restart recovery', () => {
     ): RecoveryFixtureInput => ({
       cleanupBackendSession: runtime.cleanupBackendSession,
       now,
+      reconcileExecutions: () => runtime.executionReconciler.runOnce(),
       prepareBackendCleanup: runtime.prepareBackendCleanup,
       projectRecoveredTurn: async () => ({ status: 'failed' }),
     });
@@ -4126,6 +4132,7 @@ describe('scheduler restart recovery', () => {
           throw new Error('Phase 8 must not start a physical cleanup effect.');
         },
         now: () => '2026-07-05T00:01:00.000Z',
+        reconcileExecutions: async () => {},
         prepareBackendCleanup: (identity) => {
           expect(cleanupAttempts).toBe(0);
           expect(
@@ -4134,6 +4141,7 @@ describe('scheduler restart recovery', () => {
             state: 'cleanup-pending',
           });
           preparedIdentity = identity;
+          return false;
         },
         projectRecoveredTurn: async () => {
           throw new Error('Phase 8 must not project an anchored Turn before cleanup.');
@@ -5783,6 +5791,7 @@ describe('minimal scheduler reconnect contract', () => {
       await recoverTestStartup(coreDb, {
         cleanupBackendSession: restartedRuntime.cleanupBackendSession,
         now: () => at('2026-07-05T00:01:00.000Z'),
+        reconcileExecutions: () => restartedRuntime.executionReconciler.runOnce(),
         prepareBackendCleanup: restartedRuntime.prepareBackendCleanup,
         projectRecoveredTurn: async () => ({ status: 'failed' }),
         restoreBackendSession: restartedRuntime.restoreBackendSession,
@@ -6788,8 +6797,10 @@ describe('minimal scheduler reconnect contract', () => {
           cleanupCalls += 1;
         },
         now: () => '2026-07-05T00:01:00.000Z',
+        reconcileExecutions: async () => {},
         prepareBackendCleanup: (identity) => {
           preparedIdentity = identity;
+          return false;
         },
         projectRecoveredTurn: async (session) => {
           fallbackProjectionCalls += 1;
@@ -6864,7 +6875,8 @@ describe('minimal scheduler reconnect contract', () => {
           cleanupCalls += 1;
         },
         now: () => '2026-07-05T00:01:00.000Z',
-        prepareBackendCleanup: () => undefined,
+        reconcileExecutions: async () => {},
+        prepareBackendCleanup: () => false,
         projectRecoveredTurn: async () => {
           fallbackProjectionCalls += 1;
           return { status: 'failed' as const };
@@ -7164,7 +7176,8 @@ async function createFinalReviewRecoveryFixture(
     // A definite external cleanup reply is modeled; the production owners record exact cleanup,
     // project handoff, publish the canonical outcome, derive barriers and invoke real Native release.
     cleanupBackendSession: async () => {},
-    prepareBackendCleanup: () => {},
+    reconcileExecutions: async () => {},
+    prepareBackendCleanup: () => false,
     restoreBackendSession: async () => {},
     reconcileAcceptedFinalStatus: async () => {
       throw new Error('This attempt has no final report.');

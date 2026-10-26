@@ -1580,7 +1580,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           store: f.store,
           now: () => '2026-07-15T00:00:05.000Z',
           cleanupBackendSession: () => backend.cleanupSession(),
-          prepareBackendCleanup: () => {},
+          reconcileExecutions: async () => {},
+          prepareBackendCleanup: () => false,
           restoreBackendSession: async () => {},
           reconcileAcceptedFinalStatus: async () => {
             throw new Error('Failed preparation has no final status.');
@@ -1851,7 +1852,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         executionBackend: executor.executionBackend,
         store,
         cleanupBackendSession: vi.fn(async () => {}),
-        prepareBackendCleanup: vi.fn(),
+        reconcileExecutions: async () => {},
+        prepareBackendCleanup: vi.fn(() => false),
         restoreBackendSession: vi.fn(async () => {}),
         reconcileAcceptedFinalStatus: vi.fn(async () => {}),
         projectRecoveredTurn: vi.fn(async () => ({ status: 'failed' as const })),
@@ -3206,7 +3208,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         store: f.store,
         isTurnExecutionActive: (turnId) => f.executor.isTurnExecutionActive(turnId),
         cleanupBackendSession: () => f.backend.cleanupSession(),
-        prepareBackendCleanup: () => {},
+        reconcileExecutions: async () => {},
+        prepareBackendCleanup: () => false,
         restoreBackendSession: async () => {},
         reconcileAcceptedFinalStatus: async () => {
           throw new Error('No terminal report was sent.');
@@ -7820,7 +7823,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           store: reloaded,
           now: () => '2026-06-16T00:01:00.000Z',
           cleanupBackendSession: () => backend.cleanupSession(),
-          prepareBackendCleanup: () => {},
+          reconcileExecutions: async () => {},
+          prepareBackendCleanup: () => false,
           restoreBackendSession: async () => {},
           reconcileAcceptedFinalStatus: async () => {
             throw new Error('Failed fetch has no accepted final status.');
@@ -10549,6 +10553,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ) => backend.cleanupSession(identity),
         isTurnExecutionActive: (turnId: string) => executor.isTurnExecutionActive(turnId),
         now: () => '2026-07-15T00:01:00.000Z',
+        reconcileExecutions: async () => {},
         prepareBackendCleanup: () => {
           throw new Error('The live owner already holds cleanup.');
         },

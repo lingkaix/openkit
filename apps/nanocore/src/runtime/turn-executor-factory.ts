@@ -93,11 +93,14 @@ import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   createExecutionStepJournalReader,
   decodeExecutionJournalIntent,
+  type ExecutionCandidate,
   encodeExecutionJournalValue,
+  hasIdleCleanupExecution,
   readExecutionJournalRoot,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
+import { ExecutionReconciler, type IdleCleanupSelection } from './execution-reconciler.js';
 import type {
   ExecutionJournalIntent,
   ExecutionStepJournalReader,
@@ -286,6 +289,10 @@ export interface CreateConfiguredTurnExecutorOptions {
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
 export interface ConfiguredWorkerLifecycleRuntime {
+  /** Same selected Core next-step owner used by normal cleanup, boot and maintenance. */
+  readonly executionReconciler: ExecutionReconciler;
+  /** Advances only the selected physical leaf; it never re-enters normal cleanup classification. */
+  readonly advanceIdleCleanup: (selection: IdleCleanupSelection) => Promise<void>;
   /** Captures a bounded file using this same configured backend and original evidence. */
   readonly captureArtifact?: WorkerArtifactCapture;
   /** Binds private Turn route tokens and returns `session.open` with its ephemeral Vault values. */
@@ -305,8 +312,8 @@ export interface ConfiguredWorkerLifecycleRuntime {
   ) => Promise<void>;
   /** Reports live lifecycle ownership before scheduler recovery can take over a Turn. */
   readonly isTurnExecutionActive: (turnId: string) => boolean;
-  /** Registers restart cleanup result identities before the transport listener exists. */
-  readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => void;
+  /** Prepares original results and reports exact Core idle ownership without physical contact. */
+  readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => boolean;
   /** Restores and closes one worker whose final status is already durable. */
   readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
     readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
@@ -392,6 +399,7 @@ function createNanoHostWorkerLifecycleRuntime(
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined,
   fileAdmission?: FileStorageAdmission | undefined
 ): ConfiguredWorkerLifecycleRuntime {
+  let executionReconciler: ExecutionReconciler;
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
     async (agentSessionId, digest, retainedStorage) => {
@@ -405,6 +413,10 @@ function createNanoHostWorkerLifecycleRuntime(
         retainedStorage
       );
     },
+    {
+      onCommit: () => executionReconciler.wake(),
+      join: (identity) => executionReconciler.reconcileIdleCleanup(identity),
+    },
     nanoHostSessionDispatch,
     workerControlGateway,
     vaultBackend,
@@ -412,6 +424,10 @@ function createNanoHostWorkerLifecycleRuntime(
     sharedStore,
     fileAdmission
   );
+  executionReconciler = new ExecutionReconciler({
+    coreDb,
+    advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
+  });
   const turnExecutor =
     env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? new SimulatedTurnExecutor({ coreDb, fileAdmission })
@@ -478,6 +494,8 @@ function createNanoHostWorkerLifecycleRuntime(
   }
 
   return {
+    executionReconciler,
+    advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
     captureArtifact: (input) => backend.captureArtifact(input),
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     isTurnExecutionActive: (turnId) =>
@@ -792,6 +810,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    *
    * @param coreDb Durable Core database and lineage source.
    * @param recordNativeHandleDigest Existing Core recorder for proof on an eviction victim.
+   * @param idleCleanup Non-awaiting commit wake and selected completion join, never physical authority.
    * @param sessionDispatch Optional dispatcher; production composition always supplies it.
    * @param workerControlGateway Optional existing semantic worker-control owner.
    * @param collectionVaultBackend Existing Vault owner for private release snapshots.
@@ -806,6 +825,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       digest: string,
       retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
     ) => void | Promise<void>,
+    private readonly idleCleanup: {
+      readonly onCommit: () => void;
+      readonly join: (identity: WorkerGovernanceBackendSessionIdentity) => Promise<void>;
+    },
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
     private readonly collectionVaultBackend?: () => VaultBackend,
@@ -2069,10 +2092,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
   }
 
-  /** Registers only the two exact cleanup result identities and performs no effect. */
-  public prepareCleanupRecovery(identity: WorkerGovernanceBackendSessionIdentity): void {
+  /** Reports exact Core idle ownership or prepares original results; performs no effect. */
+  public prepareCleanupRecovery(identity: WorkerGovernanceBackendSessionIdentity): boolean {
+    const anchor = getWorkerBackendSession(
+      this.coreDb,
+      this.requireAttemptId(identity.packageSnapshotId)
+    );
+    if (
+      anchor &&
+      requireSchedulerExecutionAttempt(this.coreDb, anchor.attemptId).phase === 'closed'
+    ) {
+      if (!hasIdleCleanupExecution(this.coreDb, anchor)) return false;
+      this.idleCleanup.onCommit();
+      return true;
+    }
     if (this.cleanupRecoveryResults.has(identity.packageSnapshotId)) {
-      return;
+      return false;
     }
     const durableSandbox = this.sessions.has(identity.packageSnapshotId)
       ? null
@@ -2080,17 +2115,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const durableCleanupFailure = durableSandbox
       ? null
       : this.findDurableBackendCleanupFailure(identity);
-    if (
-      durableSandbox &&
-      requireSchedulerExecutionAttempt(
-        this.coreDb,
-        this.requireAttemptId(identity.packageSnapshotId)
-      ).phase === 'closed'
-    ) {
-      const result = this.createCleanupRecoveryResult(identity, durableSandbox.originPhysicalEpoch);
-      if (result) this.cleanupRecoveryResults.set(identity.packageSnapshotId, result);
-      return;
-    }
     if (durableSandbox?.cleanupState === 'unknown') {
       if (
         durableSandbox.lifecycleState !== 'failed' ||
@@ -2099,28 +2123,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       ) {
         throw new Error('NanoHost unknown cleanup fence is contradictory.');
       }
-      return;
+      return false;
     }
     if (durableCleanupFailure) {
-      return;
+      return false;
     }
     const result = this.createCleanupRecoveryResult(
       identity,
       this.requireCleanupOriginPhysicalEpoch(identity, durableSandbox?.originPhysicalEpoch)
     );
     if (!result) {
-      // A closed idle owner with no unfinished invocation needs no result-only wait.
-      if (
-        this.sessionDispatch?.expectResultOnly &&
-        requireSchedulerExecutionAttempt(
-          this.coreDb,
-          this.requireAttemptId(identity.packageSnapshotId)
-        ).phase === 'closed'
-      )
-        return;
       throw new Error('NanoHost result-only cleanup dispatcher is unavailable.');
     }
     this.cleanupRecoveryResults.set(identity.packageSnapshotId, result);
+    return false;
   }
 
   /** Projects a correlated physical deletion to every live owner of that exact instance. */
@@ -2141,7 +2157,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Transfers every sole ready proof before a Sandbox-wide binding cascade, including idle siblings. */
-  private async handoffSandboxAgentSessionProofs(bindingRef: string): Promise<void> {
+  private async handoffSandboxAgentSessionProofs(
+    bindingRef: string,
+    retirement?: Pick<
+      NanoHostIdleSandboxEviction,
+      'originPhysicalEpoch' | 'physicalAbsent' | 'sandboxBindingRef'
+    >
+  ): Promise<void> {
     const bindings = this.coreDb.sqlite
       .prepare(`
       SELECT b.agent_session_id AS agentSessionId,
@@ -2167,7 +2189,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (live?.recordNativeHandleDigest && binding.nativeHandleDigest) {
         await this.recordAcceptedNativeHandleDigest(live, binding.nativeHandleDigest);
       } else {
-        await this.handoffDurableAgentSessionProof({ ...binding, reusable: false });
+        await this.handoffDurableAgentSessionProof(
+          { ...binding, reusable: false },
+          undefined,
+          retirement
+        );
       }
     }
   }
@@ -2205,6 +2231,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<void> {
     const attemptId = this.requireAttemptId(identity.packageSnapshotId);
     const session = this.sessions.get(identity.packageSnapshotId);
+    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
+    if (
+      anchor &&
+      requireSchedulerExecutionAttempt(this.coreDb, attemptId).phase === 'closed' &&
+      hasIdleCleanupExecution(this.coreDb, anchor)
+    ) {
+      await this.idleCleanup.join(identity);
+      this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
+      this.sessions.delete(identity.packageSnapshotId);
+      return;
+    }
     const durableSandbox = this.findDurableSandboxBinding(identity);
     const durableBackend =
       session || durableSandbox ? null : this.findDurableBackendSession(identity);
@@ -2608,6 +2645,212 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return disposed;
   }
 
+  /** Retains only the physical producer in the existing result map, never its later reconcile join. */
+  private async idleCleanupEffect(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    attemptId: string,
+    operation: 'bridge.close' | 'sandbox.delete',
+    input: Readonly<Record<string, unknown>>,
+    originPhysicalEpoch?: string,
+    predecessor?: ExecutionCandidate
+  ): Promise<void> {
+    const request = createNanoHostEffectRequest(identity, attemptId, operation, input);
+    const result = this.effect(
+      identity,
+      attemptId,
+      operation,
+      input,
+      originPhysicalEpoch,
+      undefined,
+      predecessor
+    ).then((result) => ({ kind: operation, result }));
+    this.cleanupRecoveryResults.set(identity.packageSnapshotId, result);
+    try {
+      await result;
+    } finally {
+      if (this.cleanupRecoveryResults.get(identity.packageSnapshotId) === result) {
+        this.cleanupRecoveryResults.delete(identity.packageSnapshotId);
+        // Clearing a posted original can expose its committed continuation. A pre-intent
+        // refusal has no commit to rediscover and must not schedule its own retry.
+        if (
+          this.coreDb.sqlite.open &&
+          this.coreDb.sqlite
+            .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+            .get(`idle-cleanup:${request.requestId}`)
+        )
+          this.idleCleanup.onCommit();
+      }
+    }
+  }
+
+  /** Executes exactly one selected leaf, with no normal cleanup classifier or recursive join. */
+  public async advanceIdleCleanup(selection: IdleCleanupSelection): Promise<void> {
+    const { identity, candidate, originPhysicalEpoch, sandboxBindingRef } = selection;
+    // This includes the original first delivery and registered result-only waiters.
+    if (this.cleanupRecoveryResults.has(identity.packageSnapshotId)) return;
+    const attemptId = this.requireAttemptId(identity.packageSnapshotId);
+    const anchor = getWorkerBackendSession(this.coreDb, attemptId);
+    const resident = this.findDurableSandboxBinding(identity);
+    if (
+      !anchor ||
+      !resident ||
+      !isDeepStrictEqual(this.durableBackendSessionIdentity(anchor), identity) ||
+      resident.sandboxBindingRef !== sandboxBindingRef ||
+      resident.originPhysicalEpoch !== originPhysicalEpoch ||
+      requireSchedulerExecutionAttempt(this.coreDb, attemptId).phase !== 'closed'
+    )
+      throw new Error('Selected idle cleanup has no exact current resident.');
+    await this.assertWorkspaceCaptureSettled(sandboxBindingRef);
+    const root = readExecutionJournalRoot(this.coreDb, candidate.ref.execution);
+    if (
+      root.revision !== candidate.revision ||
+      root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION
+    )
+      throw new Error('Selected idle cleanup revision changed.');
+    // A producer can become visible during the capture await; it keeps its original delivery.
+    if (this.cleanupRecoveryResults.has(identity.packageSnapshotId)) return;
+    const sameEpoch =
+      this.readCurrentPhysicalEpoch(identity.runtimeTargetId) === originPhysicalEpoch;
+    if (selection.action === 'delete' || (selection.action === 'release' && sameEpoch)) {
+      const reader = createExecutionStepJournalReader(this.coreDb, { kind: 'server' });
+      const original = await reader.readInvocation(candidate.ref);
+      const linked = await reader.readLinkedInspections(candidate.ref);
+      if (
+        original.state !== 'completed' ||
+        original.carriage.operation !==
+          (selection.action === 'delete' ? 'bridge.close' : 'sandbox.delete') ||
+        original.control.outputRefs.length !== 1 ||
+        !/^sha256:[0-9a-f]{64}$/.test(original.control.outputRefs[0]!) ||
+        !linked.some(
+          ({ inspection }) =>
+            inspection.state === 'completed' &&
+            inspection.control.kind === 'consume-receipt' &&
+            inspection.ref.execution.executionId === candidate.ref.execution.executionId &&
+            inspection.ref.stepId === `${candidate.ref.stepId}:consume` &&
+            inspection.control.operationId === original.carriage.requestId &&
+            isDeepStrictEqual(inspection.control.inputRefs, original.control.outputRefs) &&
+            isDeepStrictEqual(inspection.control.outputRefs, original.control.outputRefs)
+        )
+      )
+        throw new Error('Selected idle cleanup has no exact consumed physical proof.');
+    }
+    if (selection.action === 'delete') {
+      await this.idleCleanupEffect(
+        identity,
+        attemptId,
+        'sandbox.delete',
+        {
+          attemptId,
+          sandboxId: nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
+        },
+        originPhysicalEpoch,
+        candidate
+      );
+      return;
+    }
+    if (selection.action === 'result-only') {
+      if (!this.sessionDispatch?.expectResultOnly)
+        throw new Error('NanoHost result-only cleanup dispatcher is unavailable.');
+      const row = this.coreDb.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,
+        parent_step_id AS parentStepId, control_json AS controlJson,
+        invocation_json AS invocationJson, span_json AS spanJson
+        FROM control_execution_steps WHERE execution_id = ? AND step_id = ?`)
+        .get(candidate.ref.execution.executionId, candidate.ref.stepId) as {
+        schemaVersion: number;
+        parentStepId: string | null;
+        controlJson: string;
+        invocationJson: string;
+        spanJson: string;
+      };
+      readRetainedV1(row, () => row);
+      const invocation = JSON.parse(row.invocationJson);
+      const control = JSON.parse(row.controlJson);
+      const operation = invocation.carriage.operation;
+      if (operation !== 'bridge.close' && operation !== 'sandbox.delete')
+        throw new Error('Selected idle cleanup result kind is invalid.');
+      const intent = decodeExecutionJournalIntent(
+        encodeExecutionJournalValue({
+          execution: {
+            ref: root.ref,
+            definitionVersion: root.definitionVersion,
+            workId: root.workId,
+            fingerprint: root.fingerprint,
+            exclusionRefs: root.exclusionRefs,
+            span: { ...root.span, endTimeUnixNano: null, status: { code: 'UNSET' } },
+          },
+          stepId: candidate.ref.stepId,
+          parentStepId: row.parentStepId,
+          parent: invocation.parent,
+          carriage: invocation.carriage,
+          inspectedStep: null,
+          control: { ...control, outputRefs: [] },
+          span: { ...JSON.parse(row.spanJson), endTimeUnixNano: null, status: { code: 'UNSET' } },
+        })
+      );
+      const result = this.sessionDispatch.expectResultOnly([
+        {
+          kind: operation,
+          originPhysicalEpoch,
+          requestId: intent.carriage.requestId,
+          consumeResult: async (value) => {
+            const { resourceSummary: _diagnostic, stagingPath: _temporary, ...core } = value;
+            await this.settleIdleCleanupJournal(
+              intent,
+              value.failureCode === 'effect_failed' ? 'failed' : 'completed',
+              commandInputHash(core)
+            );
+          },
+        },
+      ]);
+      this.cleanupRecoveryResults.set(identity.packageSnapshotId, result);
+      void result
+        .then(
+          () => {
+            if (this.cleanupRecoveryResults.get(identity.packageSnapshotId) === result)
+              this.cleanupRecoveryResults.delete(identity.packageSnapshotId);
+            this.idleCleanup.onCommit();
+          },
+          () => {
+            if (this.cleanupRecoveryResults.get(identity.packageSnapshotId) !== result) return;
+            this.cleanupRecoveryResults.delete(identity.packageSnapshotId);
+            if (!this.coreDb.sqlite.open) return;
+            fenceNanoHostSandboxRuntime(this.coreDb, {
+              sandboxBindingRef,
+              timestamp: new Date().toISOString(),
+            });
+            this.fenceWorkerStorageForSandbox(sandboxBindingRef);
+          }
+        )
+        .catch(() => {});
+      return;
+    }
+    if (this.readCurrentPhysicalEpoch(identity.runtimeTargetId) !== originPhysicalEpoch)
+      this.requireLaterFreshRuntimeTarget(
+        identity.runtimeTargetId,
+        originPhysicalEpoch,
+        identity.deploymentId
+      );
+    else this.markProvedSandboxDeletion(sandboxBindingRef, originPhysicalEpoch);
+    try {
+      await this.handoffSandboxAgentSessionProofs(sandboxBindingRef, {
+        sandboxBindingRef,
+        originPhysicalEpoch,
+        physicalAbsent: !sameEpoch,
+      });
+      this.releaseWorkerStorageForSandbox(sandboxBindingRef);
+      removeNanoHostSandboxRuntimeByBinding(this.coreDb, sandboxBindingRef);
+      this.forgetSharedSandbox(resident.sandboxCompatibilityKey);
+    } catch (error) {
+      fenceNanoHostSandboxRuntime(this.coreDb, {
+        sandboxBindingRef,
+        timestamp: new Date().toISOString(),
+      });
+      this.fenceWorkerStorageForSandbox(sandboxBindingRef);
+      throw error;
+    }
+  }
+
   /** Widens live cleanup through the bridge and Sandbox without returning capacity early. */
   private async deleteSandbox(
     identity: WorkerGovernanceBackendSessionIdentity,
@@ -2621,71 +2864,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       resident?.sandboxBindingRef ?? anchor?.sandboxBindingRef ?? null
     );
     const origin = retiringSandboxOrigin ?? anchor?.originPhysicalEpoch;
+    if (
+      anchor &&
+      requireSchedulerExecutionAttempt(this.coreDb, cleanupInput.attemptId).phase === 'closed'
+    ) {
+      if (!hasIdleCleanupExecution(this.coreDb, anchor))
+        await this.idleCleanupEffect(
+          identity,
+          cleanupInput.attemptId,
+          bridgeOpen ? 'bridge.close' : 'sandbox.delete',
+          cleanupInput,
+          origin
+        );
+      await this.idleCleanup.join(identity);
+      return;
+    }
     for (const operation of [
       ...(bridgeOpen ? ['bridge.close' as const] : []),
       'sandbox.delete' as const,
     ]) {
-      if (
-        anchor &&
-        requireSchedulerExecutionAttempt(this.coreDb, cleanupInput.attemptId).phase === 'closed'
-      ) {
-        const request = createNanoHostEffectRequest(
-          identity,
-          cleanupInput.attemptId,
-          operation,
-          cleanupInput
-        );
-        const row = this.coreDb.sqlite
-          .prepare(`SELECT r.id AS executionId, s.step_id AS stepId
-          FROM control_executions r JOIN control_execution_steps s ON s.execution_id = r.id
-          WHERE r.definition_version = ? AND r.work_id = ?
-            AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
-            AND json_extract(s.invocation_json, '$.carriage.operation') = ?
-            AND json_extract(s.invocation_json, '$.carriage.requestId') = ?`)
-          .get(
-            CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
-            request.requestId,
-            operation,
-            request.requestId
-          ) as { executionId: string; stepId: string } | undefined;
-        if (row) {
-          const reader = createExecutionStepJournalReader(this.coreDb, { kind: 'server' });
-          const ref = {
-            execution: { owner: { kind: 'server' as const }, executionId: row.executionId },
-            stepId: row.stepId,
-          };
-          const invocation = await reader.readInvocation(ref);
-          const linked = await reader.readLinkedInspections(ref);
-          if (
-            invocation.state !== 'completed' ||
-            !resident ||
-            invocation.control.attemptId !== cleanupInput.attemptId ||
-            invocation.control.operationId !== request.requestId ||
-            invocation.control.target?.targetId !== identity.runtimeTargetId ||
-            invocation.carriage.bindingRef !== resident.sandboxBindingRef ||
-            invocation.control.target?.allocationRef !== resident.sandboxBindingRef ||
-            !invocation.control.authorityRefs.includes(anchor.sandboxBindingRef) ||
-            !origin ||
-            !invocation.control.physicalFenceRefs.includes(origin) ||
-            invocation.control.outputRefs.length !== 1 ||
-            !/^sha256:[0-9a-f]{64}$/.test(invocation.control.outputRefs[0]!) ||
-            !linked.some(
-              ({ inspection }) =>
-                inspection.state === 'completed' &&
-                inspection.control.kind === 'consume-receipt' &&
-                inspection.control.operationId === request.requestId &&
-                isDeepStrictEqual(inspection.control.inputRefs, invocation.control.outputRefs) &&
-                isDeepStrictEqual(inspection.control.outputRefs, invocation.control.outputRefs)
-            )
-          )
-            throw new Error(
-              'Idle cleanup requires its original result-only evidence or physical Epoch fence.'
-            );
-          if (operation === 'sandbox.delete')
-            this.markProvedSandboxDeletion(resident.sandboxBindingRef, origin);
-          continue;
-        }
-      }
       await this.effect(
         identity,
         cleanupInput.attemptId,
@@ -3339,7 +3536,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           eviction.originPhysicalEpoch
         );
       }
-      const releasedBinding = this.releaseWorkerStorageForSandbox(eviction.sandboxBindingRef);
+      const releasedBinding = getWorkerStorageBindingForSandbox(this.coreDb, {
+        sandboxBindingRef: eviction.sandboxBindingRef,
+      })
+        ? this.releaseWorkerStorageForSandbox(eviction.sandboxBindingRef)
+        : authorizedReplacementBinding
+          ? getWorkerStorageBinding(this.coreDb, {
+              storageRef: authorizedReplacementBinding.storageRef,
+            })
+          : null;
       removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       return authorizedReplacementBinding &&
@@ -5307,7 +5512,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     operation: NanoHostEffectOperation,
     input: Readonly<Record<string, unknown>>,
     originPhysicalEpoch: string,
-    deadlineUnixMs: number
+    deadlineUnixMs: number,
+    predecessor?: ExecutionCandidate
   ): ExecutionJournalIntent {
     if (!['bridge.close', 'sandbox.delete', 'workspace.collect', 'file.export'].includes(operation))
       throw new Error('Core idle cleanup has no admitted physical producer.');
@@ -5497,8 +5703,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             executionRef: intent.execution.ref,
           }
         );
+      const prior =
+        predecessor &&
+        (sqlite
+          .prepare('SELECT revision FROM control_executions WHERE id = ?')
+          .get(predecessor.ref.execution.executionId) as { revision: number } | undefined);
+      if (predecessor && prior?.revision !== predecessor.revision)
+        throw new Error('Idle cleanup predecessor changed before delete admission.');
       writeExecutionJournalIntent(coreDb, intent);
     });
+    this.idleCleanup.onCommit();
     return intent;
   }
 
@@ -5512,15 +5726,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     state: 'completed' | 'failed' | 'unknown',
     resultFingerprint?: string
   ): Promise<void> {
-    if (
-      intent.execution.ref.owner.kind !== 'server' ||
-      intent.execution.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
-      intent.execution.workId !== intent.carriage.requestId ||
-      intent.control.operationId !== intent.carriage.requestId ||
-      (resultFingerprint !== undefined && !/^sha256:[0-9a-f]{64}$/.test(resultFingerprint)) ||
-      (resultFingerprint === undefined && state === 'completed')
-    )
-      throw new Error('Core idle cleanup result identity is invalid.');
     const reader = createExecutionStepJournalReader(this.coreDb, { kind: 'server' });
     const ref = { execution: intent.execution.ref, stepId: intent.stepId };
     const original = await reader.readInvocation(ref);
@@ -5646,6 +5851,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         });
       }
     });
+    this.idleCleanup.onCommit();
   }
 
   /** Dispatches one fixed effect with an identity derived from durable lineage. */
@@ -5655,7 +5861,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     operation: NanoHostEffectOperation,
     input: Readonly<Record<string, unknown>>,
     retiringSandboxOrigin?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    predecessor?: ExecutionCandidate
   ): Promise<Record<string, unknown>> {
     if (!this.sessionDispatch) {
       throw new Error('NanoHost fixed-effect dispatcher is not configured.');
@@ -5734,7 +5941,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             operation,
             input,
             originPhysicalEpoch,
-            deadlineUnixMs
+            deadlineUnixMs,
+            predecessor
           );
     } catch (error) {
       workspaceDb?.sqlite.close();
@@ -5973,116 +6181,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       attemptId: attemptId,
       sandboxId: nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
     };
-    const closed = requireSchedulerExecutionAttempt(this.coreDb, attemptId).phase === 'closed';
-    const resident = closed ? this.findDurableSandboxBinding(identity) : null;
-    const expectations = (['bridge.close', 'sandbox.delete'] as const).flatMap(
-      (
-        operation
-      ): Parameters<NonNullable<NanoHostSessionDispatch['expectResultOnly']>>[0][number][] => {
+    if (requireSchedulerExecutionAttempt(this.coreDb, attemptId).phase === 'closed') return null;
+    return this.sessionDispatch.expectResultOnly(
+      (['bridge.close', 'sandbox.delete'] as const).map((operation) => {
         const request = createNanoHostEffectRequest(identity, attemptId, operation, cleanupInput);
-        if (!closed)
-          return [{ kind: operation, originPhysicalEpoch, requestId: request.requestId! }];
-        const row = this.coreDb.sqlite
-          .prepare(`SELECT s.schema_version AS schemaVersion, s.step_id AS stepId,
-          s.parent_step_id AS parentStepId, s.state, s.control_json AS controlJson,
-          s.invocation_json AS invocationJson, s.span_json AS spanJson,
-          s.inspected_execution_id AS inspectedExecutionId, s.inspected_step_id AS inspectedStepId,
-          r.id AS executionId FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
-          WHERE r.definition_version = ? AND r.work_id = ?
-            AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
-            AND json_extract(s.invocation_json, '$.carriage.operation') = ?
-            AND json_extract(s.invocation_json, '$.carriage.requestId') = ?`)
-          .get(
-            CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
-            request.requestId,
-            operation,
-            request.requestId
-          ) as
-          | {
-              schemaVersion: unknown;
-              stepId: string;
-              parentStepId: string | null;
-              state: string;
-              controlJson: string;
-              invocationJson: string;
-              spanJson: string;
-              inspectedExecutionId: string | null;
-              inspectedStepId: string | null;
-              executionId: string;
-            }
-          | undefined;
-        if (!row) return [];
-        readRetainedV1(row, () => row);
-        const ref = { owner: { kind: 'server' as const }, executionId: row.executionId };
-        const root = readExecutionJournalRoot(this.coreDb, ref);
-        const invocation = JSON.parse(row.invocationJson);
-        const control = JSON.parse(row.controlJson);
-        if (
-          !['intent', 'completed', 'failed', 'unknown', 'cancelled'].includes(row.state) ||
-          !resident ||
-          control.attemptId !== attemptId ||
-          control.operationId !== request.requestId ||
-          control.target?.targetId !== identity.runtimeTargetId ||
-          invocation.carriage.bindingRef !== resident.sandboxBindingRef ||
-          control.target?.allocationRef !== resident.sandboxBindingRef ||
-          !control.authorityRefs.includes(
-            this.findDurableBackendSession(identity)?.sandboxBindingRef
-          ) ||
-          !control.physicalFenceRefs.includes(originPhysicalEpoch)
-        )
-          throw new Error(
-            'Idle cleanup retained invocation conflicts with exact recovery lineage.'
-          );
-        if (row.state !== 'intent' && !(row.state === 'unknown' && control.outputRefs.length === 0))
-          return [];
-        const intent = decodeExecutionJournalIntent(
-          encodeExecutionJournalValue({
-            execution: {
-              ref,
-              definitionVersion: root.definitionVersion,
-              workId: root.workId,
-              fingerprint: root.fingerprint,
-              exclusionRefs: root.exclusionRefs,
-              span: { ...root.span, endTimeUnixNano: null, status: { code: 'UNSET' } },
-            },
-            stepId: row.stepId,
-            parentStepId: row.parentStepId,
-            parent: invocation.parent,
-            carriage: invocation.carriage,
-            inspectedStep:
-              row.inspectedExecutionId === null
-                ? null
-                : {
-                    execution: { owner: { kind: 'server' }, executionId: row.inspectedExecutionId },
-                    stepId: row.inspectedStepId,
-                  },
-            control: { ...control, outputRefs: [] },
-            span: { ...JSON.parse(row.spanJson), endTimeUnixNano: null, status: { code: 'UNSET' } },
-          })
-        );
-        const consumed = this.coreDb.sqlite
-          .prepare(`SELECT 1 FROM control_execution_steps
-          WHERE execution_id = ? AND step_id = ? AND state = 'completed'`)
-          .get(row.executionId, `${row.stepId}:consume`);
-        if (consumed) return [];
-        return [
-          {
-            kind: operation,
-            originPhysicalEpoch,
-            requestId: request.requestId!,
-            consumeResult: async (value: Readonly<Record<string, unknown>>) => {
-              const { resourceSummary: _diagnostic, stagingPath: _temporary, ...core } = value;
-              await this.settleIdleCleanupJournal(
-                intent,
-                value.failureCode === 'effect_failed' ? 'failed' : 'completed',
-                commandInputHash(core)
-              );
-            },
-          },
-        ];
-      }
+        return { kind: operation, originPhysicalEpoch, requestId: request.requestId! };
+      })
     );
-    return expectations.length === 0 ? null : this.sessionDispatch.expectResultOnly(expectations);
   }
 
   /** Finds the one Sandbox cleanup fence selected by immutable backend or AgentSession lineage. */
@@ -6546,7 +6651,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Reads the immutable prior package and lease; retirement selects only a read-only historical owner. */
   private readDurableAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection,
-    retirement?: NanoHostIdleSandboxEviction
+    retirement?: Pick<
+      NanoHostIdleSandboxEviction,
+      'originPhysicalEpoch' | 'physicalAbsent' | 'sandboxBindingRef'
+    >
   ): {
     environmentPackage: AgentEnvironmentPackage;
     attemptId: string;
@@ -6611,7 +6719,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Recognizes completed handoff from existing authorities without admitting the historical package. */
   private hasRecordedRetiringProof(
     inspection: NanoHostAgentSessionContinuityInspection,
-    retirement: NanoHostIdleSandboxEviction,
+    retirement: Pick<NanoHostIdleSandboxEviction, 'originPhysicalEpoch' | 'sandboxBindingRef'>,
     workSlotRef?: string
   ): boolean {
     if (!inspection.nativeHandleDigest) return false;
@@ -6722,7 +6830,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       digest: string,
       retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
     ) => void | Promise<void>,
-    retirement?: NanoHostIdleSandboxEviction
+    retirement?: Pick<
+      NanoHostIdleSandboxEviction,
+      'originPhysicalEpoch' | 'physicalAbsent' | 'sandboxBindingRef'
+    >
   ): Promise<void> {
     const digest = inspection.nativeHandleDigest;
     if (!digest) return;

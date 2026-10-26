@@ -16,12 +16,104 @@ import type {
   ExecutionStepJournalReader,
   ExecutionStepRef,
 } from './execution-step-journal.js';
+import {
+  createNanoHostEffectRequest,
+  nanoHostSandboxIdFromBackendSessionId,
+} from './nanohost-effect-identity.js';
+import type { WorkerBackendSessionRecord } from './worker-backend-sessions.js';
 
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
 export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
 
 /** COORD 23:5x idle physical cleanup; each keyed operation has its own existing Core root. */
 export const CORE_IDLE_CLEANUP_EXECUTION_DEFINITION = 'core-idle-cleanup/v1';
+
+/** Observed Core identity/revision; selection must reread its owning rows before advancement. */
+export interface ExecutionCandidate {
+  readonly ref: ExecutionStepRef;
+  readonly revision: number;
+}
+
+/** Pages current draining residents, then addresses their exact originals, including CLOSED roots. */
+export function listExecutionCandidates(
+  db: CoreDb,
+  after: string | null = null
+): { readonly candidates: readonly ExecutionCandidate[]; readonly next: string | null } {
+  // Residents disappear at release; retained execution history must not become periodic work.
+  const limit = 128;
+  const rows = (
+    after === null
+      ? db.sqlite
+          .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
+        WHERE drain_state = 'draining' ORDER BY sandbox_binding_ref LIMIT ?`)
+          .all(limit)
+      : db.sqlite
+          .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
+        WHERE drain_state = 'draining' AND sandbox_binding_ref > ?
+        ORDER BY sandbox_binding_ref LIMIT ?`)
+          .all(after, limit)
+  ) as { binding: string }[];
+  // Match the Core partial expression index exactly; no backend-history or creator-only lookup.
+  const originals = db.sqlite.prepare(`SELECT s.execution_id AS executionId,
+    s.step_id AS stepId, r.revision FROM control_execution_steps s
+    JOIN control_executions r ON r.id = s.execution_id
+    WHERE json_extract(s.invocation_json, '$.carriage.bindingRef') = ?
+      AND json_extract(s.control_json, '$.definitionVersion') = 'core-idle-cleanup/v1'
+      AND json_extract(s.invocation_json, '$.carriage.operation') IN ('bridge.close', 'sandbox.delete')
+      AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
+    ORDER BY s.execution_id, s.step_id`);
+  return {
+    candidates: rows.flatMap(({ binding }) =>
+      (originals.all(binding) as { executionId: string; stepId: string; revision: number }[]).map(
+        (row) => ({
+          ref: {
+            execution: { owner: { kind: 'server' }, executionId: row.executionId },
+            stepId: row.stepId,
+          },
+          revision: row.revision,
+        })
+      )
+    ),
+    next: rows.length === limit ? rows[rows.length - 1]!.binding : null,
+  };
+}
+
+/** Exact ownership exclusion is independent of candidate pages, resident availability and root terminality. */
+export function hasIdleCleanupExecution(db: CoreDb, session: WorkerBackendSessionRecord): boolean {
+  const sandboxId = nanoHostSandboxIdFromBackendSessionId(session.backendSessionId);
+  for (const operation of ['bridge.close', 'sandbox.delete'] as const) {
+    const request = createNanoHostEffectRequest(session, session.attemptId, operation, {
+      attemptId: session.attemptId,
+      sandboxId,
+    });
+    const ref: ExecutionStepRef = {
+      execution: { owner: { kind: 'server' }, executionId: `idle-cleanup:${request.requestId}` },
+      stepId: `effect:${request.requestId}`,
+    };
+    if (
+      !db.sqlite
+        .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+        .get(ref.execution.executionId)
+    )
+      continue;
+    const root = readRoot(db, ref.execution);
+    const invocation = invocationView(db, ref);
+    if (
+      root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+      root.workId !== request.requestId ||
+      invocation.control.attemptId !== session.attemptId ||
+      invocation.carriage.operation !== operation ||
+      invocation.carriage.requestId !== request.requestId ||
+      invocation.control.target?.targetId !== session.runtimeTargetId ||
+      invocation.control.target.allocationRef !== invocation.carriage.bindingRef ||
+      !invocation.control.authorityRefs.includes(session.sandboxBindingRef) ||
+      !invocation.control.physicalFenceRefs.includes(session.originPhysicalEpoch)
+    )
+      throw new Error('Idle cleanup membership conflicts with its exact retained owner.');
+    return true;
+  }
+  return false;
+}
 
 /** Release-authored interpretation for the existing Workspace Worker-Turn producers. */
 export const WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION = 'workspace-worker-turn/v1';

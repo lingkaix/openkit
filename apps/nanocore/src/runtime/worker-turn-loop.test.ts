@@ -872,7 +872,8 @@ it.each([
             packageSnapshotId: original!.inputRef,
           });
         },
-        prepareBackendCleanup: () => {},
+        reconcileExecutions: async () => {},
+        prepareBackendCleanup: () => false,
         restoreBackendSession: async () => {},
         reconcileAcceptedFinalStatus: async () => {
           throw new Error('No final was reported.');

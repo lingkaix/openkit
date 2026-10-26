@@ -394,6 +394,7 @@ const bootResult = await runBootPhases({
             recoveryRuntime.turnExecutor.executionBackend,
             'Execution backend was not initialized.'
           ),
+          reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
           reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
           store: recoveryStore,
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
@@ -838,7 +839,8 @@ function shutdown(signal: NodeJS.Signals): void {
   codexResetMaintenanceAbort.abort();
   recurringSchedules?.stop();
   schedulerDispatchRetry?.stop();
-  schedulerAttemptMaintenance?.stop();
+  const maintenanceStopped = schedulerAttemptMaintenance?.stop();
+  const executionsStopped = workerLifecycleRuntime?.executionReconciler.stop();
   const stepsCompleted = [
     'scheduler.recurring-schedules.stop',
     'scheduler.dispatch-retry.stop',
@@ -846,7 +848,13 @@ function shutdown(signal: NodeJS.Signals): void {
   ];
   closeWithDeadline({
     close: (onClosed) => {
-      void shutdownControlStoreWorkerClient()
+      void Promise.allSettled([maintenanceStopped, executionsStopped])
+        .then((results) => {
+          for (const result of results)
+            if (result.status === 'rejected')
+              console.error('Execution maintenance shutdown failed.', result.reason);
+          return shutdownControlStoreWorkerClient();
+        })
         .catch((error) => console.error('Control-store shutdown failed.', error))
         .then(() => closeNanoCoreListeners(onClosed));
     },

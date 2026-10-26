@@ -551,6 +551,7 @@ async function faultFixture() {
       runNanoHostAttemptRecoveryMaintenance(coreDb, {
         executionBackend: runtime.turnExecutor.executionBackend!,
         cleanupBackendSession: runtime.cleanupBackendSession,
+        reconcileExecutions: () => runtime.executionReconciler.runOnce(),
         prepareBackendCleanup: runtime.prepareBackendCleanup,
         restoreBackendSession: runtime.restoreBackendSession,
         reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,

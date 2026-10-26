@@ -1050,7 +1050,7 @@ describe('execution backend port through real Core coordination', () => {
         await Promise.all([first, overlap]);
       } finally {
         gate.resolve();
-        service.stop();
+        await service.stop();
       }
       expect(peak).toBe(1);
       expect(f.port.submit).toHaveBeenCalledOnce();

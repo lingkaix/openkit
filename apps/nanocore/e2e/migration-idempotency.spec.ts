@@ -49,26 +49,6 @@ describe('nanocore e2e migration idempotency', () => {
       .get() as { count: number };
     sqlite.close();
 
-    expect(journal.entries.map((entry) => `core_${entry.tag}`)).toEqual([
-      'core_0000_setup',
-      'core_0001_concurrent_turn_capacity',
-      'core_0002_durable_recurring_schedules',
-      'core_0003_notebook_admission',
-      'core_0004_equal_workspace_members',
-
-      'core_0005_channel_notifications',
-      'core_0006_external_trigger_admissions',
-      'core_0007_discord_capture_origin',
-      'core_0008_server_capability_usage',
-      'core_0009_policy_audit_v1',
-      'core_0010_retained_record_formats',
-      'core_0011_audit_authentication',
-      'core_0012_quarantined_workspace_retirement',
-      'core_0013_control_store',
-      'core_0014_execution_journal',
-      'core_0015_work_observations',
-      'core_0016_workspace_recovery_admissions',
-    ]);
     expect(ledgerRows).toEqual(
       journal.entries.map((entry) => ({ createdAt: entry.when, count: 1 }))
     );

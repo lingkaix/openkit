@@ -44,7 +44,7 @@ describe('scheduler attempt maintenance service', () => {
       expect(JSON.stringify(warn.mock.calls)).not.toContain('/private/maintenance-canary');
       expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-maintenance-canary');
     } finally {
-      service.stop();
+      await service.stop();
       warn.mockRestore();
       errorLog.mockRestore();
     }
@@ -98,7 +98,7 @@ describe('scheduler attempt maintenance service', () => {
         'scheduler.attempt_maintenance_failed',
       ]);
     } finally {
-      service.stop();
+      await service.stop();
       warn.mockRestore();
     }
   });
@@ -140,11 +140,11 @@ describe('scheduler attempt maintenance service', () => {
       });
       expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
     } finally {
-      service.stop();
+      await service.stop();
     }
   });
 
-  it('starts immediately, schedules future maintenance, and stops cleanly', () => {
+  it('starts immediately, schedules future maintenance, and stops cleanly', async () => {
     const callbacks: Array<() => void> = [];
     const cleared: unknown[] = [];
 
@@ -166,7 +166,7 @@ describe('scheduler attempt maintenance service', () => {
       });
 
       callbacks[0]?.();
-      service.stop();
+      await service.stop();
 
       expect(callbacks).toHaveLength(1);
       expect(cleared).toEqual([{ intervalMs: 30_000 }]);
@@ -226,7 +226,64 @@ describe('scheduler attempt maintenance service', () => {
       await Promise.resolve();
       expect(attempts).toBe(2);
 
-      service.stop();
+      await service.stop();
+    }
+  });
+
+  it('joins accepted maintenance before stop resolves and refuses later selection', async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const callbacks: Array<() => void> = [];
+    const clearInterval = vi.fn();
+    const scheduler = vi.fn(async () => {});
+    const native = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const checkpoints = vi.fn(async () => {});
+    const service = startSchedulerAttemptMaintenanceService({
+      intervalMs: 30_000,
+      runRecoveryMaintenance: { scheduler, native, checkpoints },
+      setInterval: (callback) => {
+        callbacks.push(callback);
+        return 'joined-stop-timer';
+      },
+      clearInterval,
+    });
+    let stopped = false;
+    let stopping: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      const active = service.runOnce();
+      stopping = Promise.resolve(service.stop()).then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      // DX Physical Receipt Consumption and accepted R2634 shutdown retain active dependencies.
+      expect.soft(stopped).toBe(false);
+      expect(clearInterval).toHaveBeenCalledExactlyOnceWith('joined-stop-timer');
+      callbacks[0]!();
+      const afterStop = service.runOnce();
+      await Promise.resolve();
+      expect(scheduler).toHaveBeenCalledOnce();
+      expect(native).toHaveBeenCalledOnce();
+      expect(checkpoints).not.toHaveBeenCalled();
+
+      release.resolve();
+      await active;
+      await afterStop;
+      await stopping;
+      expect(stopped).toBe(true);
+      expect(checkpoints).toHaveBeenCalledOnce();
+      callbacks[0]!();
+      await service.runOnce();
+      expect(scheduler).toHaveBeenCalledOnce();
+      expect(native).toHaveBeenCalledOnce();
+      expect(checkpoints).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await stopping;
+      await service.stop();
     }
   });
 });

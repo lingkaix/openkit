@@ -294,6 +294,7 @@ function recoveryPorts() {
       release: vi.fn(failEffect),
     },
     cleanupBackendSession,
+    reconcileExecutions: async () => {},
     prepareBackendCleanup,
     restoreBackendSession: vi.fn(failEffect),
     reconcileAcceptedFinalStatus: vi.fn(failEffect),

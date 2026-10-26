@@ -11,10 +11,10 @@ export interface SchedulerAttemptMaintenanceInput {
   readonly setInterval?: (callback: () => void, intervalMs: number) => unknown;
   readonly clearInterval?: (handle: unknown) => void;
 }
-/** Existing timer handle; stopping does not fabricate cancellation or release. */
+/** Existing timer handle; stopping joins accepted maintenance without fabricating cancellation or release. */
 export interface SchedulerAttemptMaintenanceService {
   readonly runOnce: () => Promise<void>;
-  readonly stop: () => void;
+  readonly stop: () => Promise<void>;
 }
 /** Carries unsuccessful stage results while distinguishing already-attributed expected native exclusion. */
 class SchedulerAttemptMaintenanceFailure extends AggregateError {
@@ -93,12 +93,14 @@ export function startSchedulerAttemptMaintenanceService(
   return {
     runOnce,
     stop: () => {
-      if (stopped) return;
-      stopped = true;
-      (
-        input.clearInterval ??
-        ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>))
-      )(timer);
+      if (!stopped) {
+        stopped = true;
+        (
+          input.clearInterval ??
+          ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>))
+        )(timer);
+      }
+      return active ?? Promise.resolve();
     },
   };
 }

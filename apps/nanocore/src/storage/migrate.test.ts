@@ -361,6 +361,7 @@ describe('database setup', () => {
         '0016_workspace_recovery_admissions.sql',
         '0017_personal_workspace_binding.sql',
         '0018_usage_provider_model.sql',
+        '0019_idle_cleanup_resident_lookup.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -388,6 +389,7 @@ describe('database setup', () => {
         'core_0016_workspace_recovery_admissions',
         'core_0017_personal_workspace_binding',
         'core_0018_usage_provider_model',
+        'core_0019_idle_cleanup_resident_lookup',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {

@@ -58,12 +58,13 @@ describe('storage layout report', () => {
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
       ]);
-      expect(report.serverDb.appliedMigrations.slice(-5)).toEqual([
+      expect(report.serverDb.appliedMigrations.slice(-6)).toEqual([
         'core_0014_execution_journal',
         'core_0015_work_observations',
         'core_0016_workspace_recovery_admissions',
         'core_0017_personal_workspace_binding',
         'core_0018_usage_provider_model',
+        'core_0019_idle_cleanup_resident_lookup',
       ]);
       expect(report.serverDb.appliedMigrations).not.toContain('workspace_0012_execution_journal');
       expect(workspace.sqlite.serialize().equals(before)).toBe(true);
@@ -108,6 +109,7 @@ describe('storage layout report', () => {
         'core_0016_workspace_recovery_admissions',
         'core_0017_personal_workspace_binding',
         'core_0018_usage_provider_model',
+        'core_0019_idle_cleanup_resident_lookup',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
