@@ -892,7 +892,11 @@ describe('worker Context Package owner', () => {
     writeFileSync(packagePath, bytes);
     const raw = JSON.parse(JSON.stringify(fixture.trace));
     raw.annotation = 'trace';
-    raw.retainedTrace = { ignored: 'untrusted metadata cannot replace trace bytes' };
+    raw.retainedTrace = {
+      ignored: 'untrusted metadata cannot replace trace bytes',
+      a: 'historical',
+      Z: 'trace',
+    };
     if (knowledge) {
       raw.knowledgeSelectionInput.annotation = 'retrieval input';
       raw.knowledgeSelectionInput.retrievalTraceRef.annotation = 'qualified reference';

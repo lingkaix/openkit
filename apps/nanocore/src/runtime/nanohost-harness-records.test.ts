@@ -332,6 +332,140 @@ describe('Workspace invocation deadline and exclusion controls', () => {
 });
 
 describe('private NanoHost Harness records', () => {
+  it('preserves historical command bytes and native correlation across cold dispatch', () => {
+    const nativeEnvironment = { a: 'e\u0301', Z: '\u00e9' };
+    const identities = {
+      agentSessionId: 'as_01a17954-0338-78b0-9e29-db2975371867',
+      threadId: 'th_01a17954-0338-7ad5-a6c8-bef8d9e81e8a',
+      workspaceId: 'ws_01a17954-0338-79ca-9b0a-47bc7cb51cdc',
+    };
+    let coreDb = openOpeningBindingDb(
+      'openkit-harness-historical-command-',
+      {
+        agentId: 'fixture-native-environment',
+        defaultsDigest: `sha256:${'a'.repeat(64)}`,
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        values: nativeEnvironment,
+      },
+      identities
+    );
+    try {
+      const credentials = [Buffer.alloc(32, 1), Buffer.alloc(32, 2)];
+      const input = {
+        body: { ...sessionOpenBody(), ...identities, nativeEnvironment },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open' as const,
+        timestamp: now,
+      };
+      const prepared = prepareNanoHostHarnessOperation(coreDb, {
+        ...input,
+        loopbackCredential: () => credentials.shift()!.toString('base64url'),
+      });
+      queueNanoHostHarnessOperation(coreDb, { ...input, prepared });
+      // Captured from this owner's real producer at 4a8a9d649; mixed-case names distinguish the old encoding.
+      const historical = {
+        bytes:
+          '{"adapterId":"codex","agentSessionCompatibilityKey":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",' +
+          '"agentSessionId":"as_01a17954-0338-78b0-9e29-db2975371867","agentSessionRuntimeBindingId":"agent-session-binding-1",' +
+          '"capabilityLoopbackCredentialHash":"6c1d63bbdab437c54368cbbd8886a886a79ad977297e265eebf1f5f5f01533b9",' +
+          '"effectiveSetupGeneration":1,"inferenceLoopbackCredentialHash":"56d5fa7333f6d747db42c239407e5da4c32f4c79f35d092b134fd35a402d9c5c",' +
+          '"nativeEnvironment":{"a":"e\u0301","Z":"\u00e9"},"resume":null,' +
+          '"threadId":"th_01a17954-0338-7ad5-a6c8-bef8d9e81e8a","workspaceId":"ws_01a17954-0338-79ca-9b0a-47bc7cb51cdc"}',
+        fingerprint: 'c5ccabf7580bd70076cc2fde82da22f9c611c20926926b1ff671aaaf02051b2a',
+        operationId: '658ec7b38c0c7517df4007d9a0a2aa65782a736aaf3b969c916eefd6530ec4b5',
+        sequence: 0,
+      };
+      // Owner-module retained-state injection follows valid owner setup; new producers may use a new encoding.
+      coreDb.sqlite
+        .prepare(
+          `UPDATE harness_instance_records
+           SET command_body_json = ?, command_fingerprint = ?, operation_id = ?
+           WHERE harness_instance_id = 'harness-1'`
+        )
+        .run(historical.bytes, historical.fingerprint, historical.operationId);
+      const readCommand = () =>
+        coreDb.sqlite
+          .prepare(
+            `SELECT command_body_json AS bytes, command_fingerprint AS fingerprint,
+                    operation_id AS operationId, operation_sequence AS sequence
+             FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`
+          )
+          .get();
+      const root = coreDb.dataRoot;
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(root);
+      // Schema Evolution, Canonical Structured Values And Exact Bytes binds the original raw proof.
+      expect(readCommand()).toEqual(historical);
+      expect(createHash('sha256').update(historical.bytes).digest('hex')).toBe(
+        historical.fingerprint
+      );
+      coreDb.sqlite
+        .prepare('UPDATE harness_instance_records SET command_body_json = ?')
+        .run(`${historical.bytes}\n`);
+      expect(() =>
+        dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        })
+      ).toThrow(/corrupt|fingerprint/);
+      coreDb.sqlite
+        .prepare('UPDATE harness_instance_records SET command_body_json = ?')
+        .run(historical.bytes);
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      // NanoHost acceptance predicate 46 preserves the already recorded operation identity and sequence.
+      expect(command).toEqual({
+        body: JSON.parse(historical.bytes),
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        operationId: historical.operationId,
+        schemaVersion: 2,
+        sequence: historical.sequence,
+      });
+      expect(readCommand()).toEqual(historical);
+      const result = {
+        body: {
+          maxActiveTurns: 1,
+          nativeHandleDigest: null,
+          nativeHandleState: 'pending',
+          state: 'open',
+        },
+        disposition: 'succeeded',
+        harnessInstanceId: 'harness-1',
+        operationId: historical.operationId,
+        schemaVersion: 2,
+        sequence: historical.sequence,
+      } as const;
+      const settle = () =>
+        settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result,
+          timestamp: now,
+        });
+      expect(settle()).toBe('settled');
+      const receipt = coreDb.sqlite
+        .prepare(
+          'SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records'
+        )
+        .get() as { bytes: string; fingerprint: string };
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(root);
+      expect(settle()).toBe('replayed');
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records'
+          )
+          .get()
+      ).toEqual(receipt);
+      expect(readCommand()).toEqual(historical);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('logs only fixed slow-stage fields at the 100 ms boundary', () => {
     const coreDb = openOpeningBindingDb('openkit-harness-slow-stage-');
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -3390,8 +3524,15 @@ function sessionOpenBody(): Readonly<Record<string, unknown>> {
   };
 }
 
-/** Creates one Harness with one AgentSession binding still `opening`. */
-function openOpeningBindingDb(prefix: string): ReturnType<typeof openCoreDb> {
+/** Creates one Harness with an opening binding, optionally using exact recorded history identities. */
+function openOpeningBindingDb(
+  prefix: string,
+  nativeEnvironment?: Parameters<typeof openNanoHostAgentSessionBinding>[1]['nativeEnvironment'],
+  identities?: Pick<
+    Parameters<typeof openNanoHostAgentSessionBinding>[1],
+    'agentSessionId' | 'threadId' | 'workspaceId'
+  >
+): ReturnType<typeof openCoreDb> {
   const root = mkdtempSync(join(tmpdir(), prefix));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const coreDb = openCoreDb(root);
@@ -3414,14 +3555,15 @@ function openOpeningBindingDb(prefix: string): ReturnType<typeof openCoreDb> {
     timestamp: now,
   });
   openNanoHostAgentSessionBinding(coreDb, {
+    nativeEnvironment,
     agentSessionCompatibilityKey: 'b'.repeat(64),
-    agentSessionId: testEntityId('as', 'agent-session-1'),
+    agentSessionId: identities?.agentSessionId ?? testEntityId('as', 'agent-session-1'),
     agentSessionRuntimeBindingId: 'agent-session-binding-1',
     effectiveSetupGeneration: 1,
     harnessInstanceId: 'harness-1',
-    threadId: testEntityId('th', 'thread-1'),
+    threadId: identities?.threadId ?? testEntityId('th', 'thread-1'),
     timestamp: now,
-    workspaceId: testEntityId('ws', 'workspace-1'),
+    workspaceId: identities?.workspaceId ?? testEntityId('ws', 'workspace-1'),
   });
   return coreDb;
 }
