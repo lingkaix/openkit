@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
 import type { ItemSchema } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 
 import type { OpenAICompatibleChatMessage } from '../llm/openai-compatible-client.js';
@@ -146,28 +146,7 @@ export function createContextPackageRecord(
  * @returns Prefixed context package digest.
  */
 function createContextPackageDigest(value: unknown): string {
-  return `ctxpkg_sha256_${createHash('sha256').update(stableStringify(value)).digest('hex')}`;
-}
-
-/**
- * Serializes JSON-like data with stable object key ordering.
- *
- * @param value Value to serialize.
- * @returns Deterministic JSON string.
- */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
-
-    return `{${entries
-      .map(([key, nested]) => `${JSON.stringify(key)}:${stableStringify(nested)}`)
-      .join(',')}}`;
-  }
-
-  return JSON.stringify(value);
+  return `ctxpkg_sha256_${sha256CanonicalJson(value)}`;
 }
 
 /**

@@ -169,6 +169,16 @@ Rules:
 - If a migration upgrades a digest-referenced record to a new schema version, the migration report MUST map the predecessor digest to the successor digest so existing references remain resolvable.
 - Records that are never digest-referenced may be rewritten under the ordinary SHOULD-preserve rule.
 
+### Canonical Structured Values And Exact Bytes
+
+New structured-value digests MUST use the single browser-safe canonical JSON encoder in `@openkit/protocol`. It emits recursive object members in UTF-16 code-unit order directly, including integer-looking keys, preserves array order and string contents without Unicode normalization, and uses ECMAScript JSON text for finite numbers. Its UTF-8 output has no byte-order mark or trailing newline. Domain owners retain field selection, prefixes, separators, length framing and any explicitly required normalization before encoding.
+
+The general encoder admits null, booleans, finite numbers, valid Unicode strings, arrays and plain objects (including null-prototype objects). It omits undefined object members. It MUST reject root undefined, undefined array elements, sparse arrays, named array members, symbol members or values, functions, bigint, nonfinite numbers, class instances, cycles and invalid Unicode; it MUST NOT invoke class `toJSON` conversions or coerce refused values to null. The identifier owner retains its stricter complete-name rule: undefined object members also fail. Both entry points use one encoding implementation; the identifier namespaces, derivation inputs and UUIDv5 algorithm do not change.
+
+Node SHA-256 construction uses the Node-only `@openkit/protocol/digest` subpath; the browser root MUST NOT import Node crypto. Exact original bytes, binary framing and incremental stream hashes are not canonical JSON. Verify retained immutable content by hashing its exact stored bytes. A historical value that left the process, including a delivered Context Package, native correlation identity or Worker control fingerprint, remains a recorded fact; readers MUST NOT re-canonicalize or recompute it from current values. Canonical encoding constructs new structured-value digests, not historical replacement evidence.
+
+When this system recomputes a digest from retained structured input and compares it on read, a changed encoding requires the complete affected digest/reference closure to move through that family's existing one-way migration owner before the new reader is enabled. The predecessor/successor rules above still apply. Historical digest-only attribution and fresh-input conflict comparisons do not authorize rewriting original content or physical identities. Do not add a second encoder, dual writer, fallback reader, alias table or digest ledger.
+
 ## Field Naming And Surface Mapping
 
 Canonical envelope and record field names are camelCase in JSON, JSONL, and SQLite-projected surfaces, such as `schemaVersion`, `ownerScope`, and `requiredFeatures`.

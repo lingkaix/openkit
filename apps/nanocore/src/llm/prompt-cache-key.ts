@@ -1,5 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { SubscriptionProviderId } from '@openkit/config-schema';
+import { canonicalJsonText } from '@openkit/protocol';
+import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type {
   OpenAICompatibleChatCompletionRequest,
@@ -72,7 +74,7 @@ export function resolveWorkerPromptCacheKey(input: {
     };
   }
 
-  const identity = stableStringify({
+  const identity = canonicalJsonText({
     accountSlotId: input.accountSlotId,
     model: input.model,
     nativeCacheLineageId: input.nativeCacheLineageId,
@@ -81,14 +83,8 @@ export function resolveWorkerPromptCacheKey(input: {
     subscriptionProviderId: input.subscriptionProviderId,
     workspaceId: input.workspaceId,
   });
-  const promptCacheKeyDigest = createHash('sha256')
-    .update('openkit:worker-prompt-cache-key:v1\0')
-    .update(identity)
-    .digest('hex');
-  const runtimeCacheLineageDigest = createHash('sha256')
-    .update('openkit:runtime-cache-lineage-ref:v1\0')
-    .update(identity)
-    .digest('hex');
+  const promptCacheKeyDigest = sha256Hex(`openkit:worker-prompt-cache-key:v1\0${identity}`);
+  const runtimeCacheLineageDigest = sha256Hex(`openkit:runtime-cache-lineage-ref:v1\0${identity}`);
 
   return {
     degraded: false,
@@ -239,29 +235,18 @@ function derivePromptCacheKey(
   model: string,
   scope: PromptCacheKeyScope
 ): string {
-  const digest = createHash('sha256')
-    .update(
-      stableStringify({
-        accountSlotId: provider.accountSlotId ?? null,
-        agentSessionId: scope.agentSessionId ?? null,
-        model,
-        providerId: provider.id,
-        sessionId: scope.sessionId ?? null,
-        subscriptionProviderId: provider.subscriptionProviderId ?? null,
-        threadId: scope.threadId ?? null,
-        workspaceId: scope.workspaceId ?? null,
-      })
-    )
-    .digest('hex')
-    .slice(0, 32);
+  const digest = sha256CanonicalJson({
+    accountSlotId: provider.accountSlotId ?? null,
+    agentSessionId: scope.agentSessionId ?? null,
+    model,
+    providerId: provider.id,
+    sessionId: scope.sessionId ?? null,
+    subscriptionProviderId: provider.subscriptionProviderId ?? null,
+    threadId: scope.threadId ?? null,
+    workspaceId: scope.workspaceId ?? null,
+  }).slice(0, 32);
 
   return `openkit:responses:${digest}`;
-}
-
-function stableStringify(value: Record<string, unknown>): string {
-  return JSON.stringify(
-    Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
-  );
 }
 
 function readNonEmptyString(value: unknown): string | undefined {

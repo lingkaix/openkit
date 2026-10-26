@@ -92,3 +92,5 @@ The Worker manifest alone retains inventory, selected payloads, policy version a
 The Thread Material read projection uses the same portable trace reader as export and import. That reader reconstructs shared facts from the exact canonical manifest before strict or imported-history verification; compact trace metadata alone is not a complete logical trace.
 
 Canonical Turn and Item authority snapshots carry the Protocol work owner. Context verification requires the exact Workspace owner before it accepts their IDs, digests or source bytes. Context request selectors, trace addresses and scheduler admission references keep their existing Workspace fields.
+
+The fixed LLM projection tuple uses the shared Protocol canonical digest, preserving ordered messages, policy decisions and the `ctxpkg_sha256_` tag. The switch preserves valid-Unicode tuple bytes and does not rewrite delivered Context Packages or alter their manifest/trace readers. Run `llm-projection.test.ts` and `projection-policy.test.ts` for the projection contract.

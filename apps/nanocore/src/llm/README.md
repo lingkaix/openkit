@@ -134,3 +134,5 @@ Model capture awaits each native observation acknowledgement before its existing
 Terminal pi-ai error events retain opaque exposed failure evidence for the existing classifier; mutable non-error events still snapshot before asynchronous observation. A resolved loop deadline is separate from the Gateway call owner’s native terminal acknowledgement.
 
 Gateway usage records the selected dispatch attempt’s provider-native providerModel beside logical modelId and measured providerRef. Public-format, Worker inference and internal-role usage callbacks supply the selected model; historical rows are not reconstructed from current routing.
+
+Prompt-cache keys use the Protocol canonical encoder and Node-only digest subpath. The fixed cache/lineage tuples, NUL-delimited Worker domains, truncation and current provider/model/scope selection stay local. Existing valid-Unicode tuple bytes are unchanged; malformed Unicode now follows the shared encoder refusal. Historical Call lineage values remain recorded attribution. Run `prompt-cache-key.test.ts` and the affected Provider/Gateway cases for this boundary.

@@ -1,3 +1,7 @@
+import { canonicalIdentifierName } from './canonical-json.js';
+
+export { canonicalIdentifierName } from './canonical-json.js';
+
 /** Entity kinds owned by Core Protocol. Selectors, request ids and native runtime ids are excluded. */
 export const ENTITY_KINDS = [
   'usr',
@@ -114,58 +118,6 @@ export function allocateEntityId<Kind extends EntityKind>(
   bytes[6] = (bytes[6]! & 0x0f) | 0x70;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   return `${kind}_${formatUuid(bytes)}`;
-}
-
-/**
- * Encodes an allocating owner's complete immutable JSON name as RFC 8785 JCS text.
- * Reject non-JSON values instead of omitting them and silently changing the derivation tuple.
- */
-export function canonicalIdentifierName(name: unknown): string {
-  const ancestors = new Set<object>();
-  function encode(value: unknown): string {
-    if (value === null) return 'null';
-    if (typeof value === 'string') {
-      if (/[\uD800-\uDFFF]/u.test(value))
-        throw new TypeError('Identifier names must contain valid Unicode');
-      return JSON.stringify(value);
-    }
-    if (typeof value === 'boolean') return JSON.stringify(value);
-    if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
-    if (typeof value !== 'object')
-      throw new TypeError('Identifier names must be finite JSON values');
-    if (ancestors.has(value)) throw new TypeError('Identifier names must not contain cycles');
-    ancestors.add(value);
-    try {
-      if (Object.getOwnPropertySymbols(value).length !== 0)
-        throw new TypeError('JSON names have no symbol members');
-      if (Array.isArray(value)) {
-        if (
-          Object.keys(value).some(
-            (key) => !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length
-          )
-        )
-          throw new TypeError('JSON arrays have no named members');
-        const entries: string[] = [];
-        for (let index = 0; index < value.length; index += 1) entries.push(encode(value[index]));
-        return `[${entries.join(',')}]`;
-      }
-      if (
-        Object.getPrototypeOf(value) !== Object.prototype &&
-        Object.getPrototypeOf(value) !== null
-      ) {
-        throw new TypeError('Identifier names must contain only JSON objects');
-      }
-      const object = value as Record<string, unknown>;
-      // Write sorted members directly: JSON.stringify(object) would reorder integer-looking keys.
-      return `{${Object.keys(object)
-        .sort()
-        .map((key) => `${encode(key)}:${encode(object[key])}`)
-        .join(',')}}`;
-    } finally {
-      ancestors.delete(value);
-    }
-  }
-  return encode(name);
 }
 
 /** Derives the shared UUIDv5 encoding of an owner's declared JSON name, without random or clock inputs. */

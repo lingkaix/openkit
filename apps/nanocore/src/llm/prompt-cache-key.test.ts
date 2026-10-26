@@ -219,6 +219,26 @@ describe('resolveWorkerPromptCacheKey', () => {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   };
 
+  it('preserves exact Worker domains and ordinary cache bytes for valid Unicode tuples', () => {
+    // QP-1a preserves baseline framing and truncation; hashes use independent literal UTF-8 tuples.
+    const worker = resolveSubscriptionWorkerPromptCacheKey({
+      ...input,
+      nativeCacheLineageId: 'cache_\u00e9_\ud83d\ude00',
+    });
+    const ordinary = new PromptCacheKeyResolver().withPromptCacheKey(
+      providerConfig(),
+      responsesRequest(),
+      { workspaceId: input.workspaceId, sessionId: 'session_e\u0301_\ud83d\ude00' }
+    );
+
+    expect(worker).toEqual({
+      degraded: false,
+      promptCacheKey: 'openkit:responses:98de1b1e1eac1c0bdb714251b61e5d2d',
+      runtimeCacheLineageRef: 'rcl_0fb74cb61d433844a2308ec1',
+    });
+    expect(ordinary.prompt_cache_key).toBe('openkit:responses:b46220b2d3dd0c98e603593b9da74cdf');
+  });
+
   it('keeps the same explicit native lineage stable', () => {
     const first = resolveSubscriptionWorkerPromptCacheKey(input);
     const second = resolveSubscriptionWorkerPromptCacheKey(input);

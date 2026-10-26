@@ -1,3 +1,4 @@
+export { canonicalJsonText } from './common/canonical-json.js';
 export * from './common/content-reference.js';
 export * from './common/entity-id.js';
 export * from './common/ids.js';

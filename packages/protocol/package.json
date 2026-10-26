@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./digest": {
+      "types": "./dist/digest.d.ts",
+      "default": "./dist/digest.js"
     }
   },
   "scripts": {

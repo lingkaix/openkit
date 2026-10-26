@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
@@ -24,7 +23,8 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { readRetainedV1 } from '@openkit/protocol';
+import { canonicalJsonText, readRetainedV1 } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
@@ -1106,7 +1106,7 @@ function createRuntimeConfigSnapshot(
 
   return {
     ...snapshot,
-    contentHash: hashSemantic(snapshotSemanticSummary(snapshot)),
+    contentHash: sha256CanonicalJson(snapshotSemanticSummary(snapshot)),
   };
 }
 
@@ -1508,14 +1508,9 @@ function workspaceMcpServerCatalogSummary(snapshot: RuntimeConfigSnapshot): unkn
  * Compares two values after stable serialization.
  */
 function equalSemantic(left: unknown, right: unknown): boolean {
-  return stableStringify(left) === stableStringify(right);
-}
-
-/**
- * Hashes a semantic value.
- */
-function hashSemantic(value: unknown): string {
-  return createHash('sha256').update(stableStringify(value)).digest('hex');
+  // Missing optional config is an absence comparison, outside the structured-value encoder.
+  if (left === undefined || right === undefined) return left === right;
+  return canonicalJsonText(left) === canonicalJsonText(right);
 }
 
 /**
@@ -1538,7 +1533,7 @@ function redactSemanticSecrets(value: unknown, key = ''): unknown {
   if (isSecretKey(key)) {
     return value === undefined || value === null
       ? value
-      : `secret:${hashSemantic(value).slice(0, 12)}`;
+      : `secret:${sha256CanonicalJson(value).slice(0, 12)}`;
   }
 
   return value;
@@ -1549,32 +1544,6 @@ function redactSemanticSecrets(value: unknown, key = ''): unknown {
  */
 function isSecretKey(key: string): boolean {
   return /apiKey|token|secret|clientSecret|auth/i.test(key);
-}
-
-/**
- * Serializes objects with stable key ordering.
- */
-function stableStringify(value: unknown): string {
-  return JSON.stringify(stableValue(value));
-}
-
-/**
- * Sorts object keys recursively for stable comparison.
- */
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stableValue);
-  }
-
-  if (typeof value === 'object' && value !== null) {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, stableValue(item)])
-    );
-  }
-
-  return value;
 }
 
 /**
