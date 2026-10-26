@@ -329,6 +329,7 @@ describe('scoped storage databases', () => {
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
+        'workspace_0015_capability_call_turn_lookup',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -555,6 +556,7 @@ describe('scoped storage databases', () => {
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
+        'workspace_0015_capability_call_turn_lookup',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -911,6 +913,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
+        'workspace_0015_capability_call_turn_lookup',
       ]);
     } finally {
       userDb.sqlite.close();

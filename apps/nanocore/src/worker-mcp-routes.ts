@@ -96,6 +96,7 @@ import type { InflightIdempotentCommand } from './runtime/idempotent-command.js'
 import {
   mcpToolArgumentsContentDigest,
   mcpToolSchemaContentDigest,
+  prepareMcpToolSchemaSnapshot,
   readCurrentMcpToolSchemaSnapshot as readCurrentMcpToolSchemaSnapshotInDb,
   readTurnMcpToolSchemaSnapshot as readTurnMcpToolSchemaSnapshotInDb,
   WorkerCapabilityMcpToolSchema,
@@ -1924,6 +1925,8 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           409
         );
       const dispatchCredentials = observedCredentials;
+      // Untyped gateway failures after dispatch cannot prove that the Tool was not contacted.
+      upstreamEffect = 'unknown';
       const result = await input.input.workerMcpGateway.callTool({
         arguments: input.arguments,
         ...(dispatchCredentials ? { credentials: dispatchCredentials } : {}),
@@ -1990,8 +1993,16 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       assertResultCurrent();
       return result;
     } catch (error) {
-      // A completed Tool effect stays completed when later observation evidence fails.
-      if (terminalCommitted && status === 'completed') throw error;
+      // Acknowledged terminal outcomes stay decided when later observation or reply checks fail.
+      if (terminalCommitted) {
+        if (error instanceof ProtocolError) throw error;
+        const normalized = normalizeWorkerMcpRouteError(error);
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
+          normalized.message,
+          projectOperationError(normalized) ?? { code: normalized.code }
+        );
+      }
       if (error instanceof WorkerMcpGatewayCallError) {
         upstreamEffect = error.upstreamEffect;
         cancelled = error.cancelled;
@@ -2059,10 +2070,53 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       terminalCommitted = true;
       status = terminalStatus === 'denied' ? 'declined' : 'failed';
+      const projection = projectOperationError(normalized) ?? { code: normalized.code };
+      let certain = false;
+      if (upstreamEffect === 'not-contacted' && terminalStatus === 'failed') {
+        try {
+          const reader = borrowWorkspaceReadDb(
+            input.workspaceDb.dataRoot,
+            input.workspaceDb.workspaceId
+          );
+          const terminal = reader.sqlite
+            .prepare(
+              'SELECT schema_version AS schemaVersion, status, completed_at FROM capability_calls WHERE call_id = ?'
+            )
+            .get(call.id) as
+            | { schemaVersion: unknown; status: string; completed_at: string | null }
+            | undefined;
+          if (terminal) readRetainedV1(terminal, () => undefined);
+          certain = terminal?.status === 'failed' && terminal.completed_at !== null;
+        } catch (verificationError) {
+          const normalized = normalizeWorkerMcpRouteError(verificationError);
+          throw new ProtocolError(
+            ProtocolErrorCode.InvalidRequest,
+            normalized.message,
+            projectOperationError(normalized) ?? { code: normalized.code }
+          );
+        }
+      }
+      const message = certain
+        ? 'MCP call ended failed. The requested Tool was not contacted.'
+        : normalized.message;
       throw new ProtocolError(
         ProtocolErrorCode.InvalidRequest,
-        normalized.message,
-        projectOperationError(normalized) ?? { code: normalized.code }
+        message,
+        certain
+          ? {
+              ...projection,
+              message,
+              details: {
+                ...('details' in projection &&
+                projection.details &&
+                typeof projection.details === 'object'
+                  ? projection.details
+                  : {}),
+                outcome: 'failed',
+                upstreamEffect: 'not-contacted',
+              },
+            }
+          : projection
       );
     } finally {
       if (terminalCommitted && publishTerminalItem) await publishTerminal(call);
@@ -2813,18 +2867,41 @@ async function observeWorkerMcpTools(input: {
     );
   }
   const snapshotDigest = mcpToolSchemaContentDigest(snapshotTools);
-  const captured = await getControlStoreWorkerClient().workspaceCapability(
-    input.workspaceDb,
-    ControlCapabilityCommandInputSchema.parse({
-      kind: 'mcp-schema',
-      workspaceId: input.environmentPackage.scope.workspaceId,
-      callId: input.call.id,
-      environmentPackage: mcpCapabilityFrame(input),
-      schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
-      serverVersion: live.serverVersion,
-      tools: snapshotTools,
-    })
-  );
+  const bound = readTurnMcpToolSchemaSnapshot(input);
+  const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
+  // The fresh observation snapshot is the reuse decision; no await carries its metadata forward.
+  const reuse =
+    bound && input.call.context.schemaSnapshotId === bound.schemaSnapshotId
+      ? reader.sqlite.transaction(
+          () =>
+            prepareMcpToolSchemaSnapshot({
+              workspaceDb: reader,
+              workspaceId: input.environmentPackage.scope.workspaceId,
+              environmentPackage: mcpCapabilityFrame(input),
+              capabilityCallId: input.call.id,
+              serverId: input.serverId,
+              schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
+              serverVersion: live.serverVersion,
+              tools: snapshotTools,
+              source: 'live',
+            }).reusedSnapshotId
+        )()
+      : null;
+  const captured =
+    reuse === bound?.schemaSnapshotId
+      ? { schemaSnapshotId: reuse, liveSnapshotId: reuse }
+      : await getControlStoreWorkerClient().workspaceCapability(
+          input.workspaceDb,
+          ControlCapabilityCommandInputSchema.parse({
+            kind: 'mcp-schema',
+            workspaceId: input.environmentPackage.scope.workspaceId,
+            callId: input.call.id,
+            environmentPackage: mcpCapabilityFrame(input),
+            schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
+            serverVersion: live.serverVersion,
+            tools: snapshotTools,
+          })
+        );
   if (
     !captured ||
     typeof captured !== 'object' ||
@@ -2842,8 +2919,8 @@ async function observeWorkerMcpTools(input: {
       409
     );
   const snapshotId = captured.schemaSnapshotId;
-  const bound = readTurnMcpToolSchemaSnapshot(input);
-  snapshotTools = bound?.tools ?? snapshotTools;
+  const fixed = bound ?? readTurnMcpToolSchemaSnapshot(input);
+  snapshotTools = fixed?.tools ?? snapshotTools;
   if (resolvedCredentials.credentials) {
     try {
       // Native schema publication can outlive the credential session's idle tick.

@@ -766,16 +766,20 @@ class ControlStoreWorkerClient {
     }
   }
 
-  /** Only the exact call's serial terminal command may borrow its original count and byte priority. */
+  /** Only the exact call's schema preparation or serial closeout borrows its original credit. */
   private closeoutCredit(
     database: string,
     input: ControlCapabilityCommandInput | ControlCapabilityWireInput
   ): CapabilityCloseoutCredit | undefined {
-    if (input.kind !== 'finish' && !(input.kind === 'usage-finish' && input.finish))
+    if (
+      input.kind !== 'finish' &&
+      input.kind !== 'mcp-schema' &&
+      !(input.kind === 'usage-finish' && input.finish)
+    )
       return undefined;
     const context = this.operationContext.getStore();
     const credit = context?.closeout;
-    const callId = input.kind === 'finish' ? input.callId : input.call.id;
+    const callId = input.kind === 'usage-finish' ? input.call.id : input.callId;
     return context?.active &&
       credit?.active &&
       !credit.borrowing &&

@@ -223,11 +223,12 @@ describe('database setup', () => {
       )
         skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
-      expect(listMigrationIds(db, 'workspace').slice(-4)).toEqual([
+      expect(listMigrationIds(db, 'workspace').slice(-5)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
+        'workspace_0015_capability_call_turn_lookup',
       ]);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
@@ -362,6 +363,7 @@ describe('database setup', () => {
         '0017_personal_workspace_binding.sql',
         '0018_usage_provider_model.sql',
         '0019_idle_cleanup_resident_lookup.sql',
+        '0020_scheduler_lineage_lookup.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -390,6 +392,7 @@ describe('database setup', () => {
         'core_0017_personal_workspace_binding',
         'core_0018_usage_provider_model',
         'core_0019_idle_cleanup_resident_lookup',
+        'core_0020_scheduler_lineage_lookup',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -810,6 +813,7 @@ describe('database setup', () => {
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
+        'workspace_0015_capability_call_turn_lookup',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1338,6 +1342,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
+        'workspace_0015_capability_call_turn_lookup',
       ]);
     } finally {
       db.sqlite.close();

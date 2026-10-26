@@ -35,9 +35,9 @@ export function topology(
           : undefined,
   };
 }
-/** Protocol errors without an explicit commit field are never inferred to be refusals. */
+/** Public terminal/contact proof is distinct from admission non-commit; other protocol errors stay unknown. */
 export function classifyOutcomeError(error: any): {
-  status: 'refused' | 'unknown';
+  status: 'refused' | 'failed-certain' | 'unknown';
   code?: string;
   commit?: string;
 } {
@@ -55,7 +55,16 @@ export function classifyOutcomeError(error: any): {
       : protocol && typeof error?.data?.code === 'string'
         ? error.data.code
         : undefined;
-  return { status: commit === 'not-committed' ? 'refused' : 'unknown', code, commit };
+  // COORD11:02: a proved failed Tool call costs service, but is neither unknown nor ACKed.
+  const failedCertain =
+    protocol &&
+    error?.data?.details?.outcome === 'failed' &&
+    error.data.details.upstreamEffect === 'not-contacted';
+  return {
+    status: failedCertain ? 'failed-certain' : commit === 'not-committed' ? 'refused' : 'unknown',
+    code,
+    commit,
+  };
 }
 export type Slot = {
   id: string;
@@ -69,7 +78,7 @@ export type Slot = {
 export type Outcome = Slot & {
   issuedMs?: number;
   ackMs?: number;
-  status: 'scheduled' | 'acked' | 'refused' | 'unknown';
+  status: 'scheduled' | 'acked' | 'refused' | 'failed-certain' | 'unknown';
   code?: string;
   commit?: string;
 };
@@ -183,9 +192,19 @@ export function account(rows: Outcome[], warmMs: number, windowMs: number, works
       eventuallyAcked: acknowledged.length,
       refused: steady.filter((x) => x.status === 'refused').length,
       unknown: steady.filter((x) => x.status === 'unknown').length,
+      failedCertain: steady.filter((x) => x.status === 'failed-certain').length,
+      oldRuleUnknown: steady.filter(
+        (x) =>
+          x.status === 'unknown' || (x.status === 'failed-certain' && x.commit !== 'not-committed')
+      ).length,
       late: acknowledged.filter((x) => x.ackMs! >= stop).length,
       unresolved: steady.filter((x) => x.issuedMs !== undefined && x.status === 'scheduled').length,
       allPhaseUnknown: all.filter((x) => x.status === 'unknown').length,
+      allPhaseFailedCertain: all.filter((x) => x.status === 'failed-certain').length,
+      allPhaseOldRuleUnknown: all.filter(
+        (x) =>
+          x.status === 'unknown' || (x.status === 'failed-certain' && x.commit !== 'not-committed')
+      ).length,
       allPhaseRefused: all.filter((x) => x.status === 'refused').length,
       allPhaseUnresolved: all.filter((x) => x.issuedMs !== undefined && x.status === 'scheduled')
         .length,
@@ -200,7 +219,12 @@ export function account(rows: Outcome[], warmMs: number, windowMs: number, works
     }));
   if (
     total.scheduled !==
-    total.missed + total.eventuallyAcked + total.refused + total.unknown + total.unresolved
+    total.missed +
+      total.eventuallyAcked +
+      total.refused +
+      total.unknown +
+      total.failedCertain +
+      total.unresolved
   )
     throw Error('Identity disposition did not reconcile');
   return { total, siblings };

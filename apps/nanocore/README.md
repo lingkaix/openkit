@@ -655,3 +655,5 @@ NanoCore Vitest configurations first create the invocation-private temporary dir
 Goal Mode rejects unsupported native authority semantics at proposal capture and refreshes the Coordinator Policy projection on internal Goal reads. Coordinator Tool Items and termination diagnostics remain available after a bounded loop fails; internal inference usage preserves adapter component and cost observations.
 
 Worker MCP credentials require the existing exact-lineage current `vault.use` predicate independently of `tool.use`, before material resolution and again at discovery/contact boundaries. Target-issued grant and reference checks remain mandatory; no second permission model is introduced.
+
+The opt-in native load instrument separately reports `failedCertain` and the former classifier's `oldRuleUnknown` count. Only a public protocol failure with both `data.details.outcome=failed` and `upstreamEffect=not-contacted` has this disposition; it earns no acknowledgement or per-actor service. Schedules, thresholds and other unknown outcomes remain unchanged.

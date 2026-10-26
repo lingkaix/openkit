@@ -184,7 +184,7 @@ export interface WorkspaceBackupStageResult {
 
 /** Installed native formats; app keys also admit recognized immutable recovery versions. */
 export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>> = Object.freeze({
-  'drizzle.workspace': 15,
+  'drizzle.workspace': 16,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,

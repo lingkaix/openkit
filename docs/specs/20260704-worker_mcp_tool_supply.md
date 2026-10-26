@@ -207,6 +207,7 @@ The first active Tool-condition subset is human-authored ordinary `prohibit` and
 ### Error normalization
 
 - MCP protocol errors, transport failures, timeouts, and server crashes map to a small closed set of capability error codes: `mcp-server-unavailable`, `mcp-tool-not-found`, `mcp-invalid-arguments`, `mcp-call-failed`, `mcp-result-too-large`, `mcp-schema-drift`, `mcp-denied`, `mcp-timeout`.
+- An acknowledged failed Call whose target Tool was proved not contacted carries `data.details: { outcome: 'failed', upstreamEffect: 'not-contacted' }` and a fixed safe failure message. Discovery may already have contacted the server; internal step uncertainty does not change this narrow target-Tool fact. A possible Tool contact, uncertain terminal acknowledgement or unavailable required publication keeps its existing unknown/recovery semantics. A previously committed terminal outcome is never rewritten as a new failure.
 - MCP-native error payloads, server stderr, and stack traces are preserved only in redacted diagnostics and restricted evidence; they MUST NOT appear in worker-visible errors or product surfaces.
 
 ### Usage and audit

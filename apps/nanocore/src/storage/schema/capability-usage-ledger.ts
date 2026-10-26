@@ -98,6 +98,15 @@ export const capabilityCalls = sqliteTable(
       table.operation
     ),
     index('capability_calls_workspace_idx').on(table.workspaceId, table.status, table.startedAt),
+    // Current raw accounting and ordered MCP binding reads stay within the exact Turn/family.
+    index('capability_calls_turn_family_idx').on(
+      table.workspaceId,
+      table.threadId,
+      table.turnId,
+      table.family,
+      table.startedAt,
+      table.callId
+    ),
     check(
       'capability_calls_system_prompt_digest_check',
       sql`${table.systemPromptDigest} IS NULL OR (${table.family} = 'llm' AND ${table.capabilityId} IN ('llm.chat_completions', 'llm.responses'))`

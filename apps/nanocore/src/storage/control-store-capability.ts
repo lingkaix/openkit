@@ -656,7 +656,7 @@ export function applyControlCapabilityCommand(
         'Capability request identity was already used.',
         400
       );
-    const call = startCapabilityCallInDb(
+    let call = startCapabilityCallInDb(
       presentControlFacts({
         ...input.context,
         workspaceDb: db,
@@ -689,12 +689,18 @@ export function applyControlCapabilityCommand(
       if (input.warmMcpSchema) {
         if (decision?.result !== 'allow') throw new WorkerRawOutputAuthorityError();
         const { bound } = readControlMcpContext(db, call.id, input.warmMcpSchema);
-        if (bound)
+        if (bound) {
           stampCapabilityCallSchemaSnapshotInDb({
             workspaceDb: db,
             callId: call.id,
             schemaSnapshotId: bound.schemaSnapshotId,
           });
+          // Return the actual stamp proved by this admission, not its pre-stamp context.
+          call = {
+            ...call,
+            context: { ...call.context, schemaSnapshotId: bound.schemaSnapshotId },
+          };
+        }
       }
     } catch (error) {
       // Integrity failures must reach the native handle fence, even after actual admission.

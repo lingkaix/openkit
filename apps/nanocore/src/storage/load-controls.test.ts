@@ -529,3 +529,80 @@ it('passive observer fails open without replacing original arguments or results'
   expect(client.runTurnPublication).toBe(publication);
   expect(client.request).toBe(request);
 });
+
+// COORD11:02: certain failure is public evidence, never an ACK or a pre-admission refusal.
+describe('r2-FIX-4 certain failure controls', () => {
+  it('classifies only the exact protocol terminal and contact pair', () => {
+    const details = { outcome: 'failed', upstreamEffect: 'not-contacted' };
+    const error = {
+      name: 'ProtocolError',
+      data: { code: 'operation_storage_unavailable', details },
+    };
+    expect(classifyOutcomeError(error)).toMatchObject({ status: 'failed-certain' });
+    for (const other of [
+      { ...error, name: 'Error' },
+      { ...error, details, data: { code: 'operation_storage_unavailable' } },
+      { ...error, data: { details: { outcome: 'failed' } } },
+      { ...error, data: { details: { upstreamEffect: 'not-contacted' } } },
+      { ...error, data: { details: { ...details, outcome: 'denied' } } },
+      { ...error, data: { details: { ...details, upstreamEffect: 'unknown' } } },
+      { ...error, data: { details: { ...details, upstreamEffect: 'contacted' } } },
+    ])
+      expect(classifyOutcomeError(other).status).toBe('unknown');
+  });
+
+  it('conserves certain failures without increasing ACK service or hiding old-rule unknowns', () => {
+    const rows: Outcome[] = schedule('one', 1, 202, 100, 300).map((slot) => ({
+      ...slot,
+      issuedMs: slot.dueMs,
+      ackMs: slot.dueMs + 1,
+      status: 'acked',
+    }));
+    const steady = rows.filter((row) => row.steady);
+    Object.assign(
+      steady[0]!,
+      classifyOutcomeError({
+        name: 'ProtocolError',
+        data: {
+          details: { outcome: 'failed', upstreamEffect: 'not-contacted' },
+        },
+      })
+    );
+    steady[1]!.status = 'unknown';
+    steady[2]!.status = 'refused';
+    const q = account(rows, 100, 300, 1).total;
+    expect(q).toMatchObject({
+      scheduled: 6,
+      eventuallyAcked: 3,
+      scheduledAckedInWindow: 3,
+      refused: 1,
+      unknown: 1,
+      failedCertain: 1,
+      oldRuleUnknown: 2,
+      allPhaseFailedCertain: 1,
+      allPhaseOldRuleUnknown: 2,
+    });
+    expect(q.scheduled).toBe(
+      q.eventuallyAcked + q.refused + q.unknown + q.failedCertain + q.missed + q.unresolved
+    );
+    // The old classifier refused explicit non-commit, even with the new exact certainty pair.
+    const contradictory = classifyOutcomeError({
+      name: 'ProtocolError',
+      data: {
+        commit: 'not-committed',
+        details: { outcome: 'failed', upstreamEffect: 'not-contacted' },
+      },
+    });
+    expect(contradictory).toMatchObject({ status: 'failed-certain', commit: 'not-committed' });
+    Object.assign(steady[0]!, contradictory);
+    expect(account(rows, 100, 300, 1).total).toMatchObject({
+      scheduled: 6,
+      eventuallyAcked: 3,
+      failedCertain: 1,
+      unknown: 1,
+      oldRuleUnknown: 1,
+      allPhaseFailedCertain: 1,
+      allPhaseOldRuleUnknown: 1,
+    });
+  });
+});

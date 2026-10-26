@@ -76,6 +76,14 @@ export const schedulerExecutionAttempts = sqliteTable(
       .on(table.agentSessionId)
       .where(sql`${table.phase} <> 'closed' AND ${table.agentSessionId} IS NOT NULL`),
     index('scheduler_execution_attempts_queue_idx').on(table.queueEntryId),
+    // Exact package lineage includes accepted closed attempts; live-only indexes cannot serve it.
+    index('scheduler_execution_attempts_lineage_idx').on(
+      table.workspaceId,
+      table.threadId,
+      table.turnId,
+      table.agentSessionId,
+      table.inputRef
+    ),
     index('scheduler_execution_attempts_deadline_idx').on(table.phase, table.deadline),
   ]
 );

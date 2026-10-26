@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
@@ -7400,6 +7401,317 @@ describe('MCP physical commit contract', () => {
         ['discovery', false],
         ['tool', false],
       ]);
+    } finally {
+      await f.close();
+    }
+  });
+});
+
+describe('MCP proved failure and admitted schema observation', () => {
+  it.each([
+    'sql-busy',
+    'native-busy',
+  ] as const)('discloses the committed pre-Tool %s failure without claiming admission rollback', async (fault) => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const workspaceCapability = client.workspaceCapability.bind(client);
+    let injected = false;
+    const schema = vi
+      .spyOn(client, 'workspaceCapability')
+      .mockImplementation((db, input, options) => {
+        if (fault === 'native-busy' && input.kind === 'mcp-schema') {
+          injected = true;
+          return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+        }
+        return workspaceCapability(db, input, options);
+      });
+    if (fault === 'sql-busy')
+      f.discovery(() => {
+        injected = true;
+        throw new Database.SqliteError('private pre-Tool storage failure', 'SQLITE_BUSY');
+      });
+    try {
+      const response = await f.call();
+      expect(injected).toBe(true);
+      // COORD10:41/11:02: only an acknowledged failed terminal proves these two public facts.
+      expect.soft(response).toMatchObject({
+        error: {
+          data: {
+            details: {
+              outcome: 'failed',
+              upstreamEffect: 'not-contacted',
+            },
+          },
+        },
+      });
+      expect(response.error?.data?.commit).not.toBe('not-committed');
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([
+        expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
+      ]);
+      const retainedCall = listWorkspaceCapabilityCalls(f.db, f.workspaceId)[0]!;
+      // The public certainty response also requires its linked failed terminal Item.
+      expect(f.store.listAllItems().filter((item) => item.id === retainedCall.itemId)).toEqual([
+        expect.objectContaining({
+          type: 'tool-call',
+          status: 'failed',
+          causationId: retainedCall.id,
+        }),
+      ]);
+      expect(
+        listWorkspaceAuditEvents(f.db, f.workspaceId).filter(
+          (event) => event.action === 'capability.finish'
+        )
+      ).toHaveLength(1);
+    } finally {
+      schema.mockRestore();
+      await f.close();
+    }
+  });
+
+  it('keeps post-closeout read failure private without claiming unverified no-contact certainty', async () => {
+    const f = await createMcpCommitFixture();
+    const privateCanary = 'private post-terminal read /private/r2741 SELECT capability_calls';
+    const failure = new Database.SqliteError(privateCanary, 'SQLITE_IOERR');
+    const prepare = Database.prototype.prepare;
+    let terminalCommitted = false;
+    let injected = false;
+    const read = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+      this: Database.Database,
+      sql: string
+    ) {
+      // Inject only a Main read after the real native terminal COMMIT, never its deciding write.
+      if (
+        terminalCommitted &&
+        !injected &&
+        this.readonly &&
+        this.name === f.db.sqlite.name &&
+        /^\s*SELECT\b/i.test(sql) &&
+        /\bcapability_calls\b/i.test(sql)
+      ) {
+        injected = true;
+        throw failure;
+      }
+      return prepare.call(this, sql);
+    });
+    try {
+      f.discovery(() => {
+        throw new Error('injected failure before the target Tool');
+      });
+      f.trace.afterCommit((writes) => {
+        if (writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql)))
+          terminalCommitted = true;
+      });
+      const response = await f.call(2741);
+      read.mockRestore();
+      expect(terminalCommitted).toBe(true);
+      expect(injected).toBe(true);
+      // MCP supply Error normalization: native failures stay private and use the safe fallback code.
+      expect.soft(response).toMatchObject({ error: { data: { code: 'mcp-call-failed' } } });
+      expect(response).not.toHaveProperty('result');
+      expect(response.error?.data?.details?.upstreamEffect).not.toBe('not-contacted');
+      expect(response.error?.data?.commit).not.toBe('not-committed');
+      const publicBytes = JSON.stringify(response);
+      for (const privateText of [privateCanary, 'SQLITE_IOERR', 'SqliteError', f.dataRoot])
+        expect.soft(publicBytes).not.toContain(privateText);
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([
+        expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
+      ]);
+      expect(
+        listWorkspaceAuditEvents(f.db, f.workspaceId).filter(
+          (event) => event.action === 'capability.finish'
+        )
+      ).toHaveLength(1);
+    } finally {
+      read.mockRestore();
+      await f.close();
+    }
+  });
+
+  it('keeps an untyped rejection after Tool dispatch uncertain', async () => {
+    const f = await createMcpCommitFixture();
+    try {
+      f.gateway.callTool.mockImplementationOnce(async () => {
+        throw new Error('untyped failure after dispatch');
+      });
+      const response = await f.call();
+      expect(f.gateway.callTool).toHaveBeenCalledTimes(1);
+      expect(response).toHaveProperty('error');
+      expect.soft(response.error?.data?.details?.upstreamEffect).not.toBe('not-contacted');
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([
+        expect.objectContaining({ status: 'unknown' }),
+      ]);
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([
+        expect.objectContaining({ quantity: 1, unit: 'tool_calls' }),
+      ]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('preserves a committed review denial when current authority changes before its reply', async () => {
+    const f = await createMcpCommitFixture();
+    try {
+      expect(await f.call()).toHaveProperty('result');
+      f.runtimeConfig.openKitConfig.policy = {
+        ...f.runtimeConfig.openKitConfig.policy,
+        mediation: admitTestMcpApproval({
+          coreDb: f.coreDb,
+          workspaceId: f.workspaceId,
+          serverId: 'echo',
+          toolName: 'echo',
+          userId: f.environmentPackage.scope.triggerActor.id,
+          threadId: f.environmentPackage.scope.threadId,
+          turnId: f.environmentPackage.scope.turnId,
+        }),
+      };
+      let revoked = false;
+      f.trace.afterCommit((writes) => {
+        if (!revoked && writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql))) {
+          revoked = true;
+          f.coreDb.sqlite
+            .transaction(() => {
+              expect(
+                disableCanonicalUser(f.coreDb, f.environmentPackage.scope.triggerActor.id)?.changed
+              ).toBe(true);
+            })
+            .immediate();
+        }
+      });
+      const response = await f.call();
+      expect(revoked).toBe(true);
+      // MCP supply Error normalization: unavailable authority uses the typed safe fallback after terminal ACK.
+      expect(response).toMatchObject({ error: { data: { code: 'mcp-call-failed' } } });
+      expect(response).not.toHaveProperty('result');
+      const publicBytes = JSON.stringify(response);
+      expect(publicBytes).not.toContain('WorkerControlGatewayError');
+      expect(publicBytes).not.toContain(
+        'Current MCP authority was unavailable before Kernel evaluation.'
+      );
+      expect(publicBytes).not.toContain('MCP Policy author no longer has current authority.');
+      expect(response.error?.data?.details?.outcome).not.toBe('failed');
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId).at(-1)).toMatchObject({
+        status: 'denied',
+      });
+      expect(f.gateway.callTool).toHaveBeenCalledTimes(1);
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([
+    'warm',
+    'cold',
+    'changed',
+  ] as const)('keeps the admitted %s observation under fresh count pressure', async (observation) => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const hold = Promise.withResolvers<void>();
+    const pending: Promise<unknown>[] = [];
+    const schema = vi.spyOn(client, 'workspaceCapability');
+    try {
+      if (observation !== 'cold') expect(await f.call()).toHaveProperty('result');
+      if (observation === 'changed') f.version('2');
+      schema.mockClear();
+      f.discovery(() => {
+        // The original call is already admitted. Distinct selectors consume ordinary count slots.
+        for (let index = 0; index < 1024; index++)
+          pending.push(
+            client
+              .runTurnPublication(database, [`schema-pressure-${index}`], {}, () => hold.promise)
+              .catch((error: unknown) => error)
+          );
+      });
+      const response = await f.call();
+      expect.soft(response).toHaveProperty('result');
+      const requests = schema.mock.calls.filter(([, input]) => input.kind === 'mcp-schema');
+      // COORD10:41 a2: exact reuse sends no request; cold/changed retains one credited observation.
+      expect(requests).toHaveLength(observation === 'warm' ? 0 : 1);
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId).at(-1)).toMatchObject({
+        status: 'succeeded',
+      });
+    } finally {
+      hold.resolve();
+      await Promise.allSettled(pending);
+      schema.mockRestore();
+      await f.close();
+    }
+  });
+
+  it('revalidates retained schema format after a warmed package reopens its reader', async () => {
+    const f = await createMcpCommitFixture();
+    let reopened: ReturnType<typeof openWorkspaceDb> | undefined;
+    try {
+      expect(await f.call()).toHaveProperty('result');
+      const original = listWorkspaceCapabilityCalls(f.db, f.workspaceId)[0]!;
+      reopened = await f.reopen();
+      // Fault injection follows a valid committed snapshot. A new reader must reject unknown core format.
+      reopened.sqlite
+        .prepare('UPDATE mcp_tool_schema_snapshots SET schema_version = 2 WHERE snapshot_id = ?')
+        .run(original.schemaSnapshotId);
+      const response = await f.call();
+      expect(response).toHaveProperty('error');
+      expect(response).not.toHaveProperty('result');
+      expect(f.gateway.callTool).toHaveBeenCalledTimes(1);
+      expect(
+        listWorkspaceCapabilityCalls(f.db, f.workspaceId).find((call) => call.id === original.id)
+      ).toMatchObject({ status: 'succeeded', schemaSnapshotId: original.schemaSnapshotId });
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toHaveLength(1);
+    } finally {
+      reopened?.sqlite.close();
+      await f.close();
+    }
+  });
+
+  it('retains the latest A to B to A observation without changing the Turn binding', async () => {
+    const f = await createMcpCommitFixture();
+    try {
+      expect(await f.call()).toHaveProperty('result');
+      const first = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId)[0]!;
+      const changed = [
+        {
+          ...mcpEchoTool(),
+          inputSchema: {
+            ...mcpEchoTool().inputSchema,
+            description: 'Observation B',
+          },
+        },
+      ];
+      f.tools(changed);
+      expect(await f.call()).toHaveProperty('result');
+      const middle = readCurrentMcpToolSchemaSnapshot({
+        workspaceDb: f.db,
+        workspaceId: f.workspaceId,
+        catalogEntryId: 'echo',
+        pinnedSchemaSnapshotId: null,
+      })!;
+      expect(middle.tools).toEqual(changed);
+      const middleRecord = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId).find(
+        (snapshot) => snapshot.schemaSnapshotId === middle.schemaSnapshotId
+      )!;
+      f.tools([mcpEchoTool()]);
+      expect(await f.call()).toHaveProperty('result');
+      const latest = readCurrentMcpToolSchemaSnapshot({
+        workspaceDb: f.db,
+        workspaceId: f.workspaceId,
+        catalogEntryId: 'echo',
+        pinnedSchemaSnapshotId: null,
+      })!;
+      expect(latest.tools).toEqual(first.tools);
+      const latestRecord = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId).find(
+        (snapshot) => snapshot.schemaSnapshotId === latest.schemaSnapshotId
+      )!;
+      expect(latestRecord.capturedAt > middleRecord.capturedAt).toBe(true);
+      expect(
+        new Set(
+          listWorkspaceCapabilityCalls(f.db, f.workspaceId).map((call) => call.schemaSnapshotId)
+        )
+      ).toEqual(new Set([first.schemaSnapshotId]));
     } finally {
       await f.close();
     }
