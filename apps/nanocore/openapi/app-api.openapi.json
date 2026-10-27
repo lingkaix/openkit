@@ -17126,6 +17126,104 @@
         }
       }
     },
+    "/api/app/operations/workspace.backup-capture": {
+      "post": {
+        "operationId": "workspace.backup-capture",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Capture one idle Workspace into an owned local operational backup.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.backup-capture.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Capture one idle Workspace into an owned local operational backup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.backup-capture.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/workspace.backup-verify": {
+      "post": {
+        "operationId": "workspace.backup-verify",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Verify one owned local operational Workspace backup.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.backup-verify.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verify one owned local operational Workspace backup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.backup-verify.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/token.my-admin-list": {
       "post": {
         "operationId": "token.my-admin-list",
@@ -18229,6 +18327,72 @@
                     "artifactVersion"
                   ],
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/workspace.backup-download": {
+      "post": {
+        "operationId": "workspace.backup-download",
+        "tags": [
+          "storage"
+        ],
+        "summary": "Download a sealed operational backup bundle as application/octet-stream; never an analytical V3 export.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "backupId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sealed verified operational inventory in the existing USTAR/Zstd container.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -146154,6 +146318,758 @@
         ],
         "additionalProperties": false
       },
+      "workspace.backup-capture.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "backupId": {
+            "type": "string",
+            "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "backup",
+              "move"
+            ]
+          }
+        },
+        "required": [
+          "workspaceId",
+          "backupId",
+          "purpose"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.backup-capture.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "capture",
+              "verify",
+              "restore",
+              "move-out",
+              "move-in",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "prepared",
+              "verified",
+              "restored",
+              "moved-out",
+              "imported",
+              "reactivated",
+              "abandoned",
+              "pending",
+              "quarantined"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "currentRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "selection": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "capture"
+                  },
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "backupId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "admission"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "requestId"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "capture": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "backupId": {
+                "type": "string",
+                "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "knowledgeBaseIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "capturedRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+              },
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "totalBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "coverage": {
+                "type": "object",
+                "properties": {
+                  "includedAuthorities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "snapshotRoots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedProjections": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedVolumes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "externalDependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "vault",
+                            "worker-volume",
+                            "native-session",
+                            "server-knowledge",
+                            "external-source",
+                            "agent",
+                            "configuration",
+                            "catalog",
+                            "repository",
+                            "mount"
+                          ]
+                        },
+                        "reference": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable",
+                            "omitted"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "reference",
+                        "availability"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "includedAuthorities",
+                  "snapshotRoots",
+                  "omittedProjections",
+                  "omittedVolumes",
+                  "externalDependencies"
+                ],
+                "additionalProperties": false
+              },
+              "source": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "live-workspace"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "stopped-data-root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "data-root-backup"
+                      },
+                      "dataRootBackupId": {
+                        "type": "string",
+                        "pattern": "^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "consistency": {
+                        "type": "string",
+                        "enum": [
+                          "clean",
+                          "crash-consistent"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "dataRootBackupId",
+                      "consistency"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "interruptedTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "unknownEffectTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
+            },
+            "required": [
+              "workspaceId",
+              "backupId",
+              "sourceDeploymentId",
+              "knowledgeBaseIds",
+              "capturedRevision",
+              "manifestDigest",
+              "fileCount",
+              "totalBytes",
+              "coverage",
+              "interruptedTurnIds",
+              "unknownEffectTurnIds"
+            ],
+            "additionalProperties": false
+          },
+          "droppedSourceMemberIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "restrictedRecovery": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "captureStartedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "lossDetectedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "backupId",
+                  "captureStartedAt",
+                  "lossDetectedAt"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "nextAction": {
+            "type": "string",
+            "enum": [
+              "none",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "disposition",
+          "workspaceId",
+          "droppedSourceMemberIds",
+          "restrictedRecovery",
+          "nextAction"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.backup-verify.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "backupId": {
+            "type": "string",
+            "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "backupId"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.backup-verify.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "capture",
+              "verify",
+              "restore",
+              "move-out",
+              "move-in",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "prepared",
+              "verified",
+              "restored",
+              "moved-out",
+              "imported",
+              "reactivated",
+              "abandoned",
+              "pending",
+              "quarantined"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "currentRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "selection": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "capture"
+                  },
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "backupId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "admission"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "requestId"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "capture": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "backupId": {
+                "type": "string",
+                "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "knowledgeBaseIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "capturedRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+              },
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "totalBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "coverage": {
+                "type": "object",
+                "properties": {
+                  "includedAuthorities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "snapshotRoots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedProjections": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedVolumes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "externalDependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "vault",
+                            "worker-volume",
+                            "native-session",
+                            "server-knowledge",
+                            "external-source",
+                            "agent",
+                            "configuration",
+                            "catalog",
+                            "repository",
+                            "mount"
+                          ]
+                        },
+                        "reference": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable",
+                            "omitted"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "reference",
+                        "availability"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "includedAuthorities",
+                  "snapshotRoots",
+                  "omittedProjections",
+                  "omittedVolumes",
+                  "externalDependencies"
+                ],
+                "additionalProperties": false
+              },
+              "source": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "live-workspace"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "stopped-data-root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "data-root-backup"
+                      },
+                      "dataRootBackupId": {
+                        "type": "string",
+                        "pattern": "^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "consistency": {
+                        "type": "string",
+                        "enum": [
+                          "clean",
+                          "crash-consistent"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "dataRootBackupId",
+                      "consistency"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "interruptedTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "unknownEffectTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
+            },
+            "required": [
+              "workspaceId",
+              "backupId",
+              "sourceDeploymentId",
+              "knowledgeBaseIds",
+              "capturedRevision",
+              "manifestDigest",
+              "fileCount",
+              "totalBytes",
+              "coverage",
+              "interruptedTurnIds",
+              "unknownEffectTurnIds"
+            ],
+            "additionalProperties": false
+          },
+          "droppedSourceMemberIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "restrictedRecovery": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "captureStartedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "lossDetectedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "backupId",
+                  "captureStartedAt",
+                  "lossDetectedAt"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "nextAction": {
+            "type": "string",
+            "enum": [
+              "none",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "disposition",
+          "workspaceId",
+          "droppedSourceMemberIds",
+          "restrictedRecovery",
+          "nextAction"
+        ],
+        "additionalProperties": false
+      },
       "token.my-admin-list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -151235,5 +152151,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:03879edb7d4f309294feb7039b7b623d044b3641ca69697003f549afebddd3a3"
+  "x-openkit-source-digest": "sha256:26cd12b6110b630f53fd60604c03b3d0a309d06bb09e91d885fbb4cccb1e6773"
 }

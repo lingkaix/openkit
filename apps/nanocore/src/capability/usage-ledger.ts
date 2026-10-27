@@ -5,6 +5,7 @@ import {
   type CapabilityCall,
   CapabilityCallExtensionsSchema,
   CapabilityCallSchema,
+  CapabilityCallStatusSchema,
   type GatewayRouteLineageEntry,
   GatewayRouteLineageEntrySchema,
   RequestIdSchema,
@@ -1001,10 +1002,13 @@ export function recoverRunningCapabilityCalls(input: RecoverRunningCapabilityCal
  */
 export function listWorkspaceCapabilityCalls(
   workspaceDb: WorkspaceDb,
-  workspaceId: string
+  workspaceId: string,
+  statuses?: readonly ('running' | 'unknown')[]
 ): CapabilityCallLedgerRecord[] {
   const noContact = new Set<string>();
-  for (const decision of listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)) {
+  for (const decision of statuses
+    ? []
+    : listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)) {
     const context = decision.contextSummary;
     if (
       decision.result === 'deny' &&
@@ -1021,10 +1025,10 @@ export function listWorkspaceCapabilityCalls(
   return workspaceDb.sqlite
     .prepare(
       `SELECT * FROM capability_calls
-       WHERE workspace_id = ?
+       WHERE workspace_id = ? ${statuses ? `AND (status IN (${statuses.map(() => '?').join(',')}) OR status NOT IN (${CapabilityCallStatusSchema.options.map(() => '?').join(',')}))` : ''}
        ORDER BY started_at, call_id`
     )
-    .all(workspaceId)
+    .all(workspaceId, ...(statuses ? [...statuses, ...CapabilityCallStatusSchema.options] : []))
     .map((row) => {
       const call = capabilityCallFromRow(row);
       return noContact.has(call.id) ? { ...call, upstreamContacted: false as const } : call;

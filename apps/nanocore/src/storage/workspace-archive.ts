@@ -431,3 +431,51 @@ export async function stageWorkspaceArchive(
     throw error;
   }
 }
+
+/** Writes one canonical NUL-terminated USTAR octal field. */
+function writeWorkspaceArchiveOctal(
+  header: Buffer,
+  offset: number,
+  length: number,
+  value: number
+): void {
+  const encoded = `${value.toString(8).padStart(length - 1, '0')}\0`;
+  if (encoded.length !== length) {
+    throw new Error('Workspace export value cannot be represented by POSIX USTAR.');
+  }
+  header.write(encoded, offset, length, 'ascii');
+}
+
+/** Returns one deterministic strict POSIX USTAR header. */
+export function workspaceArchiveHeader(
+  path: string,
+  type: 'directory' | 'file',
+  size: number,
+  mode?: number
+): Buffer {
+  const { name, prefix } = splitWorkspaceArchivePath(path);
+  const header = Buffer.alloc(512);
+  name.copy(header, 0);
+  writeWorkspaceArchiveOctal(header, 100, 8, mode ?? (type === 'directory' ? 0o755 : 0o644));
+  writeWorkspaceArchiveOctal(header, 108, 8, 0);
+  writeWorkspaceArchiveOctal(header, 116, 8, 0);
+  writeWorkspaceArchiveOctal(header, 124, 12, size);
+  writeWorkspaceArchiveOctal(header, 136, 12, 0);
+  header.fill(32, 148, 156);
+  header[156] = type === 'directory' ? 53 : 48;
+  header.write('ustar\0', 257, 6, 'ascii');
+  header.write('00', 263, 2, 'ascii');
+  writeWorkspaceArchiveOctal(header, 329, 8, 0);
+  writeWorkspaceArchiveOctal(header, 337, 8, 0);
+  prefix.copy(header, 345);
+  let checksum = 0;
+  for (const byte of header) {
+    checksum += byte;
+  }
+  const encodedChecksum = `${checksum.toString(8).padStart(6, '0')}\0 `;
+  if (encodedChecksum.length !== 8) {
+    throw new Error('Workspace export checksum cannot be represented by POSIX USTAR.');
+  }
+  header.write(encodedChecksum, 148, 8, 'ascii');
+  return header;
+}

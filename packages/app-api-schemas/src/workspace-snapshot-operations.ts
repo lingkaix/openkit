@@ -128,8 +128,8 @@ const administration = {
 } as const;
 
 /**
- * Frozen online snapshot contracts, deliberately NOT composed into OPERATION_DEFINITIONS.
- * BR activates each definition only with its complete scoped snapshot implementation.
+ * Closed online snapshot contracts; only complete capture, verify and download are composed.
+ * Remaining verbs stay uncomposed until their complete scoped recovery implementation.
  * Server admission supplies current administrator authority; the lifecycle owner performs try-freeze.
  */
 export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {

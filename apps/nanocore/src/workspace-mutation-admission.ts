@@ -10,6 +10,7 @@ export type WorkspaceFreezeAdmission =
 interface WorkspaceMutationGateState {
   admitted: number;
   closed: boolean;
+  captureClosed: boolean;
   waiters: Set<() => void>;
 }
 
@@ -30,8 +31,8 @@ export class WorkspaceMutationAdmission {
     readBlockers: () => readonly WorkspaceBlocker[]
   ): WorkspaceFreezeAdmission {
     const state = this.state(workspaceId);
-    if (state.closed || state.admitted !== 0) return { status: 'busy' };
-    state.closed = true;
+    if (this.isClosed(workspaceId) || state.admitted !== 0) return { status: 'busy' };
+    state.captureClosed = true;
     let blockers: readonly WorkspaceBlocker[];
     try {
       blockers = readBlockers();
@@ -39,7 +40,7 @@ export class WorkspaceMutationAdmission {
       blockers = [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
     }
     if (blockers.length !== 0) {
-      state.closed = false;
+      state.captureClosed = false;
       return { status: 'blocked', blockers };
     }
     let released = false;
@@ -48,15 +49,18 @@ export class WorkspaceMutationAdmission {
       release: () => {
         if (released) return;
         released = true;
-        this.reopen(workspaceId);
+        this.reopen(workspaceId, 'capture');
       },
     };
   }
 
-  /** Admits one ordinary mutation while the Workspace gate is open. */
-  public enter(workspaceId: string): (() => void) | null {
+  /** Counts ordinary admission or existing settlement; capture exclusion fences both without changing legacy deletion settlement. */
+  public enter(
+    workspaceId: string,
+    exclusion: 'ordinary' | 'capture' = 'ordinary'
+  ): (() => void) | null {
     const state = this.state(workspaceId);
-    if (state.closed) {
+    if (this.isClosed(workspaceId, exclusion)) {
       return null;
     }
     state.admitted += 1;
@@ -97,23 +101,27 @@ export class WorkspaceMutationAdmission {
     await new Promise<void>((resolve) => state.waiters.add(resolve));
   }
 
-  /** Reopens a non-deleting Workspace after a request terminates without lifecycle mutation. */
-  public reopen(workspaceId: string): void {
+  /** Releases only the selected owner closure; capture release cannot reopen a concurrent deletion. */
+  public reopen(workspaceId: string, closure: 'ordinary' | 'capture' = 'ordinary'): void {
     const state = this.state(workspaceId);
     if (state.admitted !== 0) {
       throw new Error('Workspace mutation gate cannot reopen while mutations remain admitted.');
     }
-    state.closed = false;
+    if (closure === 'capture') state.captureClosed = false;
+    else state.closed = false;
   }
 
-  /** Restores a closed gate from durable deletion state during boot. */
-  public restoreClosed(workspaceId: string): void {
-    this.state(workspaceId).closed = true;
+  /** Restores an owned closure without clearing a different lifecycle owner's exclusion. */
+  public restoreClosed(workspaceId: string, closure: 'ordinary' | 'capture' = 'ordinary'): void {
+    const state = this.state(workspaceId);
+    if (closure === 'capture') state.captureClosed = true;
+    else state.closed = true;
   }
 
-  /** Returns whether ordinary mutations are currently fenced. */
-  public isClosed(workspaceId: string): boolean {
-    return this.state(workspaceId).closed;
+  /** Tests ordinary exclusion or the capture-only exclusion required by already-owned low-level settlement. */
+  public isClosed(workspaceId: string, exclusion: 'ordinary' | 'capture' = 'ordinary'): boolean {
+    const state = this.state(workspaceId);
+    return state.captureClosed || (exclusion === 'ordinary' && state.closed);
   }
 
   /** Serializes deletion-request admission for one Workspace. */
@@ -142,7 +150,7 @@ export class WorkspaceMutationAdmission {
   private state(workspaceId: string): WorkspaceMutationGateState {
     let state = this.gates.get(workspaceId);
     if (!state) {
-      state = { admitted: 0, closed: false, waiters: new Set() };
+      state = { admitted: 0, closed: false, captureClosed: false, waiters: new Set() };
       this.gates.set(workspaceId, state);
     }
     return state;

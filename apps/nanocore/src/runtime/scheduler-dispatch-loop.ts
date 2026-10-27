@@ -24,6 +24,7 @@ import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-a
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
   denySchedulerAdmissionEntry,
@@ -36,6 +37,7 @@ import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
   openWorkspaceDb,
+  openWorkspaceReadDb,
 } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -188,61 +190,77 @@ export async function runSchedulerDispatchLoop(
     }
     if (claims.has(entry.queueEntryId))
       return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
-    if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true))
-      return {
-        startedTurns,
-        terminalResult: {
-          status: 'denied',
-          entry: denySchedulerAdmissionEntry(input.coreDb, {
-            queueEntryId: entry.queueEntryId,
-            denialReason: 'authority-denied',
-          }),
-        },
-      };
-    if (entry.backendId !== input.executionBackend.id)
-      throw new Error('Queued admission does not name the configured execution backend.');
-    // An incomplete cross-store publication fences only its own request/Thread. Continue
-    // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
-    if (!schedulerEntryPublicationComplete(input, entry)) {
-      if (
-        findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId) ||
-        findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId)
-      )
-        sourceRecoveryRequired = true;
+    let release: (() => void) | undefined;
+    try {
+      release = input.store.enterWorkspaceMutation(entry.workspaceId);
+    } catch (error) {
+      if (!(error instanceof OperationError) || error.code !== 'workspace_frozen') throw error;
       unpublishedQueueEntryIds.add(entry.queueEntryId);
       count--;
       continue;
     }
-    let acknowledgeSubmission!: (result: SchedulerDispatchLoopResult) => void;
-    let submissionResult: SchedulerDispatchLoopResult | undefined;
-    const submitted = new Promise<SchedulerDispatchLoopResult>((resolve) => {
-      acknowledgeSubmission = (result) => {
-        submissionResult = result;
-        resolve(result);
-      };
-    });
-    const promise = withTurnDispatchTelemetry(entry.turnId, () =>
-      dispatchSchedulerAdmission(input, entry, acknowledgeSubmission)
-    );
-    claims.set(entry.queueEntryId, promise);
-    const forget = () => {
-      if (claims.get(entry.queueEntryId) === promise) claims.delete(entry.queueEntryId);
-    };
-    void promise.then(forget, forget);
-    const result = await Promise.race([promise, submitted]);
-    if (result === submissionResult)
-      void promise.catch((error: unknown) =>
-        console.error(
-          'scheduler_dispatch_failed_after_admission',
-          error instanceof Error ? error.message : 'unknown'
+    try {
+      if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true))
+        return {
+          startedTurns,
+          terminalResult: {
+            status: 'denied',
+            entry: denySchedulerAdmissionEntry(input.coreDb, {
+              queueEntryId: entry.queueEntryId,
+              denialReason: 'authority-denied',
+            }),
+          },
+        };
+      if (entry.backendId !== input.executionBackend.id)
+        throw new Error('Queued admission does not name the configured execution backend.');
+      // An incomplete cross-store publication fences only its own request/Thread. Continue
+      // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
+      if (!schedulerEntryPublicationComplete(input, entry)) {
+        if (
+          findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId) ||
+          findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId)
         )
+          sourceRecoveryRequired = true;
+        unpublishedQueueEntryIds.add(entry.queueEntryId);
+        count--;
+        continue;
+      }
+      let acknowledgeSubmission!: (result: SchedulerDispatchLoopResult) => void;
+      let submissionResult: SchedulerDispatchLoopResult | undefined;
+      const submitted = new Promise<SchedulerDispatchLoopResult>((resolve) => {
+        acknowledgeSubmission = (result) => {
+          submissionResult = result;
+          resolve(result);
+        };
+      });
+      const promise = withTurnDispatchTelemetry(entry.turnId, () =>
+        dispatchSchedulerAdmission(input, entry, acknowledgeSubmission)
       );
-    startedTurns.push(...result.startedTurns);
-    if (
-      result.terminalResult.status !== 'queued' ||
-      result.terminalResult.reason !== 'max-dispatches'
-    )
-      return { startedTurns, terminalResult: result.terminalResult };
+      claims.set(entry.queueEntryId, promise);
+      const releaseDispatch = release;
+      const forget = () => {
+        releaseDispatch();
+        if (claims.get(entry.queueEntryId) === promise) claims.delete(entry.queueEntryId);
+      };
+      void promise.then(forget, forget);
+      release = undefined;
+      const result = await Promise.race([promise, submitted]);
+      if (result === submissionResult)
+        void promise.catch((error: unknown) =>
+          console.error(
+            'scheduler_dispatch_failed_after_admission',
+            error instanceof Error ? error.message : 'unknown'
+          )
+        );
+      startedTurns.push(...result.startedTurns);
+      if (
+        result.terminalResult.status !== 'queued' ||
+        result.terminalResult.reason !== 'max-dispatches'
+      )
+        return { startedTurns, terminalResult: result.terminalResult };
+    } finally {
+      release?.();
+    }
   }
   return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
 }
@@ -264,9 +282,8 @@ function schedulerEntryPublicationComplete(
     if (error instanceof StoreRecordNotFoundError) return false;
     throw error;
   }
-  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, entry.workspaceId);
+  const workspaceDb = openWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
   try {
-    applyScopedMigrations(workspaceDb);
     const receipts = workspaceDb.sqlite
       .prepare(
         'SELECT response_id AS responseId, response_json AS responseJson FROM idempotency_requests WHERE request_id = ?'
@@ -325,9 +342,8 @@ function activationPublicationComplete(
   entry: SchedulerAdmissionEntryRecord
 ): boolean {
   for (const workspace of listExistingWorkspaceDatabaseScopes(input.coreDb.dataRoot)) {
-    const db = openWorkspaceDb(input.coreDb.dataRoot, workspace.workspaceId);
+    const db = openWorkspaceReadDb(input.coreDb.dataRoot, workspace.workspaceId);
     try {
-      applyScopedMigrations(db);
       const receipts = db.sqlite
         .prepare(`SELECT response_id AS artifactId FROM idempotency_requests
         WHERE command_name = 'worker_environment.activate' AND request_id = ? AND response_kind = 'artifact'
