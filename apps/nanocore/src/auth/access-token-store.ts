@@ -341,7 +341,7 @@ export function rotateOpenKitAccessTokenRecord(
  * @param tokenId Durable token id.
  * @returns Redacted token record, or null when missing.
  */
-function getOpenKitAccessTokenRecord(
+export function getOpenKitAccessTokenRecord(
   coreDb: CoreDb,
   tokenId: string
 ): OpenKitAccessTokenRecord | null {

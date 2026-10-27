@@ -36,7 +36,7 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { getWorkspaceInvitation, getWorkspaceMember } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
 import {
-  listOpenKitAccessTokenRecords,
+  getOpenKitAccessTokenRecord,
   type OpenKitAccessTokenRecord,
   resolveSessionDeploymentAdminTokenId,
 } from './access-token-store.js';
@@ -195,9 +195,7 @@ export function requireCurrentDeploymentAdmin(
     }
     throw new DeploymentAdminRequiredError();
   }
-  const token = actor.tokenId
-    ? listOpenKitAccessTokenRecords(coreDb).find((candidate) => candidate.tokenId === actor.tokenId)
-    : undefined;
+  const token = actor.tokenId ? getOpenKitAccessTokenRecord(coreDb, actor.tokenId) : undefined;
   if (
     token?.ownerUserId === actor.userId &&
     token.scope === 'server-admin' &&
@@ -491,10 +489,7 @@ export function currentWorkspaceAuthority(
         throw new Error('Workspace authority evaluation lost its canonical membership facts.');
       }
       const tokenId = requestActor?.kind === 'token' ? requestActor.tokenId : null;
-      const token =
-        requestActor?.kind === 'token'
-          ? listOpenKitAccessTokenRecords(coreDb).find((record) => record.tokenId === tokenId)
-          : null;
+      const token = tokenId ? getOpenKitAccessTokenRecord(coreDb, tokenId) : null;
       if (requestActor?.kind === 'token' && !token) {
         throw new Error('Workspace authority evaluation lost its presented Token facts.');
       }
@@ -1125,9 +1120,7 @@ function isUsablePresentedAccessToken(coreDb: CoreDb, actor: Actor, now = new Da
   if (!isCanonicalUserActive(coreDb, actor.userId)) {
     return false;
   }
-  const token = listOpenKitAccessTokenRecords(coreDb).find(
-    (candidate) => candidate.tokenId === actor.tokenId
-  );
+  const token = getOpenKitAccessTokenRecord(coreDb, actor.tokenId);
   return (
     token?.ownerUserId === actor.userId &&
     token.scope === actor.tokenScope &&
