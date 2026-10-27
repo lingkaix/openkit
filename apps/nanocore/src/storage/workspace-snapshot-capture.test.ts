@@ -14,11 +14,11 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
-import * as durableBytes from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBetterAuth } from '../auth/better-auth.js';
@@ -90,10 +90,9 @@ import {
   withVerifiedWorkspaceBackupBundle,
   withVerifiedWorkspaceSnapshotSource,
 } from './workspace-backup-bundle.js';
-import * as captureProtection from './workspace-capture-protection.js';
-import { inspectCapture, protectCapture } from './workspace-capture-protection.js';
+import { abandonCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope } from './workspace-file-records.js';
-import { readRecoveryAdmission } from './workspace-recovery-admissions.js';
+import { endRecoveryAdmission, readRecoveryAdmission } from './workspace-recovery-admissions.js';
 
 const namespaceSyncFault = vi.hoisted(() => ({
   beforeSync: undefined as ((descriptor: number) => void) | undefined,
@@ -127,6 +126,214 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     },
   };
 });
+
+const captureWorkerProbe = vi.hoisted(() => ({
+  gate: undefined as SharedArrayBuffer | undefined,
+  script: undefined as string | undefined,
+  observe: undefined as
+    | undefined
+    | ((message: { kind: string; workspaceId?: string; captureId?: string }) => void),
+  payloadHex: undefined as string | undefined,
+  payloadName: 'cut-only-observation.bin',
+  events: [] as { kind: 'hash' | 'sync'; phase: string; threadId: number }[],
+  workers: [] as import('node:worker_threads').Worker[],
+  onNativeMessage: undefined as
+    | undefined
+    | ((worker: import('node:worker_threads').Worker, message: unknown) => boolean),
+  onPhase: undefined as
+    | undefined
+    | ((worker: import('node:worker_threads').Worker, message: { phase: string }) => boolean),
+}));
+
+// Wrap the actual private entry. Test observations never enter its production handoff parser.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        const capture = String(filename).includes('workspace-backup-worker');
+        if (capture && (captureWorkerProbe.payloadHex || captureWorkerProbe.script)) {
+          const prelude = `
+            const { parentPort, threadId, workerData } = require('node:worker_threads');
+            const oracleGate = workerData?.__captureOracleGate ? new Int32Array(workerData.__captureOracleGate) : undefined;
+            if (workerData) delete workerData.__captureOracleGate;
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const Database = require(${JSON.stringify(createRequire(import.meta.url).resolve('better-sqlite3'))});
+            const selected = ${JSON.stringify(captureWorkerProbe.payloadHex)};
+            const selectedName = ${JSON.stringify(captureWorkerProbe.payloadName)};
+            const post = parentPort.postMessage.bind(parentPort);
+            let phase = 'preflight';
+            parentPort.postMessage = function(message, ...args) {
+              if (message && typeof message.phase === 'string') phase = message.phase;
+              return post(message, ...args);
+            };
+            function observe(kind, fields = {}) { post({ __captureOracle: true, kind, phase, threadId, ...fields }); }
+            const prototype = Object.getPrototypeOf(crypto.createHash('sha256'));
+            const update = prototype.update;
+            prototype.update = function(data, ...args) {
+              if ((typeof data === 'string' || Buffer.isBuffer(data)) && Buffer.from(data).toString('hex') === selected) observe('hash');
+              return update.call(this, data, ...args);
+            };
+            function selectedFile(fd) {
+              return fs.realpathSync('/proc/self/fd/' + fd).endsWith('/' + selectedName);
+            }
+            const sync = fs.fsyncSync;
+            fs.fsyncSync = function(fd, ...args) { if (selectedFile(fd)) observe('sync'); return sync.call(this, fd, ...args); };
+            const open = fs.promises.open;
+            fs.promises.open = async function(...args) {
+              const file = await open.apply(this, args);
+              const sync = file.sync.bind(file);
+              file.sync = async function() { if (selectedFile(file.fd)) observe('sync'); return sync(); };
+              return file;
+            };
+            ${captureWorkerProbe.script ?? ''}
+            require('node:module').syncBuiltinESMExports();
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: captureWorkerProbe.gate
+              ? { ...options?.workerData, __captureOracleGate: captureWorkerProbe.gate }
+              : options?.workerData,
+          });
+        } else super(filename, options);
+        if (capture) captureWorkerProbe.workers.push(this);
+      }
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        const message = args[0];
+        if (event === 'message' && captureWorkerProbe.onNativeMessage?.(this, message)) return true;
+        if (event === 'message' && message !== null && typeof message === 'object') {
+          if ('__captureOracle' in message) {
+            if ('kind' in message && (message.kind === 'hash' || message.kind === 'sync'))
+              captureWorkerProbe.events.push(
+                message as { kind: 'hash' | 'sync'; phase: string; threadId: number }
+              );
+            captureWorkerProbe.observe?.(
+              message as { kind: string; workspaceId?: string; captureId?: string }
+            );
+            return true;
+          }
+          if (
+            'phase' in message &&
+            typeof message.phase === 'string' &&
+            captureWorkerProbe.onPhase?.(this, message as { phase: string })
+          )
+            return true;
+        }
+        return super.emit(event, ...args);
+      }
+    },
+  };
+});
+
+/** Holds the actual private worker at its acknowledged owner phase, then resumes the real operation. */
+function holdCapturePhase(phase: string, boundary: () => Promise<void>) {
+  let held: { worker: Worker; message: { phase: string } } | undefined;
+  const resume = () => {
+    if (!held) return;
+    const current = held;
+    held = undefined;
+    captureWorkerProbe.onPhase = undefined;
+    current.worker.emit('message', current.message);
+  };
+  captureWorkerProbe.onPhase = (worker, message) => {
+    if (message.phase !== phase || held) return false;
+    held = { worker, message };
+    void boundary().then(resume);
+    return true;
+  };
+  return {
+    mockRestore: () => {
+      resume();
+      captureWorkerProbe.onPhase = undefined;
+    },
+  };
+}
+
+/** Injects only at the existing capture row owner's real statement and covering COMMIT boundaries. */
+function captureRecordBoundary(
+  captureId: string,
+  decision: 'pin' | 'finish',
+  fault: 'observe' | 'before-commit' | 'lost-ack',
+  observed: (message: { kind: string; workspaceId?: string; captureId?: string }) => void
+) {
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  captureWorkerProbe.gate = gate.buffer;
+  captureWorkerProbe.observe = (message) => {
+    try {
+      observed(message);
+    } finally {
+      Atomics.add(gate, 0, 1);
+      Atomics.notify(gate, 0);
+    }
+  };
+  captureWorkerProbe.script = `
+    function captureObserved(kind, fields) {
+      const version = Atomics.load(oracleGate, 0);
+      observe(kind, fields);
+      Atomics.wait(oracleGate, 0, version);
+    }
+    const selectedCapture = ${JSON.stringify(captureId)};
+    const decision = ${JSON.stringify(decision)};
+    const fault = ${JSON.stringify(fault)};
+    let pendingCapture;
+    let pendingDatabase;
+    let installedCommitProbe = false;
+    const prepare = Database.prototype.prepare;
+    Database.prototype.prepare = function(sql, ...args) {
+      const statement = prepare.call(this, sql, ...args);
+      if (!installedCommitProbe) {
+        installedCommitProbe = true;
+        // better-sqlite3 prepares transaction-control statements through its native handle.
+        // The public Statement.run boundary still observes their real committed decision.
+        const prototype = Object.getPrototypeOf(statement);
+        const execute = prototype.run;
+        prototype.run = function(...values) {
+          const result = execute.apply(this, values);
+          if (/^COMMIT$/i.test(this.source.trim()) && this.database === pendingDatabase && pendingCapture) {
+            const facts = pendingCapture;
+            pendingCapture = undefined;
+            pendingDatabase = undefined;
+            captureObserved(decision, facts);
+            if (fault === 'lost-ack') throw new Error('Injected lost acknowledgement after capture decision COMMIT.');
+          }
+          return result;
+        };
+      }
+      const insertion = /INSERT INTO workspace_capture_records/i.test(sql);
+      const completion = /UPDATE workspace_capture_records SET state/i.test(sql);
+      if (!insertion && !completion) return statement;
+      const run = statement.run.bind(statement);
+      statement.run = function(...values) {
+        const selected = insertion ? values[0] === selectedCapture : completion && values[0] === 'finished' && values[2] === selectedCapture;
+        if (selected && ((decision === 'pin' && insertion) || (decision === 'finish' && completion))) {
+          const facts = { captureId: selectedCapture, workspaceId: insertion ? values[1] : values[3] };
+          if (fault === 'before-commit') { captureObserved(decision, facts); throw new Error('Injected capture decision before commit.'); }
+          const result = run(...values);
+          pendingCapture = facts;
+          pendingDatabase = statement.database;
+          return result;
+        }
+        return run(...values);
+      };
+      return statement;
+    };
+  `;
+  return {
+    mockRestore: () => {
+      Atomics.add(gate, 0, 1);
+      Atomics.notify(gate, 0);
+      captureWorkerProbe.gate = undefined;
+      captureWorkerProbe.script = undefined;
+      captureWorkerProbe.observe = undefined;
+    },
+  };
+}
 
 const roots: string[] = [];
 const databaseHandles: { readonly sqlite: Database.Database }[] = [];
@@ -276,6 +483,14 @@ async function refusal(f: Fixture, input = f.input()) {
 
 afterEach(async () => {
   namespaceSyncFault.beforeSync = undefined;
+  captureWorkerProbe.gate = undefined;
+  captureWorkerProbe.script = undefined;
+  captureWorkerProbe.observe = undefined;
+  captureWorkerProbe.payloadHex = undefined;
+  captureWorkerProbe.onPhase = undefined;
+  captureWorkerProbe.onNativeMessage = undefined;
+  captureWorkerProbe.events.length = 0;
+  captureWorkerProbe.workers.length = 0;
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   for (const db of databaseHandles.splice(0)) if (db.sqlite.open) db.sqlite.close();
@@ -314,6 +529,248 @@ describe('C-a snapshot authoritative blockers', () => {
     expect(f.store.getTurnById(second.id)).toEqual(second);
     f.coreDb.sqlite.close();
   });
+
+  it('keeps equal active blockers without decoding unrelated sealed Turn history', async () => {
+    const f = await fixture();
+    const dependency = await f.store.createTurn(
+      workspaceId,
+      DEMO_THREAD_ID,
+      'Unresolved attempt dependency',
+      {
+        kind: 'user',
+        id: f.ownerId,
+      }
+    );
+    const entry = createSchedulerAdmissionEntry(f.coreDb, {
+      queueEntryId: randomUUID(),
+      backendId: 'nanohost',
+      workspaceId,
+      threadId: dependency.threadId,
+      turnId: dependency.id,
+      turnInput: 'Retained dependency',
+      requestedAgentId: 'agent_fixture',
+      triggerActor: { kind: 'user', id: f.ownerId },
+    });
+    await f.store.completeTurn(dependency.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const attempt = createSchedulerExecutionAttempt(f.coreDb, {
+      entry,
+      attemptId: allocateEntityId('attempt'),
+      preparationInput: { admission: entry },
+      now: () => new Date().toISOString(),
+    });
+    const activeThread = await f.store.createThread(workspaceId, 'Constant active history control');
+    const active = await f.store.createTurn(workspaceId, activeThread.id, 'Constant active work', {
+      kind: 'user',
+      id: f.ownerId,
+    });
+    const before = readBlockers({ ...f, workspaceId });
+    expect(before).toHaveLength(2);
+    expect(before).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'turn',
+          reference: { threadId: active.threadId, turnId: active.id },
+        }),
+        expect.objectContaining({
+          kind: 'worker-attempt',
+          reference: expect.objectContaining({ attemptId: attempt.attemptId }),
+        }),
+      ])
+    );
+    const unrelated = new Set<string>();
+    for (let index = 0; index < 24; index += 1) {
+      const turn = await f.store.createTurn(
+        workspaceId,
+        DEMO_THREAD_ID,
+        `Sealed history ${index}`,
+        {
+          kind: 'user',
+          id: f.ownerId,
+        }
+      );
+      await f.store.completeTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      unrelated.add(turn.id);
+    }
+    // Each read offers a fresh command identity; blocker facts and all other action inputs stay equal.
+    const stableBlockers = (value: ReturnType<typeof readBlockers>) =>
+      JSON.stringify(value, (key, entry) => (key === 'requestId' ? '<fresh-command-id>' : entry));
+    const decodedUnrelated: string[] = [];
+    const parse = JSON.parse;
+    const decoding = vi
+      .spyOn(JSON, 'parse')
+      .mockImplementation((...args: Parameters<typeof JSON.parse>) => {
+        for (const id of unrelated) if (args[0].includes(id)) decodedUnrelated.push(id);
+        return Reflect.apply(parse, JSON, args);
+      });
+    try {
+      expect(stableBlockers(readBlockers({ ...f, workspaceId }))).toBe(stableBlockers(before));
+      // R1 admits active/unresolved candidates and addressed dependencies, not every retained Turn body.
+      expect(decodedUnrelated).toEqual([]);
+    } finally {
+      decoding.mockRestore();
+    }
+  });
+
+  it.each([
+    'turn',
+    'agent-session',
+    'capability-call',
+    'recurring-occurrence',
+    'recovery-admission',
+  ] as const)('fails closed on an unsupported %s scalar state before accepting a capture pin', async (family) => {
+    const f = await fixture();
+    let source = f.source;
+    const unsupported = 'unsupported-fixture-state';
+    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    databaseHandles.push(db);
+    if (family === 'turn' || family === 'capability-call') {
+      const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Retained header owner', {
+        kind: 'user',
+        id: f.ownerId,
+      });
+      if (family === 'capability-call') {
+        const callId = allocateEntityId('cap');
+        await startCapabilityCall({
+          workspaceDb: db,
+          workspaceId,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          callId,
+          authorityActor: { kind: 'user', id: f.ownerId },
+          family: 'llm',
+          operation: 'responses.create',
+          capabilityId: 'llm.responses',
+          requestId: randomUUID(),
+          redactionClass: 'metadata-only',
+        });
+        db.sqlite
+          .prepare('UPDATE capability_calls SET status=? WHERE call_id=?')
+          .run(unsupported, callId);
+      }
+      await f.store.completeTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      if (family === 'turn') {
+        db.sqlite.pragma('ignore_check_constraints = ON');
+        try {
+          db.sqlite
+            .prepare('UPDATE control_turns SET status=? WHERE id=?')
+            .run(unsupported, turn.id);
+        } finally {
+          db.sqlite.pragma('ignore_check_constraints = OFF');
+        }
+      }
+    } else if (family === 'agent-session') {
+      const session = await f.store.createAgentSession({
+        id: allocateEntityId('as'),
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        agentId: 'agent_codex_host',
+        status: 'closed',
+        message: 'Closed retained owner.',
+        createdAt: '2026-10-27T00:00:00.000Z',
+        updatedAt: '2026-10-27T00:00:00.000Z',
+      });
+      db.sqlite.pragma('ignore_check_constraints = ON');
+      try {
+        db.sqlite
+          .prepare('UPDATE control_agent_sessions SET status=? WHERE id=?')
+          .run(unsupported, session.id);
+      } finally {
+        db.sqlite.pragma('ignore_check_constraints = OFF');
+      }
+    } else if (family === 'recurring-occurrence') {
+      const now = '2026-10-27T01:00:00.000Z';
+      const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
+      const schedule = schedules.createAutomation(f.ownerId, {
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        name: 'Owned occurrence header',
+        intervalSeconds: 60,
+        prompt: 'Queued only.',
+      });
+      schedules.updateAutomation(f.ownerId, schedule.id, {
+        expectedRevision: schedule.revision,
+        status: 'active',
+        scheduledAt: now,
+      });
+      const occurrences = schedules.collectScanCandidates(now);
+      expect(occurrences).toHaveLength(1);
+      f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
+      try {
+        f.coreDb.sqlite
+          .prepare('UPDATE recurring_occurrences SET state=? WHERE id=?')
+          .run(unsupported, occurrences[0]!.id);
+      } finally {
+        f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
+      }
+    } else {
+      const move = await createWorkspaceBackup({ ...f.input(), purpose: 'move' });
+      expect(move.disposition).toBe('prepared');
+      endRecoveryAdmission(f.coreDb, move.manifest.backupId, 'abandoned');
+      abandonCapture(db, workspaceId, move.manifest.backupId);
+      await shutdownControlStoreWorkerClient();
+      // A new process lifetime must inspect the retained row, rather than inherit the old MOVE gate.
+      source = {
+        ...f.source,
+        store: new FsStore({ dataRoot: f.dataRoot }),
+        mutationAdmission: new WorkspaceMutationAdmission(),
+      };
+      expect(readBlockers({ ...source, workspaceId })).toEqual([]);
+      f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
+      try {
+        f.coreDb.sqlite
+          .prepare('UPDATE workspace_recovery_admissions SET state=? WHERE admission_id=?')
+          .run(unsupported, move.manifest.backupId);
+      } finally {
+        f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
+      }
+    }
+    expect(readBlockers({ ...source, workspaceId })).toEqual(expect.arrayContaining([unavailable]));
+    await refusal(
+      { ...f, store: source.store, mutationAdmission: source.mutationAdmission },
+      { ...f.input(), source }
+    );
+  }, 120_000);
+
+  it('rejects malformed closed Turn history during private-cut validation before sealing', async () => {
+    const f = await fixture();
+    const previous = await createWorkspaceBackup(f.input());
+    const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Closed retained body', {
+      kind: 'user',
+      id: f.ownerId,
+    });
+    await f.store.completeTurn(turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    databaseHandles.push(db);
+    db.sqlite.pragma('ignore_check_constraints = ON');
+    try {
+      db.sqlite
+        .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+        .run('{invalid retained body', turn.id);
+    } finally {
+      db.sqlite.pragma('ignore_check_constraints = OFF');
+    }
+    // Terminal headers are inert for the fast census; complete private-cut validation still owns integrity.
+    expect(readBlockers({ ...f, workspaceId })).toEqual([]);
+    const input = f.input();
+    await expect(createWorkspaceBackup(input)).rejects.toThrow();
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    await f.read(previous.manifest.backupId, async (bundle) =>
+      expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
+    );
+  }, 120_000);
 
   it('collapses hidden blocker cardinality to one identical identity-free sentinel', async () => {
     const f = await fixture();
@@ -1508,18 +1965,9 @@ describe('C-a nonwaiting native holds', () => {
     const entered = new Promise<void>((resolve) => {
       enter = resolve;
     });
-    const nativeBackup = Database.prototype.backup;
-    let first = true;
-    const copy = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (
-      this: Database.Database,
-      ...args: Parameters<Database.Database['backup']>
-    ) {
-      if (first) {
-        first = false;
-        enter();
-        await barrier;
-      }
-      return Reflect.apply(nativeBackup, this, args);
+    const copy = holdCapturePhase('db-backup', async () => {
+      enter();
+      await barrier;
     });
     const post = vi.spyOn(Worker.prototype, 'postMessage');
     const checkpointPosts = (selected: string) =>
@@ -1542,6 +1990,7 @@ describe('C-a nonwaiting native holds', () => {
         }),
       ]);
       expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      const beforeSessionRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
       const beforeSessionWrite = tree(f.workspaceRoot);
       // This bypasses every Store wrapper and reaches the existing native client owner.
       attempted = client.checkpoint(database).then(
@@ -1567,7 +2016,14 @@ describe('C-a nonwaiting native holds', () => {
         ])
       ).toMatchObject({ error: { code: 'workspace_frozen' } });
       await expect(siblingAck).resolves.toBeDefined();
-      expect(tree(f.workspaceRoot)).toEqual(beforeSessionWrite);
+      expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(
+        beforeSessionRows
+      );
+      const afterSessionWrite = tree(f.workspaceRoot);
+      // SQLite readers may update SHM lock metadata; canonical rows and every other byte stay exact.
+      delete beforeSessionWrite['/db/workspace.sqlite-shm'];
+      delete afterSessionWrite['/db/workspace.sqlite-shm'];
+      expect(afterSessionWrite).toEqual(beforeSessionWrite);
       expect(checkpointPosts(database)).toHaveLength(0);
       expect(checkpointPosts(siblingDatabase)).toHaveLength(1);
       expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
@@ -1594,7 +2050,7 @@ describe('C-a nonwaiting native holds', () => {
     const f = await fixture();
     const sibling = await f.store.createWorkspace('Healthy sibling');
     const client = getControlStoreWorkerClient();
-    const database = workspaceDbPath(f.dataRoot, workspaceId);
+    const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
     const release = await client.pauseForDataRootBackup(kind === 'target' ? database : undefined);
     try {
       expect(client.tryPauseForWorkspaceCapture(database)).toBeNull();
@@ -1688,20 +2144,41 @@ describe('C-a capture and existing deletion ownership', () => {
     const entered = new Promise<void>((resolve) => {
       enter = resolve;
     });
-    const realCopy = durableBytes.copyVerifiedFile;
     let intercepted = false;
-    const copy = vi.spyOn(durableBytes, 'copyVerifiedFile').mockImplementation(async (value) => {
-      if (
-        !intercepted &&
-        (value.expectedSha256 === digest(original) || value.sourcePath === sourcePath)
-      ) {
-        intercepted = true;
-        expect(readFileSync(value.sourcePath)).toEqual(original);
-        enter();
-        await barrier;
-      }
-      return realCopy(value);
+    const gate = new Int32Array(new SharedArrayBuffer(4));
+    captureWorkerProbe.gate = gate.buffer;
+    captureWorkerProbe.observe = (message) => {
+      if (message.kind !== 'immutable-copy') return;
+      intercepted = true;
+      expect(readFileSync(sourcePath)).toEqual(original);
+      enter();
+    };
+    captureWorkerProbe.script = `
+      const copyOpen = fs.promises.open;
+      let copiedOriginal = false;
+      fs.promises.open = async function(...args) {
+        const file = await copyOpen.apply(this, args);
+        if (!copiedOriginal && fs.realpathSync('/proc/self/fd/' + file.fd) === ${JSON.stringify(sourcePath)}) {
+          copiedOriginal = true;
+          observe('immutable-copy');
+          Atomics.wait(oracleGate, 0, 0);
+        }
+        return file;
+      };
+    `;
+    void barrier.then(() => {
+      Atomics.store(gate, 0, 1);
+      Atomics.notify(gate, 0);
     });
+    const copy = {
+      mockRestore: () => {
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        captureWorkerProbe.gate = undefined;
+        captureWorkerProbe.script = undefined;
+        captureWorkerProbe.observe = undefined;
+      },
+    };
     const capturing = createWorkspaceBackup(input);
     let captured: Awaited<typeof capturing>;
     try {
@@ -1813,18 +2290,9 @@ describe('C-a capture and existing deletion ownership', () => {
     const entered = new Promise<void>((resolve) => {
       enter = resolve;
     });
-    const nativeBackup = Database.prototype.backup;
-    let first = true;
-    const copy = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (
-      this: Database.Database,
-      ...args: Parameters<Database.Database['backup']>
-    ) {
-      if (first) {
-        first = false;
-        enter();
-        await barrier;
-      }
-      return Reflect.apply(nativeBackup, this, args);
+    const copy = holdCapturePhase('db-backup', async () => {
+      enter();
+      await barrier;
     });
     const capturing = createWorkspaceBackup(f.input());
     let captured: Awaited<typeof capturing> | undefined;
@@ -1972,18 +2440,19 @@ describe('C-a independent sealed generations', () => {
   it('retains MOVE admission closure after the active capture pin commits but its acknowledgement is lost', async () => {
     const f = await fixture();
     const input = { ...f.input(), purpose: 'move' as const };
-    const realProtect = captureProtection.protectCapture;
     let calls = 0;
-    const pin = vi
-      .spyOn(captureProtection, 'protectCapture')
-      .mockImplementation((db, selected, captureId) => {
-        if (captureId !== input.backupId) return realProtect(db, selected, captureId);
-        calls += 1;
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-        const retained = realProtect(db, selected, captureId);
-        expect(retained.state).toBe('active');
-        throw new Error('Injected lost acknowledgement after the active MOVE pin committed.');
-      });
+    const pin = captureRecordBoundary(input.backupId, 'pin', 'lost-ack', (message) => {
+      expect(message.captureId).toBe(input.backupId);
+      expect(message.workspaceId).toBe(workspaceId);
+      calls += 1;
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      try {
+        expect(inspectCapture(db, workspaceId, input.backupId)?.state).toBe('active');
+      } finally {
+        db.sqlite.close();
+      }
+    });
     try {
       await expect(createWorkspaceBackup(input)).rejects.toThrow();
     } finally {
@@ -2007,6 +2476,456 @@ describe('C-a independent sealed generations', () => {
       ])
     );
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+  });
+
+  it.each([
+    'capture-worker-loss',
+    'native-drain-rejection',
+  ] as const)('retains capture ownership through %s while a real posted target ACK still drains', async (failure) => {
+    const f = await fixture();
+    const sibling = await f.store.createWorkspace('Drain-loss sibling');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: sibling.id,
+      ownerUserId: f.ownerId,
+    });
+    await f.store.createThread(sibling.id, 'Initialize real sibling native ACK');
+    const client = getControlStoreWorkerClient();
+    const targetDatabase = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+    const siblingDatabase = `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`;
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    let forwardAck: (() => void) | undefined;
+    let ackForwarded = false;
+    let nativeFailed = false;
+    let nativeWorker: Worker | undefined;
+    let arrived!: () => void;
+    const ackArrived = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    captureWorkerProbe.onNativeMessage = (worker, value) => {
+      if (!value || typeof value !== 'object' || !('id' in value)) return false;
+      const request = post.mock.calls.find(
+        ([message]) =>
+          message && message.operation === 'checkpoint' && message.database === targetDatabase
+      )?.[0];
+      if (!request || value.id !== request.id || forwardAck) return false;
+      nativeWorker = worker;
+      forwardAck = () => {
+        if (ackForwarded) return;
+        ackForwarded = true;
+        captureWorkerProbe.onNativeMessage = undefined;
+        worker.emit('message', value);
+      };
+      arrived();
+      return true;
+    };
+    const pendingAck = client.checkpoint(targetDatabase).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    await ackArrived;
+    const releaseOrder: string[] = [];
+    const tryPause = client.tryPauseForWorkspaceCapture.bind(client);
+    const hold = vi.spyOn(client, 'tryPauseForWorkspaceCapture').mockImplementation((...args) => {
+      const acquired = tryPause(...args);
+      return (
+        acquired?.then((release) => () => {
+          expect(ackForwarded || nativeFailed).toBe(true);
+          releaseOrder.push('hold');
+          release();
+        }) ?? null
+      );
+    });
+    const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
+    const gate = vi.spyOn(f.mutationAdmission, 'tryFreeze').mockImplementation((...args) => {
+      const result = tryFreeze(...args);
+      if (result.status !== 'frozen') return result;
+      return {
+        ...result,
+        release: () => {
+          expect(ackForwarded || nativeFailed).toBe(true);
+          releaseOrder.push('gate');
+          result.release();
+        },
+      };
+    });
+    let worker: Worker | undefined;
+    let entered!: () => void;
+    const draining = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    captureWorkerProbe.onPhase = (selected, message) => {
+      if (message.phase === 'drain') {
+        worker = selected;
+        entered();
+      }
+      return false;
+    };
+    let settled = false;
+    const input = f.input();
+    const capturing = createWorkspaceBackup(input).then(
+      (result) => {
+        settled = true;
+        return { result };
+      },
+      (error: unknown) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      await Promise.race([
+        draining,
+        capturing.then((outcome) => {
+          if ('error' in outcome) throw outcome.error;
+          throw new Error('Capture did not reach real target ACK drain.');
+        }),
+      ]);
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      if (failure === 'capture-worker-loss') {
+        await worker!.terminate();
+        await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
+        expect(settled).toBe(false);
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        expect(releaseOrder).toEqual([]);
+        forwardAck!();
+        expect(await pendingAck).toHaveProperty('result');
+      } else {
+        nativeWorker!.prependOnceListener('exit', () => {
+          nativeFailed = true;
+        });
+        await nativeWorker!.terminate();
+        captureWorkerProbe.onNativeMessage = undefined;
+        expect(await pendingAck).toMatchObject({ error: expect.any(Error) });
+        await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
+      }
+      expect(await capturing).toMatchObject({ error: expect.any(Error) });
+      if (failure === 'capture-worker-loss') expect(releaseOrder).toEqual(['hold', 'gate']);
+      else {
+        expect(releaseOrder.at(-1)).toBe('gate');
+        expect(releaseOrder.filter((value) => value === 'gate')).toHaveLength(1);
+        expect(releaseOrder.filter((value) => value === 'hold').length).toBeLessThanOrEqual(1);
+      }
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    } finally {
+      captureWorkerProbe.onPhase = undefined;
+      if (!nativeFailed) forwardAck?.();
+      captureWorkerProbe.onNativeMessage = undefined;
+      await pendingAck;
+      await capturing;
+      hold.mockRestore();
+      gate.mockRestore();
+      post.mockRestore();
+    }
+    const reacquired = client.tryPauseForWorkspaceCapture(targetDatabase);
+    expect(reacquired).not.toBeNull();
+    if (failure === 'capture-worker-loss') {
+      await expect(reacquired).resolves.toBeTypeOf('function');
+      (await reacquired!)();
+      await expect(client.checkpoint(targetDatabase)).resolves.toBeDefined();
+    } else {
+      // The original native owner refuses a failed host before installing a new hold.
+      await expect(reacquired).rejects.toMatchObject({
+        code: 'unavailable',
+        commit: 'not-committed',
+      });
+    }
+    const siblingInput = f.input();
+    const afterLoss = createWorkspaceBackup({
+      ...siblingInput,
+      workspaceId: sibling.id,
+      bundleRoot: join(
+        f.dataRoot,
+        'server',
+        'backups',
+        'workspaces',
+        sibling.id,
+        siblingInput.backupId
+      ),
+    });
+    await expect(
+      afterLoss,
+      'A healthy sibling capture must acquire the released request slot.'
+    ).resolves.toMatchObject({ disposition: 'sealed' });
+  }, 120_000);
+
+  it.each([
+    'cut',
+    'pool',
+    'finish',
+    'cleanup',
+  ] as const)('keeps worker loss at %s truthful without losing source, predecessor or admission ownership', async (phase) => {
+    const f = await fixture();
+    const previousInput = f.input();
+    const previous = await createWorkspaceBackup(previousInput);
+    const previousBytes = tree(previousInput.bundleRoot);
+    const sibling = await f.store.createWorkspace('Capture slot sibling');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: sibling.id,
+      ownerUserId: f.ownerId,
+    });
+    await f.store.createThread(sibling.id, 'Real native sibling admission');
+    const input = f.input();
+    const beforeSource = tree(f.workspaceRoot);
+    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    let retrySibling: Parameters<typeof createWorkspaceBackup>[0] | undefined;
+    let capturedWorker: Worker | undefined;
+    const late = phase === 'finish' || phase === 'cleanup';
+    let publishedGeneration: ReturnType<typeof tree> | undefined;
+    let publishedDigest: string | undefined;
+    let publishedDecision: ReturnType<typeof inspectCapture> | undefined;
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    captureWorkerProbe.onPhase = (worker, message) => {
+      if (message.phase !== phase) return false;
+      capturedWorker = worker;
+      enter();
+      return true;
+    };
+    const capturing = createWorkspaceBackup(input).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    try {
+      await Promise.race([
+        entered,
+        capturing.then(() => {
+          throw new Error('Capture did not reach the selected real worker boundary.');
+        }),
+      ]);
+      expect(capturedWorker).toBeDefined();
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(phase === 'cut');
+      if (phase === 'cut') {
+        const siblingInput = f.input();
+        retrySibling = {
+          ...siblingInput,
+          workspaceId: sibling.id,
+          bundleRoot: join(
+            f.dataRoot,
+            'server',
+            'backups',
+            'workspaces',
+            sibling.id,
+            siblingInput.backupId
+          ),
+        };
+        const siblingCapture = createWorkspaceBackup(retrySibling).then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        );
+        const ack = getControlStoreWorkerClient().checkpoint(
+          `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
+        );
+        expect(
+          await Promise.race([
+            siblingCapture,
+            ack.then(() => ({ waitingForOccupiedCapture: true })),
+          ])
+        ).toMatchObject({ error: { code: 'capacity-exceeded' } });
+        await expect(ack).resolves.toBeDefined();
+        expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
+        try {
+          expect(inspectCapture(siblingDb, sibling.id, siblingInput.backupId)).toBeNull();
+        } finally {
+          siblingDb.sqlite.close();
+        }
+        expect(
+          existsSync(
+            join(
+              f.dataRoot,
+              'server',
+              'backups',
+              'workspaces',
+              sibling.id,
+              siblingInput.backupId,
+              'seal.json'
+            )
+          )
+        ).toBe(false);
+      }
+      if (late) {
+        const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
+          backupId: string;
+          manifestDigest: string;
+        };
+        expect(seal.backupId).toBe(input.backupId);
+        publishedDigest = seal.manifestDigest;
+        expect(publishedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+        publishedGeneration = tree(input.bundleRoot);
+        const db = openWorkspaceDb(f.dataRoot, workspaceId);
+        try {
+          publishedDecision = inspectCapture(db, workspaceId, input.backupId);
+          expect(publishedDecision).toMatchObject({
+            state: phase === 'cleanup' ? 'finished' : 'active',
+          });
+        } finally {
+          db.sqlite.close();
+        }
+        await expect(
+          getControlStoreWorkerClient().checkpoint(
+            `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
+          )
+        ).resolves.toBeDefined();
+        expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
+      }
+      await capturedWorker!.terminate();
+      expect(await capturing).toMatchObject({ error: expect.any(Error) });
+    } finally {
+      captureWorkerProbe.onPhase = undefined;
+      if (capturedWorker && capturedWorker.threadId !== -1) await capturedWorker.terminate();
+      await capturing;
+    }
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(late);
+    if (late) {
+      expect(tree(input.bundleRoot)).toEqual(publishedGeneration);
+      await f.read(input.backupId, async (bundle) =>
+        expect(bundle.manifestDigest).toBe(publishedDigest)
+      );
+    }
+    expect(tree(previousInput.bundleRoot)).toEqual(previousBytes);
+    const afterSource = tree(f.workspaceRoot);
+    for (const path of [
+      '/db/workspace.sqlite',
+      '/db/workspace.sqlite-wal',
+      '/db/workspace.sqlite-shm',
+    ]) {
+      delete beforeSource[path];
+      delete afterSource[path];
+    }
+    expect(afterSource).toEqual(beforeSource);
+    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+      const capture = row as { capture_id: string; workspace_id: string };
+      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+    });
+    expect(afterRows).toEqual(beforeRows);
+    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    try {
+      const retained = inspectCapture(db, workspaceId, input.backupId);
+      expect(retained).toMatchObject({
+        state: phase === 'cleanup' ? 'finished' : 'active',
+      });
+      if (late) expect(retained).toEqual(publishedDecision);
+    } finally {
+      db.sqlite.close();
+    }
+    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
+    );
+    expect(hold).not.toBeNull();
+    (await hold!)();
+    await f.read(previous.manifest.backupId, async (bundle) =>
+      expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
+    );
+    if (late) {
+      const siblingInput = f.input();
+      retrySibling = {
+        ...siblingInput,
+        workspaceId: sibling.id,
+        bundleRoot: join(
+          f.dataRoot,
+          'server',
+          'backups',
+          'workspaces',
+          sibling.id,
+          siblingInput.backupId
+        ),
+      };
+    }
+    // Worker death releases the single slot; only this explicit later call retries the refused request.
+    if (retrySibling)
+      expect((await createWorkspaceBackup(retrySibling)).disposition).toBe('sealed');
+  }, 120_000);
+
+  it('takes an independent mutable cut before payload hashing and synchronization leave the freeze', async () => {
+    const f = await fixture();
+    const original = Buffer.from(
+      'The exact authored cut payload must remain independent after release.'
+    );
+    const authored = join(f.workspaceRoot, 'files', captureWorkerProbe.payloadName);
+    mkdirSync(dirname(authored), { recursive: true });
+    writeFileSync(authored, original, { mode: 0o640 });
+    captureWorkerProbe.payloadHex = original.toString('hex');
+    let frozenHashes = 0;
+    let frozenSyncs = 0;
+    let released = false;
+    const update = Object.getPrototypeOf(createHash('sha256')).update;
+    const hashing = vi
+      .spyOn(Object.getPrototypeOf(createHash('sha256')), 'update')
+      .mockImplementation(function (this: unknown, data: unknown, ...args: unknown[]) {
+        if (
+          (typeof data === 'string' || Buffer.isBuffer(data)) &&
+          Buffer.from(data).equals(original) &&
+          f.mutationAdmission.isClosed(workspaceId)
+        )
+          frozenHashes += 1;
+        return Reflect.apply(update, this, [data, ...args]);
+      });
+    namespaceSyncFault.beforeSync = (fd) => {
+      if (
+        f.mutationAdmission.isClosed(workspaceId) &&
+        fstatSync(fd).isFile() &&
+        realpathSync(`/proc/self/fd/${fd}`).endsWith(`/${captureWorkerProbe.payloadName}`)
+      )
+        frozenSyncs += 1;
+    };
+    const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
+    const freeze = vi.spyOn(f.mutationAdmission, 'tryFreeze').mockImplementation((...args) => {
+      const result = tryFreeze(...args);
+      if (result.status !== 'frozen') return result;
+      return {
+        ...result,
+        release: () => {
+          result.release();
+          released = true;
+          writeFileSync(authored, 'A live source change after the cut.');
+        },
+      };
+    });
+    let captured: Awaited<ReturnType<typeof createWorkspaceBackup>>;
+    try {
+      captured = await createWorkspaceBackup(f.input());
+    } finally {
+      hashing.mockRestore();
+      freeze.mockRestore();
+      namespaceSyncFault.beforeSync = undefined;
+    }
+    expect(released).toBe(true);
+    expect(frozenHashes).toBe(0);
+    expect(frozenSyncs).toBe(0);
+    expect(captureWorkerProbe.workers).toHaveLength(1);
+    const workerHashes = captureWorkerProbe.events.filter(({ kind }) => kind === 'hash');
+    expect(workerHashes.length).toBeGreaterThan(0);
+    expect(workerHashes.every(({ threadId }) => threadId > 0)).toBe(true);
+    const frozenPhases = new Set([
+      'preflight',
+      'freeze',
+      'census',
+      'drain',
+      'core-pin',
+      'enumeration',
+      'mutable-copy',
+      'db-backup',
+      'cut',
+    ]);
+    expect(captureWorkerProbe.events.filter(({ phase }) => frozenPhases.has(phase))).toEqual([]);
+    expect(captured.disposition).toBe('sealed');
+    await f.read(captured.manifest.backupId, async (bundle) => {
+      expect(await bytes(bundle, `files/${captureWorkerProbe.payloadName}`)).toEqual(original);
+      expect(
+        bundle.manifest.inventory.find(
+          ({ path }) => path === `files/${captureWorkerProbe.payloadName}`
+        )?.mode
+      ).toBe(0o640);
+    });
+    expect(readFileSync(authored, 'utf8')).toBe('A live source change after the cut.');
   });
 
   it('preserves exact mutable and Light App cuts, reuses immutable objects and survives source deletion', async () => {
@@ -2362,27 +3281,40 @@ describe('C-a independent sealed generations', () => {
     const pool = dirname(input.bundleRoot);
     expect(existsSync(pool)).toBe(false);
     let committedPin: ReturnType<typeof protectCapture> | undefined;
-    const realProtect = captureProtection.protectCapture;
-    const pin = vi
-      .spyOn(captureProtection, 'protectCapture')
-      .mockImplementation((db, selected, captureId) => {
-        const retained = realProtect(db, selected, captureId);
-        if (selected === workspaceId && captureId === input.backupId) committedPin = retained;
-        return retained;
-      });
     let failed = false;
-    namespaceSyncFault.beforeSync = (descriptor) => {
-      if (
-        !failed &&
-        fstatSync(descriptor).isDirectory() &&
-        realpathSync(`/proc/self/fd/${descriptor}`) === dirname(pool) &&
-        existsSync(pool)
-      ) {
+    const pin = captureRecordBoundary(input.backupId, 'pin', 'observe', (message) => {
+      if (message.kind === 'pin') {
+        const db = openWorkspaceDb(f.dataRoot, workspaceId);
+        try {
+          committedPin = inspectCapture(db, workspaceId, input.backupId) ?? undefined;
+        } finally {
+          db.sqlite.close();
+        }
+      }
+      if (message.kind === 'pool-sync') {
         failed = true;
         expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-        throw new Error('Injected synchronization failure for the new Workspace pool entry.');
       }
-    };
+    });
+    captureWorkerProbe.script += `
+      let syncFailed = false;
+      function poolSync(fd) {
+        if (!syncFailed && fs.fstatSync(fd).isDirectory() && fs.realpathSync('/proc/self/fd/' + fd) === ${JSON.stringify(dirname(pool))} && fs.existsSync(${JSON.stringify(pool)})) {
+          syncFailed = true;
+          captureObserved('pool-sync');
+          throw new Error('Injected synchronization failure for the new Workspace pool entry.');
+        }
+      }
+      const originalSync = fs.fsyncSync;
+      fs.fsyncSync = function(fd, ...args) { poolSync(fd); return originalSync.call(this, fd, ...args); };
+      const originalOpen = fs.promises.open;
+      fs.promises.open = async function(...args) {
+        const file = await originalOpen.apply(this, args);
+        const sync = file.sync.bind(file);
+        file.sync = async function() { poolSync(file.fd); return sync(); };
+        return file;
+      };
+    `;
     let failure: unknown;
     let result: Awaited<ReturnType<typeof createWorkspaceBackup>> | undefined;
     try {
@@ -2431,7 +3363,7 @@ describe('C-a independent sealed generations', () => {
     if (committedPin) expect(committedPin.state).toBe('active');
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
     const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-      workspaceDbPath(f.dataRoot, workspaceId)
+      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
     );
     expect(hold).not.toBeNull();
     const release = await hold!;
@@ -2458,14 +3390,8 @@ describe('C-a independent sealed generations', () => {
     const check = vi.fn(() => {
       if (!authorized) throw new Error('Current authority was revoked.');
     });
-    const original = Database.prototype.backup;
-    const intercept = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (
-      this: Database.Database,
-      ...args: Parameters<Database.Database['backup']>
-    ) {
-      const result = await Reflect.apply(original, this, args);
+    const intercept = holdCapturePhase('cut', async () => {
       authorized = false;
-      return result;
     });
     try {
       await expect(
@@ -2485,9 +3411,14 @@ describe('C-a independent sealed generations', () => {
     const input = f.input();
     const beforeSource = tree(f.workspaceRoot);
     const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    const intercept = vi
-      .spyOn(Database.prototype, 'backup')
-      .mockRejectedValueOnce(new Error('Injected native SQLite backup failure.'));
+    captureWorkerProbe.script = `
+      Database.prototype.backup = async function() { throw new Error('Injected native SQLite backup failure.'); };
+    `;
+    const intercept = {
+      mockRestore: () => {
+        captureWorkerProbe.script = undefined;
+      },
+    };
     try {
       await expect(createWorkspaceBackup(input)).rejects.toThrow();
     } finally {
@@ -2512,7 +3443,7 @@ describe('C-a independent sealed generations', () => {
     expect(afterRows).toEqual(beforeRows);
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
     const nextHold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-      workspaceDbPath(f.dataRoot, workspaceId)
+      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
     );
     expect(nextHold).not.toBeNull();
     (await nextHold!)();
@@ -2545,27 +3476,27 @@ describe('C-a independent sealed generations', () => {
     const input = f.input();
     const beforeSource = tree(f.workspaceRoot);
     const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    const realComplete = captureProtection.completeCapture;
     let calls = 0;
     let publishedDigest: string | undefined;
-    const completion = vi
-      .spyOn(captureProtection, 'completeCapture')
-      .mockImplementation((db, selectedWorkspaceId, captureId) => {
-        if (captureId !== input.backupId) return realComplete(db, selectedWorkspaceId, captureId);
-        calls += 1;
-        expect(selectedWorkspaceId).toBe(workspaceId);
-        const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
-          backupId: string;
-          manifestDigest: string;
-        };
-        expect(seal.backupId).toBe(input.backupId);
-        publishedDigest = seal.manifestDigest;
-        if (cut === 'lost-ack') {
-          const committed = realComplete(db, selectedWorkspaceId, captureId);
-          expect(committed.state).toBe('finished');
+    const completion = captureRecordBoundary(input.backupId, 'finish', cut, (message) => {
+      calls += 1;
+      expect(message.workspaceId).toBe(workspaceId);
+      expect(message.captureId).toBe(input.backupId);
+      const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
+        backupId: string;
+        manifestDigest: string;
+      };
+      expect(seal.backupId).toBe(input.backupId);
+      publishedDigest = seal.manifestDigest;
+      if (cut === 'lost-ack') {
+        const db = openWorkspaceDb(f.dataRoot, workspaceId);
+        try {
+          expect(inspectCapture(db, workspaceId, input.backupId)?.state).toBe('finished');
+        } finally {
+          db.sqlite.close();
         }
-        throw new Error('Injected capture completion boundary failure.');
-      });
+      }
+    });
     try {
       await expect(createWorkspaceBackup(input)).rejects.toThrow();
     } finally {
@@ -2591,7 +3522,7 @@ describe('C-a independent sealed generations', () => {
     expect(afterRows).toEqual(beforeRows);
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
     const held = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-      workspaceDbPath(f.dataRoot, workspaceId)
+      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
     );
     expect(held).not.toBeNull();
     const release = await held!;
@@ -2695,18 +3626,9 @@ describe('C-a independent sealed generations', () => {
     const entered = new Promise<void>((resolve) => {
       enter = resolve;
     });
-    const nativeBackup = Database.prototype.backup;
-    let first = true;
-    const copy = vi.spyOn(Database.prototype, 'backup').mockImplementation(async function (
-      this: Database.Database,
-      ...args: Parameters<Database.Database['backup']>
-    ) {
-      if (first) {
-        first = false;
-        enter();
-        await barrier;
-      }
-      return Reflect.apply(nativeBackup, this, args);
+    const copy = holdCapturePhase('db-backup', async () => {
+      enter();
+      await barrier;
     });
     const capturing = createWorkspaceBackup(f.input());
     let captured: Awaited<typeof capturing>;
