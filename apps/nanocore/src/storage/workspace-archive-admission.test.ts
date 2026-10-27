@@ -27,7 +27,10 @@ afterEach(async () => {
 });
 
 /** Creates a real server-mode archive owner with an ordinary canonical-user session. */
-async function archiveFixture(fileAdmission?: FileStorageAdmission) {
+async function archiveFixture(
+  fileAdmission?: FileStorageAdmission,
+  workspaceMutationAdmission = new WorkspaceMutationAdmission()
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-archive-admission-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
@@ -40,7 +43,6 @@ async function archiveFixture(fileAdmission?: FileStorageAdmission) {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: workspace.id,
   });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = createApp({
     auth: {
       api: {
@@ -155,7 +157,7 @@ describe('retained archive primary admission', () => {
   ] as const)('refuses %s bearer foreign archive %s before staging or ownership changes', async (scope, operation) => {
     const source = await archiveFixture();
     const archive = await exportedArchive(source);
-    const target = await archiveFixture();
+    const target = await archiveFixture(undefined, source.workspaceMutationAdmission);
     const credential = target.token(scope);
     const before = workspaceAuthority(target);
     const staging = join(target.dataRoot, 'server', 'files', 'workspace-archive-requests');
@@ -222,7 +224,7 @@ describe('retained archive primary admission', () => {
   ] as const)('preserves %s foreign archive dry-run and import', async (actor) => {
     const source = await archiveFixture();
     const archive = await exportedArchive(source);
-    const target = await archiveFixture();
+    const target = await archiveFixture(undefined, source.workspaceMutationAdmission);
     const headers = {
       ...(actor === 'administrator'
         ? { authorization: `Bearer ${target.token('server-admin').secret}` }
