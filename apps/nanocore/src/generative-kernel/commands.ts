@@ -30,6 +30,7 @@ import {
   type UpdateLightAppRecordRequest,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
+import { compareCodeUnits } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 
 import { recordAppAuditEvent } from '../audit-events.js';
@@ -1867,7 +1868,7 @@ function listCatalogItems(dataRoot: string, workspaceId: string): LightAppCatalo
   return readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => inspectCatalogItem(dataRoot, workspaceId, entry.name))
-    .sort((left, right) => left.appId.localeCompare(right.appId));
+    .sort((left, right) => compareCodeUnits(left.appId, right.appId));
 }
 
 /**

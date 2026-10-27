@@ -17,7 +17,13 @@ import {
   type RequiredFeatureId,
 } from '@openkit/config-schema';
 
-import { allocateEntityId, isEntityId, readRetainedV1, WorkOwnerSchema } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  compareCodeUnits,
+  isEntityId,
+  readRetainedV1,
+  WorkOwnerSchema,
+} from '@openkit/protocol';
 
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
@@ -823,7 +829,7 @@ function listDescendantFiles(path: string, dataRoot: string = path): string[] {
   const files: string[] = [];
 
   for (const entry of readLayoutDirectory(path).sort((left, right) =>
-    left.name.localeCompare(right.name)
+    compareCodeUnits(left.name, right.name)
   )) {
     const childPath = join(path, entry.name);
 

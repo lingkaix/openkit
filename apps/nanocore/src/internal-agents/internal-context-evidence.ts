@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import {
+  compareCodeUnits,
   type Item,
   parseReferenceScope,
   type RetrievalTraceReference,
@@ -223,7 +224,8 @@ export function internalContextEvidenceReferences(
   }
   return [...references.values()].sort(
     (left, right) =>
-      left.scopeId.localeCompare(right.scopeId) || left.objectId.localeCompare(right.objectId)
+      compareCodeUnits(left.scopeId, right.scopeId) ||
+      compareCodeUnits(left.objectId, right.objectId)
   );
 }
 

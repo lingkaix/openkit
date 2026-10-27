@@ -5,6 +5,7 @@ import {
   ListHumanAttentionResponseSchema,
   operationHttpPath,
 } from '@openkit/app-api-schemas';
+import { compareCodeUnits } from '@openkit/protocol';
 import { publishedErrorMessage } from './api-errors.js';
 import { listArtifactReviews } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
@@ -105,7 +106,7 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
 
   return rows.sort(
     (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+      compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.id, right.id)
   );
 }
 

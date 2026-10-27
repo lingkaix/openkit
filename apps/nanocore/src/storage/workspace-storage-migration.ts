@@ -15,7 +15,12 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
-import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  compareCodeUnits,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
@@ -526,7 +531,7 @@ export function preflightWorkspaceStorageMigration(
   }
 
   for (const [workspaceId, roots] of [...rootsByWorkspaceId].sort(([left], [right]) =>
-    left.localeCompare(right)
+    compareCodeUnits(left, right)
   )) {
     if (roots.length > 1) {
       diagnostics.push({ code: 'duplicate_workspace_root', workspaceId });
@@ -609,7 +614,7 @@ function discoverOwnerNestedWorkspaceRoots(
 
   const roots: DiscoveredWorkspaceRoot[] = [];
   for (const userEntry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
-    left.name.localeCompare(right.name)
+    compareCodeUnits(left.name, right.name)
   )) {
     const userRoot = join(usersRoot, userEntry.name);
     if (userEntry.isSymbolicLink()) {
@@ -632,7 +637,7 @@ function discoverOwnerNestedWorkspaceRoots(
     }
 
     for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name)
+      (left, right) => compareCodeUnits(left.name, right.name)
     )) {
       if (!workspaceEntry.isDirectory() && !workspaceEntry.isSymbolicLink()) {
         diagnostics.push({

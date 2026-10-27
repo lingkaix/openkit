@@ -25,7 +25,7 @@
     "fmt": "bash scripts/test-env.sh any turbo run format",
     "format:check": "bash scripts/test-env.sh any biome check --formatter-enabled=true --linter-enabled=false .",
     "lint": "bash scripts/test-env.sh any turbo run lint",
-    "check:repo": "bash scripts/test-env.sh any bash -c 'node scripts/validate-spec-lifecycle.mjs && node scripts/validate-story-schema.mjs && node scripts/validate-doc-model.mjs && node scripts/generate-doc-index.mjs --check && node scripts/validate-agent-interface-reachability.mjs && node scripts/validate-agent-session-terminology.mjs && node scripts/validate-test-governance.mjs && biome check . && pnpm --filter @openkit/models-dev-catalog test'",
+    "check:repo": "bash scripts/test-env.sh any bash -c 'node scripts/validate-spec-lifecycle.mjs && node scripts/validate-story-schema.mjs && node scripts/validate-doc-model.mjs && node scripts/generate-doc-index.mjs --check && node scripts/validate-agent-interface-reachability.mjs && node scripts/validate-agent-session-terminology.mjs && node scripts/validate-locale-ordering.mjs && node scripts/validate-test-governance.mjs && biome check . && pnpm --filter @openkit/models-dev-catalog test'",
     "lint:staged": "bash scripts/test-env.sh any lint-staged",
     "hooks:install": "lefthook install",
     "commitmsg:check": "bash scripts/test-env.sh any bash scripts/check-commit-msg.sh",

@@ -2,6 +2,7 @@ import {
   AgentSessionIdSchema,
   ArtifactIdSchema,
   CapabilityCallIdSchema,
+  compareCodeUnits,
   ItemIdSchema,
   PermissionDecisionIdSchema,
   ThreadIdSchema,
@@ -246,7 +247,7 @@ export type RecordEnvelopeRewrite = Partial<
  */
 export function listRequiredFeatureDefinitions(): RequiredFeatureDefinition[] {
   return Object.values(REQUIRED_FEATURE_REGISTRY).sort((left, right) =>
-    left.id.localeCompare(right.id)
+    compareCodeUnits(left.id, right.id)
   );
 }
 

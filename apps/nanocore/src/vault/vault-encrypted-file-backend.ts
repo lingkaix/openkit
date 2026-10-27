@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { compareCodeUnits } from '@openkit/protocol';
 
 import {
   assertVaultEntryMetadata,
@@ -715,7 +716,8 @@ class EncryptedFileVaultBackend implements VaultBackend {
       }
 
       entries.sort(
-        (left, right) => left.version - right.version || left.fileName.localeCompare(right.fileName)
+        (left, right) =>
+          left.version - right.version || compareCodeUnits(left.fileName, right.fileName)
       );
       stateTemps.sort();
       return { entries, stateTemps };

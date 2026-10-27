@@ -10,6 +10,7 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
+  compareCodeUnits,
   formatReferenceUri,
   type PageReference,
   parseReferenceScope,
@@ -2012,7 +2013,7 @@ function buildKnowledgeValidationRecords(
     });
   }
 
-  return records.sort((left, right) => left.conceptId.localeCompare(right.conceptId));
+  return records.sort((left, right) => compareCodeUnits(left.conceptId, right.conceptId));
 }
 
 /**
@@ -2068,7 +2069,8 @@ function buildKnowledgeSourceReferences(
   }
 
   return references.sort((left, right) =>
-    `${left.conceptId}\u0000${left.reference}`.localeCompare(
+    compareCodeUnits(
+      `${left.conceptId}\u0000${left.reference}`,
       `${right.conceptId}\u0000${right.reference}`
     )
   );
@@ -2218,7 +2220,7 @@ function buildKnowledgeLinkEdges(
   }
 
   return edges.sort((left, right) =>
-    `${left.fromId}\u0000${left.target}`.localeCompare(`${right.fromId}\u0000${right.target}`)
+    compareCodeUnits(`${left.fromId}\u0000${left.target}`, `${right.fromId}\u0000${right.target}`)
   );
 }
 

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseRecordEnvelope, RecordEnvelopeSchema } from '@openkit/config-schema';
-import { KnowledgeSourceIdSchema, UserIdSchema } from '@openkit/protocol';
+import { compareCodeUnits, KnowledgeSourceIdSchema, UserIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   appendCanonicalTextFile,
@@ -78,7 +78,7 @@ export function readMemorySuppressions(
     const requests = new Set<string>();
     const pageIds = new Set<string>();
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name)
+      compareCodeUnits(a.name, b.name)
     )) {
       if (!entry.isFile() || !/^\d{6}\.jsonl$/.test(entry.name))
         throw new Error('Invalid maintenance ledger.');

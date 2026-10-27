@@ -15,6 +15,7 @@ import {
 import type { ActorRef, Item, TurnSchema } from '@openkit/protocol';
 import {
   allocateEntityId,
+  compareCodeUnits,
   isEntityId,
   isSealedTurnTerminal,
   workspaceIdForOwner,
@@ -415,7 +416,7 @@ function workerCoordinatorCandidates(
   return [...agentManifests]
     .sort((left, right) => {
       const defaultOrder = Number(right.id === defaultAgentId) - Number(left.id === defaultAgentId);
-      return defaultOrder || left.id.localeCompare(right.id);
+      return defaultOrder || compareCodeUnits(left.id, right.id);
     })
     .map((manifest) => {
       const readiness = computeReadiness(manifest);

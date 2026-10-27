@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { compareCodeUnits } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
@@ -216,7 +217,7 @@ function createQuarantineEntries(
         { scope: 'workspace', workspaceId: workspace.workspaceId }
       )
     ),
-  ].sort((left, right) => left.path.localeCompare(right.path));
+  ].sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 /**

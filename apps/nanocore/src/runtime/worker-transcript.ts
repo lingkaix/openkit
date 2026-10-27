@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { ArtifactSchema, deriveEntityId, ItemSchema } from '@openkit/protocol';
+import { ArtifactSchema, compareCodeUnits, deriveEntityId, ItemSchema } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   type WorkerLineage,
@@ -567,7 +567,7 @@ function sortJsonValue(value: unknown): unknown {
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([key, entryValue]) => [key, sortJsonValue(entryValue)])
     );
   }

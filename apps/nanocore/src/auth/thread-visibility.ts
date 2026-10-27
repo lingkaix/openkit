@@ -1,5 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
-import { type ArtifactSchema, ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  type ArtifactSchema,
+  compareCodeUnits,
+  ThreadSchema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 
@@ -167,7 +172,7 @@ export function canDiscloseThreadToAudience(
               ]
             : []
         )
-        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+        .sort((left, right) => compareCodeUnits(JSON.stringify(left), JSON.stringify(right)));
     return isDeepStrictEqual(restrictions(sourceStatements), restrictions(destinationStatements));
   } catch {
     return false;

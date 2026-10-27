@@ -11,7 +11,12 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import type { LightAppSnapshot } from '@openkit/app-api-schemas';
-import { readRetainedV1, TimestampSchema, writeRetainedV1 } from '@openkit/protocol';
+import {
+  compareCodeUnits,
+  readRetainedV1,
+  TimestampSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { type AppDb, lightAppRoot, writeDurableFile } from '../storage/app-db.js';
@@ -119,8 +124,8 @@ export function readLightAppSnapshots(
     })
     .sort(
       (left, right) =>
-        left.createdAt.localeCompare(right.createdAt) ||
-        left.snapshotId.localeCompare(right.snapshotId)
+        compareCodeUnits(left.createdAt, right.createdAt) ||
+        compareCodeUnits(left.snapshotId, right.snapshotId)
     );
 }
 

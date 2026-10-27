@@ -14,6 +14,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
+  compareCodeUnits,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
   readRetainedV1,
@@ -231,7 +232,7 @@ function readWorkspaceRetrievalTraceFiles(
   if (!threadsDirectory) return files;
 
   for (const thread of readdirSync(threadsDirectory, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name)
+    compareCodeUnits(a.name, b.name)
   )) {
     if (thread.isSymbolicLink()) {
       throw new Error(`Portable workspace path must not be a symbolic link: ${thread.name}.`);
@@ -253,7 +254,7 @@ function readWorkspaceRetrievalTraceFiles(
     const turnsDirectory = workspaceDirectory(root, `${threadRoot}/turns`, false);
     if (!turnsDirectory) continue;
     for (const turn of readdirSync(turnsDirectory, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name)
+      compareCodeUnits(a.name, b.name)
     )) {
       if (turn.isSymbolicLink()) {
         throw new Error(`Portable workspace path must not be a symbolic link: ${turn.name}.`);
@@ -283,7 +284,7 @@ function readRetrievalTraceDirectory(
   const directory = workspaceDirectory(root, relativeDirectory, false);
   if (!directory) return;
   for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name)
+    compareCodeUnits(a.name, b.name)
   )) {
     const relativePath = `${relativeDirectory}/${entry.name}`;
     if (entry.isSymbolicLink()) {
@@ -314,7 +315,7 @@ function writeWorkspaceRetrievalTraceFiles(
   root: string,
   files: ReadonlyMap<string, ProductRetrievalTrace>
 ): void {
-  for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [path, trace] of [...files].sort(([left], [right]) => compareCodeUnits(left, right))) {
     const text = serializeWorkspaceRetrievalTrace(trace);
     const { reference } = parseWorkspaceRetrievalTraceFile(
       path,
@@ -333,7 +334,7 @@ function writeWorkspaceRetrievalTraceExportFiles(
   root: string,
   files: ReadonlyMap<string, ProductRetrievalTrace>
 ): void {
-  for (const [path, trace] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [path, trace] of [...files].sort(([left], [right]) => compareCodeUnits(left, right))) {
     const text = serializeWorkspaceRetrievalTrace(trace);
     parseWorkspaceRetrievalTraceFile(path, text, trace.queryContext.workspaceId);
     writeText(root, `workspace-files/${path}`, text, false);
@@ -361,7 +362,7 @@ function readWorkerContextPackageFiles(
   }
 
   for (const thread of readdirSync(threadsDirectory, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name)
+    compareCodeUnits(a.name, b.name)
   )) {
     if (thread.isSymbolicLink()) {
       throw new Error(`Portable workspace path must not be a symbolic link: ${thread.name}.`);
@@ -374,7 +375,7 @@ function readWorkerContextPackageFiles(
       continue;
     }
     for (const turn of readdirSync(turnsDirectory, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name)
+      compareCodeUnits(a.name, b.name)
     )) {
       if (turn.isSymbolicLink()) {
         throw new Error(`Portable workspace path must not be a symbolic link: ${turn.name}.`);
@@ -462,7 +463,7 @@ function readTextTree(
   }
   const visit = (current: string, relativeCurrent: string): void => {
     for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name)
+      compareCodeUnits(a.name, b.name)
     )) {
       const path = join(current, entry.name);
       const relativePath = `${relativeCurrent}/${entry.name}`;

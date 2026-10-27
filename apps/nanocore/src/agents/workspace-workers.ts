@@ -7,6 +7,7 @@ import {
   WorkspaceWorkerStatusSchema,
   type WorkspaceWorkerWork,
 } from '@openkit/app-api-schemas';
+import { compareCodeUnits } from '@openkit/protocol';
 
 import {
   isCurrentDeploymentAdministrator,
@@ -80,7 +81,7 @@ export function createWorkerOperationImplementations({
               }),
             ];
           })
-          .sort((left, right) => left.threadId.localeCompare(right.threadId));
+          .sort((left, right) => compareCodeUnits(left.threadId, right.threadId));
         return { items, workspaceId };
       } catch (error) {
         if (error instanceof StoreRecordNotFoundError)

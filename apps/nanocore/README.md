@@ -32,6 +32,8 @@ Internal Chat, Administration and Knowledge Manager Stop commands wait for their
 
 Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
 
+Current discovery, read-model and transient semantic comparisons use Protocol's `compareCodeUnits` to order strings by UTF-16 code units. Each callsite keeps its numeric priorities, comparison direction and equal-key behavior. Retained digest, key, ordered-history and historical self-check comparisons keep their existing encoding and order until their family-owned transition.
+
 Thread dashboard work status projects selected Agent, active Turn status, pending attention counts and latest Artifact only. Workspace active-work rows project recorded Turn activity without a mode label. Product mode and handoff proof comes from the owning conversation, Task or Goal result and its exact Thread, Turn and Item lineage; dashboards compute no routing decision.
 
 `nanocore` is the tiny real demo core server for the UI-first protocol slice.

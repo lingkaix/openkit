@@ -41,6 +41,7 @@ import {
   type ArtifactSchema,
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
+  compareCodeUnits,
   deriveEntityId,
   entityIdPattern,
   type ItemSchema,
@@ -3252,8 +3253,8 @@ export function listExportableAgentEnvironmentPackageSnapshots(
 
   records.sort(
     (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.snapshotId.localeCompare(right.snapshotId)
+      compareCodeUnits(left.createdAt, right.createdAt) ||
+      compareCodeUnits(left.snapshotId, right.snapshotId)
   );
 
   const snapshotIds = new Set<string>();

@@ -37,6 +37,7 @@ import {
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   allocateEntityId,
+  compareCodeUnits,
   deriveEntityId,
   formatReferenceUri,
   ItemSchema,
@@ -4157,7 +4158,7 @@ export class FsStore {
           .filter((row) => row.record.threadId === threadId)
           .map((row) => this.getServerTurnById(row.record.id as string))
       : [...this.serverTurns.values()].filter((turn) => turn.threadId === threadId);
-    return turns.sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
+    return turns.sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
   }
 
   /** Updates the existing closed lifecycle without changing immutable Server owner or admission facts. */

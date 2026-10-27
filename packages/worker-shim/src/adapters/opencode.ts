@@ -9,7 +9,11 @@ import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import type { OpenCodeClient } from '@opencode/client';
-import { REASONING_EFFORT_LEVELS, ReasoningEffortSchema } from '@openkit/protocol';
+import {
+  compareCodeUnits,
+  REASONING_EFFORT_LEVELS,
+  ReasoningEffortSchema,
+} from '@openkit/protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -598,7 +602,7 @@ async function supervise(
           throw new Error('OpenCode resume did not prove the native conversation.');
         }
         if (turnState !== 'idle') throw new Error('OpenCode binding already has an active Turn.');
-        const routes = [...turn.allowedLlmRoutes].sort((a, b) => a.id.localeCompare(b.id));
+        const routes = [...turn.allowedLlmRoutes].sort((a, b) => compareCodeUnits(a.id, b.id));
         for (const route of routes) assertRoute(route, input.loopback.inferenceBaseUrl);
         // Advertisement can change without changing the native all-level declaration.
         const routeKey = JSON.stringify(

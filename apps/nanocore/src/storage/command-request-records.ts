@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   ArtifactIdSchema,
   ArtifactReviewIdSchema,
+  compareCodeUnits,
   InvitationIdSchema,
   KnowledgeReviewIdSchema,
   KnowledgeSourceIdSchema,
@@ -530,7 +531,7 @@ export function readDurableCommandRequestRecords(dataRoot: string): DurableComma
     }
     records.sort(
       (left, right) =>
-        left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key)
+        compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.key, right.key)
     );
     return { records, status: 'readable' };
   } catch {
@@ -554,7 +555,7 @@ function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
   const usersRoot = resolveDataRootPath(dataRoot, 'users');
   if (existsSync(usersRoot)) {
     for (const entry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
-      left.name.localeCompare(right.name)
+      compareCodeUnits(left.name, right.name)
     )) {
       if (entry.isSymbolicLink()) {
         throw new Error('Command receipt user directory is symbolic.');
@@ -567,7 +568,7 @@ function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
   const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
   if (existsSync(workspacesRoot)) {
     for (const entry of readdirSync(workspacesRoot, { withFileTypes: true }).sort((left, right) =>
-      left.name.localeCompare(right.name)
+      compareCodeUnits(left.name, right.name)
     )) {
       if (entry.isSymbolicLink()) {
         throw new Error('Command receipt workspace directory is symbolic.');
@@ -603,7 +604,7 @@ export function listCommandRequestRecords(
 
   if (workspaceId === undefined && existsSync(usersRoot)) {
     for (const entry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
-      left.name.localeCompare(right.name)
+      compareCodeUnits(left.name, right.name)
     )) {
       if (entry.isDirectory() && existsSync(userDbPath(dataRoot, entry.name))) {
         owners.push({ scope: 'user', userId: entry.name });
@@ -613,7 +614,7 @@ export function listCommandRequestRecords(
 
   if (workspaceId === undefined && existsSync(workspacesRoot)) {
     for (const entry of readdirSync(workspacesRoot, { withFileTypes: true }).sort((left, right) =>
-      left.name.localeCompare(right.name)
+      compareCodeUnits(left.name, right.name)
     )) {
       if (
         entry.isDirectory() &&
@@ -657,7 +658,7 @@ export function listCommandRequestRecords(
 
   return records.sort(
     (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key)
+      compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.key, right.key)
   );
 }
 

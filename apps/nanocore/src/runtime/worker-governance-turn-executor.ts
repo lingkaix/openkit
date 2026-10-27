@@ -15,6 +15,7 @@ import {
 } from '@openkit/config-schema';
 import {
   allocateEntityId,
+  compareCodeUnits,
   deriveEntityId,
   GitFailureExplanationSchema,
   isEntityId,
@@ -3321,7 +3322,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): AgentSessionReadModel | null {
     const session = store
       .listThreadAgentSessions(workspaceId, threadId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+      .sort((left, right) => compareCodeUnits(right.updatedAt, left.updatedAt))[0];
 
     if (!session) {
       return null;

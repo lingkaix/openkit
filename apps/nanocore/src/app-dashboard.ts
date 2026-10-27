@@ -11,6 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   type ArtifactSchema,
+  compareCodeUnits,
   type ItemSchema,
   isRecoveryRewritableTurnStatus,
   isSealedTurnTerminal,
@@ -76,7 +77,7 @@ function isAttentionTurnStatus(status: Turn['status']): boolean {
  */
 function sortTurns(turns: readonly Turn[]): Turn[] {
   return [...turns].sort((left, right) =>
-    (left.startedAt ?? '').localeCompare(right.startedAt ?? '')
+    compareCodeUnits(left.startedAt ?? '', right.startedAt ?? '')
   );
 }
 
@@ -89,7 +90,7 @@ function sortTurns(turns: readonly Turn[]): Turn[] {
 function selectNewestArtifact(artifacts: readonly Artifact[]): Artifact | null {
   let newest: Artifact | null = null;
   for (const artifact of artifacts) {
-    if (newest === null || artifact.updatedAt.localeCompare(newest.updatedAt) > 0) {
+    if (newest === null || compareCodeUnits(artifact.updatedAt, newest.updatedAt) > 0) {
       newest = artifact;
     }
   }
@@ -404,13 +405,13 @@ function buildWorkspaceWorkSections(
 
   return {
     activeWork: activeWork
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .sort((left, right) => compareCodeUnits(right.updatedAt, left.updatedAt))
       .slice(0, 5),
     recentCompletions: recentCompletions
-      .sort((left, right) => right.completedAt.localeCompare(left.completedAt))
+      .sort((left, right) => compareCodeUnits(right.completedAt, left.completedAt))
       .slice(0, 5),
     attentionNeeded: attentionNeeded
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .sort((left, right) => compareCodeUnits(right.updatedAt, left.updatedAt))
       .slice(0, 5),
   };
 }
@@ -445,7 +446,7 @@ export function readWorkspaceDashboard(input: {
     const threads = store
       .listThreads(workspaceId)
       .filter((thread) => isThreadVisible(store, thread, actor.userId, administratorEligible))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      .sort((left, right) => compareCodeUnits(right.updatedAt, left.updatedAt));
     const snapshot = runtimeConfigManager.current();
     const providerCount = snapshot.providerRegistry.list().length;
     const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
@@ -804,8 +805,8 @@ export function readConversationNavigation({
     rows.sort(
       (left, right) =>
         Number(right.state !== 'idle') - Number(left.state !== 'idle') ||
-        right.lastActivityAt.localeCompare(left.lastActivityAt) ||
-        left.thread.id.localeCompare(right.thread.id)
+        compareCodeUnits(right.lastActivityAt, left.lastActivityAt) ||
+        compareCodeUnits(left.thread.id, right.thread.id)
     );
     return ConversationNavigationResponseSchema.parse({ items: rows });
   } catch (error) {

@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-
 import {
   AGENT_RESOURCE_CATALOG_FEATURE,
   hashOpenKitTreeEntries,
@@ -13,6 +12,7 @@ import {
   parseResourceCatalogDocument,
   type ResourceCatalogDocument,
 } from '@openkit/config-schema';
+import { compareCodeUnits } from '@openkit/protocol';
 
 import {
   ensureCanonicalDirectory,
@@ -183,9 +183,9 @@ export function reconstructImportedWorkspaceCatalog(
         size:
           entry.kind === 'directory' ? 0 : Buffer.from(entry.contentBase64 ?? '', 'base64').length,
       }))
-      .sort((left, right) => left.path.localeCompare(right.path));
+      .sort((left, right) => compareCodeUnits(left.path, right.path));
     const retained = [...version.inventory].sort((left, right) =>
-      left.path.localeCompare(right.path)
+      compareCodeUnits(left.path, right.path)
     );
     if (JSON.stringify(inventory) !== JSON.stringify(retained)) {
       throw new Error(`Skill payload inventory mismatch: ${path}`);

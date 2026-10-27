@@ -4,6 +4,7 @@ import {
   type AuditEvent,
   AuditEventSchema,
   allocateEntityId,
+  compareCodeUnits,
   type KnowledgeOwnerScope,
   PolicyInvocationV1Schema,
   PolicyWriteOutcomeV1Schema,
@@ -252,7 +253,8 @@ export function listPortableWorkspaceAuditEvents(
   if (coreDb) events.push(...listSqliteAuditEvents(coreDb.sqlite, workspaceId, true));
   return events.sort(
     (left, right) =>
-      (left.createdAt ?? '').localeCompare(right.createdAt ?? '') || left.id.localeCompare(right.id)
+      compareCodeUnits(left.createdAt ?? '', right.createdAt ?? '') ||
+      compareCodeUnits(left.id, right.id)
   );
 }
 

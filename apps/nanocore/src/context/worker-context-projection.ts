@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ThreadMaterialActiveDelivery, ThreadTaskInput } from '@openkit/app-api-schemas';
-import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
+import { compareCodeUnits, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
@@ -151,8 +151,8 @@ export function projectVerifiedThreadMaterialTraces(input: {
 }): ThreadMaterialTraceProjection {
   const traces = [...input.traces].sort(
     (left, right) =>
-      right.startedAt.localeCompare(left.startedAt) ||
-      right.trace.turnId.localeCompare(left.trace.turnId)
+      compareCodeUnits(right.startedAt, left.startedAt) ||
+      compareCodeUnits(right.trace.turnId, left.trace.turnId)
   );
   const revisionFor = (trace: WorkerContextPackageTrace | undefined): string | null =>
     trace?.materialSelections.find((selection) => selection.materialId === input.materialId)

@@ -8,6 +8,7 @@ import {
   operationMcpEligible,
   operationToolName,
 } from '@openkit/app-api-schemas';
+import { compareCodeUnits } from '@openkit/protocol';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { recordServerAuditEvent } from './audit-events.js';
@@ -92,7 +93,7 @@ function search(query: string) {
       };
     })
     .filter((entry) => wanted.length === 0 || entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+    .sort((a, b) => b.score - a.score || compareCodeUnits(a.id, b.id));
   return {
     items: matches.slice(0, SEARCH_LIMIT).map(({ score: _score, ...entry }) => entry),
     total: matches.length,

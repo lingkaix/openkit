@@ -23,7 +23,7 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { canonicalJsonText, readRetainedV1 } from '@openkit/protocol';
+import { canonicalJsonText, compareCodeUnits, readRetainedV1 } from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -1326,7 +1326,7 @@ function loadUserConfigs(
 
   const configs: LoadedUserConfig[] = [];
   for (const userEntry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
-    left.name.localeCompare(right.name)
+    compareCodeUnits(left.name, right.name)
   )) {
     if (!userEntry.isDirectory()) {
       continue;
@@ -1365,7 +1365,7 @@ function loadWorkspaceConfigs(
   const configs: LoadedWorkspaceConfig[] = [];
 
   for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-    (left, right) => left.name.localeCompare(right.name)
+    (left, right) => compareCodeUnits(left.name, right.name)
   )) {
     if (!workspaceEntry.isDirectory()) {
       continue;
@@ -1428,7 +1428,7 @@ function loadWorkspaceDataSourceCatalogs(
   const catalogs: LoadedWorkspaceDataSourceCatalog[] = [];
 
   for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-    (left, right) => left.name.localeCompare(right.name)
+    (left, right) => compareCodeUnits(left.name, right.name)
   )) {
     if (!workspaceEntry.isDirectory()) {
       continue;
@@ -1460,7 +1460,7 @@ function loadWorkspaceMcpServerCatalogs(dataRoot: string): LoadedWorkspaceMcpSer
   if (!existsSync(workspacesRoot)) return [];
   const catalogs: LoadedWorkspaceMcpServerCatalog[] = [];
   for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-    (left, right) => left.name.localeCompare(right.name)
+    (left, right) => compareCodeUnits(left.name, right.name)
   )) {
     if (!workspaceEntry.isDirectory()) continue;
     const catalogPath = join(workspacesRoot, workspaceEntry.name, 'catalog', 'catalog.json');

@@ -8,6 +8,7 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
+import { compareCodeUnits } from '@openkit/protocol';
 import { listArtifactReviews } from '../artifact-reviews.js';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
@@ -82,7 +83,7 @@ export function listWorkspaceSyncReviewArtifacts(
   return artifacts
     .map(parseWorkspaceSyncReviewArtifact)
     .filter((item): item is WorkspaceSyncReviewItem => item !== null)
-    .sort((left, right) => right.review.updatedAt.localeCompare(left.review.updatedAt));
+    .sort((left, right) => compareCodeUnits(right.review.updatedAt, left.review.updatedAt));
 }
 
 /**
@@ -108,7 +109,7 @@ export function listWorkspaceSyncReviewsForRead(
     ...listWorkspaceSyncReviewArtifacts(artifacts).filter(
       (item) => !durableReviewIds.has(item.review.id)
     ),
-  ].sort((left, right) => right.review.updatedAt.localeCompare(left.review.updatedAt));
+  ].sort((left, right) => compareCodeUnits(right.review.updatedAt, left.review.updatedAt));
 }
 
 /**

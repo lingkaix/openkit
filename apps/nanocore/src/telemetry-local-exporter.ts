@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import fs, { type FileHandle } from 'node:fs/promises';
 import { join, parse, resolve, sep } from 'node:path';
+import { compareCodeUnits } from '@openkit/protocol';
 import { JsonMetricsSerializer, JsonTraceSerializer } from '@opentelemetry/otlp-transformer';
 import {
   AggregationTemporality,
@@ -219,7 +220,7 @@ class LocalTraceExporter implements LocalTelemetryExporter {
         throw new Error('Invalid telemetry file.');
       files.push({ path, bytes: state.size, modified: state.mtimeMs });
     }
-    return files.sort((a, b) => a.modified - b.modified || a.path.localeCompare(b.path));
+    return files.sort((a, b) => a.modified - b.modified || compareCodeUnits(a.path, b.path));
   }
 
   /** Removes expired/oldest disposable segments before growth, never canonical records. */
