@@ -12,8 +12,8 @@ export interface ClientTransport {
   readonly headers?: HeadersInit | undefined;
   /** Fetches and validates a JSON response. */
   getJson<TSchema extends z.ZodType>(path: string, schema: TSchema): Promise<z.infer<TSchema>>;
-  /** Fetches one successful response body with an exact media type. */
-  getStream(path: string, mediaType: string): Promise<ReadableStream<Uint8Array>>;
+  /** Reads one exact-media body; a supplied logical selector uses JSON POST. */
+  getStream(path: string, mediaType: string, input?: unknown): Promise<ReadableStream<Uint8Array>>;
   /** Posts a JSON body and validates JSON or declared empty-success logical null. */
   postJson<TInput, TSchema extends z.ZodType>(
     path: string,
@@ -116,9 +116,26 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return response;
   };
 
-  const getStream: ClientTransport['getStream'] = async (path, mediaType) => {
-    const response = await getDownload(path);
+  const getStream: ClientTransport['getStream'] = async (path, mediaType, input) => {
+    const response =
+      input === undefined
+        ? await getDownload(path)
+        : await fetcher(url(path), {
+            credentials: 'include',
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify(input),
+          });
+    if (!response.ok) {
+      await parseJsonResponse(response, z.never());
+      throw new Error('Unreachable response state.');
+    }
     if (response.headers.get('content-type') !== mediaType || !response.body) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Body disposal cannot replace the original protocol refusal.
+      }
       throw new ProtocolValidationError({
         path: [],
         code: 'invalid_payload',
