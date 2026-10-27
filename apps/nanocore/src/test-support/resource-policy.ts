@@ -1,8 +1,26 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import type { PolicyDocumentV1 } from '@openkit/protocol';
 import { applyEdits, modify, parse } from 'jsonc-parser';
+import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
+import type { CoreDb } from '../storage/db.js';
+
+/** Evaluates the fixture User's current membership action without supplying administrator authority. */
+export function workspaceMembershipDecisionFixture(
+  coreDb: CoreDb,
+  userId: string,
+  workspaceId: string
+): PolicyDecision {
+  return evaluateProductAuthorization(
+    coreDb,
+    { kind: 'session', userId },
+    { kind: 'workspace', workspaceId },
+    'membership.manage',
+    true
+  );
+}
 
 /** Produces a current-format managed Thread fixture without supplying runtime authority. */
 export function managedThreadPolicy(input: {

@@ -4,6 +4,7 @@ import type {
   WorkspaceMember,
   WorkspaceRegistryStatus,
 } from '@openkit/app-api-schemas';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import { allocateEntityId } from '@openkit/protocol';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { CoreDb } from './storage/db.js';
@@ -46,12 +47,12 @@ interface WorkspaceMutationInput {
   workspaceId: string;
   /** Current time override for deterministic tests. */
   now?: Date;
-  /** Current administrator eligibility supplied by the native authorizer, never caller input. */
-  administratorEligible?: boolean;
 }
 
 /** Input for creating one registered-user invitation. */
 export interface CreateWorkspaceInvitationInput extends WorkspaceMutationInput {
+  /** Fresh common-authorizer result consumed in this synchronous command transaction. */
+  authorization: PolicyDecision;
   /** Exact active member creating the invitation. */
   inviterUserId: string;
   /** Exact email lookup input; it is never stored as invitation authority. */
@@ -70,6 +71,8 @@ export interface InviteeInvitationTransitionInput extends WorkspaceMutationInput
 
 /** Input for revoking one member-visible invitation. */
 export interface RevokeWorkspaceInvitationInput extends WorkspaceMutationInput {
+  /** Fresh common-authorizer result consumed in this synchronous command transaction. */
+  authorization: PolicyDecision;
   /** Stable invitation identifier. */
   invitationId: string;
   /** Current active member requesting revocation. */
@@ -80,6 +83,8 @@ export interface RevokeWorkspaceInvitationInput extends WorkspaceMutationInput {
 
 /** Input for removing one active non-owner membership. */
 export interface RemoveWorkspaceMemberInput extends WorkspaceMutationInput {
+  /** Fresh common-authorizer result consumed in this synchronous command transaction. */
+  authorization: PolicyDecision;
   /** Current active member requesting removal. */
   actorUserId: string;
   /** Canonical member being removed. */
@@ -98,6 +103,8 @@ export interface LeaveWorkspaceInput extends WorkspaceMutationInput {
 
 /** Input for member-authorized ownership transfer. */
 export interface TransferWorkspaceOwnershipInput extends WorkspaceMutationInput {
+  /** Fresh common-authorizer result consumed in this synchronous command transaction. */
+  authorization: PolicyDecision;
   /** Active member initiating the ownership transfer. */
   actorUserId: string;
   /** Active member becoming owner. */
@@ -355,10 +362,7 @@ export function createWorkspaceInvitation(
   input: CreateWorkspaceInvitationInput
 ): CreateWorkspaceInvitationResult {
   requireOuterTransaction(input.coreDb);
-  if (
-    !input.administratorEligible &&
-    !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.inviterUserId)
-  ) {
+  if (input.authorization?.effect !== 'allow') {
     return { kind: 'workspace_access_denied' };
   }
   const normalizedEmail = input.inviteeEmail.trim().toLowerCase();
@@ -507,10 +511,7 @@ export function revokeWorkspaceInvitation(
   input: RevokeWorkspaceInvitationInput
 ): WorkspaceInvitationTransitionResult {
   requireOuterTransaction(input.coreDb);
-  if (
-    !input.administratorEligible &&
-    !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorUserId)
-  ) {
+  if (input.authorization?.effect !== 'allow') {
     return { kind: 'workspace_access_denied' };
   }
   const now = input.now ?? new Date();
@@ -545,11 +546,7 @@ export function removeWorkspaceMember(
 ): WorkspaceMemberMutationResult {
   requireOuterTransaction(input.coreDb);
   const registry = getWorkspaceRegistryFact(input.coreDb, input.workspaceId);
-  if (
-    !registry ||
-    (!input.administratorEligible &&
-      !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorUserId))
-  ) {
+  if (!registry || input.authorization?.effect !== 'allow') {
     return { kind: 'workspace_access_denied' };
   }
   if (input.memberUserId === registry.ownerUserId) {
@@ -601,11 +598,7 @@ export function transferWorkspaceOwnership(
 ): TransferWorkspaceOwnershipResult {
   requireOuterTransaction(input.coreDb);
   const registry = getWorkspaceRegistryFact(input.coreDb, input.workspaceId);
-  if (
-    !registry ||
-    (!input.administratorEligible &&
-      !resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, input.actorUserId))
-  ) {
+  if (!registry || input.authorization?.effect !== 'allow') {
     return { kind: 'workspace_access_denied' };
   }
   const target = getWorkspaceMember(input.coreDb, input.workspaceId, input.targetUserId);

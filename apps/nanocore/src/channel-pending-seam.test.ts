@@ -19,7 +19,10 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
-import { managedThreadPolicy } from './test-support/resource-policy.js';
+import {
+  managedThreadPolicy,
+  workspaceMembershipDecisionFixture,
+} from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { removeWorkspaceMember } from './workspace-sharing.js';
@@ -287,6 +290,11 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     removeMembership() {
       const result = coreDb.sqlite.transaction(() =>
         removeWorkspaceMember({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            FIXTURE_LOCAL_USER_ID,
+            DEMO_WORKSPACE_ID
+          ),
           coreDb,
           workspaceId: DEMO_WORKSPACE_ID,
           actorUserId: FIXTURE_LOCAL_USER_ID,

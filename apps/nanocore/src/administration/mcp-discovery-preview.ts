@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { OperationInput, OperationOutput } from '@openkit/app-api-schemas';
 import { digestOpenKitTree } from '@openkit/config-schema';
 import { recordServerAuditEvent } from '../audit-events.js';
-import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { loadResourceCatalog, mcpTransportFromDeclaration } from '../catalog/resource-catalog.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type AdmittedOperationContext, publicOperationActor } from '../operation-contract.js';
@@ -46,7 +46,7 @@ export async function previewMcpDiscovery(
     const previewId = randomUUID();
     const currentAdmin = () => {
       try {
-        return requireCurrentDeploymentAdmin(coreDb, actor);
+        return requireAdministratorOperation(coreDb, actor, 'api.call', undefined, 'mcp');
       } catch {
         throw new OperationError('forbidden', 'Current administrator authority is required.', 403);
       }

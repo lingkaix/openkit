@@ -57,9 +57,14 @@ export interface ProductAccessFacts {
   };
 }
 
-/** Exact primary target; Workspace ownership remains an identity fact, not a permission tier. */
+/** Exact primary target; an explicit User id selects administrative inspection, while self omits it. */
 export type ProductAccessTarget =
-  | { readonly kind: 'user' }
+  | { readonly kind: 'user'; readonly userId?: string; readonly active?: boolean }
+  | {
+      readonly kind: 'invitation';
+      readonly invitationId: string;
+      readonly inviteeUserId: string | null;
+    }
   | { readonly kind: 'server'; readonly family?: string | undefined }
   | {
       readonly kind: 'workspace';
@@ -87,7 +92,11 @@ export function evaluateProductAccess(input: {
       ? `object:server:${family}`
       : `object:${JSON.stringify([
           scope.kind,
-          scope.kind === 'workspace' ? scope.workspaceId : facts.userId,
+          scope.kind === 'workspace'
+            ? scope.workspaceId
+            : scope.kind === 'invitation'
+              ? scope.invitationId
+              : (scope.userId ?? facts.userId),
         ])}`;
   const policyClass = `pc:${scope.kind}`;
   const objects = `oa:${scope.kind}-resource`;
@@ -146,8 +155,21 @@ export function evaluateProductAccess(input: {
         if (facts.administrator)
           bind(administrator, IDENTITY_OPERATIONS, 'assoc:workspace-administrator');
       }
-    } else if (scope.kind === 'user') {
-      if (facts.credential.kind === 'local' || facts.credential.kind === 'session')
+    } else if (scope.kind === 'invitation') {
+      if (scope.inviteeUserId !== null) {
+        if (
+          scope.inviteeUserId === facts.userId &&
+          (facts.credential.kind === 'local' || facts.credential.kind === 'session')
+        )
+          bind(member, ['invitation.respond'], 'assoc:invitation-invitee');
+        if (facts.administrator)
+          bind(administrator, ['invitation.respond'], 'assoc:invitation-administrator');
+      }
+    } else if (scope.kind === 'user' && scope.active !== false) {
+      if (
+        scope.userId === undefined &&
+        (facts.credential.kind === 'local' || facts.credential.kind === 'session')
+      )
         bind(member, IDENTITY_OPERATIONS, 'assoc:user-authenticated');
       if (facts.administrator) bind(administrator, IDENTITY_OPERATIONS, 'assoc:user-administrator');
     } else if (facts.administrator && family && Object.hasOwn(SERVER_FAMILY_OPERATIONS, family)) {

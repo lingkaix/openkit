@@ -4,10 +4,8 @@ import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
-  isCanonicalUserOperationAuthorized,
-  requireCurrentDeploymentAdmin,
+  evaluateProductAuthorization,
 } from '../auth/operation-authorizer.js';
-import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
   initializeDefaultKnowledgeBaseId,
   readDefaultKnowledgeBaseId,
@@ -34,6 +32,8 @@ export interface ScopedNotebookContext {
   readonly coreDb: CoreDb;
   readonly actor: Actor | undefined;
   readonly target: ScopedNotebookTarget;
+  /** Concrete native action; inspection remains read-only at its caller. */
+  readonly operation?: 'knowledge.read' | 'knowledge.write' | 'review.apply';
 }
 
 /** Scope-only raw content boundary; it is not a Source, output-audience, sensitivity or suppression grant. */
@@ -59,33 +59,43 @@ export function resolveScopedNotebookOwner(input: ScopedNotebookContext): {
   readonly ownerScope: PinnedScopedNotebook['ownerScope'];
   readonly notebookRoot: string;
 } {
-  if (!input.actor) throw new ScopedNotebookAccessError();
-  if (input.target.kind === 'user') {
-    if (!isCanonicalUserOperationAuthorized(input.coreDb, input.actor))
-      throw new ScopedNotebookAccessError();
-    return {
-      ownerScope: { kind: 'user', userId: input.actor.userId },
-      notebookRoot: userMemoryRoot(input.coreDb.dataRoot, input.actor.userId),
-    };
-  }
+  if (!input.actor || !['user', 'user-inspection', 'server'].includes(input.target.kind))
+    throw new ScopedNotebookAccessError();
+  const target =
+    input.target.kind === 'server'
+      ? { kind: 'server' as const, family: 'knowledge' }
+      : input.target.kind === 'user'
+        ? { kind: 'user' as const }
+        : { kind: 'user' as const, userId: input.target.userId };
+  const operation = input.operation ?? 'knowledge.read';
   try {
-    requireCurrentDeploymentAdmin(input.coreDb, input.actor);
+    if (
+      evaluateProductAuthorization(
+        input.coreDb,
+        input.actor,
+        target,
+        operation,
+        operation !== 'knowledge.read'
+      ).effect !== 'allow'
+    )
+      throw new ScopedNotebookAccessError();
   } catch (error) {
     if (error instanceof DeploymentAdminRequiredError) throw new ScopedNotebookAccessError();
     throw error;
   }
-  if (input.target.kind === 'user-inspection') {
-    if (!isCanonicalUserActive(input.coreDb, input.target.userId))
-      throw new ScopedNotebookAccessError();
-    return {
-      ownerScope: { kind: 'user', userId: input.target.userId },
-      notebookRoot: userMemoryRoot(input.coreDb.dataRoot, input.target.userId),
-    };
-  }
-  if (input.target.kind !== 'server') throw new ScopedNotebookAccessError();
+  const ownerScope: PinnedScopedNotebook['ownerScope'] =
+    input.target.kind === 'server'
+      ? { kind: 'server' }
+      : {
+          kind: 'user',
+          userId: input.target.kind === 'user' ? input.actor.userId : input.target.userId,
+        };
   return {
-    ownerScope: { kind: 'server' },
-    notebookRoot: serverKnowledgeRoot(input.coreDb.dataRoot),
+    ownerScope,
+    notebookRoot:
+      ownerScope.kind === 'user'
+        ? userMemoryRoot(input.coreDb.dataRoot, ownerScope.userId)
+        : serverKnowledgeRoot(input.coreDb.dataRoot),
   };
 }
 
@@ -99,6 +109,8 @@ export function pinScopedNotebook(input: ScopedNotebookContext): PinnedScopedNot
     coreDb: input.coreDb,
     actor: input.actor ? { ...input.actor } : undefined,
     target: { ...input.target },
+    // Raw bytes always require read authority, including reads made by a writer.
+    operation: 'knowledge.read' as const,
   };
   const owner = resolveScopedNotebookOwner(context);
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
@@ -155,7 +167,7 @@ export function initializeScopedNotebook(
       | { readonly target: { readonly kind: 'server' } }
     )
 ): string {
-  const owner = resolveScopedNotebookOwner(input);
+  const owner = resolveScopedNotebookOwner({ ...input, operation: 'knowledge.write' });
   if (lstatSync(owner.notebookRoot, { throwIfNoEntry: false }))
     throw new NotebookError('recovery_required');
   const userDb = input.target.kind === 'user' && 'userDb' in input ? input.userDb : undefined;
@@ -179,7 +191,7 @@ export function initializeScopedNotebook(
       producer: { kind: 'user', id: input.actor!.userId },
     },
     revalidate: () => {
-      resolveScopedNotebookOwner(input);
+      resolveScopedNotebookOwner({ ...input, operation: 'knowledge.write' });
       return {
         pageScopeId:
           owner.ownerScope.kind === 'user'

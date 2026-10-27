@@ -9,11 +9,7 @@ import {
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import {
-  authorizeWorkspace,
-  isCanonicalUserOperationAuthorized,
-  isCurrentDeploymentAdministrator,
-} from '../auth/operation-authorizer.js';
+import { authorizeWorkspace, evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import {
   findAssistantTimeline,
   openAssistantTimeline,
@@ -117,10 +113,18 @@ function admitContext(
   ownerUserId?: string,
   policyOperation: 'workspace.write' | 'approval.respond' = 'workspace.write'
 ) {
-  if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor))
+  if (!actor)
     refuse('workspace_access_denied', 'Current self Memory authority is unavailable.', 403);
   const privateOwner = ownerUserId ?? actor.userId;
-  if (actor.userId !== privateOwner && !isCurrentDeploymentAdministrator(coreDb, actor))
+  if (
+    evaluateProductAuthorization(
+      coreDb,
+      actor,
+      privateOwner === actor.userId ? { kind: 'user' } : { kind: 'user', userId: privateOwner },
+      'knowledge.write',
+      true
+    ).effect !== 'allow'
+  )
     refuse('workspace_access_denied', 'Current Memory confirmation authority is unavailable.', 403);
   if (
     !authorizeWorkspace(coreDb, actor, input.workspaceId, {
@@ -178,11 +182,10 @@ function intentFor(record: PendingRequestRecord): ForgetIntent {
 function checkTarget(coreDb: CoreDb, actor: Actor, record: PendingRequestRecord) {
   const intent = intentFor(record);
   const self = actor.userId === intent.ownerScope.userId;
-  if (!self && !isCurrentDeploymentAdministrator(coreDb, actor))
-    refuse('workspace_access_denied', 'Current Memory confirmation authority is unavailable.', 403);
   const context = {
     coreDb,
     actor,
+    operation: 'knowledge.write' as const,
     target: self
       ? { kind: 'user' as const }
       : { kind: 'user-inspection' as const, userId: intent.ownerScope.userId },

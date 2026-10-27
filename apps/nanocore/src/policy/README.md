@@ -80,4 +80,4 @@ The agent Policy provider derives prompt-cache and call addressing from the admi
 
 `goalDomainSupportError` shares the native action, resource-reference, and Goal-anchor support predicate between proposal capture and publication. Proposal checks grant no authority; publication still checks the deciding credential, lifetime, and current Plan.
 
-Current retained human Policy authorship checks canonical User and administrator Token eligibility directly. It does not manufacture a request session or bypass the authenticated credential projection required at an administration entry.
+Current retained human Policy authorship evaluates the actual human and current membership or administrator facts through the common Kernel authorizer for `workspace.configure`. Server-root authors use the Server target; Workspace resource authors use the exact Workspace target. It does not manufacture a request session or lend an unpresented credential to a live effect. Lost author authority keeps the existing mandatory boundary closed.

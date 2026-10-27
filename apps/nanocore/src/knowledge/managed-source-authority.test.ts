@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 // LocalStorage verifies actual fixture bytes through descriptor-confined mounts.
+
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,7 @@ import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import {
   recordWorkspaceOwnerMembership,
   resolveWorkspaceMembershipRelation,
@@ -212,6 +214,7 @@ describe('request-local managed Source authority', () => {
     const f = await fixture();
     const invitation = f.coreDb.sqlite.transaction(() =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(f.coreDb, f.a.userId, f.a.workspaceId),
         coreDb: f.coreDb,
         workspaceId: f.a.workspaceId,
         inviterUserId: f.a.userId,
@@ -235,6 +238,7 @@ describe('request-local managed Source authority', () => {
     expect(deriveManagedSourceAccess(memberInput)).toMatchObject(f.knowledgeAccess);
     const removed = f.coreDb.sqlite.transaction(() =>
       removeWorkspaceMember({
+        authorization: workspaceMembershipDecisionFixture(f.coreDb, f.a.userId, f.a.workspaceId),
         coreDb: f.coreDb,
         workspaceId: f.a.workspaceId,
         actorUserId: f.a.userId,

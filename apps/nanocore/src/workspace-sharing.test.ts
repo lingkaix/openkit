@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import {
   acceptWorkspaceInvitation,
@@ -217,6 +218,11 @@ describe('Workspace sharing lifecycle', () => {
 
     const first = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: ' invitee@example.com ',
@@ -227,6 +233,11 @@ describe('Workspace sharing lifecycle', () => {
     );
     const second = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'INVITEE@example.com',
@@ -254,6 +265,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         createWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           inviteeEmail: 'member@example.com',
@@ -266,6 +282,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         createWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           inviteeEmail: 'disabled@example.com',
@@ -293,6 +314,11 @@ describe('Workspace sharing lifecycle', () => {
     const now = new Date('2026-07-19T12:00:00.000Z');
     const acceptedInvitation = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'invitee@example.com',
@@ -303,6 +329,11 @@ describe('Workspace sharing lifecycle', () => {
     );
     const staleInvitation = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'stale@example.com',
@@ -313,6 +344,11 @@ describe('Workspace sharing lifecycle', () => {
     );
     const expiredInvitation = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'expired@example.com',
@@ -417,6 +453,11 @@ describe('Workspace sharing lifecycle', () => {
     const now = new Date('2026-07-19T12:00:00.000Z');
     const created = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'invitee@example.com',
@@ -471,6 +512,11 @@ describe('Workspace sharing lifecycle', () => {
     const now = new Date('2026-07-19T12:00:00.000Z');
     const first = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'first@example.com',
@@ -481,6 +527,11 @@ describe('Workspace sharing lifecycle', () => {
     );
     const second = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'second@example.com',
@@ -507,6 +558,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         revokeWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           expectedRevision: 1,
           invitationId: second.invitation.invitationId,
@@ -519,6 +575,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         revokeWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           expectedRevision: 1,
           invitationId: second.invitation.invitationId,
@@ -551,6 +612,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         removeWorkspaceMember({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           expectedRevision: 1,
           memberUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
@@ -563,6 +629,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         removeWorkspaceMember({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           expectedRevision: 2,
           memberUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
@@ -622,6 +693,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           actorUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           expectedRegistryRevision: 99,
@@ -634,6 +710,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           actorUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           expectedRegistryRevision: 1,
@@ -657,6 +738,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           actorUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           expectedRegistryRevision: 2,
@@ -676,6 +762,11 @@ describe('Workspace sharing lifecycle', () => {
     expect(
       mutate(coreDb, () =>
         transferWorkspaceOwnership({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
           actorUserId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
           expectedRegistryRevision: 1,
@@ -800,6 +891,11 @@ describe('Workspace sharing lifecycle', () => {
     const now = new Date('2026-07-19T12:00:00.000Z');
     const created = mutate(coreDb, () =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+        ),
         coreDb,
         inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         inviteeEmail: 'admin@example.com',

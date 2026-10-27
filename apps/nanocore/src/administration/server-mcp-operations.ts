@@ -3,7 +3,11 @@ import { digestMcpConfig, McpValidatedDeclarationSchema } from '@openkit/config-
 import { allocateEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import { listServerAuditEvents, recordServerAuditEvent } from '../audit-events.js';
-import { authorizeWorkspace, requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import {
+  authorizeWorkspace,
+  evaluateProductAuthorization,
+  requireAdministratorOperation,
+} from '../auth/operation-authorizer.js';
 import { mcpEntries } from '../catalog/catalog-operations.js';
 import {
   CatalogConflictError,
@@ -131,7 +135,7 @@ export function createServerMcpOperationImplementations(
   ): Promise<T> => {
     root();
     const actor = publicOperationActor(context);
-    if (!workspaceId) requireCurrentDeploymentAdmin(coreDb!, actor);
+    if (!workspaceId) requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
     const scope = {
       actorId: actor.userId,
       ...(workspaceId ? { workspaceId } : { coreId: 'server' }),
@@ -149,7 +153,8 @@ export function createServerMcpOperationImplementations(
         responseId,
         replay: (record) => replay(record.response.id),
         execute: async () => {
-          if (!workspaceId) requireCurrentDeploymentAdmin(coreDb!, actor);
+          if (!workspaceId)
+            requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
           else if (
             !authorizeWorkspace(coreDb!, actor, workspaceId, {
               mutating: true,
@@ -230,7 +235,14 @@ export function createServerMcpOperationImplementations(
           createdAt: new Date().toISOString(),
           selectCurrent: !stage,
           ...(stage ? { id: input.mcpId! } : {}),
-          stdioHostAuthorized: true,
+          stdioHostAuthorized:
+            evaluateProductAuthorization(
+              coreDb!,
+              publicOperationActor(context),
+              { kind: 'server' },
+              'workspace.configure',
+              true
+            ).effect === 'allow',
         });
         await dependencies.closeServerMcpSessions?.(undefined, result.version.entryId);
         return {
@@ -296,7 +308,14 @@ export function createServerMcpOperationImplementations(
             dataRoot: root(),
             owner: { kind: 'server' },
             entryId: input.mcpId,
-            stdioHostAuthorized: true,
+            stdioHostAuthorized:
+              evaluateProductAuthorization(
+                coreDb!,
+                publicOperationActor(context),
+                { kind: 'server' },
+                'workspace.configure',
+                true
+              ).effect === 'allow',
           });
           await dependencies.closeServerMcpSessions?.(undefined, input.mcpId);
           return { revision: result.revision };

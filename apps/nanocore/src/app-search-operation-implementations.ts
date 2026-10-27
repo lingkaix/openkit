@@ -57,7 +57,7 @@ export function createAppSearchOperationImplementations(
               mutating: false,
               policyOperation: 'knowledge.read',
             })
-          : actor.kind === 'local';
+          : false;
         if (knowledgeReadable) {
           const dataRoot = store.getDataRoot();
           if (!dataRoot)

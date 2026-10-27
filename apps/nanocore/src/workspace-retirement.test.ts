@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { randomUUID } from 'node:crypto';
 import {
   existsSync,
@@ -43,6 +44,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
 import { createTestStore } from './test-support/store.js';
 import { createWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -101,6 +103,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: id, ownerUserId: FIXTURE_LOCAL_USER_ID });
   const invitation = coreDb.sqlite.transaction(() =>
     createWorkspaceInvitation({
+      authorization: workspaceMembershipDecisionFixture(coreDb, FIXTURE_LOCAL_USER_ID, workspaceId),
       coreDb,
       workspaceId,
       inviterUserId: FIXTURE_LOCAL_USER_ID,

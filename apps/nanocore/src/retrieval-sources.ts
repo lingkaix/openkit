@@ -88,7 +88,7 @@ export function collectProductRetrievalScopes(
       ? false
       : input.coreDb
         ? isCurrentDeploymentAdministrator(input.coreDb, actor)
-        : actor.kind === 'local';
+        : false;
   const destination = input.outputThreadId
     ? store.getThread(workspaceId, input.outputThreadId)
     : null;
@@ -339,7 +339,7 @@ function requireRead(input: ProductRetrievalInput, policyOperation: ProductOpera
         mutating: false,
         policyOperation,
       })
-    : input.actor.kind === 'local';
+    : false;
   if (!allowed)
     throw new OperationError('workspace_access_denied', 'Retrieval access denied.', 403);
 }

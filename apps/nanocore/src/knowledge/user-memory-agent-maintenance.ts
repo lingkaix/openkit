@@ -219,7 +219,7 @@ export async function prepareUserMemoryMaintenance(
     actor: input.requestActor,
     runtimeConfigManager: dependencies.runtimeConfigManager,
   };
-  const owner = admitMemoryContext(context);
+  const owner = admitMemoryContext(context, 'knowledge.write');
   input.signal.throwIfAborted();
   let workspaceId: string;
   try {
@@ -231,7 +231,7 @@ export async function prepareUserMemoryMaintenance(
   } catch {
     throw new NotebookError('recovery_required');
   }
-  admitMemoryContext(context);
+  admitMemoryContext(context, 'knowledge.write');
   input.signal.throwIfAborted();
   if (!lstatSync(owner.notebookRoot, { throwIfNoEntry: false })) {
     if (
@@ -523,7 +523,7 @@ export async function prepareUserMemoryMaintenance(
           );
           const assertCurrent = () => {
             input.signal.throwIfAborted();
-            admitMemoryContext(context);
+            admitMemoryContext(context, 'knowledge.write');
             for (const [path, content] of Object.entries(files))
               if (readPage(baseRevision, path) !== content)
                 throw new NotebookError('recovery_required');
@@ -978,7 +978,7 @@ export async function runUserMemoryMaintenanceCommand(
     userDb: dependencies.userDb,
     actor: input.requestActor,
   };
-  admitMemoryContext(context);
+  admitMemoryContext(context, 'knowledge.write');
   const command = input.tellContent === undefined ? 'knowledge.maintain' : 'knowledge.tell';
   const scope = { userId: dependencies.userDb.userId, actorId: input.requestActor.userId };
   const canonicalInput = {
@@ -1004,7 +1004,7 @@ export async function runUserMemoryMaintenanceCommand(
     execute: async (receipt) => {
       const prepared = await prepareUserMemoryMaintenance(dependencies, input);
       // User authority and receipts are a separate effect domain from acknowledged personal-Workspace work.
-      admitMemoryContext(context);
+      admitMemoryContext(context, 'knowledge.write');
       await dependencies.store.recordCommandRequest(
         {
           ...receipt,

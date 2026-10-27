@@ -9,7 +9,7 @@ import {
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import type { ServerKnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
@@ -92,7 +92,7 @@ export function currentServerMaintenanceActor(
   if (!localUserId) return undefined;
   const actor: Actor = { kind: 'local', userId: localUserId };
   try {
-    requireCurrentDeploymentAdmin(coreDb, actor);
+    requireAdministratorOperation(coreDb, actor, 'knowledge.write', undefined, 'knowledge');
     return actor;
   } catch {
     return undefined;
@@ -105,7 +105,13 @@ export function serverNotebookAdmission(
   actor: Actor,
   selectedFiles?: Readonly<Record<string, string>>
 ): NotebookPublicationAdmission {
-  requireCurrentDeploymentAdmin(dependencies.coreDb, actor);
+  requireAdministratorOperation(
+    dependencies.coreDb,
+    actor,
+    'knowledge.read',
+    undefined,
+    'knowledge'
+  );
   const notebook = pinScopedNotebook({
     coreDb: dependencies.coreDb,
     actor,
@@ -221,7 +227,14 @@ export async function prepareServerKnowledgeMaintenance(
   input: ServerKnowledgeMaintenanceInput
 ) {
   const { store, coreDb } = dependencies;
-  if (input.trigger === 'request') requireCurrentDeploymentAdmin(coreDb, input.requestActor);
+  if (input.trigger === 'request')
+    requireAdministratorOperation(
+      coreDb,
+      input.requestActor,
+      'knowledge.write',
+      undefined,
+      'knowledge'
+    );
   input.signal.throwIfAborted();
   const admitted = await admitControlMaintenance(
     coreDb.dataRoot,
@@ -342,7 +355,7 @@ export async function prepareServerKnowledgeMaintenance(
       started = true;
       try {
         const actor = input.requestActor;
-        requireCurrentDeploymentAdmin(coreDb, actor);
+        requireAdministratorOperation(coreDb, actor, 'knowledge.write', undefined, 'knowledge');
         const context = { coreDb, actor: actor!, target: { kind: 'server' as const } };
         if (!existsSync(join(coreDb.dataRoot, 'server', 'knowledge')))
           initializeScopedNotebook({
@@ -379,7 +392,7 @@ export async function prepareServerKnowledgeMaintenance(
         const historicalRevisions = new Set<string>();
         const assertCurrent = () => {
           input.signal.throwIfAborted();
-          requireCurrentDeploymentAdmin(coreDb, actor);
+          requireAdministratorOperation(coreDb, actor, 'knowledge.write', undefined, 'knowledge');
           const current = serverNotebookAdmission(dependencies, actor!, canonicalFiles);
           for (const revision of historicalRevisions)
             serverNotebookAdmission(dependencies, actor!, git.readRevision(revision).files);
@@ -685,7 +698,13 @@ export async function runServerKnowledgeMaintenanceCommand(
   dependencies: ServerKnowledgeMaintenanceDependencies,
   input: ServerKnowledgeMaintenanceInput
 ) {
-  requireCurrentDeploymentAdmin(dependencies.coreDb, input.requestActor);
+  requireAdministratorOperation(
+    dependencies.coreDb,
+    input.requestActor,
+    'knowledge.write',
+    undefined,
+    'knowledge'
+  );
   const command =
     input.tellContent === undefined ? 'knowledge.server.maintain' : 'knowledge.server.tell';
   const scope = { coreId: 'server' as const, actorId: input.actor.id };

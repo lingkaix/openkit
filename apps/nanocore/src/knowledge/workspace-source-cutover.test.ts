@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 // The contract composes actual Notebook Git publication with managed LocalStorage originals.
+
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
@@ -166,6 +168,7 @@ describe('Workspace native Source cutover', () => {
       .run(otherUserId, email, Date.now(), Date.now());
     const invitation = f.coreDb.sqlite.transaction(() =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(f.coreDb, f.userId, f.workspace.id),
         coreDb: f.coreDb,
         workspaceId: f.workspace.id,
         inviterUserId: f.userId,

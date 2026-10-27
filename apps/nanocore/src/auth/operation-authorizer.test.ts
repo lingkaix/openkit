@@ -30,6 +30,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { createWorkerEnvironmentOperations } from '../worker-environments/worker-environment-operations.js';
 import {
   createWorkspaceDeletionRequest,
@@ -1026,6 +1027,11 @@ describe('central Workspace operation authorizer', () => {
       expect(capture).not.toHaveBeenCalled();
       const rejoined = fixture.coreDb.sqlite.transaction(() => {
         const invited = createWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            fixture.coreDb,
+            'usr_00000000-0000-7000-8000-000000000001',
+            entry.workspaceId
+          ),
           coreDb: fixture.coreDb,
           workspaceId: entry.workspaceId,
           inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',

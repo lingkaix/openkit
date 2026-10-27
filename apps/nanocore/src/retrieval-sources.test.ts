@@ -1,5 +1,5 @@
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { createTestStore } from './test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -18,15 +18,19 @@ import {
 import { openWorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const stamp = '2026-10-15T00:00:00.000Z';
 const actor = { userId: 'usr_00000000-0000-7000-8000-000000000001', kind: 'local' as const };
 const hash = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
 const testRoots: string[] = [];
+const testDbs: Array<ReturnType<typeof createTestCoreDb>> = [];
 afterEach(async () => {
   await closeRetrievalServices();
   await shutdownControlStoreWorkerClient();
+  for (const db of testDbs.splice(0)) closeTestCoreDb(db);
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -34,8 +38,16 @@ describe('canonical product retrieval adapters', () => {
   it('searches past Item, exact Artifact and Material text through real kernel generations without sidecars', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-product-'));
     testRoots.push(dataRoot);
+    const coreDb = createTestCoreDb(dataRoot);
+    testDbs.push(coreDb);
+    ensureLocalUser(coreDb);
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Retrieval');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: actor.userId,
+    });
     const thread = await store.createThread(workspace.id, 'Past conversation');
     const turn = await store.createTurn(workspace.id, thread.id, 'old conversation marker', {
       kind: 'user',
@@ -88,6 +100,7 @@ describe('canonical product retrieval adapters', () => {
     db.sqlite.close();
     const input = {
       store,
+      coreDb,
       actor,
       workspaceId: workspace.id,
       families: ['conversation', 'artifact', 'material'] as const,
@@ -127,8 +140,16 @@ describe('canonical product retrieval adapters', () => {
   it('excludes another private Thread before inventory and source access, and refuses private-to-shared context', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-audience-'));
     testRoots.push(dataRoot);
+    const coreDb = createTestCoreDb(dataRoot);
+    testDbs.push(coreDb);
+    ensureLocalUser(coreDb);
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Audiences');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: actor.userId,
+    });
     const own = await store.createThread(workspace.id, 'Own', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: actor.userId,
@@ -152,6 +173,7 @@ describe('canonical product retrieval adapters', () => {
     // A shared destination excludes private sources even for an eligible administrator.
     const input = {
       store,
+      coreDb,
       actor,
       workspaceId: workspace.id,
       outputThreadId: shared.id,

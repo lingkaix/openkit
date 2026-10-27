@@ -64,3 +64,9 @@ The HTTP MCP fixture exposes server-observed header snapshots for exact bearer a
 `mcp-tool-policy.ts` constructs explicit synthetic human Tool conditions for tests of the common Policy/Goal/agent pipeline. It neither admits production authority nor reads retired catalog permission lists.
 
 `resource-policy.ts` builds explicit managed Thread Policy inputs. `writeManagedThreadPolicyFixture` authors that fixture in the existing Workspace configuration, preserves required features and authored siblings, and returns the original bytes for optional fixture restoration. Callers provide the current User, Workspace and Thread; the fixture grants no runtime admission or human confirmation.
+
+`resource-policy.ts.workspaceMembershipDecisionFixture` obtains the actual current `membership.manage` Kernel decision for a fixture User and Workspace. Sharing owner tests pass it directly into the same synchronous Core command transaction. The helper creates no User, Token, membership, stored decision or administrator projection; missing or removed authority still denies.
+
+`store.ts.createTestUserDb` opens and migrates the actual User storage owner and returns its handle plus an idempotent close callback. It creates no User or authorization facts; tests pass the opaque handle to domain owners and do not access SQLite.
+
+`pending-request.ts.createPendingRequestFixture` owns a caller-selected Workspace handle and exposes the production Pending raise, command-intent resolution and canonical-record read operations. Tests supply the actual request and current actor; the fixture adds no records, decisions or authority. Close it before removing its root.

@@ -1416,7 +1416,7 @@ function assertResponsibleActor(
       403
     );
   }
-  if (coreDb && !administrator && !authorityAllows(coreDb, store, record, requestActor)) {
+  if (coreDb && !authorityAllows(coreDb, store, record, requestActor)) {
     throw new PendingRequestCommandError(
       'workspace_access_denied',
       'Workspace access denied.',

@@ -4,7 +4,6 @@ import { basename, join, resolve } from 'node:path';
 import { KnowledgeQueryContextSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
-  isEntityId,
   ReferenceScopeIdSchema,
   RetrievalTraceReferenceSchema,
   responsibleUserIdForActor,
@@ -560,10 +559,7 @@ export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'acc
           'knowledge.read',
           true
         ) !== null
-    : access.actor.kind === 'user' &&
-      isEntityId('usr', access.actor.id) &&
-      access.requestActor?.kind === 'local' &&
-      access.requestActor.userId === access.actor.id;
+    : false;
   if (!allowed || (access.outputThreadId && !threadReadable(input, access.outputThreadId)))
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
 }
@@ -577,7 +573,7 @@ export function threadReadable(
     const administrator = access.requestActor
       ? access.coreDb
         ? isCurrentDeploymentAdministrator(access.coreDb, access.requestActor)
-        : access.requestActor.kind === 'local'
+        : false
       : false;
     const thread = access.store.getThread(workspaceId, threadId);
     if (

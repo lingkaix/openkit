@@ -51,8 +51,11 @@ function unavailable(): never {
 }
 
 /** Rechecks actual self and User database before deriving any notebook or byte location. */
-function owner(input: MemoryContext) {
-  const admitted = admitMemoryContext(input);
+function owner(
+  input: MemoryContext,
+  operation: 'knowledge.read' | 'knowledge.write' = 'knowledge.read'
+) {
+  const admitted = admitMemoryContext(input, operation);
   const database = lstatSync(userDbPath(input.coreDb.dataRoot, input.userDb.userId), {
     throwIfNoEntry: false,
   });
@@ -186,7 +189,7 @@ export async function registerUserKnowledgeSource(
   input: UserKnowledgeSourceWriter,
   request: RegisterUserKnowledgeSourceInput
 ): Promise<UserKnowledgeSource> {
-  const scope = owner(input);
+  const scope = owner(input, 'knowledge.write');
   const parsed = RequestSchema.safeParse(request);
   if (!parsed.success || Buffer.from(parsed.data.content).toString('utf8') !== parsed.data.content)
     throw new OperationError('invalid_request', 'Invalid literal Source request.', 400);
@@ -224,7 +227,7 @@ export async function registerUserKnowledgeSource(
             commandInput: { ownerScope: scope.ownerScope, ...command },
             captureChannel: OPERATION,
             revalidatePublication: () => {
-              owner(input);
+              owner(input, 'knowledge.write');
             },
           },
           {

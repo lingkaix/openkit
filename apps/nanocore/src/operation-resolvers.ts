@@ -644,8 +644,13 @@ function resolveMutationTarget(
       );
       if (
         !row ||
-        (row.inviteeUserId !== entry.actor.userId &&
-          !isCurrentDeploymentAdministrator(dependencies.coreDb, entry.actor))
+        evaluateProductAuthorization(
+          dependencies.coreDb,
+          entry.actor,
+          { kind: 'invitation', invitationId: selector(input, target.field) },
+          'invitation.respond',
+          true
+        ).effect !== 'allow'
       )
         throw denied();
       return row.workspaceId;

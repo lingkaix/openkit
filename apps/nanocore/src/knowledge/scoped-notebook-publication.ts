@@ -81,6 +81,7 @@ export async function publishScopedNotebook(
     coreDb: input.coreDb,
     actor: input.actor ? { ...input.actor } : undefined,
     target: { ...input.target },
+    operation: 'knowledge.write' as const,
   };
   const owner = resolveScopedNotebookOwner(context);
   const userDb = input.target.kind === 'user' && 'userDb' in input ? input.userDb : undefined;
@@ -117,6 +118,7 @@ export async function publishScopedNotebook(
         : {}),
       revalidate: () => {
         // Current identity/credential admission precedes every retained read and the publisher's final CAS.
+        resolveScopedNotebookOwner(context);
         const pinnedNotebook = pinScopedNotebook(context);
         const currentFiles = pinnedNotebook.read().files;
         const baseFiles = notebook.readRevision(request.baseRevision).files;

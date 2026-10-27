@@ -30,7 +30,10 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
-import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import {
+  managedThreadPolicy,
+  workspaceMembershipDecisionFixture,
+} from '../test-support/resource-policy.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -789,6 +792,11 @@ describe('bounded scheduled poll event admission', () => {
       const removed = f.db.sqlite.transaction(() => {
         const scope = { coreDb: f.db, workspaceId: f.schedule.workspaceId };
         const invitation = createWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            scope.coreDb,
+            f.userId,
+            scope.workspaceId
+          ),
           ...scope,
           inviterUserId: f.userId,
           inviteeEmail: email,
@@ -805,6 +813,11 @@ describe('bounded scheduled poll event admission', () => {
         const member = getWorkspaceMember(f.db, scope.workspaceId, f.userId);
         if (!registry || !member) throw new Error('Original membership is missing.');
         const transfer = transferWorkspaceOwnership({
+          authorization: workspaceMembershipDecisionFixture(
+            scope.coreDb,
+            f.userId,
+            scope.workspaceId
+          ),
           ...scope,
           actorUserId: f.userId,
           targetUserId: user.id,
@@ -812,6 +825,11 @@ describe('bounded scheduled poll event admission', () => {
         });
         if (transfer.kind !== 'transferred') throw new Error('Owner transfer failed.');
         return removeWorkspaceMember({
+          authorization: workspaceMembershipDecisionFixture(
+            scope.coreDb,
+            user.id,
+            scope.workspaceId
+          ),
           ...scope,
           actorUserId: user.id,
           memberUserId: f.userId,

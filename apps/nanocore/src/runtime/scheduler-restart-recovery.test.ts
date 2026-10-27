@@ -72,6 +72,7 @@ import { admitTestNativeEnvironment } from '../test-support/native-environment.j
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -6346,6 +6347,7 @@ describe('minimal scheduler reconnect contract', () => {
     });
     const joined = coreDb.sqlite.transaction(() => {
       const invitation = createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(coreDb, LOCAL_USER_ID, workspace.id),
         coreDb,
         workspaceId: workspace.id,
         inviterUserId: LOCAL_USER_ID,

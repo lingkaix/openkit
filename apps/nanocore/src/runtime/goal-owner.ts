@@ -1823,8 +1823,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         !authorizeWorkspace(services.coreDb, context.actor, input.workspaceId, {
           policyOperation: 'approval.respond',
           mutating: true,
-        }) &&
-        !administrator
+        })
       )
         throw new GoalCommandError('workspace_access_denied', 'Workspace access denied.', 403);
       if (

@@ -44,11 +44,15 @@ export type MemoryWriter = MemoryContext &
   Omit<Parameters<typeof publishScopedNotebook>[0], 'actor' | 'coreDb' | 'target' | 'userDb'>;
 
 /** Resolves actual self authority before any owner path, page identity or content is inspected. */
-export function admitMemoryContext(input: MemoryContext) {
+export function admitMemoryContext(
+  input: MemoryContext,
+  operation: 'knowledge.read' | 'knowledge.write' | 'review.apply' = 'knowledge.read'
+) {
   const context = {
     coreDb: input.coreDb,
     actor: input.actor ? { ...input.actor } : undefined,
     target: { kind: 'user' as const },
+    operation,
   };
   const owner = resolveScopedNotebookOwner(context);
   if (
@@ -155,12 +159,13 @@ export function readMemoryPage(input: MemoryContext, pageId: string) {
 /** Preserves the original exact command bytes while joining explicit human save/edit to the common scoped publisher. */
 async function changeMemoryPage(input: MemoryWriter, change: MemoryPageChange, existing: boolean) {
   const request = { ...change };
-  const owner = admitMemoryContext(input);
+  const owner = admitMemoryContext(input, 'knowledge.write');
   const path = pathFor(request.pageId);
   assertMemoryPagesNotSuppressed(owner.notebookRoot, input.userDb.userId, [path]);
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
+  admitMemoryContext(input);
   const base = notebook.readRevision(request.baseRevision).files[path];
   if ((base !== undefined) !== existing || (base !== undefined && !memoryPageFacts(path, base)))
     throw new NotebookError('invalid_request');
@@ -203,7 +208,7 @@ export function recordMemorySuppression(
     readonly digest: string;
   }
 ) {
-  const owner = admitMemoryContext(input);
+  const owner = admitMemoryContext(input, 'knowledge.write');
   pathFor(request.pageId);
   const rows = readMemorySuppressions(owner.notebookRoot, input.userDb.userId);
   const previous = rows.find((row) => row.id === request.requestId);
@@ -221,7 +226,7 @@ export function recordMemorySuppression(
   const page = readMemoryPage(input, request.pageId);
   if (!page || page.notebookRevision !== request.notebookRevision || page.digest !== request.digest)
     throw new NotebookError('conflict');
-  admitMemoryContext(input);
+  admitMemoryContext(input, 'knowledge.write');
   return appendMemorySuppression(owner.notebookRoot, {
     userId: input.userDb.userId,
     pageId: request.pageId,

@@ -76,7 +76,7 @@ export async function scanUserMemoryMaintenance(input: {
       try {
         let actor: Actor | undefined;
         if (input.localUserId === userId) actor = { kind: 'local', userId };
-        if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor))
+        if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor, 'knowledge.write'))
           throw new Error('Current User maintenance authority is unavailable.');
         await ensureUserQuickChatWorkspace({ coreDb, store, userId });
         userDb = openUserDb(coreDb.dataRoot, userId);

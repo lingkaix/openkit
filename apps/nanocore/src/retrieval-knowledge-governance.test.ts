@@ -51,10 +51,16 @@ afterEach(async () => {
 });
 
 describe('canonical local retrieval identity', () => {
-  it('requires the exact canonical local actor pair before generation access', async () => {
+  it('uses current Core identity and refuses generation access without Core authority', async () => {
     const f = await createFixture('local-identity');
+    expect(() =>
+      admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access: f.access })
+    ).not.toThrow();
     const access = { ...f.access, coreDb: undefined };
-    expect(() => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access })).not.toThrow();
+    // Core Policy requires current authoritative facts; an implicit local identity cannot replace Core.
+    expect(() => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access })).toThrow(
+      'Knowledge retrieval access denied.'
+    );
     for (const actorId of [
       'user_local',
       'usr_00000000-0000-4000-8000-000000000001',
@@ -63,7 +69,7 @@ describe('canonical local retrieval identity', () => {
       expect(() =>
         admitKnowledgeRetrieval({
           workspaceId: f.workspaceId,
-          access: { ...access, actor: { kind: 'user', id: actorId } },
+          access: { ...f.access, actor: { kind: 'user', id: actorId } },
         })
       ).toThrow('Knowledge retrieval access denied.');
     }

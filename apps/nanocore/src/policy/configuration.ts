@@ -18,6 +18,7 @@ import {
   authorizeWorkspace,
   evaluateProductAuthorization,
   isCurrentServerPolicyAuthor,
+  requireAdministratorOperation,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
@@ -67,7 +68,7 @@ export function preparePolicyConfiguration(input: {
   readonly store: FsStore;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
 }) {
-  requireCurrentDeploymentAdmin(input.coreDb, input.actor);
+  requireAdministratorOperation(input.coreDb, input.actor, 'workspace.configure');
   const read = input.files.readFile('server.jsonc');
   if (read.file.revision !== input.request.expectedRevision)
     throw new RuntimeConfigFileServiceError(

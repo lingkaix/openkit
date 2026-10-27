@@ -31,7 +31,7 @@ import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   isCurrentServerPolicyAuthor,
-  requireCurrentDeploymentAdmin,
+  requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
 import {
   CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION,
@@ -96,7 +96,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
 
   /** Authorizes the current user's exact private administration home before observing artifacts. */
   function requireHome(threadId: string, turnId?: string): void {
-    requireCurrentDeploymentAdmin(coreDb, actor);
+    requireAdministratorOperation(coreDb, actor, 'workspace.configure');
     const workspace = store.getWorkspace(workspaceId);
     const thread = store.getThread(workspaceId, threadId);
     if (workspace.kind !== 'personal' || thread.entryPath !== 'administration')
@@ -256,7 +256,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       | z.infer<typeof ApplyDelegatedAdministrationConfigurationRequestSchema>,
     invocation?: { threadId: string; turnId: string; signal?: AbortSignal }
   ): Promise<ApplyAdministrationConfigurationResponse> {
-    requireCurrentDeploymentAdmin(coreDb, actor);
+    requireAdministratorOperation(coreDb, actor, 'workspace.configure');
     const artifact = store.getArtifact(workspaceId, request.candidate.artifactId);
     if (artifact.origin.kind !== 'turn-output') fail('configuration_candidate_conflict');
     const { threadId } = artifact.origin;
@@ -434,7 +434,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         let reload: ApplyAdministrationConfigurationResponse['reload'] = 'not-attempted';
         let restartRequired = body.restartRequired;
         try {
-          requireCurrentDeploymentAdmin(coreDb, actor);
+          requireAdministratorOperation(coreDb, actor, 'workspace.configure');
           const written = files.updateFile(
             {
               id: prepared.current.read.file.id,
@@ -537,7 +537,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
   return {
     /** Reads only editable, non-secret catalog fields and exact source revisions. */
     read(targetFamily: 'provider' | 'gateway' | 'policy', targetId?: string) {
-      requireCurrentDeploymentAdmin(coreDb, actor);
+      requireAdministratorOperation(coreDb, actor, 'workspace.configure');
       if (targetFamily === 'policy' && !targetId) {
         const current = source('policy', 'server');
         return {
@@ -576,7 +576,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     },
     /** Returns only editable fields derived from the registered schema owner. */
     schema(targetFamily: 'provider' | 'gateway' | 'policy') {
-      requireCurrentDeploymentAdmin(coreDb, actor);
+      requireAdministratorOperation(coreDb, actor, 'workspace.configure');
       return {
         targetFamily,
         schema: z.toJSONSchema(changeSchema(targetFamily), {

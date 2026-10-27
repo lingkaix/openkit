@@ -1,9 +1,15 @@
 import { existsSync } from 'node:fs';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openUserDb,
+  type UserDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { coreDbPath } from '../storage/fs-layout.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 
 /**
@@ -39,6 +45,26 @@ export function createTestCoreDb(dataRoot: string): CoreDb {
 /** Closes the exact caller-owned fixture handle after native work has drained. */
 export function closeTestCoreDb(coreDb: CoreDb): void {
   if (coreDb.sqlite.open) coreDb.sqlite.close();
+}
+
+/** Opens and migrates a private User fixture without creating identity or authorization facts. */
+export function createTestUserDb(
+  dataRoot: string,
+  userId: string
+): { userDb: UserDb; close: () => void } {
+  const userDb = openUserDb(dataRoot, userId);
+  try {
+    applyScopedMigrations(userDb);
+  } catch (error) {
+    userDb.sqlite.close();
+    throw error;
+  }
+  return {
+    userDb,
+    close: () => {
+      if (userDb.sqlite.open) userDb.sqlite.close();
+    },
+  };
 }
 
 /**

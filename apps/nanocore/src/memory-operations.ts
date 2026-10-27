@@ -72,7 +72,7 @@ import { readCanonicalTextFile } from './storage/workspace-file-records.js';
 
 /** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
-  const owner = admitMemoryContext(writer);
+  const owner = admitMemoryContext(writer, 'knowledge.write');
   const path = `${input.pageId}.md`;
   if (!memoryPageFacts(path, input.content)) throw new NotebookError('invalid_request');
   const notebook = new KnowledgeNotebook({
@@ -131,7 +131,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
         scope: ownerScope,
       });
       const revalidate = () => {
-        admitMemoryContext(writer);
+        admitMemoryContext(writer, 'knowledge.write');
         const maintenance = writer.runtimeConfigManager
           .current()
           .userConfigs.find(({ userId }) => userId === writer.userDb.userId)

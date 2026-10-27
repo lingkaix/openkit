@@ -11,7 +11,7 @@ import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
-  requireCurrentDeploymentAdmin,
+  requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import type { CoreMode } from '../config/mode.js';
@@ -159,7 +159,7 @@ export function createAdministrationOperationImplementations(input: Administrati
       try {
         const actor = publicOperationActor(context);
         if (!input.coreDb) throw new DeploymentAdminRequiredError();
-        requireCurrentDeploymentAdmin(input.coreDb, actor);
+        requireAdministratorOperation(input.coreDb, actor, 'turn.run');
         return await configuration(actor).apply(request);
       } catch (error) {
         if (error instanceof DeploymentAdminRequiredError)
@@ -200,7 +200,7 @@ export function createAdministrationOperationImplementations(input: Administrati
       const threadId = request.threadId ?? administrationThreadId(actor.userId, request.requestId);
       const store = input.store;
       try {
-        requireCurrentDeploymentAdmin(input.coreDb, actor);
+        requireAdministratorOperation(input.coreDb, actor, 'turn.run');
         const workspace = store.getWorkspace(workspaceId);
         if (workspace.kind !== 'personal')
           throw new OperationError('administration_failed', 'Administration failed.', 500);
@@ -221,7 +221,7 @@ export function createAdministrationOperationImplementations(input: Administrati
         const result = await runIdempotentCommand({
           command: 'conversation.submit',
           execute: async (commandReceipt) => {
-            requireCurrentDeploymentAdmin(input.coreDb!, actor);
+            requireAdministratorOperation(input.coreDb!, actor, 'turn.run');
             const thread =
               currentThread ??
               (await store.createThread(
@@ -407,7 +407,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                   }
                 ),
                 requireCurrentAdministrator: () => {
-                  requireCurrentDeploymentAdmin(input.coreDb!, actor);
+                  requireAdministratorOperation(input.coreDb!, actor, 'turn.run');
                 },
                 environmentTools: input.environmentToolsForTurn({
                   actor,
@@ -494,7 +494,8 @@ export function createAdministrationOperationImplementations(input: Administrati
                     profileId: selection.profile?.id ?? null,
                     limits: selection.profile?.limits ?? DEFAULT_LIMITS,
                     signal: controller.signal,
-                    assertCurrent: () => requireCurrentDeploymentAdmin(input.coreDb!, actor),
+                    assertCurrent: () =>
+                      requireAdministratorOperation(input.coreDb!, actor, 'turn.run'),
                     readEvidence: (items) =>
                       readInternalContextEvidence({
                         store,
@@ -547,7 +548,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                   'Administration returned no publishable answer.'
                 );
               }
-              requireCurrentDeploymentAdmin(input.coreDb!, actor);
+              requireAdministratorOperation(input.coreDb!, actor, 'turn.run');
               try {
                 const completedAt = new Date().toISOString();
                 const item = await store.createItem({

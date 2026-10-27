@@ -31,8 +31,11 @@ import { z } from 'zod';
 import { recordServerAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import {
+  DeploymentAdminRequiredError,
+  evaluateProductAuthorization,
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
+  requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { refuseScope, scopeAdmissionFailures } from './bootstrap/readiness.js';
@@ -64,7 +67,6 @@ import {
   isTerminalWorkspaceDeletionRequest,
   listWorkspaceDeletionRequests,
 } from './workspace-deletion-request.js';
-import { resolveWorkspaceMembershipRelation } from './workspace-membership.js';
 import {
   acceptWorkspaceInvitation,
   type CreateWorkspaceInvitationResult,
@@ -154,9 +156,12 @@ export function createWorkspaceSharingOperationImplementations(
             const result = createWorkspaceInvitation({
               coreDb,
               inviterUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(
+              authorization: evaluateProductAuthorization(
                 coreDb,
-                publicOperationActor(context)
+                publicOperationActor(context),
+                { kind: 'workspace', workspaceId },
+                'membership.manage',
+                true
               ),
               inviteeEmail: request.inviteeEmail,
               workspaceId,
@@ -233,22 +238,17 @@ export function createWorkspaceSharingOperationImplementations(
               inviteeUserId: invitationInviteeUserId(
                 coreDb,
                 invitationId,
-                actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
+                publicOperationActor(context)
               ),
               workspaceId: invitationWorkspaceIdForInvitee(
                 coreDb,
                 invitationId,
-                actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
+                publicOperationActor(context)
               ),
             }),
           inflightCommands,
           invitationId,
-          administratorEligible: isCurrentDeploymentAdministrator(
-            coreDb,
-            publicOperationActor(context)
-          ),
+          actor: publicOperationActor(context),
           request,
           store,
           summary: 'Workspace invitation accepted.',
@@ -284,22 +284,17 @@ export function createWorkspaceSharingOperationImplementations(
               inviteeUserId: invitationInviteeUserId(
                 coreDb,
                 invitationId,
-                actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
+                publicOperationActor(context)
               ),
               workspaceId: invitationWorkspaceIdForInvitee(
                 coreDb,
                 invitationId,
-                actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
+                publicOperationActor(context)
               ),
             }),
           inflightCommands,
           invitationId,
-          administratorEligible: isCurrentDeploymentAdministrator(
-            coreDb,
-            publicOperationActor(context)
-          ),
+          actor: publicOperationActor(context),
           request,
           store,
           summary: 'Workspace invitation declined.',
@@ -336,18 +331,18 @@ export function createWorkspaceSharingOperationImplementations(
               expectedRevision: request.expectedRevision,
               invitationId,
               actorUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(
+              authorization: evaluateProductAuthorization(
                 coreDb,
-                publicOperationActor(context)
+                publicOperationActor(context),
+                { kind: 'workspace', workspaceId },
+                'membership.manage',
+                true
               ),
               workspaceId,
             }),
           inflightCommands,
           invitationId,
-          administratorEligible: isCurrentDeploymentAdministrator(
-            coreDb,
-            publicOperationActor(context)
-          ),
+          actor: publicOperationActor(context),
           request,
           store,
           summary: 'Workspace invitation revoked.',
@@ -384,9 +379,12 @@ export function createWorkspaceSharingOperationImplementations(
               expectedRevision: request.expectedRevision,
               memberUserId,
               actorUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(
+              authorization: evaluateProductAuthorization(
                 coreDb,
-                publicOperationActor(context)
+                publicOperationActor(context),
+                { kind: 'workspace', workspaceId },
+                'membership.manage',
+                true
               ),
               workspaceId,
             }),
@@ -489,9 +487,12 @@ export function createWorkspaceSharingOperationImplementations(
             const result = transferWorkspaceOwnership({
               coreDb,
               actorUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(
+              authorization: evaluateProductAuthorization(
                 coreDb,
-                publicOperationActor(context)
+                publicOperationActor(context),
+                { kind: 'workspace', workspaceId },
+                'membership.manage',
+                true
               ),
               expectedRegistryRevision: request.expectedRegistryRevision,
               targetUserId: request.targetUserId,
@@ -809,11 +810,15 @@ export function createWorkspaceSharingOperationImplementations(
 
 /** Rechecks current administrator authority without consulting Workspace content. */
 function requireRetirementAdministrator(coreDb: CoreDb, actor: Actor): void {
-  if (!isCurrentDeploymentAdministrator(coreDb, actor)) {
+  try {
+    requireAdministratorOperation(coreDb, actor, 'deployment.recover');
+  } catch (error) {
+    if (!(error instanceof DeploymentAdminRequiredError)) throw error;
     throw new OperationError(
       'deployment_admin_required',
       'Current deployment administrator authority is required.',
-      403
+      403,
+      { cause: error }
     );
   }
 }
@@ -921,8 +926,8 @@ interface RunInvitationTransitionInput {
   readonly summary: string;
   /** Exact Workspace for member-authorized revocation. */
   readonly workspaceId?: string;
-  /** Current trusted administrator eligibility at this invocation. */
-  readonly administratorEligible?: boolean;
+  /** Actual request actor for current invitation replay admission. */
+  readonly actor: Actor;
 }
 
 /** Runs one invitation terminal transition through the shared Core receipt boundary. */
@@ -964,8 +969,13 @@ async function runInvitationTransition(
         invitation.invitationId !== input.invitationId ||
         (input.workspaceId !== undefined && invitation.workspaceId !== input.workspaceId) ||
         (input.workspaceId === undefined &&
-          !input.administratorEligible &&
-          invitation.inviteeUserId !== input.actorId)
+          evaluateProductAuthorization(
+            input.coreDb,
+            input.actor,
+            { kind: 'invitation', invitationId: input.invitationId },
+            'invitation.respond',
+            true
+          ).effect !== 'allow')
       ) {
         throw accessDenied();
       }
@@ -1111,10 +1121,7 @@ function projectWorkspaceRelation(
   administratorEligible: boolean
 ) {
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
-  if (
-    !registry ||
-    (!administratorEligible && !resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId))
-  ) {
+  if (!registry) {
     throw accessDenied();
   }
   const member = getWorkspaceMember(coreDb, workspaceId, userId);
@@ -1156,11 +1163,19 @@ function authorizedWorkspaceSummary(
 function invitationWorkspaceIdForInvitee(
   coreDb: CoreDb,
   invitationId: string,
-  inviteeUserId: string,
-  administratorEligible = false
+  actor: Actor
 ): string {
   const invitation = getWorkspaceInvitation(coreDb, invitationId);
-  if (!invitation || (!administratorEligible && invitation.inviteeUserId !== inviteeUserId)) {
+  if (
+    !invitation ||
+    evaluateProductAuthorization(
+      coreDb,
+      actor,
+      { kind: 'invitation', invitationId },
+      'invitation.respond',
+      true
+    ).effect !== 'allow'
+  ) {
     throw accessDenied();
   }
   return invitation.workspaceId;
@@ -1474,13 +1489,8 @@ function assertWorkspaceLineage(workspaceId: string, actual: string | null): voi
 }
 
 /** Resolves the bound invitee while preserving truthful administrator attribution. */
-function invitationInviteeUserId(
-  coreDb: CoreDb,
-  invitationId: string,
-  actorId: string,
-  administratorEligible: boolean
-): string {
-  invitationWorkspaceIdForInvitee(coreDb, invitationId, actorId, administratorEligible);
+function invitationInviteeUserId(coreDb: CoreDb, invitationId: string, actor: Actor): string {
+  invitationWorkspaceIdForInvitee(coreDb, invitationId, actor);
   return getWorkspaceInvitation(coreDb, invitationId)!.inviteeUserId;
 }
 

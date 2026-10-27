@@ -7,7 +7,8 @@ import { publishedErrorMessage } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import {
-  isCurrentDeploymentAdministrator,
+  DeploymentAdminRequiredError,
+  evaluateProductAuthorization,
   isWorkspaceOperationAuthorized,
 } from '../auth/operation-authorizer.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -150,9 +151,23 @@ export function createCatalogOperationImplementations(
     void dependencies.closeWorkspaceMcpSessions?.(workspaceId);
   };
   const management = createSkillManagementCommands(dependencies, hooks, afterMutation);
-  const administrator = (context: AdmittedOperationContext) =>
-    dependencies.coreDb !== undefined &&
-    isCurrentDeploymentAdministrator(dependencies.coreDb, publicOperationActor(context));
+  const administrator = (context: AdmittedOperationContext) => {
+    if (!dependencies.coreDb) return false;
+    try {
+      return (
+        evaluateProductAuthorization(
+          dependencies.coreDb,
+          publicOperationActor(context),
+          { kind: 'server' },
+          'workspace.configure',
+          true
+        ).effect === 'allow'
+      );
+    } catch (error) {
+      if (error instanceof DeploymentAdminRequiredError) return false;
+      throw error;
+    }
+  };
   /** Reuses the existing receipt/Audit owners; no catalog-specific ledger is created. */
   const commandOwners = (workspaceId: string) => {
     if (

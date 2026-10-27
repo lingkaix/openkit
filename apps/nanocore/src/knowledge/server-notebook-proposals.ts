@@ -9,7 +9,7 @@ import { type ActorRef, deriveEntityId } from '@openkit/protocol';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
+import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
 import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
@@ -78,7 +78,13 @@ export function createServerNotebookProposal(
   producer: ActorRef & { kind: 'agent' },
   sourceReferences: readonly string[]
 ): Proposal {
-  requireCurrentDeploymentAdmin(context.coreDb, context.actor);
+  requireAdministratorOperation(
+    context.coreDb,
+    context.actor,
+    'knowledge.write',
+    undefined,
+    'knowledge'
+  );
   const git = notebook(context.coreDb);
   if (git.publishedRevision() !== edit.baseRevision)
     throw new NotebookError('conflict', git.publishedRevision());
@@ -141,7 +147,13 @@ export function createServerNotebookProposal(
 }
 /** Reads exact retained bytes and candidate identity under current Server authority. */
 export function readServerNotebookProposal(context: ServerNotebookProposalContext, id: string) {
-  requireCurrentDeploymentAdmin(context.coreDb, context.actor);
+  requireAdministratorOperation(
+    context.coreDb,
+    context.actor,
+    'knowledge.read',
+    undefined,
+    'knowledge'
+  );
   const bytes = readFileSync(proposalPath(context.coreDb, id), 'utf8');
   const header = /^---\n([\s\S]*?)\n---\n/.exec(bytes);
   if (!header) throw new NotebookError('recovery_required');
@@ -295,7 +307,13 @@ export async function decideServerNotebookProposal(
       decidedAt: new Date().toISOString(),
     });
   const recordDecision = () => {
-    requireCurrentDeploymentAdmin(context.coreDb, context.actor);
+    requireAdministratorOperation(
+      context.coreDb,
+      context.actor,
+      'review.apply',
+      undefined,
+      'knowledge'
+    );
     if (prior) return;
     const path = join(
       context.coreDb.dataRoot,
@@ -339,7 +357,13 @@ export async function decideServerNotebookProposal(
           .map((change) => [change.path, change.before!])
       ),
       revalidate: () => {
-        requireCurrentDeploymentAdmin(context.coreDb, context.actor);
+        requireAdministratorOperation(
+          context.coreDb,
+          context.actor,
+          'knowledge.write',
+          undefined,
+          'knowledge'
+        );
         return context.revalidate(
           notebook(context.coreDb).readRevision(proposal.candidateRevision).files
         );

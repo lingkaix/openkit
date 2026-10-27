@@ -100,7 +100,7 @@ export async function createUserMemoryProposal(
   producer: ActorRef & { kind: 'agent' },
   sourceReferences: readonly string[]
 ): Promise<Proposal> {
-  admitMemoryContext(context);
+  admitMemoryContext(context, 'knowledge.write');
   const git = notebook(context);
   if (git.publishedRevision() !== edit.baseRevision)
     throw new NotebookError('conflict', git.publishedRevision());
@@ -169,11 +169,13 @@ export async function createUserMemoryProposal(
     status: 'pending',
     createdAt: new Date().toISOString(),
   });
+  const workspace = await context.store.ensureQuickChatWorkspace(context.userDb.userId);
+  admitMemoryContext(context, 'knowledge.write');
   writeFileAtomic(
     proposalPath(context, id),
     serializeKnowledgeProposalRecord({
       ...proposal,
-      workspaceId: (await context.store.ensureQuickChatWorkspace(context.userDb.userId)).id,
+      workspaceId: workspace.id,
     })
   );
   return proposal;
@@ -325,6 +327,7 @@ export async function decideUserMemoryProposal(
     readonly decision: 'accepted' | 'rejected' | 'deferred';
   }
 ): Promise<{ review: Review; notebookRevision: string | null }> {
+  admitMemoryContext(context, 'review.apply');
   const selected = readUserMemoryProposal(context, request.proposalId);
   const { proposal } = selected;
   if (
@@ -364,7 +367,7 @@ export async function decideUserMemoryProposal(
       decidedAt: new Date().toISOString(),
     });
   const recordDecision = () => {
-    admitMemoryContext(context);
+    admitMemoryContext(context, 'review.apply');
     if (prior) return;
     const path = join(admitMemoryContext(context).notebookRoot, 'reviews', `${proposal.id}.json`);
     const raw = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : undefined;
@@ -395,6 +398,7 @@ export async function decideUserMemoryProposal(
     recordDecision();
     return { review, notebookRevision: null };
   }
+  admitMemoryContext(context, 'knowledge.write');
   const publication = await publishNotebook(
     {
       owner: { kind: 'user', userDb: context.userDb },
@@ -415,7 +419,7 @@ export async function decideUserMemoryProposal(
           .map((change) => [change.path, change.before!])
       ),
       revalidate: () => {
-        admitMemoryContext(context);
+        admitMemoryContext(context, 'knowledge.write');
         context.revalidate(notebook(context).readRevision(proposal.baseRevision).files);
         return context.revalidate(
           notebook(context).readRevision(proposal.candidateRevision).files,

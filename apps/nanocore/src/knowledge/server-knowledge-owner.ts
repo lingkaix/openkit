@@ -3,7 +3,10 @@ import { RegisterKnowledgeSourceRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, KnowledgeSourceIdSchema, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import {
+  DeploymentAdminRequiredError,
+  evaluateProductAuthorization,
+} from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
@@ -43,12 +46,32 @@ export interface ServerKnowledgeSourceWriter extends ServerKnowledgeContext {
 }
 
 /** Checks current Server authority without inspecting Source content. */
-export function admitsServerKnowledge(input: ServerKnowledgeContext): boolean {
-  return Boolean(input.actor && isCurrentDeploymentAdministrator(input.coreDb, input.actor));
+export function admitsServerKnowledge(
+  input: ServerKnowledgeContext,
+  operation: 'knowledge.read' | 'knowledge.write' = 'knowledge.read'
+): boolean {
+  if (!input.actor) return false;
+  try {
+    return (
+      evaluateProductAuthorization(
+        input.coreDb,
+        input.actor,
+        { kind: 'server', family: 'knowledge' },
+        operation,
+        operation === 'knowledge.write'
+      ).effect === 'allow'
+    );
+  } catch (error) {
+    if (error instanceof DeploymentAdminRequiredError) return false;
+    throw error;
+  }
 }
 /** Resolves the canonical scope only after current deployment administration admission. */
-function owner(input: ServerKnowledgeContext) {
-  if (!admitsServerKnowledge(input))
+function owner(
+  input: ServerKnowledgeContext,
+  operation: 'knowledge.read' | 'knowledge.write' = 'knowledge.read'
+) {
+  if (!admitsServerKnowledge(input, operation))
     throw new OperationError('workspace_access_denied', 'Server Knowledge access denied.', 403);
   return { dataRoot: input.coreDb.dataRoot, ownerScope: { kind: 'server' as const } };
 }
@@ -113,7 +136,7 @@ export async function registerServerKnowledgeSource(
   input: ServerKnowledgeSourceWriter,
   request: RegisterServerKnowledgeSourceInput
 ): Promise<ServerKnowledgeSource> {
-  const scope = owner(input);
+  const scope = owner(input, 'knowledge.write');
   const parsed = RequestSchema.safeParse(request);
   if (!parsed.success || Buffer.from(parsed.data.content).toString('utf8') !== parsed.data.content)
     throw new OperationError('invalid_request', 'Invalid literal Source request.', 400);
@@ -154,7 +177,7 @@ export async function registerServerKnowledgeSource(
           commandInput: { ownerScope: scope.ownerScope, ...command },
           captureChannel: OPERATION,
           revalidatePublication: () => {
-            owner(input);
+            owner(input, 'knowledge.write');
           },
         },
         {

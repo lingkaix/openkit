@@ -43,7 +43,7 @@ import {
   verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
-import { type Actor, ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
+import { type Actor, ensureLocalUser } from './auth/identity.js';
 // Actor type used by mode worker turn request credential threading
 import {
   type AuthVariables,
@@ -60,10 +60,11 @@ import {
 import {
   authorizeWorkspace,
   currentWorkspaceAuthority,
+  DeploymentAdminRequiredError,
   isWorkspaceOperationAuthorized,
   readCurrentWorkspacePolicy,
   registerOperationAccessGuards,
-  requireCurrentDeploymentAdmin,
+  requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import {
@@ -359,13 +360,23 @@ function createBrowserCors(
 /**
  * Requires deployment-admin authority before collecting deployment diagnostics.
  *
+ * @param coreDb Current canonical identity and credential owner.
  * @param actor Authenticated request actor.
  * @returns Forbidden response for non-admin actors, otherwise null.
  */
-function requireDiagnosticsAdminActor(actor: AuthVariables['actor'] | undefined): Response | null {
-  return isDeploymentAdminActor(actor)
-    ? null
-    : asApiError('Server-admin authority is required.', 'diagnostics_admin_forbidden', 403);
+function requireDiagnosticsAdminActor(
+  coreDb: CoreDb | undefined,
+  actor: AuthVariables['actor'] | undefined
+): Response | null {
+  if (coreDb && actor) {
+    try {
+      requireAdministratorOperation(coreDb, actor, 'workspace.read');
+      return null;
+    } catch (error) {
+      if (!(error instanceof DeploymentAdminRequiredError)) throw error;
+    }
+  }
+  return asApiError('Server-admin authority is required.', 'diagnostics_admin_forbidden', 403);
 }
 
 /**
@@ -999,7 +1010,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         privateWorkspaceIdForUser: (userId) =>
           quickChatWorkspaceIdForUser(userId, options.coreDb!.dataRoot),
         requireCurrentAdministrator: (actor) => {
-          requireCurrentDeploymentAdmin(options.coreDb!, actor);
+          requireAdministratorOperation(options.coreDb!, actor, 'workspace.configure');
         },
         authorizePrivateHome: ({ actor, workspaceId, threadId, turnId }) => {
           if (workspaceId !== quickChatWorkspaceIdForUser(actor.userId, options.coreDb!.dataRoot))
@@ -1034,7 +1045,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           inflightCommands,
           configFilesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
           requireCurrentAdministrator: (actor) => {
-            requireCurrentDeploymentAdmin(options.coreDb!, actor);
+            requireAdministratorOperation(options.coreDb!, actor, 'workspace.configure');
           },
           reloadRuntimeConfig: () => runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }),
           replaceResidentWork: async (input) => {
@@ -1058,7 +1069,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 )
                   throw new Error('Worker source audience changed.');
               }
-              requireCurrentDeploymentAdmin(coreDb, actor);
+              requireAdministratorOperation(coreDb, actor, 'workspace.configure');
               if (
                 !isWorkspaceOperationAuthorized(coreDb, actor, replaceNow.workspaceId, {
                   authentication: 'deployment-admin',
@@ -1982,7 +1993,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerServiceRoutes({ app, mode, turnExecutor });
 
   app.get('/api/diagnostics', (c) => {
-    const adminError = requireDiagnosticsAdminActor(c.get('actor'));
+    const adminError = requireDiagnosticsAdminActor(options.coreDb, c.get('actor'));
     if (adminError) {
       return adminError;
     }

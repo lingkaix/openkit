@@ -58,6 +58,7 @@ export function deriveManagedSourceAccess(input: ManagedSourceAdmission): Storag
       const current = resolveScopedNotebookOwner({
         coreDb: access.coreDb,
         actor: access.requestActor,
+        operation: input.mode === 'staged-write' ? 'knowledge.write' : 'knowledge.read',
         target: owner.ownerScope.kind === 'user' ? { kind: 'user' } : { kind: 'server' },
       });
       if (!isDeepStrictEqual(current.ownerScope, owner.ownerScope)) return null;

@@ -33,7 +33,7 @@ import {
   resolveWorkspaceMembershipRelation,
 } from '../workspace-membership.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { getWorkspaceMember } from '../workspace-sharing.js';
+import { getWorkspaceInvitation, getWorkspaceMember } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
 import {
   listOpenKitAccessTokenRecords,
@@ -321,8 +321,8 @@ export function isWorkspaceOperationAuthorized(
   return authorizeWorkspace(coreDb, actor, workspaceId, access) !== null;
 }
 
-/** Checks the current human Server root; it does not supply a caller's credential admission. */
-export function isCurrentServerPolicyAuthor(
+/** Reads retained human eligibility facts without presenting a credential for a live effect. */
+function currentServerPolicyAuthorEligibility(
   coreDb: CoreDb,
   humanId: string,
   now = Date.now()
@@ -339,6 +339,33 @@ export function isCurrentServerPolicyAuthor(
   );
 }
 
+/** Evaluates current retained-human Server authority; it cannot supply a live caller credential. */
+export function isCurrentServerPolicyAuthor(
+  coreDb: CoreDb,
+  humanId: string,
+  now = Date.now()
+): boolean {
+  if (!Number.isFinite(now)) return false;
+  return (
+    evaluateProductAccess({
+      facts: {
+        userId: humanId,
+        activeUser: isCanonicalUserActive(coreDb, humanId),
+        administrator: currentServerPolicyAuthorEligibility(coreDb, humanId, now),
+        credential: {
+          kind: 'retained-author',
+          current: true,
+          workspaceBound: true,
+          readOnly: false,
+        },
+      },
+      target: { kind: 'server' },
+      operation: 'workspace.configure',
+      mutating: true,
+    }).effect === 'allow'
+  );
+}
+
 /** Rereads current resource Policy authors; lost author authority never makes a boundary unmanaged. */
 export function readCurrentWorkspacePolicy(input: {
   readonly coreDb: CoreDb;
@@ -350,9 +377,14 @@ export function readCurrentWorkspacePolicy(input: {
     if (statement.state !== 'active') continue;
     if (
       statement.author.kind !== 'human' ||
-      !(
-        resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, statement.author.id) ||
-        isCurrentServerPolicyAuthor(input.coreDb, statement.author.id)
+      !currentWorkspaceAuthority(
+        input.coreDb,
+        input.workspaceId,
+        { kind: 'user', id: statement.author.id },
+        'workspace.configure',
+        true,
+        undefined,
+        { retainedPolicyAuthor: true, dependencyFailure: 'throw' }
       )
     )
       throw new Error('Workspace Policy author no longer has current authority.');
@@ -410,7 +442,7 @@ export function currentWorkspaceAuthority(
       : !!(
           options?.retainedPolicyAuthor &&
           actor.kind === 'user' &&
-          isCurrentServerPolicyAuthor(coreDb, actor.id)
+          currentServerPolicyAuthorEligibility(coreDb, actor.id)
         );
     const membership = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
     const activeUser = isCanonicalUserActive(coreDb, responsibleUserId);
@@ -666,7 +698,8 @@ export function evaluateProductAuthorization(
   coreDb: CoreDb,
   actor: Actor,
   target:
-    | { readonly kind: 'user' }
+    | { readonly kind: 'user'; readonly userId?: string }
+    | { readonly kind: 'invitation'; readonly invitationId: string }
     | { readonly kind: 'server'; readonly family?: string | undefined }
     | { readonly kind: 'workspace'; readonly workspaceId: string },
   operation: string,
@@ -691,7 +724,8 @@ function readProductAuthorizationInput(
   coreDb: CoreDb,
   actor: Actor,
   target:
-    | { readonly kind: 'user' }
+    | { readonly kind: 'user'; readonly userId?: string }
+    | { readonly kind: 'invitation'; readonly invitationId: string }
     | { readonly kind: 'server'; readonly family?: string | undefined }
     | { readonly kind: 'workspace'; readonly workspaceId: string },
   operation: string,
@@ -706,7 +740,15 @@ function readProductAuthorizationInput(
           active: isActiveRegisteredWorkspace(coreDb, target.workspaceId),
           membership: resolveWorkspaceMembershipRelation(coreDb, target.workspaceId, actor.userId),
         }
-      : target;
+      : target.kind === 'user'
+        ? { ...target, active: isCanonicalUserActive(coreDb, target.userId ?? actor.userId) }
+        : target.kind === 'invitation'
+          ? {
+              ...target,
+              inviteeUserId:
+                getWorkspaceInvitation(coreDb, target.invitationId)?.inviteeUserId ?? null,
+            }
+          : target;
   return {
     facts: {
       userId: actor.userId,
@@ -732,11 +774,12 @@ export function requireAdministratorOperation(
   coreDb: CoreDb,
   actor: Actor | undefined,
   operation: string,
-  now = new Date()
+  now = new Date(),
+  family?: string
 ): void {
   if (!actor) throw new DeploymentAdminRequiredError();
   if (
-    evaluateProductAuthorization(coreDb, actor, { kind: 'server' }, operation, false, now)
+    evaluateProductAuthorization(coreDb, actor, { kind: 'server', family }, operation, false, now)
       .effect !== 'allow'
   )
     throw new DeploymentAdminRequiredError();

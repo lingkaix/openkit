@@ -25,6 +25,7 @@ import { createDemoStore, createRetainedDemoStore } from '../test-support/demo-s
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 
@@ -653,6 +654,11 @@ describe('worker.list operation', () => {
     const viewerId = viewer.user.id;
     const membership = coreDb.sqlite.transaction(() => {
       const invited = createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(
+          coreDb,
+          'usr_00000000-0000-7000-8000-000000000001',
+          'ws_00000000-0000-7000-8000-000000000001'
+        ),
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',

@@ -110,6 +110,7 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { getWorkspaceMember, removeWorkspaceMember } from './workspace-sharing.js';
 
@@ -4781,6 +4782,11 @@ function revokeAssistantMemberAccess(f: Awaited<ReturnType<typeof assistantWirin
   const removal = f.coreDb.sqlite
     .transaction(() =>
       removeWorkspaceMember({
+        authorization: workspaceMembershipDecisionFixture(
+          f.coreDb,
+          'usr_00000000-0000-7000-8000-000000000001',
+          workspaceId
+        ),
         coreDb: f.coreDb,
         workspaceId,
         actorUserId: 'usr_00000000-0000-7000-8000-000000000001',
