@@ -321,6 +321,13 @@ async function writeWorkspaceArchive(destinationPath, stream, expected) {
       throw new Error('Workspace archive destination identity changed during download.');
     }
   } catch (cause) {
+    if (!stream.locked) {
+      try {
+        await stream.cancel(cause);
+      } catch {
+        // Preserve the original local sink failure if remote disposal also fails.
+      }
+    }
     if (fileDescriptor !== null) {
       closeSync(fileDescriptor);
     }
@@ -356,6 +363,23 @@ function requireAgentReadableMaterial(sensitivity) {
 
 /** Retained stream bindings add only CLI-local file inputs and exclusive sink effects. */
 const archiveBindings = {
+  'workspace.backup-download': {
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    clientMethod: 'operations.workspace.backup-download',
+    inputSchema: strictShared(
+      appSchemas.WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS[
+        'workspace.backup-download'
+      ].inputSchema.safeExtend({ destinationPath: z.string().min(1) })
+    ),
+    mutating: true, // Exclusive local destination creation is a CLI effect.
+    async handler({ client }, input) {
+      const stream = await client.operations['workspace.backup-download'](
+        bodyWithout(input, 'destinationPath')
+      );
+      await writeWorkspaceArchive(input.destinationPath, stream);
+      return { downloaded: true };
+    },
+  },
   'artifact.import': {
     clientMethod: 'artifactFiles.import',
     inputSchema: strictShared(

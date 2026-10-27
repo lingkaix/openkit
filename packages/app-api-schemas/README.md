@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+`workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. Only the complete capture, verify and download definitions are composed; restore, MOVE and explicit recovery remain uncomposed until their owners activate them. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.
+
 Knowledge retrieval exclusion reasons distinguish `selector_mismatch` for exact metadata filters from `policy_excluded` for current authorization or Source-policy refusal. The response shape and native admission boundary are unchanged.
 
 `src/knowledge-agent.ts` defines `knowledge.ask`, `knowledge.tell` and `knowledge.maintain`. Inputs select the current Workspace and carry no actor, source-scope or model override. Ask returns its separate KM Thread/Turn, scope-qualified citations and uncertainty. Tell and maintenance return the existing Turn/native notebook outcome. NanoCore owns current authority, Provider execution, capability delivery, fixed-base publication and required Review. User Memory execution remains a separate join.

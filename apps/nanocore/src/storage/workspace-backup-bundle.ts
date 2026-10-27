@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { type EntityKind, isEntityId } from '@openkit/protocol';
+import { copyVerifiedFile as copyStorageFile, publishDurableFile } from '@openkit/storage';
 import { type Node as JsonNode, type ParseError, parseTree, visit } from 'jsonc-parser';
 import { z } from 'zod';
 import type { FileStorageAdmission, FileStorageReservation } from './artifacts/file-admission.js';
@@ -159,12 +160,14 @@ export type WorkspaceBackupSeal = Readonly<z.infer<typeof sealSchema>>;
 export interface WorkspaceBackupVerificationInput {
   readonly bundleRoot: string;
   readonly stagingParent: string;
-  readonly admission: FileStorageAdmission;
+  readonly admission: Pick<FileStorageAdmission, 'reserve'>;
   readonly expectedRelease: Readonly<{ version: string; buildId: string }>;
   readonly supportedDatabaseFormats: Readonly<Record<string, number>>;
   readonly supportedRequiredFeatures?: readonly string[];
   /** Internal source decision only: verify a prepared MOVE without manufacturing a transferable seal. */
   readonly allowPreparedMove?: boolean;
+  /** Operational transport alone consumes exact original metadata; ordinary readers receive inventoried content only. */
+  readonly includeMetadata?: true;
 }
 
 /** Callback-scoped verified bytes; no live admission, capture or complete-closure authority. */
@@ -175,7 +178,7 @@ export interface VerifiedWorkspaceBackupBundle {
   readonly manifestDigest: string;
   readonly fileCount: number;
   readonly totalBytes: number;
-  /** Reads an inventoried private copy only while the consuming callback is active. */
+  /** Reads inventoried private copies or exact verified metadata only while the consuming callback is active. */
   readonly readFile: (path: string) => AsyncIterable<Uint8Array>;
 }
 
@@ -243,6 +246,31 @@ export function parseWorkspaceBackupManifest(value: unknown): WorkspaceBackupMan
     throw new Error('Workspace backup capture facts conflict.');
   }
   const paths = new Set(manifest.inventory.map((entry) => entry.path));
+  // A generation must be representable by this same owner's bounded standalone tree.
+  const tree = new Set(paths);
+  tree.add(WORKSPACE_BACKUP_MANIFEST_FILE);
+  tree.add(WORKSPACE_BACKUP_SEAL_FILE);
+  for (const path of paths) {
+    const parts = path.split('/');
+    for (let count = 1; count < parts.length; count++) tree.add(parts.slice(0, count).join('/'));
+    if (tree.size > MAX_ENTRIES) throw new Error('Workspace backup exceeds its entry limit.');
+  }
+  const metadataBytes = Buffer.byteLength(JSON.stringify(manifest)) + 1;
+  const sealBytes = Buffer.byteLength(
+    JSON.stringify({
+      format: 'openkit-workspace-backup-seal',
+      version: 1,
+      backupId: manifest.backupId,
+      purpose: manifest.purpose,
+      manifestDigest: `sha256:${'0'.repeat(64)}`,
+    })
+  );
+  if (
+    metadataBytes > MAX_METADATA_BYTES ||
+    manifest.inventory.reduce((sum, entry) => sum + entry.bytes, 0) + metadataBytes + sealBytes >
+      MAX_TOTAL_BYTES
+  )
+    throw new Error('Workspace backup exceeds its metadata or total byte limit.');
   for (const database of manifest.databaseFormats) {
     if (!paths.has(database.path) || Object.keys(database.markers).length === 0) {
       throw new Error('Workspace backup database coverage is invalid.');
@@ -581,7 +609,7 @@ async function copyVerifiedFile(
 /**
  * Verifies the structural bundle and supplies only private verified content copies.
  *
- * Raw metadata stays internal for exact digests. The callback cannot reopen source
+ * Raw metadata retains its exact original digest and callback lifetime. The callback cannot reopen source
  * paths through this API, and escaped readers refuse after cleanup. Capacity is
  * released only after owned staging is removed. These copies are temporary, not
  * durable capture protection or a database/reference-closure admission result.
@@ -670,7 +698,7 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
         if (totalBytes + manifestBytes.length + sealBytes.length > MAX_TOTAL_BYTES)
           throw new Error('Workspace backup exceeds its byte limit.');
         reservation = input.admission.reserve({
-          stagingBytes: BigInt(totalBytes),
+          stagingBytes: BigInt(totalBytes + manifestBytes.length + sealBytes.length),
           extractionBytes: 0n,
           derivativeBytes: 0n,
           publicationBytes: 0n,
@@ -679,9 +707,26 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
         for (const entry of manifest.inventory) {
           await copyVerifiedFile(source, staging, entry, tree.files.get(entry.path)!, reservation);
         }
+        await publishDurableFile({
+          destinationPath: join(staging, WORKSPACE_BACKUP_MANIFEST_FILE),
+          bytes: manifestBytes,
+        });
+        if (sealBytes.length)
+          await publishDurableFile({
+            destinationPath: join(staging, WORKSPACE_BACKUP_SEAL_FILE),
+            bytes: sealBytes,
+          });
         const verifiedRoot = staging;
-        const paths = new Set(manifest.inventory.map((entry) => entry.path));
-        /** Reads only the private copy; raw metadata and original source paths are not exposed. */
+        const paths = new Set([
+          ...manifest.inventory.map((entry) => entry.path),
+          ...(input.includeMetadata
+            ? [
+                WORKSPACE_BACKUP_MANIFEST_FILE,
+                ...(sealBytes.length ? [WORKSPACE_BACKUP_SEAL_FILE] : []),
+              ]
+            : []),
+        ]);
+        /** Reads only independent verified copies; original source paths are not exposed. */
         const readFile = async function* (path: string): AsyncIterable<Uint8Array> {
           if (!active || !paths.has(path))
             throw new Error('Workspace backup verified content is unavailable.');
@@ -737,6 +782,128 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
         // an earlier callback failure as well as the cleanup failure.
         removed = false;
         const cleanupError = new Error('Workspace backup verification staging cleanup failed.');
+        failure = failed
+          ? new AggregateError([failure, cleanupError], cleanupError.message)
+          : cleanupError;
+        failed = true;
+      }
+    }
+    if (removed) reservation?.release();
+  }
+  if (failed) throw failure;
+  return result;
+}
+
+/** Private operational source: local pooled generations never masquerade as flat uploaded bundles. */
+export type SnapshotSource =
+  | { readonly kind: 'local-snapshot'; readonly workspaceId: string; readonly backupId: string }
+  | { readonly kind: 'standalone-bundle'; readonly bundleRoot: string };
+
+/** Resolves a local generation into the same independently owned, bounded verified callback contract as a standalone bundle. */
+export async function withVerifiedWorkspaceSnapshotSource<T>(
+  input: Omit<WorkspaceBackupVerificationInput, 'bundleRoot'> & {
+    readonly dataRoot: string;
+    readonly source: SnapshotSource;
+  },
+  consume: (bundle: VerifiedWorkspaceBackupBundle) => Promise<T>
+): Promise<T> {
+  if (input.source.kind === 'standalone-bundle')
+    return withVerifiedWorkspaceBackupBundle(
+      { ...input, bundleRoot: input.source.bundleRoot },
+      consume
+    );
+  const { workspaceId, backupId } = input.source;
+  let materialized: string | undefined;
+  let reservation: FileStorageReservation | undefined;
+  let consuming = false;
+  let failed = false;
+  let failure: unknown;
+  let result!: T;
+  try {
+    if (!isEntityId('ws', workspaceId) || !isEntityId('wsbak', backupId))
+      throw new Error('Invalid local snapshot selector.');
+    const pool = await existingRoot(join(input.dataRoot, 'server/backups/workspaces', workspaceId));
+    const generation = await existingRoot(join(pool, backupId));
+    const source = await openSourceDirectory(generation, await lstat(generation, { bigint: true }));
+    let manifestBytes: Buffer;
+    let sealBytes: Buffer | null;
+    let manifest: WorkspaceBackupManifest;
+    try {
+      const tree = await inspectTree(source);
+      if (
+        tree.directories.size !== 0 ||
+        [...tree.files.keys()].some((path) => !METADATA_FILES.has(path))
+      )
+        throw new Error('Local generation has an unexpected file.');
+      manifestBytes = await readMetadata(source, WORKSPACE_BACKUP_MANIFEST_FILE, tree);
+      manifest = parseWorkspaceBackupManifest(decodeMetadata(manifestBytes).value);
+      if (manifest.workspaceId !== workspaceId || manifest.backupId !== backupId)
+        throw new Error('Local generation scope changed.');
+      sealBytes = tree.files.has(WORKSPACE_BACKUP_SEAL_FILE)
+        ? await readMetadata(source, WORKSPACE_BACKUP_SEAL_FILE, tree)
+        : null;
+      if (!sealBytes && !(input.allowPreparedMove && manifest.purpose === 'move'))
+        throw new Error('Local generation is not sealed.');
+    } finally {
+      await source.close();
+    }
+    const total = manifest.inventory.reduce((n, entry) => n + entry.bytes, 0);
+    if (total + manifestBytes.length + (sealBytes?.length ?? 0) > MAX_TOTAL_BYTES)
+      throw new Error('Local generation exceeds its bound.');
+    reservation = input.admission.reserve({
+      stagingBytes: BigInt(total + manifestBytes.length + (sealBytes?.length ?? 0)),
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    });
+    materialized = await mkdtemp(
+      join(await existingRoot(input.stagingParent), 'workspace-snapshot-resolve-')
+    );
+    for (const entry of manifest.inventory) {
+      reservation.assertAvailable();
+      const destinationPath = join(materialized, entry.path);
+      await mkdir(dirname(destinationPath), { recursive: true, mode: 0o700 });
+      await copyStorageFile({
+        sourcePath: join(pool, 'objects', entry.sha256.slice(7)),
+        destinationPath,
+        expectedBytes: entry.bytes,
+        expectedSha256: entry.sha256,
+        mode: entry.mode,
+        maxBytes: MAX_FILE_BYTES,
+      });
+    }
+    await publishDurableFile({
+      destinationPath: join(materialized, WORKSPACE_BACKUP_MANIFEST_FILE),
+      bytes: manifestBytes,
+    });
+    if (sealBytes)
+      await publishDurableFile({
+        destinationPath: join(materialized, WORKSPACE_BACKUP_SEAL_FILE),
+        bytes: sealBytes,
+      });
+    result = await withVerifiedWorkspaceBackupBundle(
+      { ...input, bundleRoot: materialized },
+      async (bundle) => {
+        consuming = true;
+        return consume(bundle);
+      }
+    );
+  } catch (error) {
+    failed = true;
+    failure =
+      consuming || error instanceof WorkspaceBackupBundleError
+        ? error
+        : new WorkspaceBackupBundleError(
+            error instanceof FileAdmissionError ? 'capacity-exceeded' : 'invalid-bundle'
+          );
+  } finally {
+    let removed = true;
+    if (materialized) {
+      try {
+        await rm(materialized, { recursive: true, force: true });
+      } catch {
+        removed = false;
+        const cleanupError = new Error('Workspace snapshot resolution staging cleanup failed.');
         failure = failed
           ? new AggregateError([failure, cleanupError], cleanupError.message)
           : cleanupError;
