@@ -31,7 +31,7 @@ import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { type AgentSetupResolverDependencies, resolveAgentSetup } from './agents/setup-resolver.js';
-import { asApiError } from './api-errors.js';
+import { apiErrorPayload, asApiError } from './api-errors.js';
 import {
   type AppUpdateHostTransport,
   createSshAppUpdateHostTransport,
@@ -70,6 +70,7 @@ import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import {
   createBootReadinessSnapshot,
   restoreWorkspaceRetirementAdmission,
+  scopeAdmissionFailures,
 } from './bootstrap/readiness.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import {
@@ -132,9 +133,10 @@ import {
   createTaskStartOperation,
   type WorkerCoordinatorCandidateRequest,
 } from './mode-entry-routes.js';
-import { APP_OPENAPI_DOCUMENT } from './openapi.js';
+import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { OperationError, projectOperationError } from './operation-error.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
@@ -256,6 +258,7 @@ import {
 } from './storage/db.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
@@ -738,6 +741,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.runtimeConfigManager?.current().openKitConfig ??
     options.openKitConfig ??
     (dataRoot ? loadOpenKitConfig(dataRoot) : {});
+  sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
   sharedStore.setLiveCaptureCoverage(captureCoverageBindingFromOpenKitConfig(startupOpenKitConfig));
   const publicBaseUrl = startupOpenKitConfig.server?.publicBaseUrl;
   const browserCors = createBrowserCors(mode, [
@@ -2052,6 +2056,37 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
   });
 
+  registerAppApiRoute(app, 'workspace.backup-download', async (c) => {
+    try {
+      const parsed = OPERATION_DEFINITIONS['workspace.backup-download'].inputSchema.safeParse(
+        await c.req.json().catch(() => null)
+      );
+      if (!parsed.success)
+        throw new OperationError('invalid_request', 'Invalid operation input.', 400);
+      const actor = c.get('actor');
+      return await createWorkspaceSnapshotOperationImplementations({
+        coreDb: options.coreDb,
+        dataRoot,
+        fileAdmission,
+        store: requestStore(c),
+        workspaceMutationAdmission,
+        diagnosticsServices,
+      })['workspace.backup-download'](parsed.data, {
+        kind: 'public',
+        actor,
+        actorRef: { kind: 'user', id: actor.userId },
+        scope: { kind: 'server' },
+        delivery: 'human',
+        signal: c.req.raw.signal,
+      });
+    } catch (error) {
+      const projected = projectOperationError(error);
+      if (!projected) throw error;
+      const { status, ...body } = projected;
+      return Response.json(apiErrorPayload(body), { status });
+    }
+  });
+
   app.get('/api/openapi.json', (c) => c.json(APP_OPENAPI_DOCUMENT));
 
   const onRuntimeConfigReloadApplied = () =>
@@ -2731,6 +2766,14 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       writeWorkspaceDeletionRequest(input.dataRoot, { ...request, phase: 'blocked' });
       input.workspaceMutationAdmission.reopen(workspaceId);
     }
+  }
+  // Bootstrap owns durable reconstruction; its existing authority refusal also excludes direct producers.
+  for (const failure of scopeAdmissionFailures(input.dataRoot)) {
+    if (failure.scope === 'workspace' && failure.check !== 'index')
+      input.workspaceMutationAdmission.restoreClosed(
+        failure.id,
+        failure.check === 'retired' ? 'ordinary' : 'capture'
+      );
   }
 }
 

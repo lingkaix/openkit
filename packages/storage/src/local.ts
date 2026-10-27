@@ -1,7 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { type FileHandle, lstat, mkdir, mkdtemp, open, opendir, rm, stat } from 'node:fs/promises';
-import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import {
+  type FileHandle,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  opendir,
+  rm,
+  stat,
+  unlink,
+} from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import {
   ContentReferenceSchema,
   KnowledgeBaseIdSchema,
@@ -673,5 +684,136 @@ async function verifyBinding(root: string, path: string, expected: string, direc
       refuse({ status: 'unavailable', reason: 'changed' });
   } finally {
     await current.close();
+  }
+}
+
+/** Copies independently owned regular bytes, verifies their original digest and synchronizes before returning. */
+export async function copyVerifiedFile(input: {
+  readonly sourcePath: string;
+  readonly destinationPath?: string;
+  readonly expectedBytes?: number;
+  readonly expectedSha256?: string;
+  readonly mode?: number;
+  readonly maxBytes?: number;
+}): Promise<{ bytes: number; sha256: string; mode: number }> {
+  const sourceRoot = dirname(resolve(input.sourcePath));
+  const sourceName = basename(input.sourcePath);
+  const source = await confined(sourceRoot, sourceName);
+  let destinationParent: FileHandle | undefined;
+  let destination: string | undefined;
+  let output: FileHandle | undefined;
+  let owned = false;
+  try {
+    const before = await source.stat({ bigint: true });
+    const limit = input.maxBytes ?? Number.MAX_SAFE_INTEGER;
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 0 ||
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size > BigInt(limit) ||
+      (input.expectedBytes !== undefined && BigInt(input.expectedBytes) !== before.size)
+    )
+      throw new Error('Durable source is not an admitted regular file.');
+    if (input.destinationPath) {
+      destinationParent = await confined(dirname(resolve(input.destinationPath)), '', true);
+      destination = join(await descriptorPath(destinationParent), basename(input.destinationPath));
+      output = await open(destination, 'wx', 0o600);
+      owned = true;
+    }
+    const hash = createHash('sha256');
+    let bytes = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(65536);
+      const { bytesRead } = await source.read(chunk, 0, chunk.length, null);
+      if (!bytesRead) break;
+      bytes += bytesRead;
+      if (bytes > limit || BigInt(bytes) > before.size)
+        throw new Error('Durable source exceeded its bound.');
+      hash.update(chunk.subarray(0, bytesRead));
+      let offset = 0;
+      while (output && offset < bytesRead) {
+        const result = await output.write(chunk, offset, bytesRead - offset);
+        if (!result.bytesWritten) throw new Error('Durable copy made no progress.');
+        offset += result.bytesWritten;
+      }
+    }
+    const after = await source.stat({ bigint: true });
+    const sha256 = `sha256:${hash.digest('hex')}`;
+    if (
+      BigInt(bytes) !== before.size ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs ||
+      after.nlink !== 1n ||
+      (input.expectedSha256 !== undefined && input.expectedSha256 !== sha256)
+    )
+      throw new Error('Durable source changed or failed verification.');
+    const mode = input.mode ?? Number(before.mode & 0o777n);
+    await output?.chmod(mode);
+    await output?.sync();
+    await verifyBinding(sourceRoot, sourceName, `${before.dev}:${before.ino}`);
+    if (output && input.destinationPath) {
+      const stored = await output.stat({ bigint: true });
+      if (stored.nlink !== 1n || stored.size !== BigInt(bytes))
+        throw new Error('Durable destination changed.');
+      await verifyBinding(
+        dirname(resolve(input.destinationPath)),
+        basename(input.destinationPath),
+        `${stored.dev}:${stored.ino}`
+      );
+    }
+    return { bytes, sha256, mode };
+  } catch (error) {
+    if (owned && output && destination) {
+      const stored = await output.stat({ bigint: true });
+      const current = await lstat(destination, { bigint: true }).catch(() => null);
+      if (current?.dev === stored.dev && current.ino === stored.ino) await unlink(destination);
+    }
+    throw error;
+  } finally {
+    await output?.close();
+    await destinationParent?.close();
+    await source.close();
+  }
+}
+
+/** Publishes exact private metadata create-only, with durable bytes before the directory entry acknowledgement. */
+export async function publishDurableFile(input: {
+  readonly destinationPath: string;
+  readonly bytes: Uint8Array | string;
+  readonly mode?: number;
+}): Promise<{ bytes: number; sha256: string; mode: number }> {
+  const parent = dirname(resolve(input.destinationPath));
+  const directory = await confined(parent, '', true);
+  try {
+    const before = await directory.stat({ bigint: true });
+    const pinned = await descriptorPath(directory);
+    const temporary = join(pinned, `.publish-${randomUUID()}`);
+    const destination = join(pinned, basename(input.destinationPath));
+    const file = await open(temporary, 'wx', 0o600);
+    const bytes =
+      typeof input.bytes === 'string' ? Buffer.from(input.bytes) : Buffer.from(input.bytes);
+    const mode = input.mode ?? 0o600;
+    try {
+      await file.writeFile(bytes);
+      await file.chmod(mode);
+      await file.sync();
+      await verifyBinding(parent, '', `${before.dev}:${before.ino}`, true);
+      // Link only our private copy inside the pinned parent; never a live source or substituted directory.
+      await link(temporary, destination);
+    } finally {
+      await file.close();
+      await unlink(temporary);
+    }
+    await directory.sync();
+    await verifyBinding(parent, '', `${before.dev}:${before.ino}`, true);
+    return {
+      bytes: bytes.length,
+      sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      mode,
+    };
+  } finally {
+    await directory.close();
   }
 }
