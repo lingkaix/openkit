@@ -2011,6 +2011,7 @@ describe('C-a independent sealed generations', () => {
 
   it('preserves exact mutable and Light App cuts, reuses immutable objects and survives source deletion', async () => {
     const f = await fixture();
+    const sourceDeploymentId = readDataRootLayoutMarker(f.dataRoot).deploymentId;
     const authored = Buffer.from('Exact binary Source\0\xff');
     await captureWorkspaceSourceFixture({
       ...f,
@@ -2075,6 +2076,8 @@ describe('C-a independent sealed generations', () => {
     );
     const first = await createWorkspaceBackup(f.input());
     expect(first.disposition).toBe('sealed');
+    expect(first.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
+    expect(first.report.sourceDeploymentId).toBe(sourceDeploymentId);
     expect(first.manifest.capture.consistency).toBe('workspace-consistent');
     const originalObjectStats = tree(
       join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId)
@@ -2125,6 +2128,8 @@ describe('C-a independent sealed generations', () => {
     );
     expect(secondGitHeads).not.toEqual(firstGitHeads);
     const second = await createWorkspaceBackup(f.input());
+    expect(second.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
+    expect(second.report.sourceDeploymentId).toBe(sourceDeploymentId);
     const backupRoot = join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId);
     const firstCopies = Object.values(originalObjectStats).filter(
       (value) => value === digest(authored)
@@ -2152,6 +2157,7 @@ describe('C-a independent sealed generations', () => {
       [second, secondGitHeads],
     ] as const) {
       await f.read(generation.manifest.backupId, async (bundle) => {
+        expect(bundle.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
         for (const [path, expectedDigest] of heads)
           expect(digest(await bytes(bundle, path.slice(1)))).toBe(expectedDigest);
       });
@@ -2187,6 +2193,7 @@ describe('C-a independent sealed generations', () => {
     rmSync(f.workspaceRoot, { recursive: true });
     for (const generation of [first, second])
       await f.read(generation.manifest.backupId, async (bundle) => {
+        expect(bundle.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
         for (const entry of bundle.manifest.inventory) {
           const actual = await bytes(bundle, entry.path);
           expect(actual.length).toBe(entry.bytes);
@@ -2255,15 +2262,39 @@ describe('C-a independent sealed generations', () => {
     'missing',
     'corrupt',
     'linked',
+    'substituted',
   ] as const)('refuses a %s local digest object before invoking its reader', async (fault) => {
     const f = await fixture();
+    const authoredPath = join(f.workspaceRoot, 'files', 'substitution.bin');
+    if (fault === 'substituted') {
+      mkdirSync(dirname(authoredPath), { recursive: true });
+      writeFileSync(authoredPath, Buffer.alloc(64, 0x41), { mode: 0o600 });
+    }
     const captured = await createWorkspaceBackup(f.input());
-    const entry = captured.manifest.inventory[0]!;
+    const entry =
+      fault === 'substituted'
+        ? captured.manifest.inventory.find((item) => item.path === 'files/substitution.bin')!
+        : captured.manifest.inventory[0]!;
     const backupRoot = join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId);
     const object = Object.entries(tree(backupRoot)).find(([, hash]) => hash === entry.sha256)?.[0];
     expect(object).toBeDefined();
     const path = join(backupRoot, object!);
-    if (fault === 'corrupt') {
+    if (fault === 'substituted') {
+      writeFileSync(authoredPath, Buffer.alloc(64, 0x42));
+      const donor = await createWorkspaceBackup(f.input());
+      expect(donor.disposition).toBe('sealed');
+      const other = donor.manifest.inventory.find((item) => item.path === entry.path)!;
+      expect(other.bytes).toBe(entry.bytes);
+      expect(other.sha256).not.toBe(entry.sha256);
+      const replacement = Object.entries(tree(backupRoot)).find(
+        ([, hash]) => hash === other.sha256
+      )?.[0];
+      expect(replacement).toBeDefined();
+      const mode = lstatSync(path).mode & 0o777;
+      chmodSync(path, 0o600);
+      writeFileSync(path, readFileSync(join(backupRoot, replacement!)));
+      chmodSync(path, mode);
+    } else if (fault === 'corrupt') {
       chmodSync(path, 0o600);
       writeFileSync(path, 'Corrupt retained object');
     } else {
@@ -2326,6 +2357,8 @@ describe('C-a independent sealed generations', () => {
     expect(control.disposition).toBe('sealed');
     const beforeControl = tree(controlRoot);
     const input = f.input();
+    const beforeSource = tree(f.workspaceRoot);
+    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
     const pool = dirname(input.bundleRoot);
     expect(existsSync(pool)).toBe(false);
     let committedPin: ReturnType<typeof protectCapture> | undefined;
@@ -2369,6 +2402,22 @@ describe('C-a independent sealed generations', () => {
     expect(failure).toBeInstanceOf(Error);
     expect(result).toBeUndefined();
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    const afterSource = tree(f.workspaceRoot);
+    for (const path of [
+      '/db/workspace.sqlite',
+      '/db/workspace.sqlite-wal',
+      '/db/workspace.sqlite-shm',
+    ]) {
+      delete beforeSource[path];
+      delete afterSource[path];
+    }
+    expect(afterSource).toEqual(beforeSource);
+    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+      const capture = row as { capture_id: string; workspace_id: string };
+      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+    });
+    expect(afterRows).toEqual(beforeRows);
     const db = bindWorkspaceSqlite(
       new Database(workspaceDbPath(f.dataRoot, workspaceId), {
         readonly: true,
@@ -2434,6 +2483,8 @@ describe('C-a independent sealed generations', () => {
     const f = await fixture();
     const previous = await createWorkspaceBackup(f.input());
     const input = f.input();
+    const beforeSource = tree(f.workspaceRoot);
+    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
     const intercept = vi
       .spyOn(Database.prototype, 'backup')
       .mockRejectedValueOnce(new Error('Injected native SQLite backup failure.'));
@@ -2443,6 +2494,22 @@ describe('C-a independent sealed generations', () => {
       intercept.mockRestore();
     }
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    const afterSource = tree(f.workspaceRoot);
+    for (const path of [
+      '/db/workspace.sqlite',
+      '/db/workspace.sqlite-wal',
+      '/db/workspace.sqlite-shm',
+    ]) {
+      delete beforeSource[path];
+      delete afterSource[path];
+    }
+    expect(afterSource).toEqual(beforeSource);
+    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+      const capture = row as { capture_id: string; workspace_id: string };
+      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+    });
+    expect(afterRows).toEqual(beforeRows);
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
     const nextHold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
       workspaceDbPath(f.dataRoot, workspaceId)
@@ -2476,6 +2543,8 @@ describe('C-a independent sealed generations', () => {
     const f = await fixture();
     const previous = await createWorkspaceBackup(f.input());
     const input = f.input();
+    const beforeSource = tree(f.workspaceRoot);
+    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
     const realComplete = captureProtection.completeCapture;
     let calls = 0;
     let publishedDigest: string | undefined;
@@ -2504,6 +2573,22 @@ describe('C-a independent sealed generations', () => {
     }
     expect(calls).toBe(1);
     expect(publishedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const afterSource = tree(f.workspaceRoot);
+    for (const path of [
+      '/db/workspace.sqlite',
+      '/db/workspace.sqlite-wal',
+      '/db/workspace.sqlite-shm',
+    ]) {
+      delete beforeSource[path];
+      delete afterSource[path];
+    }
+    expect(afterSource).toEqual(beforeSource);
+    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+      const capture = row as { capture_id: string; workspace_id: string };
+      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+    });
+    expect(afterRows).toEqual(beforeRows);
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
     const held = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
       workspaceDbPath(f.dataRoot, workspaceId)
