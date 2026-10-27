@@ -147,7 +147,7 @@ export async function dispatchOpenkitWorkTool(
   }
   const { scope } = input.environmentPackage;
   const responsibleUserId = responsibleUserIdForActor(scope.triggerActor);
-  const turn = input.store.getTurnById(scope.turnId);
+  const turn = input.store.getTurnMetadata(scope.workspaceId, scope.threadId, scope.turnId);
   if (
     !responsibleUserId ||
     workspaceIdForOwner(turn.owner) !== scope.workspaceId ||
@@ -670,7 +670,7 @@ async function submitArtifact(
           'The request was already used with different submission metadata.',
           409
         );
-      const sourceTurn = store.getTurnById(scope.turnId);
+      const sourceTurn = store.getTurnMetadata(scope.workspaceId, scope.threadId, scope.turnId);
       if (
         sourceTurn.agentId !== environmentPackage.agent.agentId ||
         sourceTurn.agentSessionId !== scope.agentSessionId ||
@@ -731,7 +731,7 @@ async function submitArtifact(
   const admit = () => {
     input.signal?.throwIfAborted();
     input.requireAdmission?.();
-    const turn = store.getTurnById(scope.turnId);
+    const turn = store.getTurnMetadata(scope.workspaceId, scope.threadId, scope.turnId);
     if (
       turn.status !== 'running' ||
       turn.agentSessionId !== scope.agentSessionId ||

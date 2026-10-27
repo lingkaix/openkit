@@ -52,6 +52,30 @@ import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
 import { readWorkerRawOutput } from './worker-raw-output.js';
 
+const retainedBodyObservation = vi.hoisted(() => ({
+  active: undefined as { itemIds: Set<string>; bodies: number } | undefined,
+}));
+
+// Observe retained Item bodies without replacing Store reads or filesystem effects.
+vi.mock('node:fs', async (load) => {
+  const actual = await load<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      const value = Reflect.apply(actual.readFileSync, actual, args);
+      const active = retainedBodyObservation.active;
+      if (active) {
+        try {
+          if (active.itemIds.has(JSON.parse(value.toString())?.id)) active.bodies++;
+        } catch {
+          // Other retained content is outside this Item-body observation.
+        }
+      }
+      return value;
+    }) as typeof actual.readFileSync,
+  };
+});
+
 it('advertises the canonical Knowledge and Work Tool projections in their fixed order', () => {
   expect(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
     'automation.event-admit',
@@ -265,6 +289,60 @@ it('refuses old and unregistered Work spellings before an owner effect', async (
   expect(fixture.counts()).toEqual(before);
 });
 
+it('keeps current Work admission body work flat as irrelevant Item history grows', async () => {
+  const samples: number[] = [];
+  for (const count of [1, 16]) {
+    const fixture = await submissionFixture();
+    const items = [];
+    for (let index = 0; index < count; index++) {
+      items.push(
+        await fixture.store.createItem({
+          id: allocateEntityId('it'),
+          owner: fixture.turn.owner,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text: `Unrelated retained message ${index}`,
+          createdAt: fixture.environmentPackage.createdAt,
+          completedAt: fixture.environmentPackage.createdAt,
+        })
+      );
+    }
+    const observed = { itemIds: new Set(items.map((item) => item.id)), bodies: 0 };
+    retainedBodyObservation.active = observed;
+    try {
+      await expect(
+        dispatchOpenkitWorkTool(fixture.input, 'work_peer_list', {})
+      ).resolves.toMatchObject({
+        isError: false,
+        structuredContent: { peers: [] },
+        content: [{ type: 'text', text: expect.any(String) }],
+      });
+      await expect(
+        dispatchOpenkitWorkTool(fixture.input, 'work_peer_read', { handle: 'unlisted-peer' })
+      ).rejects.toMatchObject({ code: 'peer_not_found' });
+    } finally {
+      retainedBodyObservation.active = undefined;
+    }
+    samples.push(observed.bodies);
+
+    // A real full-history read must exercise the observer before it can decide cost.
+    const control = { ...observed, bodies: 0 };
+    retainedBodyObservation.active = control;
+    try {
+      expect(fixture.store.getTurnById(fixture.turn.id).items).toEqual(items);
+    } finally {
+      retainedBodyObservation.active = undefined;
+    }
+    expect(control.bodies).toBeGreaterThanOrEqual(count);
+    expect(fixture.captureArtifact).not.toHaveBeenCalled();
+    expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
+  }
+  // R2767 relevant-history reads: unrelated retained bodies cannot increase admission work.
+  expect(samples[1]).toBeLessThanOrEqual(samples[0]);
+});
+
 /** Extracts the acknowledged id without inferring successful publication from assistant text. */
 function acknowledgedArtifactId(
   result: Awaited<ReturnType<typeof dispatchOpenkitWorkTool>>
@@ -466,7 +544,7 @@ describe('synchronous Worker file submission', () => {
     });
   });
 
-  it('refuses a terminal authority reread after capture (L1 dependency fault)', async () => {
+  it('refuses publication when the current Turn Agent changes during capture', async () => {
     const fixture = await submissionFixture();
     const clean = await fixture.captureArtifact({
       packageSnapshotId: '',
@@ -475,26 +553,19 @@ describe('synchronous Worker file submission', () => {
       maxByteLength: 0,
     });
     fixture.captureArtifact.mockClear();
-    const readTurn = fixture.store.getTurnById.bind(fixture.store);
-    const authorityRead = vi.spyOn(fixture.store, 'getTurnById');
-    onTestFinished(() => authorityRead.mockRestore());
     fixture.captureArtifact.mockImplementation(async () => {
-      // L1 admission-read fault only: the real native Turn stays running; no sealing is claimed.
-      authorityRead.mockClear();
-      authorityRead.mockImplementation((turnId) => {
-        const turn = readTurn(turnId);
-        return turnId === fixture.turn.id
-          ? { ...turn, status: 'interrupted', completedAt: '2026-10-05T01:00:00.000Z' }
-          : turn;
+      await fixture.store.updateTurn(fixture.turn.id, {
+        agentId: 'changed-agent-after-capture',
       });
       return clean;
     });
     await expect(fixture.submit()).rejects.toMatchObject({
       code: 'turn_not_active',
     });
-    expect(authorityRead).toHaveBeenCalledWith(fixture.turn.id);
-    authorityRead.mockRestore();
-    expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
+    expect(fixture.store.getTurnById(fixture.turn.id)).toMatchObject({
+      status: 'running',
+      agentId: 'changed-agent-after-capture',
+    });
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
