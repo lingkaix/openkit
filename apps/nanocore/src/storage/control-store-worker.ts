@@ -1,3 +1,4 @@
+import { channel } from 'node:diagnostics_channel';
 import {
   closeSync,
   constants,
@@ -307,8 +308,44 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     : undefined;
 }
 
+const refusalObservation = channel('openkit.control-store.refusal');
+/** Passive LOAD observation only; no SQL, paths, bodies or changed refusal semantics. */
+function observeRefusal(
+  ids: readonly number[],
+  origin: 'checkpoint-pressure' | 'sqlite-lock' | 'queue-count' | 'cohort-bytes',
+  scope: 'request' | 'batch',
+  databasePending?: number
+): void {
+  if (refusalObservation.hasSubscribers)
+    refusalObservation.publish({
+      ids,
+      origin,
+      scope,
+      at: performance.timeOrigin + performance.now(),
+      pending: pendingIds.size,
+      databasePending,
+    });
+}
+
 /** Classifies a native failure without publishing its message, SQL or parameters. */
-function failureCode(error: unknown): ControlWorkerFailureCode {
+function failureCode(
+  error: unknown,
+  ids: readonly number[] = [],
+  scope: 'request' | 'batch' = 'request'
+): ControlWorkerFailureCode {
+  if (refusalObservation.hasSubscribers && ids.length) {
+    const cause =
+      error instanceof OperationError && error.code === 'usage_record_failed' ? error.cause : error;
+    if (cause instanceof ControlStoreBusyError) observeRefusal(ids, 'checkpoint-pressure', scope);
+    else if (
+      cause !== null &&
+      typeof cause === 'object' &&
+      'code' in cause &&
+      typeof cause.code === 'string' &&
+      /^(SQLITE_BUSY|SQLITE_LOCKED)(_|$)/.test(cause.code)
+    )
+      observeRefusal(ids, 'sqlite-lock', scope);
+  }
   if (
     error instanceof PreconditionError ||
     error instanceof ControlProductPreconditionError ||
@@ -932,7 +969,7 @@ function flush(owner: OwnedDatabase): void {
     const refuse = (error: unknown) => {
       refuseSuccessors(owner, first);
       releaseContentPublications(owner.publications, first.preparedPublications ?? []);
-      const code = failureCode(error);
+      const code = failureCode(error, [first.id]);
       if (code === 'integrity') owner.poisoned = true;
       const domain = domainRefusal(first.operation, error);
       complete(
@@ -1012,7 +1049,16 @@ function flush(owner: OwnedDatabase): void {
       for (const [path, publication] of publications)
         if (publication && dirname(path) === directory) publication.directorySynchronized = true;
     } catch (error) {
-      directoryErrors.set(directory, failureCode(error));
+      directoryErrors.set(
+        directory,
+        failureCode(
+          error,
+          selected
+            .filter((request) => requiredDirectories.get(request)?.includes(directory))
+            .map((request) => request.id),
+          'batch'
+        )
+      );
     }
   }
   for (const request of selected) {
@@ -1276,7 +1322,7 @@ function flush(owner: OwnedDatabase): void {
           outcomes.push(
             domain
               ? { ...failure(request.id, 'precondition'), domain }
-              : failure(request.id, failureCode(error))
+              : failure(request.id, failureCode(error, [request.id]))
           );
         }
       }
@@ -1285,7 +1331,11 @@ function flush(owner: OwnedDatabase): void {
     });
   } catch (error) {
     const unknown = bodyFinished || owner.sqlite.inTransaction;
-    const code = failureCode(error);
+    const code = failureCode(
+      error,
+      batch.map((request) => request.id),
+      'batch'
+    );
     owner.poisoned = unknown || code === 'integrity';
     for (const request of batch) refuseSuccessors(owner, request, new Set(batch));
     replies = batch.map(
@@ -1394,7 +1444,7 @@ function maintainDatabase(
           complete: owner.writer.reclaim(),
         });
     } catch (error) {
-      const code = failureCode(error);
+      const code = failureCode(error, [request.id]);
       reply(failure(request.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
     }
   };
@@ -1417,7 +1467,7 @@ function shutdownWorker(id: number): void {
       reply({ version: CONTROL_WORKER_VERSION, id, status: 'ok', operation: 'shutdown' });
       port.close();
     } catch (error) {
-      const code = failureCode(error);
+      const code = failureCode(error, [id]);
       reply(failure(id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
     }
   };
@@ -1566,14 +1616,26 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       owner.pending.length + value.requests.length > CONTROL_WORKER_LIMITS.pendingTransitions ||
       value.requests.reduce((bytes, request) => bytes + controlWorkerInputBytes(request) + 64, 0) >
         CONTROL_WORKER_LIMITS.pendingBytes
-    )
+    ) {
+      observeRefusal(
+        value.requests.map((request) => request.id),
+        owner.pending.length + value.requests.length > CONTROL_WORKER_LIMITS.pendingTransitions
+          ? 'queue-count'
+          : 'cohort-bytes',
+        'batch',
+        owner.pending.length
+      );
       code = 'busy';
-    else {
+    } else {
       try {
         // Validate all metadata owners before any member can occupy a native slot.
         for (const request of value.requests) requestLanes(owner, request);
       } catch (error) {
-        code = failureCode(error);
+        code = failureCode(
+          error,
+          value.requests.map((request) => request.id),
+          'batch'
+        );
       }
     }
     if (code) {
@@ -1648,6 +1710,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'terminal'
     ) {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
+        observeRefusal([value.id], 'queue-count', 'request', owner.pending.length);
         reply(failure(value.id, 'busy'));
       } else {
         let lanes: ReadonlySet<string>;
@@ -1658,7 +1721,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           reply(
             domain
               ? { ...failure(value.id, 'precondition'), domain }
-              : failure(value.id, failureCode(error))
+              : failure(value.id, failureCode(error, [value.id]))
           );
           return;
         }
@@ -1822,7 +1885,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               ? failure(value.id, 'unavailable')
               : domain
                 ? { ...failure(value.id, 'precondition'), domain }
-                : failure(value.id, failureCode(error), 'not-committed');
+                : failure(value.id, failureCode(error, [value.id]), 'not-committed');
             queued.ready = true;
             if (owner.poisoned) refusePoisonedPending(owner);
             else schedule(owner);
@@ -1837,7 +1900,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     }
     maintainDatabase(value, owner);
   } catch (error) {
-    const code = failureCode(error);
+    const code = failureCode(error, [value.id]);
     reply(failure(value.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
   }
 }

@@ -70,6 +70,7 @@ import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { createWorkspaceTransferOperationImplementations } from './storage/workspace-transfer-operations.js';
 import { createThreadOperationImplementations } from './thread-operation-implementations.js';
 import { createTurnOperationImplementations } from './turn-operation-implementations.js';
@@ -185,7 +186,12 @@ export interface OperationInvocationDependencies {
 }
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
+  const snapshot = createWorkspaceSnapshotOperationImplementations(dependencies);
   return composeOperationTables(
+    {
+      'workspace.backup-capture': snapshot['workspace.backup-capture'],
+      'workspace.backup-verify': snapshot['workspace.backup-verify'],
+    },
     createCallerOperationImplementations(dependencies),
     createChannelOperationImplementations(dependencies.channelServices),
     createMaterialOperationImplementations({

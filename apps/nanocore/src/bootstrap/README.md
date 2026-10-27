@@ -20,3 +20,5 @@ Run the focused phase-order, lock, policy, Vault, readiness, shutdown, and audit
 All three boot lifecycle Audit publishers emit the shared retained SQL v1 marker for their native phase/readiness JSON. There is no product boot-Audit payload reader; inspection tests read raw SQLite rows. No historical reader or replay mechanism is added for this writer-only boundary. General Audit projection remains with its existing owner.
 
 Personal Workspace boot resolution uses the Core User current binding. Terminal retirement permits a fresh successor through the shared idempotent provisioner; a quarantined current home remains excluded. The retirement operation itself never opens or modifies the retired Workspace, and succession does not move its history or User Memory.
+
+Workspace recovery rebuilds the existing mutation fence from its quarantine census before recurrence scanners start. Prepared MOVE and unfinished manual captures stay closed across restart, including repeated inspection of an already refused scope; index-only degradation leaves mutation admission unchanged.

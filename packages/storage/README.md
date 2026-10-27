@@ -18,6 +18,8 @@ Staging uses `beginStage`, repeated bounded `writeStage` calls and `finishStage`
 
 ## Commands
 
+Trusted Node owners can use `copyVerifiedFile` for bounded independent copies or digest verification, and `publishDurableFile` for create-only private metadata publication. Both pin directory traversal, reject links and source changes, and synchronize output bytes before acknowledgement. Publication also synchronizes its parent entry. `copyFileForCut` uses the same confined independent-copy mechanics but returns explicitly unverified private bytes without a digest or payload sync. It preserves inode, link, size and binding checks. Its caller must verify and synchronize durable destination objects before publishing any seal; a completed cut copy alone is not durable publication. NanoCore's snapshot owner selects paths, reserves capacity, protects source lifetimes and decides when a seal can become visible; these helpers add no Storage service request or retained authority.
+
 - `pnpm --filter @openkit/storage... build`
 - `pnpm --filter @openkit/storage test`
 - `pnpm --filter @openkit/storage test:coverage`

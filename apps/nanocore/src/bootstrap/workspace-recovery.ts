@@ -2,10 +2,14 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { CoreDb } from '../storage/db.js';
-import { isScopeAdmitted, refuseScope } from './readiness.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './readiness.js';
 
-/** Refuses unpublished bytes and unfinished offline decisions before any scoped open or recovery. */
-export function restoreWorkspaceRecoveryAdmission(core: CoreDb): void {
+/** Rebuilds quarantine and the same mutation fence from retained recovery before scoped opens or scanners. */
+export function restoreWorkspaceRecoveryAdmission(
+  core: CoreDb,
+  mutationAdmission?: WorkspaceMutationAdmission
+): void {
   const registered = new Set(
     core.sqlite
       .prepare("SELECT workspace_id FROM workspace_registry WHERE status='active'")
@@ -51,5 +55,13 @@ export function restoreWorkspaceRecoveryAdmission(core: CoreDb): void {
     } finally {
       db?.close();
     }
+  }
+  // Already-refused captures skip reopening above; their existing refusal still closes every producer.
+  for (const failure of scopeAdmissionFailures(core.dataRoot)) {
+    if (failure.scope === 'workspace' && failure.check !== 'index')
+      mutationAdmission?.restoreClosed(
+        failure.id,
+        failure.check === 'retired' ? 'ordinary' : 'capture'
+      );
   }
 }

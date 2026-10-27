@@ -29,6 +29,11 @@ export default async function setup() {
   await Promise.all([
     build({
       ...options,
+      entryPoints: ['src/storage/workspace-backup-worker.ts'],
+      outfile: join(root, 'dist/storage/workspace-backup-worker.mjs'),
+    }),
+    build({
+      ...options,
       entryPoints: ['src/storage/control-store-worker.ts'],
       outfile: join(root, 'dist', 'storage', 'control-store-worker.mjs'),
     }),
