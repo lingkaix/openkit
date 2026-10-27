@@ -16,7 +16,9 @@ import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   type ControlProductEntry,
+  ControlProductEntrySchema,
   type ControlProductOwner,
+  inlineControlContentBytes,
 } from './control-store-products.js';
 import {
   ensureCanonicalDirectoryAsync,
@@ -170,14 +172,13 @@ async function withStagedProductJson<T>(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
-  value: unknown,
+  bytes: Buffer,
   consume: (input: ImmutableContentHandoff) => Promise<T>
 ): Promise<T> {
   if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
     throw new Error(
       'Canonical product publication requires the admitted native work-byte binding.'
     );
-  const bytes = Buffer.from(JSON.stringify(value));
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (bytes.length > CONTROL_PRODUCT_LIMITS.payloadBytes)
     throw new Error('Control product body exceeds its byte limit.');
@@ -241,7 +242,13 @@ export async function publishImmutableProductJson(
 ): Promise<StorageContent> {
   await ensureCanonicalDirectoryAsync(mount.root);
   await ensureCanonicalDirectoryAsync(stagingRoot);
-  return withStagedProductJson(mount, owner, stagingRoot, value, publishImmutableContent);
+  return withStagedProductJson(
+    mount,
+    owner,
+    stagingRoot,
+    Buffer.from(JSON.stringify(value)),
+    publishImmutableContent
+  );
 }
 
 /** Hands verified private bytes to the native publisher; neither a final name nor durability is published on Main. */
@@ -250,7 +257,46 @@ export async function prepareImmutableProductJson(
   owner: ControlProductOwner,
   stagingRoot: string,
   value: unknown
+): Promise<{ content: StorageContent; publication: { temporary: string } }> {
+  return prepareProductFile(mount, owner, stagingRoot, Buffer.from(JSON.stringify(value)));
+}
+
+/** Selects the accepted retained work-body representation once, before native verification and FULL ACK. */
+export async function prepareRetainedProductJson(
+  mount: ControlProductContentMount,
+  owner: ControlProductOwner,
+  stagingRoot: string,
+  value: unknown
 ): Promise<Pick<ControlProductEntry, 'content' | 'publication'>> {
+  const body = JSON.stringify(value);
+  const bytes = Buffer.from(body, 'utf8');
+  if (bytes.length > CONTROL_PRODUCT_LIMITS.inlineBytes)
+    return prepareProductFile(mount, owner, stagingRoot, bytes);
+  if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
+    throw new Error(
+      'Canonical product publication requires the admitted native work-byte binding.'
+    );
+  return {
+    content: {
+      reference: {
+        representation: 'inline',
+        body,
+        contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        ownerScope: owner,
+      },
+      byteLength: bytes.length,
+      mediaType: 'application/json',
+    },
+  };
+}
+
+/** Keeps the existing file publication for large bodies and explicit immutable-file owners. */
+async function prepareProductFile(
+  mount: ControlProductContentMount,
+  owner: ControlProductOwner,
+  stagingRoot: string,
+  bytes: Buffer
+): Promise<{ content: StorageContent; publication: { temporary: string } }> {
   for (const path of [dirname(mount.root), dirname(stagingRoot)])
     if ((await realpath(path)) !== resolve(path))
       throw new Error('Native private staging must not traverse a link.');
@@ -264,7 +310,7 @@ export async function prepareImmutableProductJson(
     (await realpath(mount.root)) !== resolve(mount.root)
   )
     throw new Error('Native publication mount must not traverse a link.');
-  return withStagedProductJson(mount, owner, stagingRoot, value, async (input) => {
+  return withStagedProductJson(mount, owner, stagingRoot, bytes, async (input) => {
     const content = immutableStageContent(input);
     const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
     const path = join(mount.root, temporary);
@@ -282,12 +328,15 @@ export async function prepareImmutableProductJson(
   });
 }
 
-/** Reads exact immutable bytes under the admitted scope binding, never a file-record fallback. */
+/** Reads verified exact inline or immutable-file bytes under the owning scope, never a file-record fallback. */
 export function readImmutableProductJson(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
-  content: StorageContent
+  content: ControlProductEntry['content']
 ): unknown {
+  content = ControlProductEntrySchema.shape.content.parse(content);
+  const inline = inlineControlContentBytes(owner, content);
+  if (inline) return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(inline));
   const reference = ContentReferenceSchema.parse(content.reference);
   if (
     reference.range !== null ||

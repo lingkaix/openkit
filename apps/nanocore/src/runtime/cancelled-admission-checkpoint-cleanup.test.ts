@@ -1213,7 +1213,7 @@ async function publishUnrelatedTurn(store: FsStore, dataRoot: string) {
     type: 'user-message',
     status: 'completed',
     actor: ACTOR,
-    text: 'Retained unrelated content.',
+    text: 'Retained unrelated content.'.repeat(3_000),
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
   });
@@ -1309,19 +1309,25 @@ function nativeItemBytes(dataRoot: string, workspaceId: string, turnId: string) 
           "SELECT content_json FROM control_product_entries WHERE kind = 'item' AND turn_id = ? ORDER BY sequence"
         )
         .all(turnId) as { content_json: string }[]
-    ).map((row) => ({
-      descriptor: row.content_json,
-      bytes: readFileSync(
-        join(
-          dataRoot,
-          'workspaces',
-          workspaceId,
-          'evidence',
-          'backend',
-          JSON.parse(row.content_json).reference.locator.path
-        )
-      ),
-    }));
+    ).map((row) => {
+      const content = JSON.parse(row.content_json);
+      return {
+        descriptor: row.content_json,
+        bytes:
+          content.reference.representation === 'inline'
+            ? Buffer.from(content.reference.body, 'utf8')
+            : readFileSync(
+                join(
+                  dataRoot,
+                  'workspaces',
+                  workspaceId,
+                  'evidence',
+                  'backend',
+                  content.reference.locator.path
+                )
+              ),
+      };
+    });
   } finally {
     sqlite.close();
   }
@@ -1438,30 +1444,30 @@ describe('cancelled-admission cleanup global native absence', () => {
       type: 'user-message' as const,
       status: 'completed' as const,
       actor: ACTOR,
-      text: 'Retain this Item and its exact immutable bytes.',
+      text: 'Retain this Item and its exact immutable bytes.'.repeat(2_000),
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt!,
     };
     if (evidenceOwner === 'Server') {
       expect(turn.owner).toEqual({ kind: 'server' });
-      await fixture.store.createServerItem(item);
+      const retainedItem = await fixture.store.createServerItem(item);
       const event = await fixture.store.persistServerTurnEvent(turn.id, {
-        event: 'turn.started',
+        event: 'item.completed',
         threadId,
         turnId: turn.id,
-        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+        data: { type: 'item-completed', itemId: retainedItem.id, item: retainedItem },
       });
       expect(event.owner).toEqual({ kind: 'server' });
       expect(event).not.toHaveProperty('workspaceId');
     } else {
       expect(turn.owner).toEqual({ kind: 'workspace', workspaceId: fixture.workspaceId });
-      await fixture.store.createItem(item);
+      const retainedItem = await fixture.store.createItem(item);
       await fixture.store.persistTurnEvent(turn.id, {
-        event: 'turn.started',
+        event: 'item.completed',
         workspaceId: fixture.workspaceId,
         threadId,
         turnId: turn.id,
-        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+        data: { type: 'item-completed', itemId: retainedItem.id, item: retainedItem },
       });
     }
     const checkpointBefore = getWorkerCheckpoint(

@@ -120,7 +120,7 @@ async function replaceRetainedSurface(surface: RetainedSurface, record: Record<s
   }
 }
 
-/** Publishes one native metadata/revision/event tuple and the existing file-owned Artifact. */
+/** Seeds native metadata, prior file-backed Item/event specimens and the file-owned Artifact. */
 async function createRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-'));
   onTestFinished(async () => {
@@ -224,6 +224,14 @@ async function createRetainedFixture() {
     Item: { kind: 'entry', scope, turnId: turn.id, entryKind: 'item' },
     'stream event': { kind: 'entry', scope, turnId: turn.id, entryKind: 'event' },
   };
+  // These retained-file cases require prior files to remain unchanged after descriptor replacement.
+  // Seed only these stopped specimens through the existing immutable-file publication owner.
+  for (const family of ['Item', 'stream event'] as const) {
+    const surface = surfaces[family];
+    if (surface.kind !== 'entry') throw new Error('Retained file fixture requires an entry.');
+    const original = readNativeProductEntries(scope, surface.turnId, surface.entryKind)[0]!;
+    await replaceRetainedSurface(surface, original.value as Record<string, unknown>);
+  }
   return {
     dataRoot,
     workspaceId: workspace.id,

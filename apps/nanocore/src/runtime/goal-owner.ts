@@ -1,6 +1,4 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -64,12 +62,13 @@ import {
   type PreparedControlEntry,
   prepareControlEntries,
   prepareRetainedControlEntries,
+  readPreparedControlEntry,
   readProduct,
 } from '../storage/control-store-products.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
-import { prepareImmutableProductJson } from '../storage/immutable-content.js';
+import { prepareRetainedProductJson } from '../storage/immutable-content.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   StoredGoalCardTaskV1Schema,
@@ -709,30 +708,9 @@ export async function prepareControlGoalCommand(
       expectedRevision: row.revision - 1,
       content: JSON.parse(row.content_json),
     });
-    await prepareRetainedControlEntries(db, binding, [entry]);
-    if (!binding)
-      throw new GoalCommandError('recovery_required', 'Goal Item content mount is unavailable.');
-    const fd = await open(
-      join(binding.root, entry.content.reference.locator.path),
-      constants.O_RDONLY | constants.O_NOFOLLOW
-    );
-    let bytes: Buffer;
-    try {
-      bytes = await fd.readFile();
-    } finally {
-      await fd.close();
-    }
-    if (
-      `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
-      entry.content.reference.contentDigest
-    )
-      throw new GoalCommandError(
-        'revision_conflict',
-        'Goal Item content changed during preparation.'
-      );
-    const item = readRetainedV1(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-      (value) => ItemSchema.parse(value)
+    const [retained] = await prepareRetainedControlEntries(db, binding, [entry]);
+    const item = readRetainedV1(readPreparedControlEntry(retained!), (value) =>
+      ItemSchema.parse(value)
     );
     if (item.id !== id)
       throw new GoalCommandError('recovery_required', 'Goal Item identity is contradictory.');
@@ -929,7 +907,7 @@ async function publishGoalPendingItem(
         : 'Approve the exact captured commitment.',
     createdAt: receipt.createdAt,
   });
-  const content = await prepareImmutableProductJson(
+  const content = await prepareRetainedProductJson(
     mount,
     owner,
     join(db.dataRoot, 'workspaces', db.workspaceId, 'runtime', 'staging'),

@@ -110,7 +110,7 @@ function nativeEntries(
   ).map((row) => row.value);
 }
 
-/** Replaces one fixture descriptor with digest-correct corrupted bytes, so the retained decoder is the deciding check. */
+/** Replaces bytes in a fixture's current representation with a correct digest, so the retained decoder decides refusal. */
 async function replaceEntry(
   dataRoot: string,
   workspaceId: string,
@@ -124,8 +124,6 @@ async function replaceEntry(
   const digest = createHash('sha256').update(bytes).digest('hex');
   const path = `sha256/${digest}`;
   const root = join(dataRoot, 'workspaces', workspaceId, 'evidence', 'backend');
-  mkdirSync(join(root, 'sha256'), { recursive: true });
-  writeFileSync(join(root, path), bytes);
   workspaceSql(dataRoot, workspaceId, (db) => {
     const row = db
       .prepare(
@@ -134,7 +132,13 @@ async function replaceEntry(
       .get(kind, turnId, sequence) as { content_json: string };
     const content = JSON.parse(row.content_json);
     content.reference.contentDigest = `sha256:${digest}`;
-    content.reference.locator.path = path;
+    if (content.reference.representation === 'inline') {
+      content.reference.body = bytes.toString('utf8');
+    } else {
+      mkdirSync(join(root, 'sha256'), { recursive: true });
+      writeFileSync(join(root, path), bytes);
+      content.reference.locator.path = path;
+    }
     content.byteLength = bytes.length;
     db.prepare(
       'UPDATE control_product_entries SET content_json=? WHERE kind=? AND turn_id=? AND sequence=?'

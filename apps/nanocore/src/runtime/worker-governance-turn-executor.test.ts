@@ -6147,12 +6147,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
           )
           .all(turn.id) as { content_json: string }[]
       )
-        .map((row) =>
-          readFileSync(
-            join(scope.contentMount.root, JSON.parse(row.content_json).reference.locator.path),
-            'utf8'
-          )
-        )
+        .map((row) => {
+          const reference = JSON.parse(row.content_json).reference;
+          return reference.representation === 'inline'
+            ? reference.body
+            : readFileSync(join(scope.contentMount.root, reference.locator.path), 'utf8');
+        })
         .join('\n');
       historyDb.sqlite.close();
       for (const byte of [17, 34, 51])

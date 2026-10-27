@@ -41,7 +41,7 @@ import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { inventoryRegularFiles } from './data-root-backup.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
-import { prepareImmutableProductJson } from './immutable-content.js';
+import { prepareRetainedProductJson } from './immutable-content.js';
 import {
   RECURRING_PORTABLE_PATHS,
   readRecurringPortableFiles,
@@ -678,7 +678,7 @@ async function interruptImportedHistory(
             turnId: before.id,
             sequence,
             expectedRevision: 0,
-            ...(await prepareImmutableProductJson(
+            ...(await prepareRetainedProductJson(
               mount,
               owner,
               join(root, 'runtime/staging'),
@@ -797,7 +797,7 @@ async function interruptImportedHistory(
             turnId,
             sequence: entries.length + 1,
             expectedRevision: 0,
-            ...(await prepareImmutableProductJson(
+            ...(await prepareRetainedProductJson(
               mount,
               owner,
               join(root, 'runtime/staging'),
@@ -810,7 +810,7 @@ async function interruptImportedHistory(
           turnId,
           sequence,
           expectedRevision: 0,
-          ...(await prepareImmutableProductJson(
+          ...(await prepareRetainedProductJson(
             mount,
             owner,
             join(root, 'runtime/staging'),

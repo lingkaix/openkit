@@ -12,6 +12,7 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
+import type { StorageContent } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
@@ -48,12 +49,13 @@ import {
   preserveDescriptiveRecord,
 } from './workspace-file-records.js';
 
-/** Current finite metadata/page defaults; payloads use synchronized immutable Storage objects. */
+/** Current finite metadata/page defaults; exact work bodies use inline bytes or immutable Storage objects. */
 export const CONTROL_PRODUCT_LIMITS = {
   metadataBytes: 64 * 1024,
   entries: 32,
   pageRows: 128,
   payloadBytes: 1024 * 1024,
+  inlineBytes: 65_536,
 } as const;
 
 /** Admitted transient Storage binding; reference parsing cannot select another Knowledge Base or mount. */
@@ -84,7 +86,21 @@ export const ControlProductMutationSchema = z
   })
   .strict();
 export type ControlProductMutation = z.infer<typeof ControlProductMutationSchema>;
-/** Exact immutable content descriptor prepared before its SQL reference can commit. */
+// The shared file reader tolerates descriptive additions; a required representation tag
+// must be dispatched before that reader can strip it and reinterpret it as a file.
+const fileReferenceSchema = z.preprocess(
+  (value) => (value && typeof value === 'object' && 'representation' in value ? null : value),
+  ContentReferenceSchema
+);
+const fileContentSchema = z
+  .object({
+    reference: fileReferenceSchema,
+    byteLength: z.number().int().nonnegative(),
+    mediaType: z.string().min(1),
+  })
+  .strict();
+
+/** Exact retained work bytes; prior file descriptors remain a current representation. */
 export const ControlProductEntrySchema = z
   .object({
     kind: z.enum(['item', 'event']),
@@ -103,7 +119,17 @@ export const ControlProductEntrySchema = z
       .optional(),
     content: z
       .object({
-        reference: ContentReferenceSchema,
+        reference: z.union([
+          fileReferenceSchema,
+          z
+            .object({
+              representation: z.literal('inline'),
+              body: z.string().max(CONTROL_PRODUCT_LIMITS.inlineBytes),
+              contentDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+              ownerScope: StoredWorkOwnerV1Schema,
+            })
+            .strict(),
+        ]),
         byteLength: z.number().int().nonnegative(),
         mediaType: z.string().min(1),
       })
@@ -111,6 +137,61 @@ export const ControlProductEntrySchema = z
   })
   .strict();
 export type ControlProductEntry = z.infer<typeof ControlProductEntrySchema>;
+
+/** Verifies original inline UTF-8 bytes before decoding; file references keep their existing owner. */
+export function inlineControlContentBytes(
+  owner: ControlProductOwner,
+  content: ControlProductEntry['content']
+): Buffer | undefined {
+  const reference = content.reference;
+  if (!('representation' in reference)) return undefined;
+  assertControlProductOwner(owner, reference.ownerScope);
+  const bytes = Buffer.from(reference.body, 'utf8');
+  if (
+    reference.representation !== 'inline' ||
+    !Number.isSafeInteger(content.byteLength) ||
+    bytes.length !== content.byteLength ||
+    bytes.length > CONTROL_PRODUCT_LIMITS.inlineBytes ||
+    bytes.toString('utf8') !== reference.body ||
+    `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== reference.contentDigest
+  )
+    throw new ControlProductPreconditionError();
+  return bytes;
+}
+
+/** Counts descriptor metadata separately from bounded inline entry bodies; actual queue bytes stay charged. */
+export function controlProductMetadataJson(value: {
+  entries?: readonly ControlProductEntry[];
+  terminal?: { entries?: readonly ControlProductEntry[] };
+  admission?: { entries?: readonly ControlProductEntry[] };
+  pendingItem?: { entry: ControlProductEntry } | null;
+  pendingAdmission?: { entries?: readonly ControlProductEntry[] };
+  transition?: { entries?: readonly ControlProductEntry[] };
+}): string {
+  const entryMetadata = (entry: ControlProductEntry) => {
+    const reference = entry.content.reference;
+    return 'representation' in reference
+      ? { ...entry, content: { ...entry.content, reference: { ...reference, body: '' } } }
+      : entry;
+  };
+  const entriesMetadata = (input: { entries?: readonly ControlProductEntry[] }) => ({
+    ...input,
+    ...(input.entries && {
+      entries: input.entries.map(entryMetadata),
+    }),
+  });
+  return JSON.stringify({
+    ...entriesMetadata(value),
+    // Existing compound owners carry bounded bodies at these fixed packet paths.
+    ...(value.terminal && { terminal: entriesMetadata(value.terminal) }),
+    ...(value.admission && { admission: entriesMetadata(value.admission) }),
+    ...(value.pendingItem && {
+      pendingItem: { ...value.pendingItem, entry: entryMetadata(value.pendingItem.entry) },
+    }),
+    ...(value.pendingAdmission && { pendingAdmission: entriesMetadata(value.pendingAdmission) }),
+    ...(value.transition && { transition: entriesMetadata(value.transition) }),
+  });
+}
 /** One shared publication stays live until every admitted preparation or queued reference releases it. */
 export interface ControlContentPublication {
   readonly result: Promise<{ bytes: Buffer; changedDirectory: boolean }>;
@@ -694,10 +775,7 @@ export async function prepareRetainedControlEntries(
 }
 
 /** Verifies one actual inode before either first publication or SQL-proved reuse. */
-async function readControlContentFile(
-  file: FileHandle,
-  content: ControlProductEntry['content']
-): Promise<Buffer> {
+async function readControlContentFile(file: FileHandle, content: StorageContent): Promise<Buffer> {
   const metadata = await file.stat();
   if (!metadata.isFile() || metadata.size !== content.byteLength)
     throw new ControlProductPreconditionError();
@@ -760,7 +838,7 @@ async function hasCommittedControlContent(
 async function preparePrivateControlContent(
   path: string,
   root: string,
-  content: ControlProductEntry['content'],
+  content: StorageContent,
   entry: ControlProductEntry,
   preparation: ControlContentPreparation
 ): Promise<Buffer> {
@@ -849,7 +927,14 @@ async function synchronizeControlContent(
 ): Promise<Buffer> {
   if (isMainThread || !contentMount || content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
     throw new ControlProductPreconditionError();
+  const inline = inlineControlContentBytes(owner, content);
+  if (inline) {
+    if (entry?.publication) throw new ControlProductPreconditionError();
+    return inline;
+  }
   const reference = content.reference;
+  if ('representation' in reference) throw new ControlProductPreconditionError();
+  const fileContent = { ...content, reference };
   assertControlProductOwner(owner, reference.locator.ownerScope);
   if (
     reference.range !== null ||
@@ -869,12 +954,12 @@ async function synchronizeControlContent(
       reference.locator.path !== `sha256/${reference.contentDigest.slice('sha256:'.length)}`
     )
       throw new ControlProductPreconditionError();
-    return preparePrivateControlContent(path, root, content, entry, newDirectories);
+    return preparePrivateControlContent(path, root, fileContent, entry, newDirectories);
   }
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let bytes: Buffer;
   try {
-    bytes = await readControlContentFile(fd, content);
+    bytes = await readControlContentFile(fd, fileContent);
     if (newDirectories !== null) await fd.sync();
   } finally {
     await fd.close();
@@ -1482,9 +1567,7 @@ export const ControlTerminalTransitionSchema = z
       .optional(),
     reap: z.object({ reason: z.string().min(1), inferredBy: z.string().min(1) }).strict(),
     evidence: z.array(StoredRuntimeEvidenceV1Schema).max(CONTROL_PRODUCT_LIMITS.entries),
-    evidenceContent: z
-      .array(ControlProductEntrySchema.shape.content)
-      .max(CONTROL_PRODUCT_LIMITS.entries),
+    evidenceContent: z.array(fileContentSchema).max(CONTROL_PRODUCT_LIMITS.entries),
     command: terminalCommandSchema.nullable(),
     // Only the waiting internal Stop may converge with the original submission.
     interruptCommand: terminalCommandSchema
@@ -1608,7 +1691,7 @@ export async function prepareControlTerminal(
     !turn.completedAt ||
     input.products.some((product) => product.kind === 'turn') ||
     input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
-    Buffer.byteLength(JSON.stringify(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
+    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
   )
     throw new ControlProductPreconditionError();
   for (const content of input.evidenceContent)
@@ -2369,7 +2452,12 @@ export function openControlStoreProductReadHandle(
         if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
           throw new ControlProductPreconditionError();
         const content = ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json));
-        assertControlProductOwner(owner, content.reference.locator.ownerScope);
+        assertControlProductOwner(
+          owner,
+          'representation' in content.reference
+            ? content.reference.ownerScope
+            : content.reference.locator.ownerScope
+        );
         return {
           sequence: row.sequence,
           id: row.id,

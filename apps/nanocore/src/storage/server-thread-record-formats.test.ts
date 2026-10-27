@@ -50,6 +50,10 @@ function readServerRetainedRecord(
     };
     const content = JSON.parse(row.content_json);
     readImmutableProductJson(scope.contentMount, scope.owner, content);
+    if (content.reference.representation === 'inline') {
+      const bytes = content.reference.body as string;
+      return { record: JSON.parse(bytes) as Record<string, unknown>, bytes, path: undefined };
+    }
     const path = join(scope.contentMount.root, content.reference.locator.path);
     const bytes = readFileSync(path, 'utf8');
     return { record: JSON.parse(bytes) as Record<string, unknown>, bytes, path };
@@ -94,7 +98,7 @@ async function replaceServerRetainedRecord(
   }
 }
 
-/** Publishes one native Server Turn, Item row and transcript row through FsStore. */
+/** Publishes native Server work and seeds its original Item/event rows as prior file specimens. */
 async function createServerRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-retained-formats-'));
   onTestFinished(async () => {
@@ -124,9 +128,24 @@ async function createServerRetainedFixture() {
     data: { type: 'item-completed', itemId: item.id, item },
   });
   await shutdownControlStoreWorkerClient();
+  const scope = nativeProductScope(dataRoot, { kind: 'server' });
+  // Keep the original-file preservation predicate while later native rows select their own representation.
+  for (const family of ['Server Item', 'Server transcript event'] as const) {
+    const original = readNativeProductEntries(
+      scope,
+      turn.id,
+      family === 'Server Item' ? 'item' : 'event'
+    )[0]!;
+    await replaceServerRetainedRecord(
+      scope,
+      turn.id,
+      family,
+      original.value as Record<string, unknown>
+    );
+  }
   return {
     dataRoot,
-    scope: nativeProductScope(dataRoot, { kind: 'server' }),
+    scope,
     thread,
     turn: store.getServerTurnById(turn.id),
     item,

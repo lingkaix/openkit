@@ -7323,13 +7323,14 @@ function readNativeEventBytes(f: Pick<FailedStartFixture, 'dataRoot' | 'turnId'>
       )
       .all(f.turnId) as { content_json: string }[];
     return rows
-      .map(
-        (row) =>
-          `${readFileSync(
-            join(scope.contentMount.root, JSON.parse(row.content_json).reference.locator.path),
-            'utf8'
-          )}\n`
-      )
+      .map((row) => {
+        const reference = JSON.parse(row.content_json).reference;
+        const bytes =
+          reference.representation === 'inline'
+            ? reference.body
+            : readFileSync(join(scope.contentMount.root, reference.locator.path), 'utf8');
+        return `${bytes}\n`;
+      })
       .join('');
   } finally {
     db.sqlite.close();

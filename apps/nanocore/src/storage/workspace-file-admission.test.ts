@@ -20,7 +20,7 @@ import { shutdownControlStoreWorkerClient } from './control-store-worker-client.
 import { openWorkspaceDb } from './db.js';
 import { WorkOwnershipViolationError } from './fs-layout.js';
 import { publishImmutableProductJson } from './immutable-content.js';
-import { nativeProductScope } from './workspace-file-records.js';
+import { nativeProductScope, readNativeProductEntries } from './workspace-file-records.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
@@ -63,6 +63,26 @@ async function fixture() {
   await shutdownControlStoreWorkerClient();
   const workspaceRoot = join(root, 'workspaces', workspace.id);
   const scope = nativeProductScope(root, { kind: 'workspace', workspaceId: workspace.id });
+  // These tail-preservation faults require prior files, including the fixed-shape Turn event.
+  const fixtureDb = openWorkspaceDb(root, workspace.id);
+  try {
+    for (const kind of ['item', 'event'] as const) {
+      const original = readNativeProductEntries(scope, turn.id, kind)[0]!;
+      const content = await publishImmutableProductJson(
+        scope.contentMount,
+        scope.owner,
+        join(workspaceRoot, 'runtime', 'staging'),
+        original.value
+      );
+      fixtureDb.sqlite
+        .prepare(
+          'UPDATE control_product_entries SET content_json=? WHERE kind=? AND turn_id=? AND sequence=1'
+        )
+        .run(JSON.stringify(content), kind, turn.id);
+    }
+  } finally {
+    fixtureDb.sqlite.close();
+  }
   const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
   let itemContent: ReturnType<typeof reader.entries>[number]['content'];
   let eventContent: typeof itemContent;
@@ -72,6 +92,8 @@ async function fixture() {
   } finally {
     reader.close();
   }
+  if ('representation' in itemContent.reference || 'representation' in eventContent.reference)
+    throw new Error('Tail-preservation fixtures require immutable file bodies.');
   return {
     root,
     store,

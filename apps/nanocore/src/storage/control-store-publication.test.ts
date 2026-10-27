@@ -253,7 +253,7 @@ async function fixture() {
     turnId: turn.id,
     type: 'user-message',
     actor,
-    text: 'Exact new native bytes',
+    text: 'Exact new native bytes'.repeat(3_200),
     status: 'completed',
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
@@ -523,7 +523,7 @@ describe('native publication cleanup, retained reuse and file cohorts', () => {
     const second = ItemSchema.parse({
       ...f.item,
       id: allocateEntityId('it'),
-      text: 'Second terminal body',
+      text: 'Second terminal body'.repeat(3_500),
     });
     const before = new Set(contentFiles(f.scope.contentMount.root));
     f.arm(3);

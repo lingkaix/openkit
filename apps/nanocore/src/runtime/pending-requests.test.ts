@@ -1614,11 +1614,12 @@ describe('pending requests', () => {
         const entries = db.sqlite
           .prepare('SELECT * FROM control_product_entries ORDER BY turn_id,kind,sequence')
           .all() as Array<{ content_json: string }>;
-        const bytes = entries.map((row) =>
-          readFileSync(
-            join(scope.contentMount.root, JSON.parse(row.content_json).reference.locator.path)
-          )
-        );
+        const bytes = entries.map((row) => {
+          const content = JSON.parse(row.content_json);
+          return content.reference.representation === 'inline'
+            ? Buffer.from(content.reference.body, 'utf8')
+            : readFileSync(join(scope.contentMount.root, content.reference.locator.path));
+        });
         return { turns, entries, bytes };
       };
       const before = snapshot();

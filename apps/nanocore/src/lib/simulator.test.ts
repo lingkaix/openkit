@@ -1309,15 +1309,18 @@ describe('SimulatedTurnExecutor', () => {
             revision: number;
             content_json: string;
           }>;
-          return rows.map((row) => ({
-            ...row,
-            bytes: readFileSync(
-              join(
-                historyScope.contentMount.root,
-                JSON.parse(row.content_json).reference.locator.path
-              )
-            ),
-          }));
+          return rows.map((row) => {
+            const content = JSON.parse(row.content_json);
+            return {
+              ...row,
+              bytes:
+                content.reference.representation === 'inline'
+                  ? Buffer.from(content.reference.body, 'utf8')
+                  : readFileSync(
+                      join(historyScope.contentMount.root, content.reference.locator.path)
+                    ),
+            };
+          });
         };
         const history = readHistory();
         expect(history.length).toBeGreaterThan(0);

@@ -364,7 +364,8 @@ it.each([
           threadId: thread.id,
           turnId: turn.id,
           type: 'assistant-message',
-          text: 'Exact immutable input',
+          // Keep these real file-input faults above the retained inline threshold.
+          text: 'Exact immutable input'.padEnd(70_000, '.'),
           status: 'in_progress',
           createdAt: turn.startedAt!,
           completedAt: null,

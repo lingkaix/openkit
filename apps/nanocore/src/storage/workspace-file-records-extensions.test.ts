@@ -635,7 +635,7 @@ describe('retained Item Actor annotations on native revision', () => {
       completedAt: turn.startedAt!,
       type: 'user-message',
       actor,
-      text: 'Original request body',
+      text: 'Original request body'.repeat(3_250),
       status: 'completed',
     });
     await shutdownControlStoreWorkerClient();
@@ -653,7 +653,10 @@ describe('retained Item Actor annotations on native revision', () => {
           const content = JSON.parse(row.content_json);
           return {
             row,
-            bytes: readFileSync(join(scope.contentMount.root, content.reference.locator.path)),
+            bytes:
+              content.reference.representation === 'inline'
+                ? Buffer.from(content.reference.body, 'utf8')
+                : readFileSync(join(scope.contentMount.root, content.reference.locator.path)),
             value: readImmutableProductJson(scope.contentMount, scope.owner, content) as Record<
               string,
               unknown

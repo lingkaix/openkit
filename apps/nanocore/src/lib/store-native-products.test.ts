@@ -578,7 +578,8 @@ describe('native Store authority and immutable closure', () => {
 
   it('rereads immutable bodies and refuses changed bytes instead of serving a cached Item', async () => {
     const f = await workspaceFixture();
-    const item = await f.store.createItem(message(f.turn, 'Original'));
+    // Keep this corruption fixture on the immutable-file branch.
+    const item = await f.store.createItem(message(f.turn, 'Original'.repeat(10_000)));
     expect(f.store.getTurnById(f.turn.id).items[0]!.id).toBe(item.id);
     const reader = openControlStoreProductReadHandle(f.scope.path, f.scope.owner);
     let path: string;

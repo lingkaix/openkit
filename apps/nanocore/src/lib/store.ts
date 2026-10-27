@@ -182,7 +182,7 @@ import {
   resolveDataRootPath,
 } from '../storage/fs-layout.js';
 import {
-  prepareImmutableProductJson,
+  prepareRetainedProductJson,
   publishImmutableProductJson,
 } from '../storage/immutable-content.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -3352,7 +3352,7 @@ export class FsStore {
           item
         ) as Item)
       : item;
-    const content = await prepareImmutableProductJson(
+    const content = await prepareRetainedProductJson(
       scope.contentMount,
       scope.owner,
       join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -3493,7 +3493,7 @@ export class FsStore {
         turnId: item.turnId,
         sequence: existing.length + offset + 1,
         expectedRevision: 0,
-        ...(await prepareImmutableProductJson(
+        ...(await prepareRetainedProductJson(
           scope.contentMount,
           scope.owner,
           join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -3662,7 +3662,7 @@ export class FsStore {
         reader.close();
       }
     } else {
-      content = await prepareImmutableProductJson(
+      content = await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -3999,7 +3999,7 @@ export class FsStore {
       turnId: turn.id,
       sequence: 1,
       expectedRevision: 0,
-      ...(await prepareImmutableProductJson(
+      ...(await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -4372,7 +4372,7 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'server' });
       const previous = { revision: native!.revision, record: native!.metadata };
-      const content = await prepareImmutableProductJson(
+      const content = await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -5247,7 +5247,7 @@ export class FsStore {
         const existing = retainedItems.find((candidate) => candidate.id === item.id);
         if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) continue;
         const previous = revisions.filter((row) => row.id === item.id).at(-1);
-        const content = await prepareImmutableProductJson(
+        const content = await prepareRetainedProductJson(
           scope.contentMount,
           owner,
           join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -5275,7 +5275,7 @@ export class FsStore {
             reader.close();
           }
         } else {
-          content = await prepareImmutableProductJson(
+          content = await prepareRetainedProductJson(
             scope.contentMount,
             owner,
             join(dirname(dirname(scope.path)), 'runtime', 'staging'),
@@ -6135,7 +6135,7 @@ export class FsStore {
           turnId: turn.id,
           sequence: items.length + 1,
           expectedRevision: 0,
-          ...(await prepareImmutableProductJson(
+          ...(await prepareRetainedProductJson(
             scope.contentMount,
             scope.owner,
             stagingRoot,
@@ -6149,7 +6149,7 @@ export class FsStore {
           turnId: turn.id,
           sequence: event.sequence,
           expectedRevision: 0,
-          ...(await prepareImmutableProductJson(
+          ...(await prepareRetainedProductJson(
             scope.contentMount,
             scope.owner,
             stagingRoot,
@@ -7335,7 +7335,7 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope(turn.owner);
       const previous = { revision: native!.revision, record: native!.metadata };
-      const content = await prepareImmutableProductJson(
+      const content = await prepareRetainedProductJson(
         scope.contentMount,
         scope.owner,
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),

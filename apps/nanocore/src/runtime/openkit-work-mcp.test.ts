@@ -303,7 +303,8 @@ it('keeps current Work admission body work flat as irrelevant Item history grows
           turnId: fixture.turn.id,
           type: 'assistant-message',
           status: 'completed',
-          text: `Unrelated retained message ${index}`,
+          // Keep the full-history control observable through actual file reads.
+          text: `Unrelated retained message ${index}`.padEnd(70_000, '.'),
           createdAt: fixture.environmentPackage.createdAt,
           completedAt: fixture.environmentPackage.createdAt,
         })

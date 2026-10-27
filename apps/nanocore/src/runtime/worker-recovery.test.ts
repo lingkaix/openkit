@@ -300,7 +300,7 @@ async function createCheckpointCloseoutFixture(
   const complete = store.completeTurn.bind(store);
   let publicationStart = 0;
   let terminalFaultObserved = false;
-  let retainedTerminal: { path: string; bytes: Buffer } | undefined;
+  let retainedTerminal: { readBytes: () => Buffer; bytes: Buffer } | undefined;
   const publishing = vi
     .spyOn(store, 'completeTurn')
     .mockImplementation(async (id, patch, publication) => {
@@ -609,12 +609,15 @@ async function createCheckpointCloseoutFixture(
       "SELECT * FROM control_product_entries WHERE kind = 'event' AND turn_id = ? AND sequence = ?"
     );
     const descriptor = terminalEntry.get(turn.id, terminal.sequence) as { content_json: string };
-    const path = join(
-      scope.contentMount.root,
-      JSON.parse(descriptor.content_json).reference.locator.path
-    );
-    const bytes = readFileSync(path);
-    retainedTerminal = { path, bytes };
+    const readBytes = () => {
+      const current = terminalEntry.get(turn.id, terminal.sequence) as typeof descriptor;
+      const reference = JSON.parse(current.content_json).reference;
+      return reference.representation === 'inline'
+        ? Buffer.from(reference.body, 'utf8')
+        : readFileSync(join(scope.contentMount.root, reference.locator.path));
+    };
+    const bytes = readBytes();
+    retainedTerminal = { readBytes, bytes };
     await shutdownControlStoreWorkerClient();
     for (const event of [
       { ...busy, sequence: closeout.sequence },
@@ -639,7 +642,7 @@ async function createCheckpointCloseoutFixture(
         );
     }
     expect(terminalEntry.get(turn.id, terminal.sequence)).toEqual(descriptor);
-    expect(readFileSync(path).equals(bytes)).toBe(true);
+    expect(readBytes().equals(bytes)).toBe(true);
     expect(store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')).toEqual(
       terminal
     );
@@ -1076,7 +1079,7 @@ describe('worker recovery materialization', () => {
       ).toBe(stopReason);
       expect(reloaded.getTurnEvents(f.checkpoint.turnId)).toEqual(retainedEvents);
       expect(descriptors.all(f.checkpoint.turnId)).toEqual(retainedDescriptors);
-      expect(readFileSync(f.retainedTerminal!.path).equals(f.retainedTerminal!.bytes)).toBe(true);
+      expect(f.retainedTerminal!.readBytes().equals(f.retainedTerminal!.bytes)).toBe(true);
     } finally {
       await f.close();
     }

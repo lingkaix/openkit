@@ -201,7 +201,8 @@ describe('canonical append writes', () => {
       turnId: turn.id,
       type: 'assistant-message',
       status: 'completed',
-      text: 'The complete row must reach the append log.',
+      // Keep this partial-write subject on the real immutable-file branch.
+      text: 'The complete row must reach the append log.'.padEnd(70_000, '.'),
       createdAt: '2026-07-07T00:00:00.000Z',
       completedAt: '2026-07-07T00:00:00.000Z',
     } as const;

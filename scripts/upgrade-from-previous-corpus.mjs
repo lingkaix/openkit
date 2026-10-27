@@ -287,19 +287,24 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     });
     selectors.turnId = turn.id;
     const lineage = { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id };
+    // File-corpus entries must exceed the inline boundary; native inline bodies have separate coverage.
+    let completedItem;
     for (const item of [
-      { type: 'user-message', actor: producer, text: FIXTURE.text },
-      { type: 'assistant-message', text: 'Public synthetic previous-release response.' },
+      { type: 'user-message', actor: producer, text: FIXTURE.text.repeat(2_000) },
+      {
+        type: 'assistant-message',
+        text: 'Public synthetic previous-release response.'.repeat(2_000),
+      },
       {
         type: 'command-execution',
         command: 'printf fixture',
         cwd: '/workspace',
-        output: 'fixture',
+        output: 'fixture'.repeat(10_000),
         exitCode: 0,
         durationMs: 1,
       },
-    ])
-      await ctx.store.createItem({
+    ]) {
+      const stored = await ctx.store.createItem({
         owner: turn.owner,
         threadId: thread.id,
         turnId: turn.id,
@@ -309,13 +314,15 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         createdAt: FIXTURE.at,
         completedAt: FIXTURE.at,
       });
-    const startedEvent = await ctx.store.persistTurnEvent(turn.id, {
+      completedItem ??= stored;
+    }
+    const completedEvent = await ctx.store.persistTurnEvent(turn.id, {
       ...lineage,
-      event: 'turn.started',
+      event: 'item.completed',
       requestId: randomUUID(),
-      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      data: { type: 'item-completed', itemId: completedItem.id, item: completedItem },
     });
-    ctx.store.emitTurnEvent(turn.id, startedEvent);
+    ctx.store.emitTurnEvent(turn.id, completedEvent);
     selectors.agentSessionId = o.protocol.allocateEntityId('as');
     await ctx.store.createAgentSession({
       id: selectors.agentSessionId,

@@ -1398,7 +1398,10 @@ describe('control writer parent admission', () => {
       const scope = nativeProductScope(backupRoot, turn.owner);
       for (const json of entries) {
         const content = JSON.parse(json);
-        const bytes = readFileSync(join(scope.contentMount.root, content.reference.locator.path));
+        const bytes =
+          content.reference.representation === 'inline'
+            ? Buffer.from(content.reference.body, 'utf8')
+            : readFileSync(join(scope.contentMount.root, content.reference.locator.path));
         expect(bytes.length).toBe(content.byteLength);
         expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(
           content.reference.contentDigest

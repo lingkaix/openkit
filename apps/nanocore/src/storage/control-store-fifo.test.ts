@@ -236,7 +236,8 @@ async function fixture() {
         createdAt: lane.turn.startedAt!,
         completedAt: lane.turn.startedAt!,
       }),
-      text: `Exact FIFO body ${sequence}`,
+      // Store terminal publication must retain this real native file-sync subject.
+      text: `Exact FIFO body ${sequence}`.padEnd(70_000, '.'),
     });
     const prepared = await prepareImmutableProductJson(
       lane.scope.contentMount,
@@ -659,7 +660,8 @@ it('prepares an exact native Review decision after its queued Artifact submissio
           requestId: randomUUID(),
           path: `/openkit/sessions/${environmentPackage.scope.agentSessionId}/outputs/report.md`,
           kind: 'report',
-          title: 'Queued report',
+          // Keep the original first-entry file barrier with a valid large public title.
+          title: 'Queued report'.padEnd(70_000, '.'),
           mediaType: 'text/markdown',
         }
       ),

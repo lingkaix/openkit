@@ -162,7 +162,8 @@ async function buildFixture() {
       threadId: privateThread.id,
       turnId: turn.id,
       kind: 'report',
-      title: 'Capture artifact',
+      // Its native reference Item must retain a real file for missing-body and byte faults.
+      title: 'Capture artifact'.padEnd(70_000, '.'),
       status: 'ready',
       summary: null,
       version: 1,

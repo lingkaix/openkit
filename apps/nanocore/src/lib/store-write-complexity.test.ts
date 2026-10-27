@@ -60,7 +60,8 @@ function message(turn: Turn, index: number) {
     turnId: turn.id,
     type: 'user-message',
     actor,
-    text: `Message ${index}`.padEnd(128, '.'),
+    // Keep the filesystem observer's positive history-read control on real file bodies.
+    text: `Message ${index}`.padEnd(70_000, '.'),
     status: 'completed',
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
@@ -276,6 +277,9 @@ describe('Store addressed event and current metadata reads', () => {
     expect(() =>
       f.store.getTurnMetadata(f.workspace.id, h.turn.threadId, allocateEntityId('tu'))
     ).toThrow(StoreRecordNotFoundError);
+    // Keep all file bodies in the metadata observation, then bound the completion event's current Item snapshot.
+    for (const item of h.expected)
+      await f.store.updateItem(item.id, { text: item.text.slice(0, 128) });
     await f.store.completeTurn(h.turn.id, {
       status: 'completed',
       completedAt: h.turn.startedAt!,

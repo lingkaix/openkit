@@ -66,6 +66,7 @@ import {
   type ControlTerminalResult,
   type ControlTerminalTransition,
   ControlTerminalTransitionSchema,
+  controlProductMetadataJson,
 } from './control-store-products.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
@@ -729,10 +730,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     try {
       const schema =
         value.operation === 'transition' ? ControlAdmissionSchema : ControlProductTransitionSchema;
+      const parsed = schema.safeParse(value.transition);
       return (
         exactFields(value, [...scoped, 'transition']) &&
-        schema.safeParse(value.transition).success &&
-        JSON.stringify(value.transition).length <= 2 * 1024 * 1024
+        parsed.success &&
+        controlProductMetadataJson(value.transition as typeof parsed.data).length <= 2 * 1024 * 1024
       );
     } catch {
       return false;
@@ -808,7 +810,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&
-        Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+        Buffer.byteLength(
+          value.operation === 'terminal' ||
+            value.operation === 'publication' ||
+            value.operation === 'pending' ||
+            value.operation === 'goal' ||
+            value.operation === 'review'
+            ? controlProductMetadataJson(value.input as ControlTerminalTransition)
+            : JSON.stringify(value.input)
+        ) <= CONTROL_PRODUCT_LIMITS.payloadBytes
       );
     } catch {
       return false;

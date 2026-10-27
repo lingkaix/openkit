@@ -567,7 +567,11 @@ describe('native standalone archive and concurrent Pending raise', () => {
       turnId: f.turn.id,
       type: 'user-message',
       actor: { kind: 'user', id: userId },
-      text: 'Existing history is not a fresh archive admission dependency on exact replay.',
+      // This replay fault must remove an acknowledged immutable file.
+      text: 'Existing history is not a fresh archive admission dependency on exact replay.'.padEnd(
+        70_000,
+        '.'
+      ),
       status: 'completed',
       createdAt: f.turn.startedAt!,
       completedAt: f.turn.startedAt!,
@@ -613,6 +617,8 @@ describe('native standalone archive and concurrent Pending raise', () => {
       .get(f.turn.id, item.id) as { content_json: string } | undefined;
     if (!row) throw new Error('Acknowledged native Item descriptor is missing.');
     const content = ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json));
+    if ('representation' in content.reference)
+      throw new Error('The archive replay file-fault fixture must retain a file body.');
     const immutablePath = join(scope.contentMount.root, content.reference.locator.path);
     const originalBytes = readFileSync(immutablePath);
     const beforeReplay = committedRows(f.reader);

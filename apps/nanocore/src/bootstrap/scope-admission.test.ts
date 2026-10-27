@@ -316,7 +316,7 @@ describe('scope-owned admission', () => {
         approvalRequestId: `ap_${id}`,
         kind: 'permission',
         title: workspace.name,
-        description: 'Retained aggregate content.',
+        description: 'Retained aggregate content.'.repeat(3_000),
         createdAt: now,
         completedAt: now,
       });
