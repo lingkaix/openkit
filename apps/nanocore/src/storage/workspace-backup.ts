@@ -574,7 +574,7 @@ export function readBlockers(input: {
       }
     }
     // A running call can outlive its user-visible Turn; unknown historical rows need closed physical proof.
-    for (const row of listWorkspaceCapabilityCalls(targetDb, workspaceId, ['running', 'unknown'])) {
+    for (const row of listWorkspaceCapabilityCalls(targetDb, workspaceId, 'unsettled')) {
       if (row.status !== 'running' && row.status !== 'unknown') continue;
       const dependency = row.turnId ? turn(row.turnId) : undefined;
       if (row.status === 'running' || !dependency || !SEALED_TURN_TERMINALS[dependency.status]) {
@@ -1112,7 +1112,11 @@ function parent(root: string) {
 
 /** Validates inert retained history after the cut; it is not another live blocker census. */
 function validateCaptureHistory(dataRoot: string, workspaceId: string, coreRoot?: string): void {
-  const sqlite = database(join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'));
+  // graph() already checked this private cut; no writes may intervene before this validator.
+  const sqlite = new Database(join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'), {
+    readonly: true,
+    fileMustExist: true,
+  });
   const target = bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
   try {
     for (const id of sqlite
@@ -1344,24 +1348,16 @@ export async function createWorkspaceBackup(
     const host = worker;
     result = await new Promise<Omit<WorkspaceBackupCreateResult, 'manifest'>>(
       (resolveResult, reject) => {
-        host.on('error', () =>
+        const onWorkerFailure = () =>
           reject(
             authorityError ??
               new WorkspaceRecoveryError(
                 'recovery-required',
                 'Capture worker outcome requires inspection.'
               )
-          )
-        );
-        host.on('exit', () =>
-          reject(
-            authorityError ??
-              new WorkspaceRecoveryError(
-                'recovery-required',
-                'Capture worker outcome requires inspection.'
-              )
-          )
-        );
+          );
+        host.on('error', onWorkerFailure);
+        host.on('exit', onWorkerFailure);
         host.on(
           'message',
           async (
@@ -2002,10 +1998,6 @@ async function captureWorkspaceBackup(
     }
     const metadata = `${JSON.stringify(manifest)}\n`;
     const manifestDigest = digest(metadata);
-    writeFileSync(join(staging.workspaceRoot, 'manifest.json'), metadata, {
-      flag: 'wx',
-      mode: 0o600,
-    });
     // Remove only empty directories, which the exact file-inventory format does not represent.
     const prune = (root: string) => {
       for (const name of readdirSync(root)) {
@@ -2017,42 +2009,45 @@ async function captureWorkspaceBackup(
       }
     };
     if (!live) {
+      writeFileSync(join(staging.workspaceRoot, 'manifest.json'), metadata, {
+        flag: 'wx',
+        mode: 0o600,
+      });
       prune(staging.workspaceRoot);
       syncCanonicalTree(staging.workspaceRoot);
     }
-    if (input.purpose === 'backup') {
-      writeFileSync(
-        join(staging.workspaceRoot, 'seal.json'),
-        JSON.stringify({
-          format: 'openkit-workspace-backup-seal',
-          version: 1,
-          backupId: input.backupId,
-          purpose: input.purpose,
-          manifestDigest,
-        }),
-        { flag: 'wx', mode: 0o600 }
+    const seal =
+      input.purpose === 'backup'
+        ? JSON.stringify({
+            format: 'openkit-workspace-backup-seal',
+            version: 1,
+            backupId: input.backupId,
+            purpose: input.purpose,
+            manifestDigest,
+          })
+        : undefined;
+    if (!live && seal !== undefined) {
+      writeFileSync(join(staging.workspaceRoot, 'seal.json'), seal, { flag: 'wx', mode: 0o600 });
+      syncCanonicalTree(staging.workspaceRoot);
+      await withVerifiedWorkspaceBackupBundle(
+        {
+          ...input,
+          supportedRequiredFeatures: input.supportedRequiredFeatures ?? [
+            RECURRING_PORTABLE_FEATURE,
+          ],
+          bundleRoot: staging.workspaceRoot,
+        },
+        async () => undefined
       );
-      if (!live) syncCanonicalTree(staging.workspaceRoot);
-      if (!live)
-        await withVerifiedWorkspaceBackupBundle(
-          {
-            ...input,
-            supportedRequiredFeatures: input.supportedRequiredFeatures ?? [
-              RECURRING_PORTABLE_FEATURE,
-            ],
-            bundleRoot: staging.workspaceRoot,
-          },
-          async () => undefined
-        );
     }
     reservation.assertAvailable();
     if (live) {
       await publishDurableFile({ destinationPath: join(output, 'manifest.json'), bytes: metadata });
       phase?.('authority');
-      if (input.purpose === 'backup')
+      if (seal !== undefined)
         await publishDurableFile({
           destinationPath: join(output, 'seal.json'),
-          bytes: readFileSync(join(staging.workspaceRoot, 'seal.json')),
+          bytes: seal,
         });
       phase?.('authority');
     } else publishCanonicalPath(staging.workspaceRoot, output);
