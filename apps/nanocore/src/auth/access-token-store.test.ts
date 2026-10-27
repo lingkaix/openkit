@@ -1,9 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
-import { openCoreDb } from '../storage/db.js';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestCoreDb, createTestStore } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
@@ -14,6 +18,14 @@ import {
   setDefaultServerAdminTokenId,
   verifyOpenKitAccessTokenRecord,
 } from './access-token-store.js';
+import type { Actor } from './identity.js';
+import {
+  authorizeWorkspace,
+  currentWorkspaceAuthority,
+  DeploymentAdminRequiredError,
+  requireCurrentDeploymentAdmin,
+  type WorkspaceAuthorityEvaluation,
+} from './operation-authorizer.js';
 
 /**
  * Inserts one canonical human user used by direct access-token store tests.
@@ -626,5 +638,131 @@ describe('OpenKit access token store', () => {
     } finally {
       coreDb.sqlite.close();
     }
+  });
+});
+
+/** Creates current User, Workspace and presented credentials through their existing owners. */
+async function createFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-keyed-token-authority-'));
+  const coreDb = createTestCoreDb(dataRoot);
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const userId = ensureLocalUser(coreDb);
+  const workspace = await createTestStore({ dataRoot }).createWorkspace('Token authority');
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const issue = (scope: 'server-admin' | 'workspace') =>
+    createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: userId,
+      scope,
+      workspaceIds: scope === 'workspace' ? [workspace.id] : [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+  const present = (scope: 'server-admin' | 'workspace'): Actor => {
+    const issued = issue(scope);
+    const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+    if (!verified) throw new Error('Expected owner-issued fixture credential to authenticate.');
+    return {
+      kind: 'token',
+      userId: verified.ownerUserId,
+      tokenId: verified.tokenId,
+      tokenScope: verified.scope,
+      tokenWorkspaceIds: verified.workspaceIds,
+    };
+  };
+  const admin = present('server-admin');
+  const member = present('workspace');
+  const capture = vi.fn<(evaluation: WorkspaceAuthorityEvaluation) => void>();
+  const reads = {
+    administrator: () => requireCurrentDeploymentAdmin(coreDb, admin),
+    workspace: () =>
+      authorizeWorkspace(coreDb, member, workspace.id, {
+        policyOperation: 'workspace.read',
+        mutating: false,
+      }),
+    capturedAuthority: () =>
+      currentWorkspaceAuthority(
+        coreDb,
+        workspace.id,
+        { kind: 'user', id: userId },
+        'workspace.read',
+        true,
+        member,
+        { mutating: false, dependencyFailure: 'throw', onEvaluation: capture }
+      ),
+  };
+  return { coreDb, issue, admin, member, capture, reads };
+}
+
+/** Observes real SQLite results without changing queries, rows, decoders or authority decisions. */
+function observeTokenRows(coreDb: CoreDb, read: () => unknown) {
+  let rows = 0;
+  const observe = (row: unknown) => {
+    if (row && typeof row === 'object' && 'token_id' in row) rows += 1;
+  };
+  const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+  const observation = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((source) => {
+    const statement = prepare(source);
+    const all = statement.all.bind(statement);
+    const get = statement.get.bind(statement);
+    statement.all = (...bindings: unknown[]) => {
+      const result = all(...bindings);
+      for (const row of result) observe(row);
+      return result;
+    };
+    statement.get = (...bindings: unknown[]) => {
+      const result = get(...bindings);
+      observe(result);
+      return result;
+    };
+    return statement;
+  });
+  try {
+    return { result: read(), rows };
+  } finally {
+    observation.mockRestore();
+  }
+}
+
+describe('exact current bearer authority', () => {
+  it('keeps addressed reads independent of unrelated Token history and rechecks revocation', async () => {
+    const fixture = await createFixture();
+    const before = Object.values(fixture.reads).map((read) =>
+      observeTokenRows(fixture.coreDb, read)
+    );
+    expect(before.map(({ result }) => Boolean(result))).toEqual([true, true, true]);
+    for (let index = 0; index < 4; index += 1) fixture.issue('workspace');
+    const after = Object.values(fixture.reads).map((read) =>
+      observeTokenRows(fixture.coreDb, read)
+    );
+    expect(after.map(({ result }) => result)).toEqual(before.map(({ result }) => result));
+    expect(fixture.capture.mock.calls.at(-1)?.[0].facts.presentedTokenId).toBe(
+      fixture.member.tokenId
+    );
+
+    // Core Policy Administrator Eligibility and remote-auth Scopes require current revocation facts.
+    revokeOpenKitAccessTokenRecord(fixture.coreDb, fixture.admin.tokenId!);
+    revokeOpenKitAccessTokenRecord(fixture.coreDb, fixture.member.tokenId!);
+    expect(fixture.reads.administrator).toThrow(DeploymentAdminRequiredError);
+    expect(fixture.reads.workspace()).toBeNull();
+    fixture.capture.mockClear();
+    expect(fixture.reads.capturedAuthority()).toBeNull();
+    expect(fixture.capture).not.toHaveBeenCalled();
+    // Accepted QP-3a: addressed public reads must not materialize unrelated credential history.
+    expect(after.map(({ rows }) => rows)).toEqual(before.map(({ rows }) => rows));
+  });
+
+  it('propagates an unsupported selected Token format before authority evaluation', async () => {
+    const fixture = await createFixture();
+    // Deliberate retained-format fault follows valid owner setup; Core Storage requires refusal.
+    fixture.coreDb.sqlite
+      .prepare('UPDATE openkit_access_tokens SET schema_version = 2 WHERE token_id IN (?, ?)')
+      .run(fixture.admin.tokenId, fixture.member.tokenId);
+    for (const read of Object.values(fixture.reads)) {
+      expect(read).toThrow('Unsupported retained record format.');
+    }
+    expect(fixture.capture).not.toHaveBeenCalled();
   });
 });
