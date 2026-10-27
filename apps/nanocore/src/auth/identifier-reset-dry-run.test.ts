@@ -25,7 +25,10 @@ afterEach(async () => {
 });
 
 /** Opens an isolated candidate with the real identity, membership and operation owners. */
-function deployment(root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-'))) {
+function deployment(
+  root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-')),
+  admission = new WorkspaceMutationAdmission()
+) {
   if (!roots.includes(root)) roots.push(root);
   const coreDb = openCoreDb(root);
   databases.push(coreDb);
@@ -38,7 +41,6 @@ function deployment(root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-
       BETTER_AUTH_SECRET: 'isolated-synthetic-reset-test-secret-at-least-32-characters',
     },
   });
-  const admission = new WorkspaceMutationAdmission();
   const app = createApp({
     auth,
     coreDb,
@@ -136,7 +138,7 @@ it('re-registers the protected synthetic account set on a clean candidate and re
   const oldArtifactBytes = sourceWork.map((work) =>
     JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
   );
-  const candidate = deployment();
+  const candidate = deployment(undefined, source.admission);
   expect(candidate.root).not.toBe(source.root);
   // This variable models selected ingress only; it changes no host or service.
   let selectedIngress = source;
@@ -207,14 +209,18 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     },
     body: 'fenced',
   });
-  expect(fenced.status).toBe(403);
+  expect(fenced.status).toBe(409);
+  expect(await fenced.json()).toMatchObject({
+    code: 'workspace_frozen',
+    details: { workspaceId: sourceWork[0]!.workspaceId, retryable: true },
+  });
   expect(
     sourceWork.map((work) =>
       JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
     )
   ).toEqual(oldArtifactBytes);
   candidate.coreDb.sqlite.close();
-  const reopened = deployment(candidate.root);
+  const reopened = deployment(candidate.root, candidate.admission);
   for (const [index, subject] of subjects.entries()) {
     const account = await authenticate(reopened, subject, false);
     expect(account.id).toBe(newIds[index]);
