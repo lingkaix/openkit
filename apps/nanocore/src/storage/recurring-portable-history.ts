@@ -292,12 +292,29 @@ export function validateRecurringPortableHistory(text: string): void {
   readRecurringPortableHistory(JSON.parse(text));
 }
 
+/** Raw target Core rows remain private until the post-cut projection validates their retained semantics. */
+export function readRecurringPortableCoreCut(coreDb: CoreDb, workspaceId: string) {
+  const rows = (table: string) =>
+    coreDb.sqlite
+      .prepare(
+        `SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE workspace_id=? ORDER BY id`
+      )
+      .all(workspaceId) as { schemaVersion: unknown; record_json: string }[];
+  return {
+    schedules: rows('recurring_schedules'),
+    occurrences: rows('recurring_occurrences'),
+    expiredRanges: rows('recurring_expired_ranges'),
+    externalAdmissions: listWorkspaceExternalTriggerAdmissions(coreDb, workspaceId),
+  };
+}
+
 /** Captures the whitelist under the caller's Workspace mutation fence and exact exported canonical Turn graph. */
 export function exportRecurringPortableHistory(
   coreDb: CoreDb | undefined,
   workspaceId: string,
   inherited: string | null,
-  retainedTurns: readonly { id: string; threadId: string }[]
+  retainedTurns: readonly { id: string; threadId: string }[],
+  coreCut?: ReturnType<typeof readRecurringPortableCoreCut>
 ): RecurringPortableHistory {
   const graph =
     inherited === null
@@ -305,20 +322,13 @@ export function exportRecurringPortableHistory(
       : readRecurringPortableHistory(JSON.parse(inherited));
   if (graph.schedules.some((schedule) => schedule.workspaceId !== workspaceId))
     throw new Error('Imported recurring history contradicts its owning Workspace.');
-  if (!coreDb) return graph;
-  const readRows = (
-    table: 'recurring_schedules' | 'recurring_occurrences' | 'recurring_expired_ranges'
-  ) =>
-    (
-      coreDb.sqlite
-        .prepare(
-          `SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`
-        )
-        .all(workspaceId) as { schemaVersion: unknown; record_json: string }[]
-    ).map((row) => readRetainedV1(row, () => row.record_json));
+  const cut = coreCut ?? (coreDb ? readRecurringPortableCoreCut(coreDb, workspaceId) : undefined);
+  if (!cut) return graph;
+  const readRows = (family: 'schedules' | 'occurrences' | 'expiredRanges') =>
+    cut[family].map((row) => readRetainedV1(row, () => row.record_json));
   const turns = new Map(retainedTurns.map((turn) => [turn.id, turn.threadId]));
-  const sourceSchedules = readRows('recurring_schedules').map(readRecurringSchedule);
-  const externalAdmissions = listWorkspaceExternalTriggerAdmissions(coreDb, workspaceId);
+  const sourceSchedules = readRows('schedules').map(readRecurringSchedule);
+  const externalAdmissions = cut.externalAdmissions;
   const schedules = sourceSchedules.map(({ actor, ...schedule }) => ({
     ...schedule,
     originScheduleId: schedule.id,
@@ -331,7 +341,7 @@ export function exportRecurringPortableHistory(
         }
       : {}),
   }));
-  const occurrences = readRows('recurring_occurrences')
+  const occurrences = readRows('occurrences')
     .map(readRecurringOccurrence)
     .map((row) => {
       const { actor, ...snapshot } = row.snapshot;
@@ -358,7 +368,7 @@ export function exportRecurringPortableHistory(
           : null,
       });
     });
-  const expiredRanges = readRows('recurring_expired_ranges').map((text) => {
+  const expiredRanges = readRows('expiredRanges').map((text) => {
     const {
       snapshot: { actor, ...snapshot },
       ...range

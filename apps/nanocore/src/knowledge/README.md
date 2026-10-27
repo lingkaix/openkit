@@ -1,5 +1,7 @@
 # Knowledge Format
 
+Workspace Notebook publication holds the existing Store mutation admission across native receipt admission and Git publication. A snapshot freeze therefore refuses a new Workspace publication before its first effect; an already admitted publication prevents capture. User and Server Notebook roots retain their own scope. Native-only maintenance uses the common worker-client post refusal; its open owner already prepares the content directory.
+
 Server maintenance awaits its model pin before it starts the shared role. Its domain result Items join the existing complete terminal Turn publication, including failures before inference and shared-role failures before notebook submission. Startup awaits interrupted Server Turn closure; recovery starts no model or notebook effect. A scheduled Server run with no current administrator acknowledges its failed Turn during preparation; this metadata admission grants no notebook or model access.
 
 Knowledge Manager runs have a 300-second default budget. Workspace, Server and User Memory editors read the actual pinned Turn deadline when a Tool runs, including explicit longer or shorter limits; they do not start another fixed default budget. Caller cancellation still fences every editor. The role reports its owned deadline as `knowledge_manager_timeout` in the retained Turn and ordinary failure summary, and keeps caller cancellation distinct. A User Memory failure returns an already sealed role result without appending a late Status Item. No timeout retries a Provider call or notebook effect.

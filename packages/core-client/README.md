@@ -32,6 +32,8 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 ## Client Shape
 
+Workspace snapshot capture and verification use the composed JSON operations. `client.operations['workspace.backup-download']({ workspaceId, backupId })` sends the shared logical selector by JSON POST and returns the original `application/octet-stream` body without buffering it. It uses the same configured headers, credentials and typed API failures as other client operations. Other streaming families retain their existing bindings.
+
 - `client.operations`: definition-derived product operations, including `conversation.submit`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, redacted Agent Environment Package snapshot readback, Material reads and mutations, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership, and personal administrator-token inventory and default selection.
 - `client.core`: metadata discovery and the Thread event stream.
 - `client.app`: raw portable archive download, dry-run, and import streams.

@@ -550,6 +550,39 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/operations/workspace.backup-download': {
+        post: {
+          operationId: 'workspace.backup-download',
+          tags: ['storage'],
+          summary: OPERATION_DEFINITIONS['workspace.backup-download'].description,
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: toJsonSchema(
+                  OPERATION_DEFINITIONS['workspace.backup-download'].inputSchema
+                ),
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description:
+                'Sealed verified operational inventory in the existing USTAR/Zstd container.',
+              content: {
+                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
+              },
+            },
+          },
+        },
+      },
       '/api/app/operations/artifact.download': {
         get: {
           operationId: 'artifact.download',
