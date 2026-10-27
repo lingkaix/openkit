@@ -1,3 +1,11 @@
+import type { WorkspaceBlocker } from '@openkit/app-api-schemas';
+
+/** Nonwaiting freeze result; the caller owns release only after successful admission. */
+export type WorkspaceFreezeAdmission =
+  | { readonly status: 'busy' }
+  | { readonly status: 'blocked'; readonly blockers: readonly WorkspaceBlocker[] }
+  | { readonly status: 'frozen'; readonly release: () => void };
+
 /** Process-local mutation admission state for one Workspace. */
 interface WorkspaceMutationGateState {
   admitted: number;
@@ -11,10 +19,39 @@ export const WORKSPACE_MUTATION_LATE_PUBLISHERS = ['worker-turn-closeout'] as co
 /** Registered canonical publisher that must name late mutation admission. */
 export type WorkspaceMutationLatePublisher = (typeof WORKSPACE_MUTATION_LATE_PUBLISHERS)[number];
 
-/** Coordinates ordinary Workspace mutations with exclusive deletion admission. */
+/** Coordinates ordinary Workspace mutations and exclusive lifecycle admission. */
 export class WorkspaceMutationAdmission {
   private readonly gates = new Map<string, WorkspaceMutationGateState>();
   private readonly deletionTails = new Map<string, Promise<void>>();
+
+  /** Fences an idle target before synchronous authoritative inspection, without draining live work. */
+  public tryFreeze(
+    workspaceId: string,
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): WorkspaceFreezeAdmission {
+    const state = this.state(workspaceId);
+    if (state.closed || state.admitted !== 0) return { status: 'busy' };
+    state.closed = true;
+    let blockers: readonly WorkspaceBlocker[];
+    try {
+      blockers = readBlockers();
+    } catch {
+      blockers = [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    }
+    if (blockers.length !== 0) {
+      state.closed = false;
+      return { status: 'blocked', blockers };
+    }
+    let released = false;
+    return {
+      status: 'frozen',
+      release: () => {
+        if (released) return;
+        released = true;
+        this.reopen(workspaceId);
+      },
+    };
+  }
 
   /** Admits one ordinary mutation while the Workspace gate is open. */
   public enter(workspaceId: string): (() => void) | null {

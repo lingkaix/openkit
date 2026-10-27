@@ -18,6 +18,8 @@ Each mutable control-state transition MUST commit in exactly one transaction in 
 
 Each Workspace MUST retain independently backupable and movable control data and locally retained content inside its own directory. Server-owned physical state and global capacity remain separate. An operation across those scopes is an effect with intent and outcome, not one transaction across stores. External references, retained Worker volumes and Vault material require explicit coverage; local content identity does not make them portable bytes.
 
+[The Workspace snapshot decision](../decisions/20261027-online_workspace_snapshots_and_recovery.md) selects online local capture, target-scoped restore and identity-preserving MOVE. Running work blocks their freeze without waiting or interruption. Outward export is separate; ordinary portable import supplies no recovery path. Whole-server recovery remains a separate offline operation.
+
 Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. Query indexes remain separate from canonical control authority. Arbitrary-byte originals remain canonical under their existing Artifact/upload owners. Versioned media derivatives remain rebuildable projections; file storage and transfer capacity is separate from raw model output and model-context budgets. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records this separation.
 
 The source of truth MUST be explicit per data class.

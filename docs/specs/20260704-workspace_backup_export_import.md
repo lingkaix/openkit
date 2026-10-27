@@ -2,20 +2,22 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: 2026-10-21
+updated: 2026-10-27
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V3
 
 ## Current Product Boundary
 
-Workspace export serves external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not its acceptance requirement. Existing analytical import behavior and regression obligations remain; they do not define operational recovery.
+Workspace export serves external analysis, evaluation, audit, and other external use. OpenKit-to-OpenKit preservation uses backup, restore and MOVE. Ordinary portable import and its engine are removed; deleted recovery uses scoped restore. Light App and Knowledge Package interchange retain their separate owners.
 
-Before `v0.1.0`, each Workspace MUST support local hot backup, verified same-deployment restore, and an operator-driven offline move. [The operational decision](../decisions/20261019-workspace_backup_restore_move.md) activates the previously deferred detailed design. Copy/remint, remote synchronization, optional native-volume continuity, and whole-server hot-backup changes remain deferred. Backup And Restore and Workspace Move below own these operations.
+Before `v0.1.0`, each Workspace MUST support online local backup, verified same-deployment restore, and operator-driven MOVE. Only the affected Workspace is frozen. [The online recovery decision](../decisions/20261027-online_workspace_snapshots_and_recovery.md) supersedes the earlier cold-operation exception. Copy/remint, remote synchronization, optional native-volume continuity, and whole-server hot-backup changes remain deferred.
 
-For v0.1.0, per-Workspace backup, same-deployment restore and identity-preserving MOVE are offline operator commands that run while NanoCore and every writer of the affected roots are stopped and the exclusive data-root lock is held; hot capture, live admission, GC and execution fences and online operator surfaces are deferred until after v0.1.0. Bundle format, quiescent consistency, complete content closure, safety and retention checks, identity preservation, explicit owner and member mapping, target binding restrictions, holds, and crash-restart refusal of partial authority at the next boot remain required. Pending Requests and unfinished executions travel only as inert history with truthful interrupted or unknown disposition.
+Running work blocks capture, Workspace archive, deletion, restore and MOVE. These operations neither wait for that work nor interrupt it. They refuse with the authorized blocker list defined below. Bundle integrity, complete content closure, safety, retention, identity, explicit injective account mapping, target restrictions and truthful crash outcomes remain required. Pending Requests and unfinished executions travel only as inert history.
 
-Cold capture also accepts a verified data-root backup directory from `backup.create` as a strictly read-only source while the live server keeps running. It takes no kernel data-root lock on that parent: it verifies the parent before reading, checks copied bytes against the parent manifest digests, and re-verifies the parent inventory digest after copying; any difference refuses with `parent-backup-invalid`. Target restore and the MOVE source seal remain offline.
+Cold capture also accepts a verified data-root backup directory from `backup.create` as a strictly read-only source. It takes no kernel data-root lock on that parent: it verifies the parent before reading, checks copied bytes against the parent manifest digests, and re-verifies the parent inventory digest after copying; any difference refuses with `parent-backup-invalid`. Whole-server restore remains offline.
+
+Implementation is Partial. The shared wire contract and nonwaiting freeze primitive precede activation. Snapshot operation definitions remain uncomposed until each complete capture or recovery handler lands. Existing import-specific clauses below describe the retiring implementation, not the accepted target. Their removal must preserve outward format verification and unrelated package interchange. Capture, scoped restore/MOVE, deletion recovery and import retirement are separate implementation cuts.
 
 One Core recovery-admission family, `workspace_recovery_admissions`, retains restore and MOVE ownership, decisions and results for crash restart and next-boot refusal of partial authority.
 
@@ -76,7 +78,7 @@ Backup copies the same canonical Knowledge Base files unchanged within its decla
 
 ## Summary
 
-The primary export unit is one workspace. Workspace export format V3 is a self-describing, offline-verifiable directory tree whose manifest commits to the exact portable file set and bytes consumed by import. Imports consume only those verified bytes, enforce required features fail-closed, preserve or remint the workspace id with recorded lineage, remint collision-prone target identities and references, and coordinate staged files with transactional Core replay and synchronous compensation on failure. A portable Workspace export carries product truth and actor lineage but no deployment-local access grants. Ordinary portable import records the authenticated importing user as the new canonical owner and only active member. Deleted-Workspace recovery follows the owner distinction in Verification And Import. Operational backup captures one Workspace's consistent static databases and reachable immutable content. Restore preserves its identity; move uses the same bundle and leaves a moved-out source tombstone. Whole-server recovery retains its separate boundary. Data-root migration is a config repoint validated at boot. System-managed Vault, provider, and runtime secrets never enter workspace exports; exports carry only non-secret vault reference metadata that lands `unbound`. User-authored portable content is not a sanitized or DLP-scanned channel.
+The outward export unit is one Workspace. Format V3 is a self-describing, offline-verifiable directory tree whose manifest binds the exact exported bytes. It carries product history and actor lineage, never deployment-local grants. Ordinary portable import is removed. Operational backup captures one consistent Workspace and its complete local content closure. Restore preserves its identity; MOVE uses the same verified bundle and leaves a moved-out source tombstone. Deleted recovery reactivates the original deleted registry row. Whole-server recovery stays separate. System-managed secrets remain excluded; user-authored content is not a sanitized channel.
 
 ## Goals
 
@@ -84,14 +86,14 @@ The primary export unit is one workspace. Workspace export format V3 is a self-d
 - Recover or move one Workspace without restoring the source server.
 - Make every export verifiable offline against its own manifest.
 - Preserve complete authoritative workspace history and file-backed knowledge state.
-- Keep imports safe: fail closed on unknown semantics or incomplete lineage, leave no partial state after a caught synchronous failure, and document the remaining process-crash window explicitly.
+- Verify operational recovery before publication, refuse unknown semantics and incomplete lineage, and preserve truthful target-only crash disposition.
 - Keep system-managed Vault, provider, and runtime secret material, backend-native handles, derived indexes, and server operational state out of workspace exports.
 - Define backup and restore procedures that lean on rebuildable derived state instead of exporting it.
-- Keep lineage truthful across export, import, and data-root moves.
+- Keep lineage truthful across outward export, scoped restore, Workspace MOVE and data-root moves.
 
 ## Non-goals
 
-- Do not design incremental, differential, or continuous backup.
+- Do not add page-level SQLite increments, WAL shipping or continuous replication without a measured need. Immutable content reuse is part of idle backup.
 - Do not design live replication or multi-deployment sync.
 - Do not define a deep compaction model beyond the item-log snapshot allowance in `docs/core/storage.md`.
 - Do not redefine ownership scopes, envelope fields, retention classes, or vault semantics owned by sibling specs.
@@ -106,7 +108,7 @@ Workspace export requires a currently usable administrator credential under Admi
 
 ## Decision
 
-The export unit is one workspace, serialized as a plain V3 directory tree with an envelope-wrapped manifest and per-file digests. The canonical transported form is that exact tree streamed as `.openkit-workspace.tar.zst`; transport introduces no second manifest or server archive registry. SQLite never travels inside an export: portable source-of-truth rows are dumped as line-oriented records, and derived indexes are omitted so their existing owner can rebuild them at boot or on demand. Import is manifest-verified, fail-closed on unknown required features or incomplete lineage, and coordinated through same-filesystem staging, one Core transaction, and synchronous compensating rollback. This does not create a transaction spanning the filesystem and SQLite across a process crash. V1 and V2 are intentionally incompatible and rejected rather than migrated. Operational Workspace backup instead uses the control-store snapshot and immutable-content closure. Offline move preserves identities, closes the source, and requires fresh target authority. The existing whole-server procedures remain distinct. Data-root migration is supported by repointing server config and letting boot verification validate the moved tree.
+The export unit is one Workspace serialized as a V3 directory tree with an envelope-wrapped manifest and exact file digests. Its transported form remains `.openkit-workspace.tar.zst`. Portable rows represent product history; SQLite and disposable indexes are outside that outward format. V1 and V2 remain rejected. Operational backup uses static database snapshots and complete owned content instead. Restore preserves identity; MOVE freezes the source, seals its moved-out disposition and checks target authority. Data-root migration remains a separately verified configuration repoint. The import-specific criteria below document the retiring implementation only and authorize no new ordinary import or recovery-by-remint.
 
 ## Contract / Expected Behavior
 
@@ -329,7 +331,53 @@ Keep current authorization, inert historical requests and authority, native iden
 
 ### Backup And Restore
 
+#### Scoped Freeze And Blockers
+
+The lifecycle owner MUST atomically exclude new target publishers before checking authoritative blockers. If a publisher is already admitted, another freeze exists, or required facts are unreadable, it refuses immediately. It reopens admission when inspection refuses. Successful admission returns one idempotent release. No SQL transaction spans an await. An ordinary mutation admission must not count the lifecycle operation itself as running work.
+
+Every mutable publisher, including late terminal publication, dispatch, claim, filesystem apply and maintenance, shares that exclusion. Gate counters alone do not prove inactivity. The snapshot owner checks existing durable execution, physical cleanup, claim and recovery facts. Unknown or ambiguous facts block. Healthy siblings remain admitted.
+
+| Family | Blocker versus inert history |
+| --- | --- |
+| Turns and Goal/Task work | Nonsealed Turns and unacknowledged terminal publication block. Ready Goals, cards and closed history alone are inert. |
+| Worker attempts and residency | Open/closing attempts, handoff, unproved cleanup and unresolved physical bindings block. Cleanup-proved idle storage is inert for capture; replacement still requires physical exclusion. |
+| Pending Requests | Claimed execution without disposition and active raising/delivery block. Passive unclaimed or final undelivered records are inert only under the claim/delivery fence. |
+| Recurrence and scheduler admission | Active preparation, uncertain publication and nonterminal Turns block. Future timers and merely queued/denied entries are inert under the dispatch fence. |
+| Synchronization and materialization | Active preparation/apply and an approved Plan without proved Result block. Undecided Review, finished Result and immutable snapshots are inert. |
+| Snapshot and export | Generation, original-byte acquisition, candidate placement and unfinished recovery block. A stream holding only independent verified sealed bytes is inert. |
+| Knowledge, Source, catalog, Light App and retention | Mutable head, reference, namespace, Git and GC publication block. Immutable finished versions and read-only derived indexes are inert. |
+| Capability calls and callbacks | Unsettled calls, owed receipts/accounting and possible later writes block. Historical unknown contact is inert only with proved closed execution and writer exclusion. |
+| Holds and unavailable facts | Legal holds follow their existing nondestructive/destructive rules. Unclassified writers, unreadable evidence and ambiguous rows block. |
+
+The public refusal uses HTTP 409 and existing operation-error details. `workspace_blocked` means not admitted, requires explicit resolution and has `retryable:false`. `workspace_frozen` means not admitted during a current freeze and has `retryable:true`; it promises no retry time. Prior accepted requests retain their original replay and uncertainty rules.
+
+Details contain `workspaceId`, lifecycle `operation` (`capture`, `archive`, `delete`, `restore`, `move-out`, `move-in`), `retryable` and a nonempty `blockers` array. Blocker kinds are `turn`, `worker-attempt`, `worker-residency`, `pending-request`, `recurring-occurrence`, `scheduler-admission`, `goal-task`, `synchronization`, `publication`, `snapshot`, `retention` and `unavailable`. Reasons are `active-work`, `pending-publication`, `cleanup-unproved`, `unproved-effect`, `frozen`, `held` and `unavailable`. These are derived observations, never retained states.
+
+Each permitted blocker names only its existing typed identity and existing quick actions. The response includes every authorized blocker. All hidden private blockers collapse into ONE `unavailable` row, with no reference, content, count-derived label or action. Unreadable enumeration also fails closed through that identity-free row. Never expose paths, commands, credentials or private previews.
+
+The ONE quick-action list uses exact existing operation inputs: `turn.interrupt`, `goal.cancel`, `goal.card.cancel`, `scheduler.cancel`, `pending-request.withdraw`, `administration.cleanup-read`, `worker.list`, `sync.review-read` and owner-eligible `sync.recovery-decide`. There is no general Worker stop. Actions recheck current authority, request identity and revisions; an offered action grants nothing. A blocker without an executable stop stays inspect-only (#537). Action success does not prove physical cleanup. The user explicitly retries the original lifecycle request after resolution; no batch-stop or automatic retry is added.
+
+#### Online Snapshot Policy
+
+One snapshot owner serves capture, restore, MOVE, deletion and deleted recovery. Scheduled idle capture uses the existing maintenance tick, skips blockers without creating an accepted failed request, and considers at most one eligible Workspace per pass. The current default is one successful capture per UTC day and seven successful daily generations. Derive eligibility from the last sealed manifest. Holds and active readers independently protect required generations.
+
+Snapshots use a private data-root-local Workspace backup root, an independently owned immutable digest-object pool, and sealed complete inventories. New immutable bytes become durable before their manifest references. SQLite and mutable files are copied under the target fence; the existing online SQLite backup primitive supplies committed database snapshots. WAL/SHM files are not independent snapshot authority. Captured Core account/membership facts use one short read transaction, never a whole-server capture pause.
+
+The bundle owner distinguishes an owned local snapshot from a standalone verified bundle. It resolves local digest objects against the exact inventory and supplies independently acquired verified copies through the existing callback-scoped manifest/file interface. A local object pool is never accepted as a flat standalone bundle root. Path, link, size, original-byte digest and reader-lifetime checks apply to both sources. Download materializes that same complete inventory, not a second backup format.
+
+Before database copy, the existing native hold owner atomically refuses a competing database or global hold without queueing. Once acquired, it may settle only finite already-posted acknowledgements for that database. It releases the hold before posting native finish/close and releases it in `finally` on every exit. It never awaits a native command whose post it holds. No second hold manager, state machine or Main lock retry is introduced.
+
+Release the capture fence early only after mutable state is copied and complete immutable protection is proved. Otherwise retain it through copy and seal. Retention first retires generation exposure, then removes only objects unreachable from remaining sealed or pinned inventories. Deletion or GC of the live source cannot break a sealed backup. Page-level SQLite increments require measurement before a separate design decision.
+
+After restart, a crashed AUTOMATIC unsealed capture abandons its own publication right and releases its pins through the existing capture owner. It creates no repair or retry service. Manual capture retains explicit inspect/finish/abandon. Restore/MOVE placement and deletion retain target quarantine and their truthful candidate/predecessor evidence. One successful verification cannot clear an unrelated database or layout refusal.
+
+Only local destinations are supported in this release. S3 with client-side encryption is deferred to #536. Workspace archive uses this capture/freeze contract; Thread archive retains its existing Thread-scoped rules.
+
 #### Operator Contract
+
+The public projection uses owned backup/request identities, never a server path. Capture, verify, restore, MOVE-out, inspect, finish, abandon and reactivation use JSON. Sealed-bundle download and MOVE-in use streaming `application/octet-stream`. Operational bytes carry the verified backup inventory; they never use the analytical V3 import decoder. Manual operations require current Administrator Eligibility through the common Kernel authorizer, rechecked after awaits. Maintenance uses its existing trusted owner, never a synthetic administrator.
+
+The streamed operational bundle uses the existing bounded Zstandard-compressed POSIX USTAR container. Its root contains the same operational manifest, seal and complete inventory as the standalone bundle, with no wrapper directory. Container path/link/size checks and operational manifest verification remain separate requirements. Sharing the container grammar does not share the analytical V3 decoder, import engine or authority.
 
 - Capture takes purpose `backup`/`move` and the Workspace selector; return its capture identity (the backup identity) and disposition.
 - Inspect, finish, and abandon select that capture identity and use current authority and operation fences. Abandon closes publication rights before releasing protection.
@@ -370,17 +418,17 @@ A versioned seal binds the backup identity, purpose, and exact manifest digest. 
 
 #### Local Hot Capture
 
-1. Admit the request and protect the selected Workspace's complete snapshot roots from garbage collection before snapshot selection. Protection covers transitive manifests, Notebook history, definitions, prompts, message parts, and other required blobs.
-2. Hold the layout's common-cut gate across control SQL, Light Apps, and opaque roots. Block mutations, stabilize in-flight app effects, and obtain each owner's freeze/flush or stopped-writer proof before selecting heads and taking SQLite backup-API snapshots. Unrelated Workspaces remain usable. Never independently copy a live database and WAL.
-3. Once snapshots and immutable roots are fixed, release the capture pause, not the content protection. Copy the referenced immutable bytes through the Storage owner. Concurrent new content is outside this cut; later deletion cannot remove protected members.
+1. Perform only effect-free authority and capacity preflight, then try to freeze the target and recheck authoritative blockers. Running work or unproved writer exclusion refuses before accepting a capture or acquiring durable pins. Successful freeze protects the complete snapshot roots before selection, including transitive manifests, Notebook history, definitions, prompts, message parts and other required blobs.
+2. Keep that target fence across control SQL, Light Apps and opaque roots. Select heads and take SQLite backup-API snapshots under the same exclusion and nonwaiting native hold. Unrelated Workspaces remain usable. Never independently copy a live database and WAL.
+3. Release the capture pause only after mutable snapshots are independent and immutable protection is proved. Otherwise retain the fence through copying and sealing. Copy referenced immutable bytes through the Storage owner. Concurrent new content is outside this cut; later deletion cannot remove protected members.
 4. Write the manifest, verify its inventory digest and exact file set, and validate database integrity, identities, required features, and complete reference closure. Light App schema/native-table inventories and definition/presentation digests retain their existing checks.
 5. For purpose `backup`, synchronize the completed bundle and manifest before publishing its seal. Report success only after the seal is durable. Release content protection only after verified independent copies exist. Purpose `move` stops after verification and uses Source Seal And Moved-Out State below; it MUST NOT publish a backup seal first.
 
-Failed copy/verification publishes no seal; preserve source data and report the failing authority. Process exit or clock expiry cannot release protection. After restart, inspect the same capture identity; finish its verified capture or explicitly abandon before releasing protection. No automatic repair/retry service is added.
+Failed copy/verification publishes no seal; preserve source data and report the failing authority. Clock expiry cannot release protection. After restart, manual capture retains explicit inspect/finish/abandon; automatic capture follows Online Snapshot Policy above. No automatic repair/retry service is added.
 
 #### Same-Deployment Restore
 
-Restore requires the same source deployment and Workspace identity, current administrator authority, and proved absence of affected writers. Fence dependent execution hosts through their existing owner. Refuse an identity mismatch or a moved-out Workspace; reactivation is a separate operation. Keep current server users, ownership, membership, and physical registry authority, not a historical server database from the bundle.
+Restore requires the same source deployment and Workspace identity, current administrator authority, and proved absence of affected writers. Running work refuses the operation; restore neither waits nor interrupts it. Freeze only the target Workspace and close only its owned handles. Refuse an identity mismatch or a moved-out Workspace; reactivation is a separate operation. Keep current server users, ownership, membership, and physical registry authority, not a historical server database from the bundle.
 
 1. Verify the seal, exact release/features, paths, inventory/digests, SQLite integrity, and complete owned graphs before changing live authority. Reject duplicate, missing, unlisted, linked, or unsafe entries; only the root manifest and seal are exempt from the content inventory. Parse or copy only verified bytes. Never execute packaged content or contact an external mount during verification.
 2. Stage on the destination filesystem. Preserve the predecessor separately. Reverify staged bytes and open staged databases without creating replacements. Do not expose staged data through discovery, indexes, or execution.
@@ -393,6 +441,12 @@ When the current Workspace database is lost, a deployment administrator may expl
 Restricted recovery opens with automation, channels, schedules, and executable catalog bindings disabled, as on MOVE import, until explicit administrator re-admission under current checks. It preserves provable safety facts and current server authority; it does not claim to recover missing post-capture facts.
 
 A failure before publication leaves prior readable authority unchanged. An interrupted or uncertain publication fences and quarantines only the affected Workspace, preserving candidate/predecessor bytes. Restart never serves a partial candidate, fabricates empty authority, or automatically rolls back an external effect. Healthy Workspaces can boot. Corrupt server authority refuses server boot; uncertain shared writers block their actual effect domain.
+
+#### Deleted Workspace Recovery
+
+Deletion captures a recoverable operational snapshot before changing the active registry status. The existing deletion request binds that backup identity and digest before destructive cleanup. Recovery restores the ORIGINAL Workspace identity and reactivates its exact deleted registry row. It preserves original private Thread owners, current server authority, holds and the exact recovery eligibility of the original active owner or a current administrator. Neither recovery caller nor Workspace owner replaces a private Thread owner.
+
+Retained completed deletion requests with only analytical recovery-export bytes have no continuity into this recovery path. They refuse through the existing unavailable outcome; existing retention governs their bytes. No legacy importer, remint reader or automatic conversion remains. This is an explicit pre-release disposition, not permission to discard another retained family or bypass a hold.
 
 #### Existing Whole-Server Recovery Boundary
 
@@ -412,7 +466,7 @@ Move transfers one Workspace between two deployments of the same exact release. 
 
 #### Source Seal And Moved-Out State
 
-1. Close Workspace admission. Through the execution owner, settle product executions or truthfully interrupt them, inspect unknown effects, and fence all writers. Withdraw outstanding Pending Requests through their owner before capture; retain requests, decisions, and withdrawal history. No source request becomes live target authority.
+1. Try to freeze the source Workspace through Scoped Freeze And Blockers. Running work refuses immediately; MOVE neither waits nor interrupts it. Passive Pending history remains inert under the claim/delivery fence and grants no live target authority. A separate explicit withdrawal, when needed, uses its existing owner before a new MOVE request.
 2. Capture and verify a `quiescent` bundle through steps 1-4 of Local Hot Capture. Synchronize the complete bundle and manifest before the source seal transaction. Keep admission closed throughout. No Worker process, queue, capacity reservation, physical attachment, or live session authority travels.
 3. In one source-local control transaction, commit the successful move seal fact and the Workspace's `moved-out` lifecycle disposition. Bind both to the same backup identity and manifest digest. Record source deployment and lineage under the existing Workspace lifecycle/Audit owners.
 4. Finalization, including marker publication and bundle return, shares one source-local operation fence with abandonment and reactivation. Under that fence, require the CURRENT matching moved-out revision, backup identity, manifest digest, and open publication right. A historical seal fact is insufficient. Publish the durable marker only after the source transaction commits. Before commit, no transferable seal exists; afterward, marker failure leaves the source read-only. After durable sealing, release capture protection, not ordinary retention or holds.
@@ -422,7 +476,7 @@ Before the seal transaction commits, failure keeps admission closed pending fenc
 
 #### Target Admission And Rebinding
 
-The importing administrator supplies the target owner, defaulting to themself, and may supply an exact source-account-to-target-account member map. Every supplied target account MUST exist and be active. A missing owner refuses import before publication. Unmapped members are dropped and listed in the report; never infer accounts from names, contact addresses, or matching deployment-local IDs. The owner receives active membership under the existing identity owner. Mapped members receive only target-admitted membership, not source roles or Policy decisions. Source grants, invitations, tokens, and administrator eligibility never travel.
+The receiving administrator supplies the target owner, defaulting to themself, and may supply an exact source-account-to-target-account member map. The complete resolved map, including the owner, MUST be injective. Several source accounts cannot map to one target account. Every supplied target account MUST exist and be active. A missing owner or non-injective map refuses before publication. Unmapped members are dropped and listed in the report; never infer accounts from names, contact addresses, or matching deployment-local IDs. The owner receives active membership under the existing identity owner. Mapped members receive only target-admitted membership, not source roles or Policy decisions. Source grants, invitations, tokens, and administrator eligibility never travel.
 
 Preserve historical ActorRef values as source-qualified attribution. Rebind private audience access only through explicit admitted mappings. Unmapped private audiences remain unavailable, not shared with the Workspace. Current administrator eligibility retains its separately owned inspection authority. Removed memberships and historical request responsibility cannot create a target grant.
 
