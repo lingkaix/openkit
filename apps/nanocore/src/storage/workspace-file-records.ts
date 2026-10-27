@@ -1312,7 +1312,17 @@ export function readPublishedAgentSessionIds(
  * @returns Valid records in directory order; disputed global identities exclude both owners.
  * @throws When the shared container or a Workspace identity is unsafe rather than an attributable record failure.
  */
-export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
+export function loadWorkspaceFileRecords(
+  dataRoot: string,
+  workspaceId?: string
+): WorkspaceFileRecords[] {
+  // Snapshot validation owns one already-admitted target. Ordinary discovery retains the complete collision census below.
+  if (workspaceId !== undefined) {
+    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+    if (!isScopeAdmitted(dataRoot, 'workspace', workspaceId))
+      throw new Error('Workspace authority is refused.');
+    return [loadWorkspace(join(dataRoot, 'workspaces', workspaceId), workspaceId)];
+  }
   const workspacesRoot = join(dataRoot, 'workspaces');
   if (!lstatSync(workspacesRoot, { throwIfNoEntry: false })) return [];
   assertCanonicalDirectory(workspacesRoot);

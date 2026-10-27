@@ -39,6 +39,7 @@ import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js'
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { readBlockers } from './storage/workspace-backup.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
   assertCanonicalDirectory,
@@ -116,6 +117,57 @@ export function createWorkspaceDeletionOperationImplementations(
         return await input.workspaceMutationAdmission!.runDeletionExclusive(
           value.workspaceId,
           async () => {
+            const requests = listWorkspaceDeletionRequests(dataRoot, value.workspaceId);
+            const deletionOwned = requests.some(
+              (request) =>
+                request.requestId === value.requestId ||
+                !isTerminalWorkspaceDeletionRequest(request)
+            );
+            if (!deletionOwned) {
+              if (input.workspaceMutationAdmission!.isClosed(value.workspaceId))
+                throw new OperationError(
+                  'workspace_frozen',
+                  'Workspace is temporarily frozen.',
+                  409,
+                  {
+                    details: {
+                      workspaceId: value.workspaceId,
+                      operation: 'delete',
+                      retryable: true,
+                      blockers: [
+                        {
+                          kind: 'publication',
+                          reason: 'frozen',
+                          reference: { workspaceId: value.workspaceId },
+                          actions: [],
+                        },
+                      ],
+                    },
+                  }
+                );
+              // Mutable capture admission can reopen before immutable copying ends. Its durable pin
+              // still excludes destructive source removal; an exact deletion retry owns its prior state.
+              const blockers = readBlockers({
+                coreDb,
+                store: input.store!,
+                workspaceId: value.workspaceId,
+                operation: 'delete',
+              });
+              if (blockers.length)
+                throw new OperationError(
+                  'workspace_blocked',
+                  'Resolve the Workspace blockers before deletion.',
+                  409,
+                  {
+                    details: {
+                      workspaceId: value.workspaceId,
+                      operation: 'delete',
+                      retryable: false,
+                      blockers,
+                    },
+                  }
+                );
+            }
             const result = await advanceWorkspaceDeletion({
               actorId: context.actor.userId,
               actor: context.actor,
