@@ -36,6 +36,7 @@ import {
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
+import * as workspaceMembership from './workspace-membership.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const NOW = '2026-10-15T00:00:00.000Z';
@@ -59,7 +60,7 @@ describe('canonical local retrieval identity', () => {
     const access = { ...f.access, coreDb: undefined };
     // Core Policy requires current authoritative facts; an implicit local identity cannot replace Core.
     expect(() => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access })).toThrow(
-      'Knowledge retrieval access denied.'
+      expect.objectContaining({ code: 'recovery_required', status: 503 })
     );
     for (const actorId of [
       'user_local',
@@ -78,7 +79,35 @@ describe('canonical local retrieval identity', () => {
         workspaceId: f.workspaceId,
         access: { ...access, requestActor: undefined },
       })
-    ).toThrow('Knowledge retrieval access denied.');
+    ).toThrow(expect.objectContaining({ code: 'recovery_required', status: 503 }));
+  });
+
+  it.each([
+    'presented requestActor',
+    'native ActorRef',
+  ] as const)('preserves the current membership read failure for %s', async (actorInput) => {
+    const f = await createFixture('unreadable-authority');
+    const access = {
+      ...f.access,
+      ...(actorInput === 'native ActorRef' ? { requestActor: undefined } : {}),
+    };
+    const admit = () => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access });
+    expect(admit).not.toThrow();
+    const failure = new Error('Current membership reader is unavailable.');
+    const reader = vi
+      .spyOn(workspaceMembership, 'resolveWorkspaceMembershipRelation')
+      .mockImplementation(() => {
+        throw failure;
+      });
+    // Core Policy Decision: a failed mandatory fact read must not become a Kernel denial.
+    let observed: unknown;
+    try {
+      admit();
+    } catch (error) {
+      observed = error;
+    }
+    expect(reader).toHaveBeenCalledWith(f.access.coreDb, f.workspaceId, f.userId);
+    expect(observed).toBe(failure);
   });
 });
 

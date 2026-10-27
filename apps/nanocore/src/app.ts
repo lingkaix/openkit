@@ -362,13 +362,16 @@ function createBrowserCors(
  *
  * @param coreDb Current canonical identity and credential owner.
  * @param actor Authenticated request actor.
- * @returns Forbidden response for non-admin actors, otherwise null.
+ * @returns Unavailable response without Core, forbidden for non-admin actors, otherwise null.
+ * @throws The original current-authority dependency error.
  */
 function requireDiagnosticsAdminActor(
   coreDb: CoreDb | undefined,
   actor: AuthVariables['actor'] | undefined
 ): Response | null {
-  if (coreDb && actor) {
+  if (!coreDb)
+    return asApiError('Administrator authority is unavailable.', 'recovery_required', 503);
+  if (actor) {
     try {
       requireAdministratorOperation(coreDb, actor, 'workspace.read');
       return null;

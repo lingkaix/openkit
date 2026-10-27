@@ -541,25 +541,27 @@ export function resolveKnowledgeQueryContext(input: Target) {
     );
   }
 }
-/** Rechecks live membership, credentials and Policy before opening a named generation. */
+/** Rechecks live membership, credentials and Policy before opening a named generation; missing Core is unavailable and current-fact failures propagate. */
 export function admitKnowledgeRetrieval(input: Pick<Target, 'workspaceId' | 'access'>): void {
   const { access, workspaceId } = input;
+  if (!access.coreDb)
+    throw new OperationError('recovery_required', 'Knowledge authority is unavailable.', 503);
   if (access.requestActor && access.requestActor.userId !== responsibleUserIdForActor(access.actor))
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
-  const allowed = access.coreDb
-    ? access.requestActor
-      ? isWorkspaceOperationAuthorized(access.coreDb, access.requestActor, workspaceId, {
-          mutating: false,
-          policyOperation: 'knowledge.read',
-        })
-      : currentWorkspaceAuthority(
-          access.coreDb,
-          workspaceId,
-          access.actor,
-          'knowledge.read',
-          true
-        ) !== null
-    : false;
+  const allowed = access.requestActor
+    ? isWorkspaceOperationAuthorized(access.coreDb, access.requestActor, workspaceId, {
+        mutating: false,
+        policyOperation: 'knowledge.read',
+      })
+    : currentWorkspaceAuthority(
+        access.coreDb,
+        workspaceId,
+        access.actor,
+        'knowledge.read',
+        true,
+        undefined,
+        { dependencyFailure: 'throw' }
+      ) !== null;
   if (!allowed || (access.outputThreadId && !threadReadable(input, access.outputThreadId)))
     throw new OperationError('workspace_access_denied', 'Knowledge retrieval access denied.', 403);
 }

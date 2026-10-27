@@ -51,9 +51,8 @@ describe('NanoCore deployment mode matrix', () => {
         authorization = `Bearer ${serverAdmin.secret}`;
       }
       const app = createApp({
-        ...(coreMode === 'server'
-          ? { auth: createSignedInAuthStub(), coreDb: coreDb!, mode: 'server' }
-          : {}),
+        coreDb,
+        ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
         agentManifests: [],
         turnExecutor: runtime.turnExecutor,
       });

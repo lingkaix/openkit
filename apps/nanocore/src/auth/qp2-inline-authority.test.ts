@@ -123,6 +123,15 @@ function removeOperationGrants(operation: string, serverOnly = false) {
 }
 
 describe('QP-2c remaining inline authority', () => {
+  it('reports unavailable authority when diagnostics has no Core dependency', async () => {
+    const f = await fixture();
+    const app = createApp({ dataRoot: f.root, store: f.store });
+    // Core Policy Decision: missing mandatory facts are an error, not an authorization denial.
+    const unavailable = await app.request('/api/diagnostics');
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toMatchObject({ code: 'recovery_required' });
+  });
+
   it('rechecks the authenticated diagnostics administrator after selected Token revocation', async () => {
     const f = await fixture();
     const app = f.session(FIXTURE_LOCAL_USER_ID);

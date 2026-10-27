@@ -1,15 +1,30 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { listAppliedMigrationIds } from './storage/migrate.js';
 import { resolveTelemetryConfiguration } from './telemetry.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { initializeTestCore } from './test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, initializeTestCore } from './test-support/store.js';
+
+const fixtureCoreDbs: ReturnType<typeof createTestCoreDb>[] = [];
+afterEach(() => {
+  for (const coreDb of fixtureCoreDbs.splice(0)) closeTestCoreDb(coreDb);
+});
+
+/** Owns the current canonical facts used by explicit deployment diagnostics requests. */
+function diagnosticsCore(dataRoot: string) {
+  const coreDb = createTestCoreDb(dataRoot);
+  fixtureCoreDbs.push(coreDb);
+  ensureLocalUser(coreDb);
+  return coreDb;
+}
 
 /**
  * Creates a minimal Better Auth stub for diagnostics tests.
@@ -229,9 +244,11 @@ describe('Settings diagnostics app API', () => {
 
   it('exposes the aggregate diagnostics snapshot in local mode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
-    initializeTestCore(dataRoot);
+    const coreDb = diagnosticsCore(dataRoot);
+    const appliedMigrations = listAppliedMigrationIds(coreDb);
     const app = createApp({
       dataRoot,
+      coreDb,
       providerRegistry: new ProviderRegistry([]),
       agentManifests: [],
     });
@@ -243,7 +260,7 @@ describe('Settings diagnostics app API', () => {
     expect(body).toMatchObject({
       auth: { mode: 'local' },
       dataRoot: 'configured',
-      migrations: { applied: [] },
+      migrations: { applied: appliedMigrations },
       mode: 'local',
       providers: [],
       agents: [],
@@ -252,10 +269,14 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('rejects signed-in sessions from deployment diagnostics without leaking session tokens', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-session-'));
+    const coreDb = diagnosticsCore(dataRoot);
     const app = createApp({
+      dataRoot,
+      coreDb,
       auth: createAuthStub({
         session: { id: 'session_secret_value' },
-        user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+        user: { id: ensureLocalUser(coreDb) },
       }),
       mode: 'server',
       providerRegistry: new ProviderRegistry([]),

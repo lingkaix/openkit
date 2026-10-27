@@ -39,7 +39,7 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openControlStoreProductReadHandle } from './control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from './db.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
   rebuildInvalidExistingWorkspaceDerivedIndexes,
@@ -51,10 +51,12 @@ import { applyMigrations } from './migrate.js';
 import { readRetrievalTrace } from './retrieval-traces.js';
 
 const fixtureRoots: string[] = [];
+const fixtureCoreDbs: CoreDb[] = [];
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   await closeRetrievalServices();
   await shutdownControlStoreWorkerClient();
+  for (const coreDb of fixtureCoreDbs.splice(0)) coreDb.sqlite.close();
   for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -69,10 +71,18 @@ function createDataRoot(): string {
   return root;
 }
 
-/** Builds trusted local-user access against the exact temporary data root under test. */
-function localRetrievalAccess(dataRoot: string, store = new FsStore({ dataRoot })) {
+/** Establishes real current local-user authority for the exact fixture Workspace and keeps Core open through disclosure. */
+function localRetrievalAccess(dataRoot: string, store: FsStore, workspaceId: string) {
+  const coreDb = openCoreDb(dataRoot);
+  fixtureCoreDbs.push(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId,
+    ownerUserId: ensureLocalUser(coreDb),
+  });
   return {
     store,
+    coreDb,
     actor: { kind: 'user' as const, id: LOCAL_USER_ID },
     requestActor: { kind: 'local' as const, userId: LOCAL_USER_ID },
   };
@@ -555,7 +565,7 @@ describe('workspace derived index rebuild', () => {
     const traceId = 'krt_00000000-0000-7a4b-9b29-0556f2c2a5bd';
     const input = {
       access: {
-        ...localRetrievalAccess(dataRoot, store),
+        ...localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001'),
         outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
       },
       dataRoot,
@@ -590,7 +600,7 @@ describe('workspace derived index rebuild', () => {
         caller: 'task-mode',
         dataRoot,
         access: {
-          ...localRetrievalAccess(dataRoot, store),
+          ...localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001'),
           outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
         },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -738,7 +748,7 @@ describe('workspace derived index rebuild', () => {
     publishPage(workspaceRoot, `${knowledgePageId}.md`, content);
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
-        ...localRetrievalAccess(dataRoot, store),
+        ...localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001'),
         outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
       },
       caller: 'task-mode',
@@ -788,7 +798,7 @@ describe('workspace derived index rebuild', () => {
     const readSelection = () =>
       resolveWorkspaceKnowledgeRetrievalPages({
         access: {
-          ...localRetrievalAccess(dataRoot, afterStore),
+          ...localRetrievalAccess(dataRoot, afterStore, 'ws_00000000-0000-7000-8000-000000000001'),
           outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
         },
         caller: 'task-mode',
@@ -820,7 +830,7 @@ describe('workspace derived index rebuild', () => {
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
         access: {
-          ...localRetrievalAccess(dataRoot, afterStore),
+          ...localRetrievalAccess(dataRoot, afterStore, 'ws_00000000-0000-7000-8000-000000000001'),
           outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
         },
         caller: 'task-mode',
@@ -870,7 +880,7 @@ describe('workspace derived index rebuild', () => {
 
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {
-        ...localRetrievalAccess(dataRoot, store),
+        ...localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001'),
         outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
       },
       caller: 'task-mode',
@@ -926,7 +936,7 @@ describe('workspace derived index rebuild', () => {
     const interruptedPath = join(traceRoot, '.krt_00000000-0000-7b84-9036-54ad1961c1f0.tmp');
     writeFileSync(interruptedPath, '{"interrupted":true');
     const input = {
-      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: thread.id },
+      access: { ...localRetrievalAccess(dataRoot, store, workspace.id), outputThreadId: thread.id },
       dataRoot,
       workspaceId: workspace.id,
       caller: 'task-mode' as const,
@@ -977,7 +987,7 @@ describe('workspace derived index rebuild', () => {
     fixtureRoots.push(outsideRoot);
     const outsidePath = join(outsideRoot, 'sentinel.json');
     const input = {
-      access: { ...localRetrievalAccess(dataRoot, store), outputThreadId: thread.id },
+      access: { ...localRetrievalAccess(dataRoot, store, workspace.id), outputThreadId: thread.id },
       dataRoot,
       workspaceId: workspace.id,
       caller: 'task-mode' as const,
@@ -1967,7 +1977,7 @@ describe('workspace derived index rebuild', () => {
     });
 
     const retrieval = await retrieveWorkspaceKnowledge({
-      access: localRetrievalAccess(dataRoot, store),
+      access: localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001'),
       caller: 'app-api',
       dataRoot,
       limit: 5,

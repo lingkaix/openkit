@@ -44,6 +44,7 @@ import {
 } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
+import { createTestSessionActor } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -349,7 +350,15 @@ describe('retrieval query context, references, and query-owned traces', () => {
       })
     ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     await expect(
-      retrieveWorkspaceKnowledge({ ...fixture.input('release cadence'), sourceScope: 'server' })
+      retrieveWorkspaceKnowledge({
+        ...fixture.input('release cadence'),
+        access: {
+          ...fixture.access,
+          // Core Policy: Workspace membership does not grant an ordinary session Server Knowledge.
+          requestActor: createTestSessionActor(fixture.coreDb, ACTOR.id),
+        },
+        sourceScope: 'server',
+      })
     ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
     expect(findTraceFiles(fixture.workspaceRoot)).toEqual([]);
   });
@@ -1118,6 +1127,7 @@ async function createFixture(
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const access: KnowledgeRetrievalAccess = {
     store,
+    coreDb,
     actor: ACTOR,
     requestActor: REQUEST_ACTOR,
   };
