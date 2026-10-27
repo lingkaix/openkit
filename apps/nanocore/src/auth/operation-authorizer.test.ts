@@ -8,6 +8,7 @@ import {
   PRODUCT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import * as policyKernel from '@openkit/policy-kernel';
+import { ApiErrorSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
@@ -1422,9 +1423,51 @@ describe('central Workspace operation authorizer', () => {
     const items = (await collection.json()).items as { workspace: { id: string } }[];
     expect(items.map(({ workspace }) => workspace.id)).not.toContain(fixture.workspace.id);
     expect(read.status).toBe(403);
-    expect(mutation.status).toBe(403);
+    expect(mutation.status).toBe(409);
     await expect(read.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
-    await expect(mutation.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    await expect(mutation.json()).resolves.toMatchObject({
+      code: 'workspace_frozen',
+      details: { workspaceId: fixture.workspace.id, retryable: true },
+    });
+  });
+
+  it('projects a frozen retained Gateway route refusal without replacing unauthorized denial', async () => {
+    const gateway = () =>
+      fixture.app.request('/v1/responses', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          input: 'Do not admit this frozen request.',
+          metadata: { openkit: { workspaceId: fixture.workspace.id } },
+          model: 'test',
+        }),
+      });
+    fixture.actorState.current = {
+      kind: 'session',
+      userId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+    };
+    const deniedBefore = await gateway();
+    expect(deniedBefore.status).toBe(403);
+    const baselineDenial = await deniedBefore.json();
+    expect(baselineDenial).toMatchObject({ code: 'workspace_access_denied' });
+
+    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+    const deniedFrozen = await gateway();
+    expect(deniedFrozen.status).toBe(403);
+    expect(await deniedFrozen.json()).toEqual(baselineDenial);
+
+    fixture.actorState.current = {
+      kind: 'session',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    };
+    const authorizedFrozen = await gateway();
+    expect(authorizedFrozen.status, await authorizedFrozen.clone().text()).toBe(409);
+    expect(authorizedFrozen.headers.get('content-type')).toContain('application/json');
+    expect(ApiErrorSchema.parse(await authorizedFrozen.json())).toMatchObject({
+      code: 'workspace_frozen',
+      details: { workspaceId: fixture.workspace.id, retryable: true },
+    });
+    expect(fixture.workspaceMutationAdmission.isClosed(fixture.workspace.id)).toBe(true);
   });
 
   it('lets usable server-admin bearer tokens receive Workspace administrator eligibility', async () => {

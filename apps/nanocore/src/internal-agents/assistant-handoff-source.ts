@@ -9,8 +9,7 @@ import {
   assistantPendingOutcomeSourceHash,
   listThreadPendingRequests,
 } from '../runtime/pending-requests.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 
 /** Verifies receipt-free Task provenance from existing canonical owners; this grants no current execution authority. */
 export function readAssistantTaskHandoffSource(
@@ -53,8 +52,7 @@ export function readAssistantTaskHandoffSource(
     sourceDb =
       sourceWorkspace.id === receiving.workspaceId
         ? workspaceDb
-        : openWorkspaceDb(workspaceDb.dataRoot, sourceWorkspace.id);
-    if (sourceDb !== workspaceDb) applyScopedMigrations(sourceDb);
+        : openWorkspaceReadDb(workspaceDb.dataRoot, sourceWorkspace.id);
     const records = listThreadPendingRequests(
       sourceDb.sqlite,
       sourceWorkspace.id,

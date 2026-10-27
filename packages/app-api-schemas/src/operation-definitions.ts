@@ -61,6 +61,7 @@ import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 import { WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS } from './workspace-archive-operations.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 import { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
+import { WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS } from './workspace-snapshot-operations.js';
 import { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from './workspace-transfer.js';
 
 export { ARTIFACT_OPERATION_DEFINITIONS } from './artifact-operations.js';
@@ -110,7 +111,14 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
   APP_UPDATE_OPERATION_DEFINITIONS,
   DIAGNOSTICS_OPERATION_DEFINITIONS,
   NANOHOST_OPERATION_DEFINITIONS,
-  DATA_ROOT_ADMIN_OPERATION_DEFINITIONS
+  DATA_ROOT_ADMIN_OPERATION_DEFINITIONS,
+  {
+    'workspace.backup-capture':
+      WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.backup-capture'],
+    'workspace.backup-verify': WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.backup-verify'],
+    'workspace.backup-download':
+      WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.backup-download'],
+  }
 );
 
 /** Statically composed product contracts. */

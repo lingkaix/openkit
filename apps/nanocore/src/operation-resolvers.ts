@@ -60,6 +60,20 @@ export interface OperationAdmissionDependencies {
 function denied(cause?: unknown): OperationError {
   return new OperationError('workspace_access_denied', 'Workspace access denied.', 403, { cause });
 }
+/** Reports only an already-authorized target whose new mutation was not admitted. */
+function frozenWorkspace(workspaceId: string): OperationError {
+  return new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+    details: {
+      workspaceId,
+      operation: 'capture',
+      retryable: true,
+      blockers: [
+        { kind: 'publication', reason: 'frozen', reference: { workspaceId }, actions: [] },
+      ],
+    },
+  });
+}
+
 /** Exhaustive strategy failure also rejects corrupted or unknown required discriminants at runtime. */
 function unknownStrategy(strategy: never): never {
   void strategy;
@@ -388,7 +402,11 @@ export async function admitOperation(
             ))
         )
           throw denied();
-      } else if (!authorized || admission.isClosed(workspaceId)) throw denied();
+      } else {
+        if (!authorized) throw denied();
+        // Mutating refusals follow exact child/Thread authorization below, preserving private-target denial.
+        if (!definition.mutating && admission.isClosed(workspaceId)) throw denied();
+      }
       // Scope diagnosis follows credential eligibility, before unreadable Thread history can mask it.
       assertScopeAdmitted(coreDb.dataRoot, 'workspace', workspaceId);
       if (definition.scope.kind === 'opaque-child-workspace') {
@@ -463,10 +481,11 @@ export async function admitOperation(
     );
   let release: (() => void) | undefined;
   if (mutationWorkspaceId) {
-    if (!admission || admission.isClosed(mutationWorkspaceId)) throw denied();
+    if (!admission) throw denied();
+    if (admission.isClosed(mutationWorkspaceId)) throw frozenWorkspace(mutationWorkspaceId);
     if (definition.mutating) {
       release = admission.enter(mutationWorkspaceId) ?? undefined;
-      if (!release) throw denied();
+      if (!release) throw frozenWorkspace(mutationWorkspaceId);
     }
   }
   const context: AdmittedOperationContext = {

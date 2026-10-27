@@ -334,6 +334,22 @@ export async function publishNotebook(
   dependencies: ScopedNotebookPublicationDependencies,
   request: NotebookEdit
 ): Promise<NotebookPublication<KnowledgeOwnerScope>> {
+  const release =
+    dependencies.owner.kind === 'workspace'
+      ? dependencies.store.enterWorkspaceMutation(dependencies.owner.workspaceDb.workspaceId)
+      : () => undefined;
+  try {
+    return await publishAdmittedNotebook(dependencies, request);
+  } finally {
+    release();
+  }
+}
+
+/** Keeps the existing Git, Audit and receipt sequence inside its owning mutable admission. */
+async function publishAdmittedNotebook(
+  dependencies: ScopedNotebookPublicationDependencies,
+  request: NotebookEdit
+): Promise<NotebookPublication<KnowledgeOwnerScope>> {
   const ownerScope = notebookOwnerScope(dependencies.owner);
   const operation = dependencies.command?.name ?? OPERATION;
   const commandInput = dependencies.command?.input ?? request;

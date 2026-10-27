@@ -5,7 +5,7 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 
-import { asApiError } from '../api-errors.js';
+import { apiErrorPayload, asApiError } from '../api-errors.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
@@ -229,6 +229,25 @@ interface AuthorizedWorkspace {
   readonly workspaceId: string;
 }
 
+/** Reports only an already-authorized target whose new mutation was not admitted. */
+function frozenWorkspace(workspaceId: string): Response {
+  return Response.json(
+    apiErrorPayload({
+      code: 'workspace_frozen',
+      message: 'Workspace is temporarily frozen.',
+      details: {
+        workspaceId,
+        operation: 'capture',
+        retryable: true,
+        blockers: [
+          { kind: 'publication', reason: 'frozen', reference: { workspaceId }, actions: [] },
+        ],
+      },
+    }),
+    { status: 409 }
+  );
+}
+
 /**
  * Registers exact catalog-driven authorization guards before public handlers.
  *
@@ -266,6 +285,7 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
         return;
       }
       if (input.workspaceMutationAdmission.isClosed(workspaceId)) {
+        if (route.access.mutating) return frozenWorkspace(workspaceId);
         return workspaceAccessDenied();
       }
       if (!route.access.mutating) {
@@ -273,9 +293,7 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
         return;
       }
       const release = input.workspaceMutationAdmission.enter(workspaceId);
-      if (!release) {
-        return workspaceAccessDenied();
-      }
+      if (!release) return frozenWorkspace(workspaceId);
       try {
         await next();
       } finally {

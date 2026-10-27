@@ -19,11 +19,28 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { isDeepStrictEqual } from 'node:util';
-import { LightAppAdmittedSchemaSchema } from '@openkit/app-api-schemas';
-import { isEntityId, SEALED_TURN_TERMINALS } from '@openkit/protocol';
+import { createZstdCompress } from 'node:zlib';
+import {
+  LightAppAdmittedSchemaSchema,
+  type WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS,
+  type WorkspaceBlocker,
+  WorkspaceBlockerSchema,
+  type WorkspaceFreezeRefusal,
+  WorkspaceSnapshotReportSchema,
+} from '@openkit/app-api-schemas';
+import { isEntityId, readRetainedV1, SEALED_TURN_TERMINALS, TurnSchema } from '@openkit/protocol';
+import { copyVerifiedFile as copyStorageFile, publishDurableFile } from '@openkit/storage';
 import Database from 'better-sqlite3';
+import {
+  DeploymentAdminRequiredError,
+  requireAdministratorOperation,
+} from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import {
   collectionTableName,
@@ -37,14 +54,37 @@ import {
   readLightAppSnapshots,
 } from '../generative-kernel/snapshots.js';
 import { readSourcePointers } from '../knowledge/source-pointers.js';
+import type { FsStore } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
+import { type AdmittedOperationContext, publicOperationActor } from '../operation-contract.js';
+import { OperationError, projectOperationError } from '../operation-error.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import { readExecutionJournalRoot } from '../runtime/execution-journal.js';
+import { hasUnprovedNanoHostWorkspaceCleanup } from '../runtime/nanohost-attempt-records.js';
+import { readPendingRequest } from '../runtime/pending-requests.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
+import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
+import { listWorkspaceApplyPlans } from '../runtime/workspace-apply-plans.js';
+import { listWorkspaceApplyResults } from '../runtime/workspace-apply-results.js';
+import { getWorkspaceSyncReview } from '../runtime/workspace-sync-records.js';
+import {
+  isTerminalWorkspaceDeletionRequest,
+  listWorkspaceDeletionRequests,
+} from '../workspace-deletion-request.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { assertAppDefinitionMatches } from './app-db.js';
 import { FileAdmissionError, type FileStorageReservation } from './artifacts/file-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  getWorkspaceProductReadHandle,
+  openControlStoreProductReadHandle,
+} from './control-store-products.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   DATA_ROOT_BACKUP_MANIFEST_FILE,
   inventoryRegularFiles,
   verifyDataRootBackupManifest,
 } from './data-root-backup.js';
+import type { CoreDb } from './db.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, openExistingCoreDbWithIntegrityCheck } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
@@ -54,8 +94,10 @@ import {
   readRecurringPortableFiles,
   validateRecurringPortableHistory,
 } from './recurring-portable-history.js';
-import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
+import { readRecurringOccurrence } from './recurring-records.js';
+import { assertWorkspaceArchiveFilePath, workspaceArchiveHeader } from './workspace-archive.js';
 import type {
+  SnapshotSource,
   WorkspaceBackupCoverage,
   WorkspaceBackupManifest,
   WorkspaceBackupVerificationInput,
@@ -64,9 +106,11 @@ import {
   parseWorkspaceBackupManifest,
   WorkspaceBackupBundleError,
   withVerifiedWorkspaceBackupBundle,
+  withVerifiedWorkspaceSnapshotSource,
 } from './workspace-backup-bundle.js';
 import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import {
+  ensureCanonicalDirectory,
   loadWorkspaceFileRecords,
   publishCanonicalPath,
   syncCanonicalDirectory,
@@ -74,6 +118,7 @@ import {
 } from './workspace-file-records.js';
 import {
   prepareRecoveryAdmission,
+  readRecoveryAdmission,
   recoveryReport,
   refuseRecovery as refuse,
 } from './workspace-recovery-admissions.js';
@@ -117,11 +162,21 @@ export class WorkspaceRecoveryError extends Error {
 
 /** The backup-directory branch requires verification by the implementation, not the caller. */
 export type WorkspaceBackupSource =
+  | {
+      readonly kind: 'live-workspace';
+      readonly dataRoot: string;
+      readonly coreDb: CoreDb;
+      readonly store: FsStore;
+      readonly mutationAdmission: WorkspaceMutationAdmission;
+      readonly currentAuthority?: () => void;
+      readonly canReadThread?: (threadId: string) => boolean;
+    }
   | { readonly kind: 'stopped-data-root'; readonly dataRoot: string }
   | { readonly kind: 'data-root-backup'; readonly backupRoot: string };
 
 /** Retains the parent backup's actual guarantee, including crash-consistent hot capture. */
 export type WorkspaceBackupSourceReport =
+  | { readonly kind: 'live-workspace' }
   | { readonly kind: 'stopped-data-root' }
   | {
       readonly kind: 'data-root-backup';
@@ -146,6 +201,319 @@ export interface WorkspaceBackupReport {
   readonly unknownEffectTurnIds: readonly string[];
 }
 
+/**
+ * Reads authoritative target obstruction without writes, asynchronous work or private-count disclosure.
+ * Existing deletion consults only capture protection here; its owner retains other deletion decisions.
+ */
+export function readBlockers(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceId: string;
+  readonly operation?: WorkspaceFreezeRefusal['operation'];
+  readonly canReadThread?: (threadId: string) => boolean;
+}): readonly WorkspaceBlocker[] {
+  const blockers: WorkspaceBlocker[] = [];
+  let unavailable = false;
+  const add = (blocker: WorkspaceBlocker, threadId?: string) => {
+    if (threadId && input.canReadThread && !input.canReadThread(threadId)) unavailable = true;
+    else blockers.push(WorkspaceBlockerSchema.parse(blocker));
+  };
+  try {
+    const { coreDb, workspaceId } = input;
+    if (!isEntityId('ws', workspaceId)) throw new Error('Invalid Workspace scope.');
+    input.store.getWorkspace(workspaceId);
+    const reader = getWorkspaceProductReadHandle(
+      join(coreDb.dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'),
+      { kind: 'workspace', workspaceId }
+    );
+    const db = reader.sqlite;
+    const targetDb = bindWorkspaceSqlite(db, coreDb.dataRoot, workspaceId);
+    const ids = (sql: string): string[] => db.prepare(sql).pluck().all(workspaceId) as string[];
+    const coreIds = (sql: string): string[] =>
+      coreDb.sqlite.prepare(sql).pluck().all(workspaceId) as string[];
+    const addCaptureBlockers = () => {
+      for (const id of ids(
+        'SELECT capture_id FROM workspace_capture_records WHERE workspace_id=?'
+      )) {
+        const capture = inspectCapture(targetDb, workspaceId, id);
+        if (!capture) throw new Error('Missing capture authority.');
+        if (capture.state === 'active')
+          add({
+            kind: 'snapshot',
+            reason: 'pending-publication',
+            reference: { backupId: id },
+            actions: [],
+          });
+      }
+    };
+    if (input.operation === 'delete') {
+      addCaptureBlockers();
+      return blockers;
+    }
+    if (
+      listWorkspaceDeletionRequests(coreDb.dataRoot, workspaceId).some(
+        (request) => !isTerminalWorkspaceDeletionRequest(request)
+      )
+    )
+      add({
+        kind: 'publication',
+        reason: 'pending-publication',
+        reference: { workspaceId },
+        actions: [],
+      });
+    const turnActions = (threadId: string, turnId: string): WorkspaceBlocker['actions'] => [
+      {
+        operationId: 'turn.interrupt',
+        input: { workspaceId, threadId, turnId, requestId: randomUUID() },
+      },
+    ];
+    let after = '';
+    const turns = new Map<string, ReturnType<typeof TurnSchema.parse>>();
+    for (;;) {
+      const page = reader.list('turn', after);
+      if (!page.length) break;
+      for (const row of page) {
+        const turn = TurnSchema.parse({ ...row.record, items: [] });
+        turns.set(turn.id, turn);
+        if (!SEALED_TURN_TERMINALS[turn.status])
+          add(
+            {
+              kind: 'turn',
+              reason: 'active-work',
+              reference: { threadId: turn.threadId, turnId: turn.id },
+              actions: turnActions(turn.threadId, turn.id),
+            },
+            turn.threadId
+          );
+        after = turn.id;
+      }
+    }
+    for (const id of coreIds(
+      'SELECT attempt_id FROM scheduler_execution_attempts WHERE workspace_id=?'
+    )) {
+      const attempt = requireSchedulerExecutionAttempt(coreDb, id);
+      const session = getWorkerBackendSession(coreDb, id);
+      if (
+        attempt.phase !== 'closed' ||
+        (session && (session.state !== 'cleaned' || session.physicalCleanedAt === null))
+      )
+        add(
+          {
+            kind: 'worker-attempt',
+            reason: attempt.phase === 'closed' ? 'cleanup-unproved' : 'active-work',
+            reference: {
+              attemptId: id,
+              threadId: attempt.threadId,
+              turnId: attempt.turnId,
+              agentSessionId: attempt.agentSessionId,
+            },
+            actions:
+              attempt.phase !== 'closed' &&
+              turns.has(attempt.turnId) &&
+              !SEALED_TURN_TERMINALS[turns.get(attempt.turnId)!.status]
+                ? turnActions(attempt.threadId, attempt.turnId)
+                : [{ operationId: 'administration.cleanup-read', input: {} }],
+          },
+          attempt.threadId
+        );
+    }
+    if (
+      hasUnprovedNanoHostWorkspaceCleanup(coreDb, workspaceId) &&
+      !blockers.some((b) => b.kind === 'worker-attempt')
+    )
+      unavailable = true;
+    for (const id of coreIds(
+      'SELECT attempt_id FROM worker_backend_sessions WHERE workspace_id=?'
+    )) {
+      const session = getWorkerBackendSession(coreDb, id);
+      if (!session) throw new Error('Missing physical session authority.');
+      if (session.state !== 'cleaned' || session.physicalCleanedAt === null)
+        add(
+          {
+            kind: 'worker-residency',
+            reason: 'cleanup-unproved',
+            reference: { agentSessionId: session.agentSessionId },
+            actions: [{ operationId: 'administration.cleanup-read', input: {} }],
+          },
+          session.threadId ?? undefined
+        );
+    }
+    for (const session of input.store.listWorkspaceAgentSessions(workspaceId)) {
+      if (['created', 'initializing', 'busy'].includes(session.status))
+        add(
+          {
+            kind: 'worker-residency',
+            reason: 'active-work',
+            reference: { agentSessionId: session.id },
+            actions: [{ operationId: 'administration.cleanup-read', input: {} }],
+          },
+          session.threadId ?? undefined
+        );
+    }
+    for (const id of coreIds(
+      'SELECT storage_ref FROM worker_storage_bindings WHERE workspace_id=?'
+    )) {
+      const binding = getWorkerStorageBinding(coreDb, { storageRef: id });
+      if (!binding) throw new Error('Missing storage authority.');
+      if (
+        !['idle', 'purged'].includes(binding.state) ||
+        (input.operation !== undefined &&
+          input.operation !== 'capture' &&
+          binding.state !== 'purged')
+      )
+        add(
+          {
+            kind: 'worker-residency',
+            reason: 'cleanup-unproved',
+            reference: { storageRef: id },
+            actions: [{ operationId: 'administration.cleanup-read', input: {} }],
+          },
+          binding.currentThreadId ?? undefined
+        );
+    }
+    for (const row of coreDb.sqlite
+      .prepare(
+        'SELECT schema_version AS schemaVersion,agent_session_id AS id,thread_id AS threadId FROM agent_session_runtime_bindings WHERE workspace_id=?'
+      )
+      .all(workspaceId) as { schemaVersion: number; id: string; threadId: string }[]) {
+      readRetainedV1(row, () => undefined);
+      add(
+        {
+          kind: 'worker-residency',
+          reason: 'cleanup-unproved',
+          reference: { agentSessionId: row.id },
+          actions: [{ operationId: 'administration.cleanup-read', input: {} }],
+        },
+        row.threadId
+      );
+    }
+    for (const id of ids('SELECT request_id FROM pending_requests WHERE workspace_id=?')) {
+      const request = readPendingRequest(db, id);
+      if (!request) throw new Error('Missing Pending authority.');
+      if (request.claim === 'claimed' && request.disposition === null)
+        add(
+          {
+            kind: 'pending-request',
+            reason: 'unproved-effect',
+            reference: { threadId: request.threadId, pendingRequestId: request.requestId },
+            actions: [],
+          },
+          request.threadId
+        );
+    }
+    const results = new Set(
+      listWorkspaceApplyResults(targetDb, workspaceId).map((result) =>
+        JSON.stringify([result.reviewId, result.changeSetId])
+      )
+    );
+    for (const plan of listWorkspaceApplyPlans(targetDb, workspaceId)) {
+      if (
+        plan.approvalState !== 'approved' ||
+        results.has(JSON.stringify([plan.reviewId, plan.changeSetId]))
+      )
+        continue;
+      let threadId: string | undefined;
+      if (input.canReadThread) {
+        const review = getWorkspaceSyncReview(targetDb, workspaceId, plan.reviewId);
+        const artifact = review ? input.store.getArtifact(workspaceId, review.artifactId) : null;
+        if (!artifact?.threadId) {
+          unavailable = true;
+          continue;
+        }
+        threadId = artifact.threadId;
+      }
+      add(
+        {
+          kind: 'synchronization',
+          reason: 'unproved-effect',
+          reference: { reviewId: plan.reviewId },
+          actions: [
+            { operationId: 'sync.review-read', input: { workspaceId, reviewId: plan.reviewId } },
+          ],
+        },
+        threadId
+      );
+    }
+    for (const row of coreDb.sqlite
+      .prepare(
+        'SELECT schema_version AS schemaVersion,record_json FROM recurring_occurrences WHERE workspace_id=?'
+      )
+      .all(workspaceId) as { schemaVersion: number; record_json: string }[]) {
+      const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
+      if (
+        occurrence.state === 'recovery_required' ||
+        (occurrence.state === 'admission-accepted' &&
+          (!occurrence.turnId || !turns.has(occurrence.turnId)))
+      )
+        add(
+          {
+            kind: 'recurring-occurrence',
+            reason: 'unproved-effect',
+            reference: { occurrenceId: occurrence.id },
+            actions: [],
+          },
+          occurrence.snapshot.threadId
+        );
+    }
+    addCaptureBlockers();
+    for (const id of coreIds(
+      'SELECT admission_id FROM workspace_recovery_admissions WHERE workspace_id=?'
+    )) {
+      const recovery = readRecoveryAdmission(coreDb, id);
+      if (!recovery) throw new Error('Missing recovery authority.');
+      if (recovery.state === 'prepared')
+        add({
+          kind: 'snapshot',
+          reason: 'pending-publication',
+          reference: id.startsWith('wsbak_') ? { backupId: id } : { recoveryRequestId: id },
+          actions: [],
+        });
+    }
+    for (const id of db.prepare('SELECT id FROM control_executions').pluck().all() as string[]) {
+      const execution = readExecutionJournalRoot(targetDb, {
+        owner: { kind: 'workspace', workspaceId },
+        executionId: id,
+      });
+      if (execution.phase !== 'closed' || execution.openSteps.length) {
+        const turn = turns.get(execution.workId);
+        if (!turn) unavailable = true;
+        else
+          add(
+            {
+              kind: 'publication',
+              reason: 'pending-publication',
+              reference: { workspaceId },
+              actions: [],
+            },
+            turn.threadId
+          );
+      }
+    }
+    // A running call can outlive its user-visible Turn; unknown historical rows need closed physical proof.
+    for (const row of listWorkspaceCapabilityCalls(targetDb, workspaceId)) {
+      if (row.status !== 'running' && row.status !== 'unknown') continue;
+      const turn = row.turnId ? turns.get(row.turnId) : undefined;
+      if (row.status === 'running' || !turn || !SEALED_TURN_TERMINALS[turn.status]) {
+        if (!turn) unavailable = true;
+        else
+          add(
+            {
+              kind: 'publication',
+              reason: 'pending-publication',
+              reference: { workspaceId },
+              actions: [],
+            },
+            turn.threadId
+          );
+      }
+    }
+  } catch {
+    unavailable = true;
+  }
+  if (unavailable) blockers.push({ kind: 'unavailable', reason: 'unavailable', actions: [] });
+  return blockers;
+}
+
 /** Trusted release/capacity policy plus a new or exactly owned output and stable wsbak identity. */
 export interface WorkspaceBackupCreateInput extends WorkspaceBackupVerificationInput {
   readonly source: WorkspaceBackupSource;
@@ -168,6 +536,8 @@ export type WorkspaceBackupCreateResult = Readonly<{
 
 /** A request-owned, absent destination on the target filesystem; no registration is changed. */
 export interface WorkspaceBackupStageInput extends WorkspaceBackupVerificationInput {
+  /** Local pool resolution stays with the one bundle owner, before candidate admission. */
+  readonly snapshotSource?: { readonly dataRoot: string; readonly source: SnapshotSource };
   readonly candidateRoot: string;
   readonly expectedWorkspaceId: string;
   readonly expectedSourceDeploymentId: string;
@@ -536,7 +906,7 @@ function graph(
   }
   try {
     const formats = databaseFormats(dataRoot, workspaceId, root);
-    const records = loadWorkspaceFileRecords(dataRoot).find((r) => r.workspace.id === workspaceId);
+    const records = loadWorkspaceFileRecords(dataRoot, workspaceId)[0];
     if (!records) refuse('incomplete-closure');
     const references = {
       workspaceId,
@@ -661,6 +1031,7 @@ function captureDatabase(dataRoot: string, workspaceId: string) {
     fileMustExist: true,
   });
   sqlite.pragma('synchronous = FULL');
+  sqlite.pragma('busy_timeout = 5');
   return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
 }
 
@@ -677,7 +1048,7 @@ function privateRoot(stagingParent: string, workspaceId: string) {
 function report(
   manifest: WorkspaceBackupManifest,
   manifestDigest: string,
-  facts: ReturnType<typeof graph>
+  facts: Pick<ReturnType<typeof graph>, 'interruptedTurnIds' | 'unknownEffectTurnIds'>
 ): WorkspaceBackupReport {
   return {
     backupId: manifest.backupId,
@@ -695,7 +1066,7 @@ function report(
 }
 
 /**
- * Captures stopped authority under its lock, or a verified, read-only H1 parent without a parent lock.
+ * Captures the fenced live target, stopped authority under its lock, or a verified read-only parent.
  * Core recurring history uses its existing portable paths; scheduler authority never travels.
  */
 export async function createWorkspaceBackup(
@@ -705,7 +1076,20 @@ export async function createWorkspaceBackup(
   let staging: ReturnType<typeof privateRoot> | undefined;
   let reservation: FileStorageReservation | undefined;
   let ownedOutput = false;
+  let captureFinished = false;
+  let retainMoveFence = false;
   let captureDb: ReturnType<typeof bindWorkspaceSqlite> | undefined;
+  const live = input.source.kind === 'live-workspace' ? input.source : undefined;
+  let releaseFreeze: (() => void) | undefined;
+  let resumeNative: (() => void) | undefined;
+  let liveFacts: ReturnType<typeof graph> | undefined;
+  const immutableCut: WorkspaceBackupManifest['inventory'][number][] = [];
+  let liveCut:
+    | {
+        accounts: WorkspaceBackupManifest['accounts'];
+        recurring: ReturnType<typeof exportRecurringPortableHistory>;
+      }
+    | undefined;
   try {
     if (
       !isEntityId('ws', input.workspaceId) ||
@@ -715,7 +1099,7 @@ export async function createWorkspaceBackup(
     )
       refuse('invalid-arguments');
     const sourceRoot = resolve(
-      input.source.kind === 'stopped-data-root' ? input.source.dataRoot : input.source.backupRoot
+      input.source.kind === 'data-root-backup' ? input.source.backupRoot : input.source.dataRoot
     );
     if (!existsSync(sourceRoot)) refuse('source-unavailable');
     realDirectory(sourceRoot);
@@ -735,23 +1119,31 @@ export async function createWorkspaceBackup(
       (verifiedParent && verifiedParent.sourceDeploymentId !== deploymentId)
     )
       refuse('deployment-mismatch');
-    const source: WorkspaceBackupSourceReport = verifiedParent
-      ? {
-          kind: 'data-root-backup',
-          dataRootBackupId: verifiedParent.id,
-          consistency: verifiedParent.consistency,
-        }
-      : { kind: 'stopped-data-root' };
+    const source: WorkspaceBackupSourceReport = live
+      ? { kind: 'live-workspace' }
+      : verifiedParent
+        ? {
+            kind: 'data-root-backup',
+            dataRootBackupId: verifiedParent.id,
+            consistency: verifiedParent.consistency,
+          }
+        : { kind: 'stopped-data-root' };
     const sourceWorkspace = join(sourceRoot, 'workspaces', input.workspaceId);
     if (!existsSync(join(sourceWorkspace, 'db/workspace.sqlite'))) refuse('workspace-unavailable');
-    const sourceFiles = files(sourceWorkspace);
     const output = resolve(input.bundleRoot);
     if (
       output === sourceRoot ||
-      output.startsWith(`${sourceRoot}${sep}`) ||
+      (!live && output.startsWith(`${sourceRoot}${sep}`)) ||
       sourceRoot.startsWith(`${output}${sep}`)
     )
       refuse('unsafe-path');
+    if (live) {
+      if (
+        output !== join(sourceRoot, 'server/backups/workspaces', input.workspaceId, input.backupId)
+      )
+        refuse('unsafe-path');
+      ensureCanonicalDirectory(dirname(output));
+    }
     realDirectory(dirname(output));
     if (lstatSync(output, { throwIfNoEntry: false })) {
       realDirectory(output);
@@ -770,6 +1162,39 @@ export async function createWorkspaceBackup(
         refuse('request-conflict');
       if (input.purpose !== 'backup' || !existsSync(join(output, 'seal.json')))
         refuse('recovery-required');
+      if (live) {
+        live.currentAuthority?.();
+        const retained = captureDatabase(sourceRoot, input.workspaceId);
+        try {
+          if (inspectCapture(retained, input.workspaceId, input.backupId)?.state !== 'finished')
+            refuse('recovery-required');
+        } finally {
+          retained.sqlite.close();
+        }
+        staging = privateRoot(input.stagingParent, input.workspaceId);
+        const saved = await stageWorkspaceBackup({
+          ...input,
+          candidateRoot: join(staging.container, 'retry'),
+          expectedWorkspaceId: input.workspaceId,
+          expectedSourceDeploymentId: deploymentId,
+          snapshotSource: {
+            dataRoot: sourceRoot,
+            source: {
+              kind: 'local-snapshot',
+              workspaceId: input.workspaceId,
+              backupId: input.backupId,
+            },
+          },
+        });
+        live.currentAuthority?.();
+        return {
+          bundleRoot: output,
+          manifest: saved.manifest,
+          report: { ...saved.report, source },
+          purpose: 'backup' as const,
+          disposition: 'sealed' as const,
+        };
+      }
       staging = privateRoot(input.stagingParent, input.workspaceId);
       const staged = await stageWorkspaceBackup({
         ...input,
@@ -788,6 +1213,106 @@ export async function createWorkspaceBackup(
         disposition: 'sealed',
       };
     }
+    if (live) {
+      live.currentAuthority?.();
+      live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
+      const alreadyFrozen = live.mutationAdmission.isClosed(input.workspaceId);
+      let hold: Promise<() => void> | null = null;
+      const admission = live.mutationAdmission.tryFreeze(input.workspaceId, () => {
+        const blockers = readBlockers({
+          ...live,
+          workspaceId: input.workspaceId,
+          operation: 'capture',
+        });
+        if (blockers.length) return blockers;
+        hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+          `workspace:${join(sourceWorkspace, 'db/workspace.sqlite')}`,
+          live.mutationAdmission
+        );
+        return hold
+          ? []
+          : [
+              {
+                kind: 'publication' as const,
+                reason: 'pending-publication' as const,
+                reference: { workspaceId: input.workspaceId },
+                actions: [],
+              },
+            ];
+      });
+      if (admission.status !== 'frozen') {
+        const busy = admission.status === 'busy' && alreadyFrozen;
+        throw new OperationError(
+          busy ? 'workspace_frozen' : 'workspace_blocked',
+          busy
+            ? 'Workspace is temporarily frozen.'
+            : 'Resolve the Workspace blockers before capture.',
+          409,
+          {
+            details: {
+              workspaceId: input.workspaceId,
+              operation: 'capture',
+              retryable: busy,
+              blockers: busy
+                ? [
+                    {
+                      kind: 'publication',
+                      reason: 'frozen',
+                      reference: { workspaceId: input.workspaceId },
+                      actions: [],
+                    },
+                  ]
+                : admission.status === 'blocked'
+                  ? admission.blockers
+                  : [
+                      {
+                        kind: 'publication',
+                        reason: 'pending-publication',
+                        reference: { workspaceId: input.workspaceId },
+                        actions: [],
+                      },
+                    ],
+            },
+          }
+        );
+      }
+      releaseFreeze = admission.release;
+      resumeNative = await hold!;
+      live.currentAuthority?.();
+      const sourceFacts = graph(sourceRoot, input.workspaceId);
+      liveFacts = sourceFacts;
+      liveCut = live.coreDb.sqlite.transaction(() => {
+        const ownerId = live.coreDb.sqlite
+          .prepare(
+            "SELECT owner_user_id FROM workspace_registry WHERE workspace_id=? AND status='active'"
+          )
+          .pluck()
+          .get(input.workspaceId) as string;
+        const memberIds = live.coreDb.sqlite
+          .prepare(
+            "SELECT user_id FROM workspace_members WHERE workspace_id=? AND status='active' ORDER BY user_id"
+          )
+          .pluck()
+          .all(input.workspaceId) as string[];
+        if (!isEntityId('usr', ownerId) || memberIds.some((id) => !isEntityId('usr', id)))
+          refuse('workspace-unavailable');
+        const recurring = exportRecurringPortableHistory(
+          live.coreDb,
+          input.workspaceId,
+          sourceFacts.inheritedRecurring,
+          [...sourceFacts.references.turns].map(([id, threadId]) => ({ id, threadId }))
+        );
+        return {
+          accounts: {
+            ownerId,
+            memberIds: memberIds.filter((id) => isEntityId('usr', id)),
+            privateAudienceRefs: sourceFacts.privateAudienceRefs,
+          },
+          recurring,
+        };
+      })();
+    }
+    const sourceFiles = files(sourceWorkspace);
     const total = sourceFiles.reduce(
       (n, p) =>
         n +
@@ -797,7 +1322,8 @@ export async function createWorkspaceBackup(
     );
     reservation = input.admission.reserve({
       stagingBytes:
-        BigInt(total) * 3n + BigInt(lstatSync(join(sourceRoot, 'server/db/core.sqlite')).size),
+        BigInt(total) * 3n +
+        (live ? 0n : BigInt(lstatSync(join(sourceRoot, 'server/db/core.sqlite')).size)),
       extractionBytes: 0n,
       derivativeBytes: 0n,
       publicationBytes: 0n,
@@ -811,6 +1337,8 @@ export async function createWorkspaceBackup(
       const sourceDb = database(join(sourceWorkspace, 'db/workspace.sqlite'));
       sourceDb.close();
       captureDb = captureDatabase(sourceRoot, input.workspaceId);
+      // A lost acknowledgement can still leave an active MOVE pin. Unknown completion keeps its fence.
+      retainMoveFence = live !== undefined && input.purpose === 'move';
       protectCapture(captureDb, input.workspaceId, input.backupId);
     }
     for (const path of sourceFiles) {
@@ -821,7 +1349,25 @@ export async function createWorkspaceBackup(
         path === 'db/workspace.sqlite' || /^light-apps\/[^/]+\/data.sqlite$/.test(path);
       const original = join(sourceWorkspace, path);
       const mode = lstatSync(original).mode & 0o777;
-      if (verifiedParent || !currentDatabase) {
+      if (live && /^evidence\/backend\/sha256\/[0-9a-f]{64}$/.test(path)) {
+        // The existing native content owner publishes these create-only and never sweeps committed digest objects.
+        // Active capture protection remains retained until seal; mutable/expiry-owned families stay in the frozen cut.
+        immutableCut.push({
+          path,
+          bytes: lstatSync(original).size,
+          sha256: `sha256:${path.split('/').at(-1)!}`,
+          mode,
+        });
+        continue;
+      }
+      if (live && !currentDatabase) {
+        await copyStorageFile({
+          sourcePath: original,
+          destinationPath: destination,
+          mode,
+          maxBytes: 2_147_483_648,
+        });
+      } else if (verifiedParent || !currentDatabase) {
         const entry = verifiedParent?.contentInventory.find(
           (e) => e.path === `workspaces/${input.workspaceId}/${path}`
         );
@@ -845,14 +1391,26 @@ export async function createWorkspaceBackup(
       captureDb = captureDatabase(staging.container, input.workspaceId);
       protectCapture(captureDb, input.workspaceId, input.backupId);
     }
-    const facts = graph(staging.container, input.workspaceId);
+    // Mutable files and every SQLite copy are independent now. Only append-only native digest objects remain live-source dependent.
+    if (live) {
+      resumeNative?.();
+      resumeNative = undefined;
+      if (input.purpose === 'backup') {
+        releaseFreeze?.();
+        releaseFreeze = undefined;
+      }
+      live.currentAuthority?.();
+    }
+    const facts = liveFacts ?? graph(staging.container, input.workspaceId);
     for (const { markers } of facts.formats)
       for (const [key, value] of Object.entries(markers))
         if (input.supportedDatabaseFormats[key] !== value) refuse('unsupported-format');
     const coreSource = join(sourceRoot, 'server/db/core.sqlite');
     // H1 opens Core only after making a private copy; no SQLite operation touches its parent.
     const corePath = join(staging.container, 'core.sqlite');
-    if (verifiedParent) {
+    if (live) {
+      // Core facts were cut synchronously before file I/O; no whole-Core copy belongs to a live Workspace.
+    } else if (verifiedParent) {
       const entry = verifiedParent.contentInventory.find((e) => e.path === 'server/db/core.sqlite');
       if (!entry || entry.bytes !== lstatSync(coreSource).size) refuse('parent-backup-invalid');
       copyBytes(coreSource, corePath, entry.digest);
@@ -864,28 +1422,34 @@ export async function createWorkspaceBackup(
         db.close();
       }
     }
-    const core = database(corePath);
+    const core = live ? live.coreDb.sqlite : database(corePath);
     let hasRecurring = false;
     let accounts: WorkspaceBackupManifest['accounts'];
     try {
-      const owner = core
-        .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id=?')
-        .pluck()
-        .get(input.workspaceId) as string | undefined;
+      const owner =
+        liveCut?.accounts.ownerId ??
+        (core
+          .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id=?')
+          .pluck()
+          .get(input.workspaceId) as string | undefined);
       if (!isEntityId('usr', owner)) refuse('workspace-unavailable');
-      const memberIds = core
-        .prepare(
-          "SELECT user_id FROM workspace_members WHERE workspace_id=? AND status='active' ORDER BY user_id"
-        )
-        .pluck()
-        .all(input.workspaceId) as string[];
+      const memberIds =
+        liveCut?.accounts.memberIds ??
+        (core
+          .prepare(
+            "SELECT user_id FROM workspace_members WHERE workspace_id=? AND status='active' ORDER BY user_id"
+          )
+          .pluck()
+          .all(input.workspaceId) as string[]);
       // Core owns native rows. Its existing portable owner emits inert history, never queue authority.
-      const recurring = exportRecurringPortableHistory(
-        bindCoreSqlite(core, staging.container),
-        input.workspaceId,
-        facts.inheritedRecurring,
-        [...facts.references.turns].map(([id, threadId]) => ({ id, threadId }))
-      );
+      const recurring =
+        liveCut?.recurring ??
+        exportRecurringPortableHistory(
+          bindCoreSqlite(core, staging.container),
+          input.workspaceId,
+          facts.inheritedRecurring,
+          [...facts.references.turns].map(([id, threadId]) => ({ id, threadId }))
+        );
       validateRecurringPortableHistory(JSON.stringify(recurring));
       hasRecurring =
         facts.inheritedRecurring !== null ||
@@ -910,7 +1474,7 @@ export async function createWorkspaceBackup(
         privateAudienceRefs: facts.privateAudienceRefs,
       };
     } finally {
-      core.close();
+      if (!live) core.close();
     }
     if (verifiedParent && !isDeepStrictEqual(verifiedParent, parent(sourceRoot)))
       refuse('parent-backup-invalid');
@@ -919,12 +1483,15 @@ export async function createWorkspaceBackup(
     captureDb?.sqlite.close();
     captureDb = undefined;
     closePrivateBytes(staging.workspaceRoot);
-    const inventory = files(staging.workspaceRoot).map((path) => ({
-      path,
-      bytes: lstatSync(join(staging!.workspaceRoot, path)).size,
-      sha256: copyBytes(join(staging!.workspaceRoot, path)),
-      mode: lstatSync(join(staging!.workspaceRoot, path)).mode & 0o777,
-    }));
+    const inventory = [
+      ...files(staging.workspaceRoot).map((path) => ({
+        path,
+        bytes: lstatSync(join(staging!.workspaceRoot, path)).size,
+        sha256: copyBytes(join(staging!.workspaceRoot, path)),
+        mode: lstatSync(join(staging!.workspaceRoot, path)).mode & 0o777,
+      })),
+      ...immutableCut,
+    ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     const manifest = parseWorkspaceBackupManifest({
       format: 'openkit-workspace-backup',
       version: 1,
@@ -938,7 +1505,11 @@ export async function createWorkspaceBackup(
       release: input.expectedRelease,
       databaseFormats: facts.formats,
       requiredFeatures: hasRecurring ? [RECURRING_PORTABLE_FEATURE] : [],
-      capture: { startedAt, completedAt: new Date().toISOString(), consistency: 'quiescent' },
+      capture: {
+        startedAt,
+        completedAt: new Date().toISOString(),
+        consistency: live && input.purpose === 'backup' ? 'workspace-consistent' : 'quiescent',
+      },
       inventory,
       inventoryDigest: digest(JSON.stringify(inventory)),
       coverage: {
@@ -950,6 +1521,36 @@ export async function createWorkspaceBackup(
       },
       accounts,
     });
+    if (live) {
+      const objectRoot = join(dirname(output), 'objects');
+      ensureCanonicalDirectory(objectRoot);
+      for (const entry of inventory) {
+        reservation.assertAvailable();
+        const object = join(objectRoot, entry.sha256.slice(7));
+        if (existsSync(object)) {
+          await copyStorageFile({
+            sourcePath: object,
+            expectedBytes: entry.bytes,
+            expectedSha256: entry.sha256,
+            maxBytes: 2_147_483_648,
+          });
+        } else {
+          const original = immutableCut.some((item) => item.path === entry.path)
+            ? join(sourceWorkspace, entry.path)
+            : join(staging.workspaceRoot, entry.path);
+          await copyStorageFile({
+            sourcePath: original,
+            destinationPath: object,
+            expectedBytes: entry.bytes,
+            expectedSha256: entry.sha256,
+            mode: 0o444,
+            maxBytes: 2_147_483_648,
+          });
+        }
+      }
+      syncCanonicalDirectory(objectRoot);
+      live.currentAuthority?.();
+    }
     const metadata = `${JSON.stringify(manifest)}\n`;
     const manifestDigest = digest(metadata);
     writeFileSync(join(staging.workspaceRoot, 'manifest.json'), metadata, {
@@ -981,24 +1582,43 @@ export async function createWorkspaceBackup(
         { flag: 'wx', mode: 0o600 }
       );
       syncCanonicalTree(staging.workspaceRoot);
-      await withVerifiedWorkspaceBackupBundle(
-        {
-          ...input,
-          supportedRequiredFeatures: input.supportedRequiredFeatures ?? [
-            RECURRING_PORTABLE_FEATURE,
-          ],
-          bundleRoot: staging.workspaceRoot,
-        },
-        async () => undefined
-      );
+      if (!live)
+        await withVerifiedWorkspaceBackupBundle(
+          {
+            ...input,
+            supportedRequiredFeatures: input.supportedRequiredFeatures ?? [
+              RECURRING_PORTABLE_FEATURE,
+            ],
+            bundleRoot: staging.workspaceRoot,
+          },
+          async () => undefined
+        );
     }
     reservation.assertAvailable();
-    publishCanonicalPath(staging.workspaceRoot, output);
+    if (live) {
+      await publishDurableFile({ destinationPath: join(output, 'manifest.json'), bytes: metadata });
+      live.currentAuthority?.();
+      if (input.purpose === 'backup')
+        await publishDurableFile({
+          destinationPath: join(output, 'seal.json'),
+          bytes: readFileSync(join(staging.workspaceRoot, 'seal.json')),
+        });
+      live.currentAuthority?.();
+    } else publishCanonicalPath(staging.workspaceRoot, output);
     if (input.purpose === 'backup') {
       if (!verifiedParent) {
         const writer = captureDatabase(sourceRoot, input.workspaceId);
         try {
-          completeCapture(writer, input.workspaceId, input.backupId);
+          try {
+            captureFinished = true;
+            completeCapture(writer, input.workspaceId, input.backupId);
+          } catch (error) {
+            // An acknowledgement can be lost after the durable decision. Keep its exact sealed bytes.
+            const decision = inspectCapture(writer, input.workspaceId, input.backupId);
+            if (decision?.state === 'active' || decision?.state === 'abandoned')
+              captureFinished = false;
+            throw error;
+          }
         } finally {
           writer.sqlite.close();
         }
@@ -1010,12 +1630,12 @@ export async function createWorkspaceBackup(
       report: { ...report(manifest, manifestDigest, facts), source },
     };
     if (input.purpose === 'move' && !verifiedParent) {
-      const core = openExistingCoreDbWithIntegrityCheck(sourceRoot);
+      const core = live?.coreDb ?? openExistingCoreDbWithIntegrityCheck(sourceRoot);
       try {
         prepareRecoveryAdmission(core, input.backupId, output, {
           input: {
             command: 'capture',
-            source: input.source,
+            source: live ? { kind: 'live-workspace' } : input.source,
             workspaceId: input.workspaceId,
             expectedSourceDeploymentId: deploymentId,
             bundleRoot: output,
@@ -1027,17 +1647,21 @@ export async function createWorkspaceBackup(
           result: recoveryReport('capture', 'prepared', common.report),
         });
       } finally {
-        core.sqlite.close();
+        if (!live) core.sqlite.close();
       }
     }
     return input.purpose === 'backup'
       ? { ...common, purpose: 'backup', disposition: 'sealed' }
       : { ...common, purpose: 'move', disposition: 'prepared' };
   } catch (error) {
-    // A failed command cannot leave a transferable completion marker.
-    if (ownedOutput) rmSync(join(input.bundleRoot, 'seal.json'), { force: true });
+    // An unfinished capture has no transferable marker. A lost finish ACK cannot erase a committed generation.
+    if (ownedOutput && !captureFinished)
+      rmSync(join(input.bundleRoot, 'seal.json'), { force: true });
+    if (error instanceof OperationError) throw error;
     return failure(error, 'invalid-database');
   } finally {
+    resumeNative?.();
+    if (!retainMoveFence) releaseFreeze?.();
     captureDb?.sqlite.close();
     lock?.release();
     if (staging) rmSync(staging.container, { recursive: true, force: true });
@@ -1055,7 +1679,15 @@ export async function stageWorkspaceBackup(
   try {
     realDirectory(dirname(input.candidateRoot));
     if (lstatSync(input.candidateRoot, { throwIfNoEntry: false })) refuse('candidate-conflict');
-    return await withVerifiedWorkspaceBackupBundle(
+    const verify = input.snapshotSource
+      ? <T>(
+          policy: WorkspaceBackupVerificationInput,
+          consume: (
+            bundle: import('./workspace-backup-bundle.js').VerifiedWorkspaceBackupBundle
+          ) => Promise<T>
+        ) => withVerifiedWorkspaceSnapshotSource({ ...policy, ...input.snapshotSource! }, consume)
+      : withVerifiedWorkspaceBackupBundle;
+    return await verify(
       {
         ...input,
         supportedRequiredFeatures: input.supportedRequiredFeatures ?? [RECURRING_PORTABLE_FEATURE],
@@ -1216,4 +1848,214 @@ export function assertWorkspaceBackupCut(
       : '';
     if (rows.map((row) => `${JSON.stringify(row)}\n`).join('') !== text) refuse('request-conflict');
   }
+}
+
+/** Complete online operator joins; existing backup, bundle and Kernel owners retain their decisions. */
+export function createWorkspaceSnapshotOperationImplementations(
+  dependencies: OperationInvocationDependencies
+) {
+  type Definitions = typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS;
+  type Input<K extends keyof Definitions> = import('zod').infer<Definitions[K]['inputSchema']>;
+  // Offline domain refusals keep their existing safe identities in the online operation envelope.
+  const invoke = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof WorkspaceRecoveryError || error instanceof WorkspaceBackupBundleError)
+        throw new OperationError(error.code, error.message, 409, { cause: error });
+      throw error;
+    }
+  };
+  const policy = (context: AdmittedOperationContext) => {
+    const { coreDb, dataRoot, fileAdmission, store, workspaceMutationAdmission } = dependencies;
+    if (!coreDb)
+      throw new OperationError('recovery_required', 'Administrator authority is unavailable.', 503);
+    if (!dataRoot || !fileAdmission || !store || !workspaceMutationAdmission)
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'Workspace snapshot storage is unavailable.',
+        503
+      );
+    const currentAuthority = () => {
+      try {
+        requireAdministratorOperation(coreDb, publicOperationActor(context), 'api.call');
+      } catch (cause) {
+        if (cause instanceof DeploymentAdminRequiredError)
+          throw new OperationError(
+            'deployment_admin_required',
+            'Current deployment administrator authority is required.',
+            403,
+            { cause }
+          );
+        if (cause instanceof OperationError) throw cause;
+        const failure = projectOperationError(cause);
+        throw new OperationError(
+          failure?.code ?? 'internal_error',
+          failure?.message ?? 'Internal Server Error',
+          failure?.status ?? 500,
+          { cause }
+        );
+      }
+    };
+    currentAuthority();
+    const release = dependencies.diagnosticsServices?.releaseIdentity;
+    if (!release?.sourceCommit)
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'The server build identity is unknown; install a build with its source commit.',
+        503
+      );
+    const stagingParent = join(dataRoot, 'server/backups');
+    ensureCanonicalDirectory(stagingParent);
+    realDirectory(stagingParent);
+    return {
+      coreDb,
+      dataRoot,
+      store,
+      mutationAdmission: workspaceMutationAdmission,
+      currentAuthority,
+      verification: {
+        stagingParent,
+        admission: fileAdmission,
+        expectedRelease: {
+          version: release.releaseTag ?? 'source',
+          buildId: release.sourceCommit,
+        },
+        ...WORKSPACE_BACKUP_POLICY,
+      },
+    };
+  };
+  const inspect = async (
+    input: Input<'workspace.backup-verify'>,
+    owned: ReturnType<typeof policy>
+  ) => {
+    const container = privateRoot(owned.verification.stagingParent, input.workspaceId);
+    try {
+      const result = await stageWorkspaceBackup({
+        ...owned.verification,
+        bundleRoot: join(
+          owned.dataRoot,
+          'server/backups/workspaces',
+          input.workspaceId,
+          input.backupId
+        ),
+        snapshotSource: { dataRoot: owned.dataRoot, source: { kind: 'local-snapshot', ...input } },
+        expectedWorkspaceId: input.workspaceId,
+        expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
+        purpose: 'backup',
+        candidateRoot: join(container.container, 'verified'),
+      });
+      owned.currentAuthority();
+      return result;
+    } finally {
+      rmSync(container.container, { recursive: true, force: true });
+    }
+  };
+  return {
+    'workspace.backup-capture': (
+      input: Input<'workspace.backup-capture'>,
+      context: AdmittedOperationContext
+    ) =>
+      invoke(async () => {
+        const owned = policy(context);
+        const captured = await createWorkspaceBackup({
+          ...owned.verification,
+          ...input,
+          source: {
+            kind: 'live-workspace',
+            ...owned,
+            canReadThread: (threadId) =>
+              isThreadIdVisible(
+                owned.store,
+                input.workspaceId,
+                threadId,
+                publicOperationActor(context)?.userId,
+                true,
+                'thread.read',
+                { kind: 'user', userId: publicOperationActor(context)!.userId }
+              ),
+          },
+          expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
+          bundleRoot: join(
+            owned.dataRoot,
+            'server/backups/workspaces',
+            input.workspaceId,
+            input.backupId
+          ),
+        });
+        owned.currentAuthority();
+        return WorkspaceSnapshotReportSchema.parse(
+          recoveryReport('capture', captured.disposition, captured.report)
+        );
+      }),
+    'workspace.backup-verify': (
+      input: Input<'workspace.backup-verify'>,
+      context: AdmittedOperationContext
+    ) =>
+      invoke(async () => {
+        const result = await inspect(input, policy(context));
+        return WorkspaceSnapshotReportSchema.parse(
+          recoveryReport('verify', 'verified', result.report)
+        );
+      }),
+    'workspace.backup-download': (
+      input: Input<'workspace.backup-download'>,
+      context: AdmittedOperationContext
+    ): Promise<Response> =>
+      invoke(async () => {
+        const owned = policy(context);
+        // Verification acquires independent copies before exposing a stream. Keep its callback alive until cancellation or completion.
+        return new Promise<Response>((resolveResponse, rejectResponse) => {
+          void withVerifiedWorkspaceSnapshotSource(
+            {
+              ...owned.verification,
+              includeMetadata: true,
+              dataRoot: owned.dataRoot,
+              source: { kind: 'local-snapshot', ...input },
+            },
+            async (bundle) => {
+              owned.currentAuthority();
+              const chunks = async function* () {
+                for (const path of ['manifest.json', 'seal.json']) {
+                  const buffers: Buffer[] = [];
+                  for await (const chunk of bundle.readFile(path)) buffers.push(Buffer.from(chunk));
+                  owned.currentAuthority();
+                  const bytes = Buffer.concat(buffers);
+                  yield workspaceArchiveHeader(path, 'file', bytes.length, 0o600);
+                  yield bytes;
+                  if (bytes.length % 512) yield Buffer.alloc(512 - (bytes.length % 512));
+                }
+                for (const inventory of bundle.manifest.inventory) {
+                  owned.currentAuthority();
+                  yield workspaceArchiveHeader(
+                    inventory.path,
+                    'file',
+                    inventory.bytes,
+                    inventory.mode
+                  );
+                  for await (const chunk of bundle.readFile(inventory.path)) {
+                    owned.currentAuthority();
+                    yield Buffer.from(chunk);
+                  }
+                  if (inventory.bytes % 512) yield Buffer.alloc(512 - (inventory.bytes % 512));
+                }
+                yield Buffer.alloc(1024);
+              };
+              const archive = Readable.from(chunks(), { objectMode: false, highWaterMark: 65536 });
+              const compressed = createZstdCompress();
+              const completion = pipeline(archive, compressed, { signal: context.signal });
+              resolveResponse(
+                new Response(Readable.toWeb(compressed) as ReadableStream, {
+                  headers: {
+                    'content-type': 'application/octet-stream',
+                    'cache-control': 'no-store',
+                  },
+                })
+              );
+              await completion;
+            }
+          ).catch(rejectResponse);
+        });
+      }),
+  };
 }

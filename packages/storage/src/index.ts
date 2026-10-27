@@ -1,2 +1,2 @@
 export * from './contract.js';
-export { LocalStorage } from './local.js';
+export { copyVerifiedFile, LocalStorage, publishDurableFile } from './local.js';
