@@ -3,7 +3,7 @@ import {
   DataRootBackupVerifyRequestSchema,
 } from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import {
@@ -13,7 +13,6 @@ import {
   ErrorBanner,
   Page,
   PageHeader,
-  Skeleton,
   TextField,
 } from '../../primitives';
 
@@ -31,26 +30,10 @@ function backupSummary(response: DataRootBackupCreateResponse) {
   };
 }
 
-/** Create and verify deployment backups using only session-derived server-admin authority. */
+/** Create and verify deployment backups; server authority is checked on each operation. */
 export function DataRootBackupScreen() {
   const client = useCoreClient();
   const [knownBackupId, setKnownBackupId] = useState('');
-  const adminAccess = useQuery({
-    queryKey: ['settings', 'data-root-backup', 'admin-access'],
-    queryFn: async ({ signal }) => {
-      try {
-        await client.operations['token.list']({});
-        // A departed observer cannot admit a later mount through an ignored cancellation.
-        signal.throwIfAborted();
-        return true;
-      } catch (error) {
-        signal.throwIfAborted();
-        throw safeBackupError(error);
-      }
-    },
-    retry: false,
-    refetchOnMount: 'always',
-  });
   const backup = useMutation({
     mutationFn: async (action: { kind: 'create' } | { kind: 'verify'; backupId: string }) => {
       try {
@@ -66,9 +49,9 @@ export function DataRootBackupScreen() {
     retry: false,
     onSuccess: (summary) => setKnownBackupId(summary.backupId),
   });
-  const denied = [adminAccess.error, backup.error].some(
-    (error) => error instanceof ApiCallError && (error.status === 401 || error.status === 403)
-  );
+  const denied =
+    backup.error instanceof ApiCallError &&
+    (backup.error.status === 401 || backup.error.status === 403);
   const backupId = knownBackupId.trim();
   const validId = DataRootBackupVerifyRequestSchema.safeParse({ backupId }).success;
   const summary = backup.data;
@@ -80,11 +63,7 @@ export function DataRootBackupScreen() {
         title="Create and verify backups"
         subtitle="Create a deployment data-root backup or verify a known backup ID."
       />
-      {!adminAccess.isFetchedAfterMount ||
-      adminAccess.isPending ||
-      adminAccess.fetchStatus !== 'idle' ? (
-        <Skeleton lines={6} />
-      ) : denied ? (
+      {denied ? (
         <EmptyState
           icon="key"
           title="Access denied"
@@ -95,31 +74,22 @@ export function DataRootBackupScreen() {
               onPress={() => {
                 backup.reset();
                 setKnownBackupId('');
-                void adminAccess.refetch();
               }}
             >
               Retry
             </Button>
           }
         />
-      ) : adminAccess.isError ? (
-        <ErrorBanner
-          message="Couldn't verify deployment-admin authority."
-          onRetry={() => void adminAccess.refetch()}
-        />
       ) : (
         <>
-          {backup.isError ? (
+          {backup.isError && !denied ? (
             <ErrorBanner
               message="Backup request failed. If creation was interrupted, its outcome may be unknown. Verify a known backup ID or explicitly create another backup."
               onRetry={() => backup.reset()}
             />
           ) : null}
           <Card className="flex flex-col gap-4">
-            <Button
-              isDisabled={backup.isPending || adminAccess.isFetching}
-              onPress={() => backup.mutate({ kind: 'create' })}
-            >
+            <Button isDisabled={backup.isPending} onPress={() => backup.mutate({ kind: 'create' })}>
               Create backup
             </Button>
             <TextField
@@ -131,7 +101,7 @@ export function DataRootBackupScreen() {
             />
             <Button
               variant="outline"
-              isDisabled={!validId || backup.isPending || adminAccess.isFetching}
+              isDisabled={!validId || backup.isPending}
               onPress={() => backup.mutate({ kind: 'verify', backupId })}
             >
               Verify backup

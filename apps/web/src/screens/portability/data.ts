@@ -1,30 +1,11 @@
-import {
-  ApiCallError,
-  type CoreClient,
-  createRequestId,
-  type WorkspaceRecord,
-} from '@openkit/core-client';
+import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { chatKeys, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
+import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { settingsKeys } from '../settings/data';
+import { parseWorkspaceFreezeRefusal } from '../workspace-freeze';
 
-/** Schema-owned dry-run review from `workspace.import-dry-run`. */
-export type PortabilityImportReview = Awaited<
-  ReturnType<CoreClient['operations']['workspace.import-dry-run']>
->;
-/** Exact import command accepted by `workspace.import`. */
-export type PortabilityImportCommand = Parameters<CoreClient['operations']['workspace.import']>[0];
-/** Exact dry-run command accepted by `workspace.import-dry-run`. */
-export type PortabilityReviewCommand = Parameters<
-  CoreClient['operations']['workspace.import-dry-run']
->[0];
-/** Exact archive import command accepted by `importWorkspaceArchive`. */
-export type PortabilityArchiveImportCommand = {
-  file: File;
-  requestId: string;
-};
 /** Selected-Workspace identity used to scope one vault rebind. */
 export type PortabilityRebindTarget = {
   workspaceId: string;
@@ -76,54 +57,6 @@ export function isPortabilityProjectKind(kind: string | undefined): boolean {
 }
 
 /**
- * Builds the exact retryable import command, creating a request id only on first attempt.
- *
- * @param previous Command retained by a failed import, if any.
- * @param sourceWorkspaceId Source Workspace handle from the review form.
- * @param exportId Export handle from the review form.
- * @returns Exact `workspace.import` payload.
- */
-export function nextImportCommand(
-  previous: PortabilityImportCommand | undefined,
-  sourceWorkspaceId: string,
-  exportId: string
-): PortabilityImportCommand {
-  if (
-    previous &&
-    previous.sourceWorkspaceId === sourceWorkspaceId &&
-    previous.exportId === exportId &&
-    previous.requestId
-  ) {
-    return previous;
-  }
-  return {
-    sourceWorkspaceId,
-    exportId,
-    requestId: createRequestId(),
-  };
-}
-
-/**
- * Builds the retryable archive import command, creating a request id only on first attempt.
- *
- * @param previous Command retained by a failed archive import, if any.
- * @param file Selected local archive File; identity is the File object.
- * @returns Exact `importWorkspaceArchive` payload.
- */
-export function nextArchiveImportCommand(
-  previous: PortabilityArchiveImportCommand | undefined,
-  file: File
-): PortabilityArchiveImportCommand {
-  if (previous && previous.file === file && previous.requestId) {
-    return previous;
-  }
-  return {
-    file,
-    requestId: createRequestId(),
-  };
-}
-
-/**
  * Builds the same-origin archive GET href for one created export.
  *
  * @param workspaceId Source Workspace id; encoded as one path segment.
@@ -138,12 +71,16 @@ export function workspaceExportArchiveHref(workspaceId: string, exportId: string
  * Maps a typed or uncertain export failure to product-safe copy without private text.
  *
  * @param error Mutation failure retained by TanStack Query.
- * @returns Safe banner copy.
+ * @returns Safe banner copy, or null when a structured freeze refusal owns the UI.
  */
-export function exportWorkspaceError(error: unknown): string {
+export function exportWorkspaceError(error: unknown): string | null {
+  if (parseWorkspaceFreezeRefusal(error)) return null;
   const code = apiCode(error);
   if (code === 'conflict') {
     return 'Export is blocked by a conflict, pending input, or unresolved work.';
+  }
+  if (error instanceof ApiCallError && (error.status === 401 || error.status === 403)) {
+    return 'Workspace export requires administrator authority.';
   }
   if (code === 'workspace_access_denied') {
     return 'Access denied for this workspace.';
@@ -152,48 +89,6 @@ export function exportWorkspaceError(error: unknown): string {
     return "Couldn't export this workspace.";
   }
   return 'The export result is unknown. It is not known whether the export completed.';
-}
-
-/**
- * Maps a typed import-review failure to product-safe copy without private text.
- *
- * @param error Mutation failure retained by TanStack Query.
- * @returns Safe banner copy.
- */
-export function dryRunWorkspaceImportError(error: unknown): string {
-  const code = apiCode(error);
-  if (
-    code === 'workspace_import_forbidden' ||
-    code === 'workspace_archive_import_forbidden' ||
-    code === 'workspace_archive_import_unavailable'
-  ) {
-    return 'This import is forbidden or unavailable.';
-  }
-  if (code === 'workspace_access_denied') {
-    return 'Access denied.';
-  }
-  return "Couldn't review this import.";
-}
-
-/**
- * Maps a typed import failure to product-safe copy without private text.
- *
- * @param error Mutation failure retained by TanStack Query.
- * @returns Safe banner copy.
- */
-export function importWorkspaceError(error: unknown): string {
-  const code = apiCode(error);
-  if (
-    code === 'workspace_import_forbidden' ||
-    code === 'workspace_archive_import_forbidden' ||
-    code === 'workspace_archive_import_unavailable'
-  ) {
-    return 'This import is forbidden or unavailable.';
-  }
-  if (code === 'workspace_access_denied') {
-    return 'Access denied.';
-  }
-  return "Couldn't import this workspace.";
 }
 
 /**
@@ -232,79 +127,6 @@ export function useExportWorkspace() {
   return useMutation({
     mutationFn: (workspaceId: string) => client.operations['workspace.export']({ workspaceId }),
     retry: false,
-  });
-}
-
-/**
- * Reviews a local portable archive through `dryRunWorkspaceArchiveImport`.
- *
- * @returns Mutation whose variables are the selected File object.
- */
-export function useDryRunWorkspaceArchiveImport() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (file: File) => client.app.dryRunWorkspaceArchiveImport(file),
-    retry: false,
-  });
-}
-
-/**
- * Reviews a server-managed import through `workspace.import-dry-run`.
- *
- * @returns Mutation that retains the schema-owned dry-run response.
- */
-export function useDryRunWorkspaceImport() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (input: PortabilityReviewCommand) =>
-      client.operations['workspace.import-dry-run'](input),
-    retry: false,
-  });
-}
-
-/**
- * Imports a reviewed workspace export through `workspace.import`, then refreshes Workspace discovery.
- *
- * @returns Mutation that keeps the exact request identity for retry.
- */
-export function useImportWorkspace() {
-  const client = useCoreClient();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (command: PortabilityImportCommand) =>
-      client.operations['workspace.import'](command),
-    retry: false,
-    onSuccess: (result) => {
-      queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {
-        if (!current) return [result.workspace];
-        if (current.some((item) => item.id === result.workspace.id)) return current;
-        return [...current, result.workspace];
-      });
-      void queryClient.invalidateQueries({ queryKey: chatKeys.workspaces });
-    },
-  });
-}
-
-/**
- * Imports a reviewed local archive through `importWorkspaceArchive`, then refreshes discovery.
- *
- * @returns Mutation that keeps the exact File and request identity for retry.
- */
-export function useImportWorkspaceArchive() {
-  const client = useCoreClient();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (command: PortabilityArchiveImportCommand) =>
-      client.app.importWorkspaceArchive(command.file, command.requestId),
-    retry: false,
-    onSuccess: (result) => {
-      queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {
-        if (!current) return [result.workspace];
-        if (current.some((item) => item.id === result.workspace.id)) return current;
-        return [...current, result.workspace];
-      });
-      void queryClient.invalidateQueries({ queryKey: chatKeys.workspaces });
-    },
   });
 }
 

@@ -3,12 +3,9 @@ import {
   VaultAdminRebindWorkspaceReferenceRequestSchema,
   VaultAdminRebindWorkspaceReferenceResponseSchema,
   WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunRequestSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportRequestSchema,
-  WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -22,7 +19,7 @@ import { surfaceById } from '../../app/surfaces';
 import { chatKeys } from '../chat/data';
 import { settingsKeys } from '../settings/data';
 import { useWorkspaceStore } from '../workspace-store';
-import { encodeVaultMaterial, nextArchiveImportCommand, workspaceExportArchiveHref } from './data';
+import { encodeVaultMaterial, workspaceExportArchiveHref } from './data';
 import portabilityDataSource from './data.ts?raw';
 import portabilityScreenSource from './PortabilityScreen.tsx?raw';
 
@@ -48,16 +45,12 @@ const WORKSPACE_B = {
   name: 'Second workspace',
   kind: 'general',
 } as const;
-const EXPORTED_ABSENT_ID = 'ws_00000000-0000-73f4-8366-3b35ef8cc8de';
 const PERSONAL_WORKSPACE = {
   id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
   name: 'Personal',
   kind: 'personal',
 } as const;
 const EXPORT_ID = 'wsexp_00000000-0000-7569-b23e-40ca1402f214';
-const EXPORT_ID_B = 'wsexp_00000000-0000-7a9c-98db-a5d2c980ee99';
-const LOCAL_SOURCE_DEPLOYMENT_ID = 'dep_00000000-0000-7562-9a88-afe7e367ea27';
-const EXTERNAL_SOURCE_DEPLOYMENT_ID = 'dep_00000000-0000-7737-8fe7-61ca07c79d45';
 const WORKSPACE_EXPORT_FILE_BYTES = serializeExportJson({
   id: WORKSPACE.id,
   name: WORKSPACE.name,
@@ -69,9 +62,6 @@ const WORKSPACE_EXPORT_FILE_BYTES = serializeExportJson({
 });
 const FILE_DIGEST = 'sha256:0f141fbf15bd9400f2152ee0738383b2d713f6502cd98f8ee72951843f632197';
 const FILE_BYTES = new TextEncoder().encode(WORKSPACE_EXPORT_FILE_BYTES).byteLength;
-const ARCHIVE_BYTES = new Uint8Array([40, 181, 47, 253]);
-const ARCHIVE_FILE_NAME = `${WORKSPACE.id}-${EXPORT_ID}.openkit-workspace.tar.zst`;
-const SECOND_ARCHIVE_FILE_NAME = `${WORKSPACE_B.id}-${EXPORT_ID_B}.openkit-workspace.tar.zst`;
 const CONTENT_INVENTORY = [
   {
     path: 'records/ws_00000000-0000-70f9-a923-618c488a4651.json',
@@ -80,22 +70,6 @@ const CONTENT_INVENTORY = [
   },
 ];
 const CONTENT_DIGEST = 'sha256:0cd2fa898af279bb1179b690909444b73031fa36d246fa4037346c598ca2c9f5';
-const DRY_RUN_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
-  sourceWorkspaceId: WORKSPACE.id,
-  exportId: EXPORT_ID,
-});
-const AVAILABLE_DRY_RUN_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
-  sourceWorkspaceId: EXPORTED_ABSENT_ID,
-  exportId: EXPORT_ID,
-});
-const CHANGED_SOURCE_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
-  sourceWorkspaceId: WORKSPACE_B.id,
-  exportId: EXPORT_ID,
-});
-const CHANGED_EXPORT_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
-  sourceWorkspaceId: WORKSPACE.id,
-  exportId: EXPORT_ID_B,
-});
 const REBIND_REQUEST = VaultAdminRebindWorkspaceReferenceRequestSchema.parse({
   materialBase64: VAULT_MATERIAL_BASE64,
 });
@@ -116,62 +90,11 @@ const MANIFEST = {
   sensitivity: 'internal' as const,
   requiredFeatures: [] as string[],
   extensions: {},
-  sourceDeploymentId: LOCAL_SOURCE_DEPLOYMENT_ID,
+  sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
   workspaceId: WORKSPACE.id,
   exportCreatedAt: TIMESTAMP,
   exportFormatVersion: 3 as const,
   contentInventory: CONTENT_INVENTORY,
-};
-
-const EXPORTED_ABSENT_MANIFEST = {
-  ...MANIFEST,
-  lineage: { workspaceId: EXPORTED_ABSENT_ID },
-  workspaceId: EXPORTED_ABSENT_ID,
-  sourceDeploymentId: EXTERNAL_SOURCE_DEPLOYMENT_ID,
-};
-
-const CHANGED_SOURCE_MANIFEST = {
-  ...MANIFEST,
-  lineage: { workspaceId: WORKSPACE_B.id },
-  workspaceId: WORKSPACE_B.id,
-  sourceDeploymentId: EXTERNAL_SOURCE_DEPLOYMENT_ID,
-};
-
-const CHANGED_EXPORT_MANIFEST = {
-  ...MANIFEST,
-  id: EXPORT_ID_B,
-};
-
-const VERIFICATION = {
-  fileCount: 1,
-  totalBytes: FILE_BYTES,
-  checkedFiles: ['records/ws_00000000-0000-70f9-a923-618c488a4651.json'],
-};
-
-const COLLISION = {
-  status: 'collides' as const,
-  workspaceId: WORKSPACE.id,
-  suggestedWorkspaceId: 'ws_00000000-0000-7ca9-b277-954ac43692f1',
-};
-
-const AVAILABLE_COLLISION = {
-  status: 'available' as const,
-  workspaceId: EXPORTED_ABSENT_ID,
-};
-
-const CHANGED_SOURCE_COLLISION = {
-  status: 'available' as const,
-  workspaceId: WORKSPACE_B.id,
-};
-
-const IMPORTED_WORKSPACE = {
-  id: COLLISION.suggestedWorkspaceId,
-  name: 'Imported research',
-  kind: 'general' as const,
-  status: 'active' as const,
-  counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
-  createdAt: TIMESTAMP,
-  updatedAt: TIMESTAMP,
 };
 
 const EXPORT_RESULT = WorkspaceExportResponseSchema.parse({
@@ -182,147 +105,6 @@ const EXPORT_RESULT = WorkspaceExportResponseSchema.parse({
   totalBytes: FILE_BYTES,
   checkedFiles: ['records/ws_00000000-0000-70f9-a923-618c488a4651.json'],
 });
-
-const DRY_RUN = WorkspaceImportDryRunResponseSchema.parse({
-  mode: 'dry-run',
-  exportId: EXPORT_ID,
-  sourceWorkspaceId: WORKSPACE.id,
-  exportedWorkspaceId: WORKSPACE.id,
-  manifest: MANIFEST,
-  verification: VERIFICATION,
-  collision: COLLISION,
-});
-
-const DRY_RUN_AVAILABLE = WorkspaceImportDryRunResponseSchema.parse({
-  mode: 'dry-run',
-  exportId: EXPORT_ID,
-  sourceWorkspaceId: EXPORTED_ABSENT_ID,
-  exportedWorkspaceId: EXPORTED_ABSENT_ID,
-  manifest: EXPORTED_ABSENT_MANIFEST,
-  verification: VERIFICATION,
-  collision: AVAILABLE_COLLISION,
-});
-
-const CHANGED_SOURCE_DRY_RUN = WorkspaceImportDryRunResponseSchema.parse({
-  mode: 'dry-run',
-  exportId: EXPORT_ID,
-  sourceWorkspaceId: WORKSPACE_B.id,
-  exportedWorkspaceId: WORKSPACE_B.id,
-  manifest: CHANGED_SOURCE_MANIFEST,
-  verification: VERIFICATION,
-  collision: CHANGED_SOURCE_COLLISION,
-});
-
-const CHANGED_EXPORT_DRY_RUN = WorkspaceImportDryRunResponseSchema.parse({
-  mode: 'dry-run',
-  exportId: EXPORT_ID_B,
-  sourceWorkspaceId: WORKSPACE.id,
-  exportedWorkspaceId: WORKSPACE.id,
-  manifest: CHANGED_EXPORT_MANIFEST,
-  verification: VERIFICATION,
-  collision: COLLISION,
-});
-
-const DRY_RUNS = [
-  DRY_RUN,
-  DRY_RUN_AVAILABLE,
-  CHANGED_SOURCE_DRY_RUN,
-  CHANGED_EXPORT_DRY_RUN,
-] as const;
-
-const MANIFEST_DIGESTS = new Map([
-  [
-    `${WORKSPACE.id}/${EXPORT_ID}`,
-    'sha256:b796e26a17d120bdb3da4ee9c58bfbfd9a451b88989742a26749794205c362fc',
-  ],
-  [
-    `${EXPORTED_ABSENT_ID}/${EXPORT_ID}`,
-    'sha256:f6075fca77e7ffae15e2c8a422e53c6e6070e1525387ae85d06750a66579eda2',
-  ],
-  [
-    `${WORKSPACE_B.id}/${EXPORT_ID}`,
-    'sha256:a147834b4059571949436715c2724bddef98fb55603a3016b4789535f6220e93',
-  ],
-  [
-    `${WORKSPACE.id}/${EXPORT_ID_B}`,
-    'sha256:6c29d5346ad4b2de0f2ea3c85cc87b8b24ad05d4805ec2096c119a3eb03a68ab',
-  ],
-]);
-
-/** Resolves the dry-run fixture whose handles match one import request. */
-function dryRunFor(command: { sourceWorkspaceId: string; exportId: string }) {
-  const review = DRY_RUNS.find(
-    (item) =>
-      item.sourceWorkspaceId === command.sourceWorkspaceId && item.exportId === command.exportId
-  );
-  if (!review) {
-    throw new Error(`no dry-run fixture for ${command.sourceWorkspaceId}/${command.exportId}`);
-  }
-  return review;
-}
-
-/** Builds a complete schema-parsed import response from the matching dry-run report. */
-function importResultFor(input: unknown) {
-  const command = WorkspaceImportRequestSchema.parse(input);
-  const review = dryRunFor(command);
-  const importedWorkspaceId =
-    review.collision.status === 'available'
-      ? review.exportedWorkspaceId
-      : review.collision.suggestedWorkspaceId;
-  const [fileEntry] = review.manifest.contentInventory;
-  const manifestDigest = MANIFEST_DIGESTS.get(`${review.sourceWorkspaceId}/${review.exportId}`);
-  expect(manifestDigest).toEqual(expect.stringMatching(/^sha256:[0-9a-f]{64}$/));
-  expect(fileEntry?.digest).toBe(FILE_DIGEST);
-  expect(fileEntry?.bytes).toBe(FILE_BYTES);
-  expect(review.manifest.contentDigest).toBe(CONTENT_DIGEST);
-  expect(manifestDigest).not.toBe(review.manifest.contentDigest);
-  expect(manifestDigest).not.toBe(fileEntry?.digest);
-  expect(review.manifest.contentDigest).not.toBe(fileEntry?.digest);
-  const result = WorkspaceImportResponseSchema.parse({
-    mode: 'imported',
-    requestId: command.requestId ?? null,
-    exportId: command.exportId,
-    sourceWorkspaceId: command.sourceWorkspaceId,
-    exportedWorkspaceId: review.exportedWorkspaceId,
-    importedWorkspaceId,
-    manifest: review.manifest,
-    verification: review.verification,
-    collision: review.collision,
-    workspace: {
-      ...IMPORTED_WORKSPACE,
-      id: importedWorkspaceId,
-      importedFrom: {
-        sourceDeploymentId: review.manifest.sourceDeploymentId,
-        sourceWorkspaceId: review.exportedWorkspaceId,
-        exportCreatedAt: review.manifest.exportCreatedAt,
-        manifestDigest,
-      },
-    },
-  });
-  expect(result.workspace.importedFrom?.manifestDigest).toBe(manifestDigest);
-  expect(result.sourceWorkspaceId).toBe(command.sourceWorkspaceId);
-  expect(result.exportId).toBe(command.exportId);
-  expect(result.exportedWorkspaceId).toBe(review.exportedWorkspaceId);
-  expect(result.manifest).toEqual(review.manifest);
-  expect(result.collision).toEqual(review.collision);
-  expect(result.importedWorkspaceId).toBe(importedWorkspaceId);
-  expect(result.workspace.id).toBe(importedWorkspaceId);
-  if (review.collision.status === 'available') {
-    expect(result.importedWorkspaceId).toBe(result.exportedWorkspaceId);
-  } else {
-    expect(result.importedWorkspaceId).toBe(review.collision.suggestedWorkspaceId);
-  }
-  return result;
-}
-
-for (const review of DRY_RUNS) {
-  importResultFor({
-    sourceWorkspaceId: review.sourceWorkspaceId,
-    exportId: review.exportId,
-    requestId: 'req_import_identity',
-  });
-}
-expect(new Set(MANIFEST_DIGESTS.values()).size).toBe(DRY_RUNS.length);
 
 const UNBOUND_REFERENCE = {
   backendKind: 'encrypted-file' as const,
@@ -398,29 +180,6 @@ function privateFailure(status: number, code: string) {
   return new ApiCallError(status, 'portability-private failure', { code });
 }
 
-/** Builds one in-memory portable archive File for the file input. */
-function archiveFile(name = ARCHIVE_FILE_NAME): File {
-  return new File([ARCHIVE_BYTES], name, {
-    type: 'application/vnd.openkit.workspace-export+tar.zstd',
-  });
-}
-
-/** Proves one client body is File, Blob, or ReadableStream rather than JSON or a path. */
-function expectBinaryArchiveBody(body: unknown) {
-  expect(body instanceof File || body instanceof Blob || body instanceof ReadableStream).toBe(true);
-  expect(typeof body).not.toBe('string');
-  if (body && typeof body === 'object' && !Array.isArray(body)) {
-    expect(body).not.toHaveProperty('contentBase64');
-    expect(body).not.toHaveProperty('sourcePath');
-  }
-}
-
-/** Selects one local archive through the standard file input. */
-async function selectArchive(user: ReturnType<typeof userEvent.setup>, file: File = archiveFile()) {
-  await user.upload(screen.getByLabelText('Portable archive'), file);
-  return file;
-}
-
 /** Empty grant list matching the Settings Vault hook's companion read. */
 function emptyVaultGrants(workspaceId: string) {
   return { workspaceId, items: [] };
@@ -443,16 +202,6 @@ function makeClient(
     },
     app: {
       downloadWorkspaceExportArchive: vi.fn(),
-      dryRunWorkspaceArchiveImport: vi.fn().mockResolvedValue(DRY_RUN),
-      importWorkspaceArchive: vi.fn().mockImplementation((_body: unknown, requestId?: string) =>
-        Promise.resolve(
-          importResultFor({
-            sourceWorkspaceId: WORKSPACE.id,
-            exportId: EXPORT_ID,
-            requestId,
-          })
-        )
-      ),
       ...overrides.app,
     },
 
@@ -470,10 +219,6 @@ function makeClient(
         ),
       'vault.reference-rebind': vi.fn().mockResolvedValue(REBIND_MUTATION),
       'workspace.export': vi.fn().mockResolvedValue(EXPORT_RESULT),
-      'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN),
-      'workspace.import': vi
-        .fn()
-        .mockImplementation((input: unknown) => Promise.resolve(importResultFor(input))),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
@@ -528,17 +273,6 @@ function renderApp(
   return { client, queryClient };
 }
 
-/** Fills the server-managed import handles and runs dry-run review. */
-async function reviewImport(
-  user: ReturnType<typeof userEvent.setup>,
-  sourceWorkspaceId: string = WORKSPACE.id,
-  exportId: string = EXPORT_ID
-) {
-  await user.type(screen.getByRole('textbox', { name: 'Source workspace ID' }), sourceWorkspaceId);
-  await user.type(screen.getByRole('textbox', { name: 'Export ID' }), exportId);
-  await user.click(screen.getByRole('button', { name: 'Review import' }));
-}
-
 /** Confirms the explicit Vault rebind dialog; Rebind itself must not submit. */
 async function confirmRebind(user: ReturnType<typeof userEvent.setup>) {
   const dialog = await screen.findByRole('dialog', { name: /confirm/i });
@@ -560,22 +294,6 @@ function rebindControl(
   return screen.getByRole('button', {
     name: `Rebind ${secretKind} ${referenceId}`,
   });
-}
-
-/** Captures the exact accepted import command, including its requestId. */
-function acceptedImportCommand(
-  importWorkspace: ReturnType<typeof vi.fn>,
-  callIndex = 0,
-  request: { sourceWorkspaceId: string; exportId: string } = DRY_RUN_REQUEST
-) {
-  const command = WorkspaceImportRequestSchema.parse(importWorkspace.mock.calls[callIndex]?.[0]);
-  expect(command.requestId).toEqual(expect.any(String));
-  expect(command).toEqual({
-    sourceWorkspaceId: request.sourceWorkspaceId,
-    exportId: request.exportId,
-    requestId: command.requestId,
-  });
-  return command;
 }
 
 /** Serializes TanStack retention so Vault material can be proven absent from cache. */
@@ -629,24 +347,6 @@ function assertNoLeakedInternals(queryClient: QueryClient, surface: 'all' | 'cac
   }
 }
 
-function importSection() {
-  return screen.getByRole('region', { name: 'Import' });
-}
-
-/** Visible completed-import status, identity, and open action after a known success. */
-async function expectImportedSuccess(imported: { id: string; name: string }) {
-  const section = importSection();
-  const status = await within(section).findByRole('status');
-  expect(status).toHaveTextContent('Imported');
-  expect(status).toHaveTextContent(imported.name);
-  expect(status).toHaveTextContent(imported.id);
-  expect(within(section).getByRole('button', { name: 'Open workspace' })).toBeEnabled();
-  expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
-  expect(section).not.toHaveTextContent(/already exists|new id/i);
-  expect(within(section).queryByRole('list', { name: 'What import does' })).not.toBeInTheDocument();
-}
-
 /** Same-origin encoded archive href bound to one Workspace export. */
 function expectDownloadArchiveLink(workspaceId: string, exportId: string) {
   const link = screen.getByRole('link', { name: 'Download archive (opens in a new tab)' });
@@ -654,137 +354,6 @@ function expectDownloadArchiveLink(workspaceId: string, exportId: string) {
   expect(link).toHaveAttribute('target', '_blank');
   expect(link.getAttribute('rel') ?? '').toMatch(/\bnoopener\b/);
   return link;
-}
-
-/** Inverse precommit copy that must not appear in a consequence row or the Import region. */
-function expectNoContradictoryPrecommitCopy(node: HTMLElement) {
-  expect(node).not.toHaveTextContent(/source owner remains/i);
-  expect(node).not.toHaveTextContent(/preserves source membership/i);
-  expect(node).not.toHaveTextContent(/source memberships? are recreated/i);
-  expect(node).not.toHaveTextContent(/source invitations? are recreated/i);
-  expect(node).not.toHaveTextContent(/source tokens? are recreated/i);
-  expect(node).not.toHaveTextContent(/imported approvals? authorize/i);
-  expect(node).not.toHaveTextContent(/imported permission decisions? authorize/i);
-  expect(node).not.toHaveTextContent(/imported vault grants? authorize/i);
-  expect(node).not.toHaveTextContent(/vault references? remain (?:bound|active)/i);
-  expect(node).not.toHaveTextContent(/does not require rebind/i);
-  expect(node).not.toHaveTextContent(/no rebind (?:is )?required/i);
-  const text = node.textContent ?? '';
-  expect(text).not.toMatch(
-    /becomes[\s\S]{0,80}new(?: canonical)? owner[\s\S]{0,80}source owner remains/i
-  );
-  expect(text).not.toMatch(/sole active member[\s\S]{0,80}preserves source membership/i);
-  expect(text).not.toMatch(/not reconstructed[\s\S]{0,80}are reconstructed/i);
-  expect(text).not.toMatch(/historical only[\s\S]{0,80}authorize/i);
-  expect(text).not.toMatch(/unbound[\s\S]{0,80}remain (?:bound|active)/i);
-}
-
-/** Accessible Import consequence rows: named list items, otherwise table rows. */
-function importConsequenceRows(section: HTMLElement) {
-  const namedList = within(section).queryByRole('list', {
-    name: /consequence|import will|before you import|what import does/i,
-  });
-  const lists = namedList ? [namedList] : within(section).queryAllByRole('list');
-  const fromLists = lists.flatMap((list) => within(list).queryAllByRole('listitem'));
-  if (fromLists.length > 0) return fromLists;
-  return within(section).queryAllByRole('row');
-}
-
-/** Returns the one accessible row whose text binds this subject. */
-function uniqueConsequenceRow(rows: HTMLElement[], subject: RegExp) {
-  const matches = rows.filter((row) => subject.test(row.textContent ?? ''));
-  expect(matches).toHaveLength(1);
-  return matches[0]!;
-}
-
-/** Visible precommit consequences required on both collision branches before Import. */
-function expectPrecommitConsequences(section: HTMLElement) {
-  const rows = importConsequenceRows(section);
-  expect(rows.length).toBeGreaterThanOrEqual(4);
-  const owner = uniqueConsequenceRow(rows, /authenticated importer/i);
-  const membership = uniqueConsequenceRow(rows, /source(?:[\s-]deployment)?[\s\w,/]*memberships?/i);
-  const authority = uniqueConsequenceRow(rows, /Approval|approvals?/i);
-  const vault = uniqueConsequenceRow(rows, /vault references?/i);
-  expect(new Set([owner, membership, authority, vault]).size).toBe(4);
-
-  expect(owner).toHaveTextContent(/(?:becomes|is recorded as)(?: the)? new(?: canonical)? owner/i);
-  expect(owner).toHaveTextContent(/(?:sole|only) active member/i);
-
-  expect(membership).toHaveTextContent(/invitations?/i);
-  expect(membership).toHaveTextContent(/tokens?/i);
-  expect(membership).toHaveTextContent(
-    /(?:must not|are not|will not|never) (?:be )?(?:reconstructed|recreated)/i
-  );
-
-  expect(authority).toHaveTextContent(/PermissionDecision|permission decisions?/i);
-  expect(authority).toHaveTextContent(/VaultGrant|vault grants?/i);
-  expect(authority).toHaveTextContent(/historical only|history only|historical evidence only/i);
-  expect(authority).toHaveTextContent(
-    /grant no authority|non-authorizing|do not (?:grant|confer) authority/i
-  );
-
-  expect(vault).toHaveTextContent(/unbound/i);
-  expect(vault).toHaveTextContent(
-    /(?:require|need)(?:s|d)? (?:an? )?(?:explicit )?(?:local )?rebind/i
-  );
-
-  for (const row of [owner, membership, authority, vault]) {
-    expectNoContradictoryPrecommitCopy(row);
-  }
-  expectNoContradictoryPrecommitCopy(section);
-}
-
-function expectReviewIdentities(
-  review:
-    | typeof DRY_RUN
-    | typeof DRY_RUN_AVAILABLE
-    | typeof CHANGED_SOURCE_DRY_RUN
-    | typeof CHANGED_EXPORT_DRY_RUN,
-  request: { sourceWorkspaceId: string; exportId: string }
-) {
-  expect(review.sourceWorkspaceId).toBe(request.sourceWorkspaceId);
-  expect(review.exportId).toBe(request.exportId);
-  expect(review.exportedWorkspaceId).toBe(review.manifest.workspaceId);
-  expect(review.manifest.id).toBe(request.exportId);
-  expect(review.manifest.lineage).toEqual({ workspaceId: review.exportedWorkspaceId });
-  expect(review.collision.workspaceId).toBe(review.exportedWorkspaceId);
-  if (review.collision.status === 'available') {
-    expect(review.manifest.sourceDeploymentId).toBe(EXTERNAL_SOURCE_DEPLOYMENT_ID);
-    expect(review.manifest.sourceDeploymentId).not.toBe(LOCAL_SOURCE_DEPLOYMENT_ID);
-  }
-}
-
-function expectReviewSummary(
-  review:
-    | typeof DRY_RUN
-    | typeof DRY_RUN_AVAILABLE
-    | typeof CHANGED_SOURCE_DRY_RUN
-    | typeof CHANGED_EXPORT_DRY_RUN
-) {
-  expect(review.exportedWorkspaceId).toBe(review.manifest.workspaceId);
-  expect(review.manifest.id).toBe(review.exportId);
-  expect(review.manifest.lineage).toEqual({ workspaceId: review.exportedWorkspaceId });
-  expect(review.collision.workspaceId).toBe(review.exportedWorkspaceId);
-  const section = importSection();
-  expect(section).toHaveTextContent(
-    new RegExp(`source workspace[\\s\\S]*${review.sourceWorkspaceId}`, 'i')
-  );
-  expect(section).toHaveTextContent(
-    new RegExp(`exported workspace[\\s\\S]*${review.exportedWorkspaceId}`, 'i')
-  );
-  expect(section).toHaveTextContent(new RegExp(`${review.verification.fileCount}\\s+files?`, 'i'));
-  expect(section).toHaveTextContent(new RegExp(`${review.verification.totalBytes}\\s+bytes`, 'i'));
-  expectPrecommitConsequences(section);
-  if (review.collision.status === 'collides') {
-    expect(section).toHaveTextContent(review.collision.suggestedWorkspaceId);
-    expect(section).toHaveTextContent(/already exists|new id/i);
-  } else {
-    expect(section).toHaveTextContent(
-      new RegExp(`(target|suggested) workspace[\\s\\S]*${review.collision.workspaceId}`, 'i')
-    );
-    expect(section).toHaveTextContent(/available|no collision|does not collide|keep/i);
-    expect(section).not.toHaveTextContent(/already exists|new id/i);
-  }
 }
 
 function expectVaultUiAbsent(client: CoreClient) {
@@ -798,50 +367,68 @@ function expectVaultUiAbsent(client: CoreClient) {
   expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
 }
 
-/** User-scoped import of an unrelated external-deployment export the caller may inspect. */
-async function proveUserScopedImport(
-  user: ReturnType<typeof userEvent.setup>,
-  client: CoreClient,
-  queryClient: QueryClient,
-  expectWorkspaceSurface: () => void = () => expectVaultUiAbsent(client)
-) {
-  expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).toBe(EXTERNAL_SOURCE_DEPLOYMENT_ID);
-  expect(DRY_RUN_AVAILABLE.sourceWorkspaceId).not.toBe(WORKSPACE.id);
-  expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).not.toBe(LOCAL_SOURCE_DEPLOYMENT_ID);
-  expectReviewIdentities(DRY_RUN_AVAILABLE, AVAILABLE_DRY_RUN_REQUEST);
-  expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-  expectWorkspaceSurface();
-  await reviewImport(user, EXPORTED_ABSENT_ID, EXPORT_ID);
-  await waitFor(() =>
-    expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
-      [AVAILABLE_DRY_RUN_REQUEST],
-    ])
-  );
-  expectReviewSummary(DRY_RUN_AVAILABLE);
-  expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-  expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-  await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
-  const acceptedImport = acceptedImportCommand(
-    vi.mocked(client.operations['workspace.import']),
-    0,
-    AVAILABLE_DRY_RUN_REQUEST
-  );
-  expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
-  await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
-  expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
-  expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-  expectWorkspaceSurface();
-  assertNoLeakedInternals(queryClient);
-}
-
 beforeEach(() => {
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
 
 describe('Portability', () => {
+  it('does not expose ordinary workspace import entry points', async () => {
+    const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
+    expect(production).not.toMatch(/workspace\.import/);
+    expect(production).not.toMatch(/ImportPanel/);
+    expect(production).not.toMatch(/Portable archive/);
+    renderApp('/settings/portability', makeClient());
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Portability' })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Import' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review import' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Import workspace' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Portable archive')).not.toBeInTheDocument();
+  });
+
+  it('renders a structured freeze refusal instead of a generic export banner', async () => {
+    const user = userEvent.setup();
+    const threadId = allocateEntityId('th');
+    const turnId = allocateEntityId('tu');
+    const refusal = {
+      workspaceId: WORKSPACE.id,
+      operation: 'archive' as const,
+      retryable: false,
+      blockers: [
+        {
+          kind: 'turn' as const,
+          reason: 'active-work' as const,
+          reference: { threadId, turnId },
+          actions: [],
+        },
+      ],
+    };
+    const exportWorkspace = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiCallError(409, 'blocked', { code: 'workspace_blocked', details: refusal })
+      );
+    const client = makeClient({ operations: { 'workspace.export': exportWorkspace } });
+    renderApp('/settings/portability', client);
+    await user.click(await screen.findByRole('button', { name: 'Export workspace' }));
+    expect(await screen.findByLabelText('Workspace blocked')).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't export/i)).not.toBeInTheDocument();
+  });
+
+  it('shows administrator authority when export is refused with 403', async () => {
+    const user = userEvent.setup();
+    const exportWorkspace = vi.fn().mockRejectedValue(new ApiCallError(403, 'denied'));
+    const client = makeClient({ operations: { 'workspace.export': exportWorkspace } });
+    renderApp('/settings/portability', client);
+    await user.click(await screen.findByRole('button', { name: 'Export workspace' }));
+    expect(
+      await screen.findByText('Workspace export requires administrator authority.')
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+  });
+
   it('reuses the shared Settings Vault hook rather than a Portability-owned vault query', () => {
     const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
     expect(production).toMatch(
@@ -852,14 +439,14 @@ describe('Portability', () => {
     expect(production).not.toMatch(/portabilityKeys\.vault/);
   });
 
-  it('is a reachable user-scoped surface for export, import review, and vault rebind', async () => {
+  it('is a reachable administration surface for export and vault rebind', async () => {
     const user = userEvent.setup();
     const surface = surfaceById('portability');
     expect(surface).toMatchObject({
       title: 'Portability',
       path: '/settings/portability',
       tier: 'A',
-      nav: 'settings-user',
+      nav: 'settings-admin',
     });
     expect(isSurfaceLive(surface!)).toBe(true);
 
@@ -881,9 +468,6 @@ describe('Portability', () => {
     const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const { queryClient } = renderApp('/settings/portability', client);
 
-    expect(await screen.findByRole('region', { name: 'Import' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeEnabled();
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeEnabled();
     const loadAlert = await screen.findByRole('alert');
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
     expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
@@ -913,9 +497,6 @@ describe('Portability', () => {
     expect(screen.queryByRole('link', { name: 'Download archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Download archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use server export' })).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Portable archive')).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
     expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
     expect(screen.getByText(UNBOUND_REFERENCE.secretKind, { exact: true })).toBeInTheDocument();
     expect(rebindControl()).toBeEnabled();
@@ -937,8 +518,6 @@ describe('Portability', () => {
       vi.mocked(client.operations['vault.reference-list']).mock.invocationCallOrder[0]
     ).toBeGreaterThan(listWorkspaces.mock.invocationCallOrder[1]);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
   });
 
@@ -981,7 +560,6 @@ describe('Portability', () => {
     expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
     expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
     expect(
       within(screen.getByRole('main')).queryByRole('button', { name: 'Export workspace' })
     ).not.toBeInTheDocument();
@@ -994,9 +572,8 @@ describe('Portability', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('exports the selected Workspace, reviews an import dry-run before apply, and rebinds from an authoritative refetch', async () => {
+  it('exports the selected Workspace and rebinds from an authoritative refetch', async () => {
     const user = userEvent.setup();
-    const importedWorkspaces = createDeferred<{ items: unknown[] }>();
     const reboundVault = createDeferred<typeof REBOUND_LIST>();
     const listWorkspaces = vi
       .fn()
@@ -1011,7 +588,17 @@ describe('Portability', () => {
           registryRevision: 1,
         })),
       })
-      .mockReturnValueOnce(importedWorkspaces.promise);
+      .mockResolvedValue({
+        items: [WORKSPACE].map((workspace) => ({
+          membershipStatus: 'active' as const,
+          accessCause: 'membership' as const,
+          workspace,
+          isOwner: true,
+          membershipRevision: 1,
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          registryRevision: 1,
+        })),
+      });
     const listWorkspaceVaultReferences = vi
       .fn()
       .mockResolvedValueOnce(VAULT_LIST)
@@ -1041,50 +628,8 @@ describe('Portability', () => {
     expect(await screen.findByText(EXPORT_ID)).toBeInTheDocument();
     expect(screen.getByText('1 file', { exact: false })).toBeInTheDocument();
     expectDownloadArchiveLink(WORKSPACE.id, EXPORT_ID);
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
-
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    await reviewImport(user);
-    await waitFor(() =>
-      expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
-        [DRY_RUN_REQUEST],
-      ])
-    );
-    expect(await screen.findByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-    expectReviewSummary(DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
-    const acceptedImport = acceptedImportCommand(vi.mocked(client.operations['workspace.import']));
-    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
-    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-    await expectImportedSuccess({
-      id: COLLISION.suggestedWorkspaceId,
-      name: IMPORTED_WORKSPACE.name,
-    });
-
-    importedWorkspaces.resolve({
-      items: [WORKSPACE, IMPORTED_WORKSPACE].map((workspace) => ({
-        workspace,
-        isOwner: true,
-        membershipStatus: 'active' as const,
-        accessCause: 'membership' as const,
-        membershipRevision: 1,
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        registryRevision: 1,
-      })),
-    });
-    await expectImportedSuccess({
-      id: COLLISION.suggestedWorkspaceId,
-      name: IMPORTED_WORKSPACE.name,
-    });
-    assertNoLeakedInternals(queryClient);
-
     await user.type(vaultMaterialInput(), VAULT_MATERIAL);
     expect(vaultMaterialInput()).toHaveValue(VAULT_MATERIAL);
     expect(retainedPortabilityState(queryClient)).not.toContain(VAULT_MATERIAL);
@@ -1117,115 +662,7 @@ describe('Portability', () => {
       [{ workspaceId: WORKSPACE.id }],
     ]);
     expect(client.operations['workspace.export']).toHaveBeenCalledTimes(1);
-    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
-    expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1);
     expect(client.operations['vault.reference-rebind']).toHaveBeenCalledTimes(1);
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it('shows non-collision dry-run review semantics before import is enabled', async () => {
-    const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({
-      items: [WORKSPACE_B].map((workspace) => ({
-        membershipStatus: 'active' as const,
-        accessCause: 'membership' as const,
-        workspace,
-        isOwner: true,
-        membershipRevision: 1,
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        registryRevision: 1,
-      })),
-    });
-    const client = makeClient({
-      core: {},
-      app: {},
-
-      operations: {
-        'vault.reference-list': vi.fn().mockResolvedValue(EMPTY_VAULT_B),
-        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
-        'workspace.list': listWorkspaces,
-      },
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    expect(screen.getByText(WORKSPACE_B.name, { exact: true })).toBeInTheDocument();
-    expect(screen.queryByText(EXPORTED_ABSENT_ID)).not.toBeInTheDocument();
-    expect(WORKSPACE_B.id).not.toBe(EXPORTED_ABSENT_ID);
-    expect(DRY_RUN_AVAILABLE.exportedWorkspaceId).toBe(EXPORTED_ABSENT_ID);
-    expect(DRY_RUN_AVAILABLE.collision.workspaceId).toBe(EXPORTED_ABSENT_ID);
-    expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).toBe(EXTERNAL_SOURCE_DEPLOYMENT_ID);
-    expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).not.toBe(LOCAL_SOURCE_DEPLOYMENT_ID);
-    expect(DRY_RUN_AVAILABLE.manifest.sourceDeploymentId).not.toBe(MANIFEST.sourceDeploymentId);
-    expectReviewIdentities(DRY_RUN_AVAILABLE, AVAILABLE_DRY_RUN_REQUEST);
-    expect(listWorkspaces.mock.calls.length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    await reviewImport(user, EXPORTED_ABSENT_ID, EXPORT_ID);
-    await waitFor(() =>
-      expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
-        [AVAILABLE_DRY_RUN_REQUEST],
-      ])
-    );
-    expectReviewSummary(DRY_RUN_AVAILABLE);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it.each([
-    [
-      'source workspace ID',
-      WORKSPACE_B.id,
-      EXPORT_ID,
-      CHANGED_SOURCE_REQUEST,
-      CHANGED_SOURCE_DRY_RUN,
-    ],
-    ['export ID', WORKSPACE.id, EXPORT_ID_B, CHANGED_EXPORT_REQUEST, CHANGED_EXPORT_DRY_RUN],
-  ] as const)('invalidates Import until a new dry-run after the %s changes', async (field, sourceWorkspaceId, exportId, nextRequest, nextReview) => {
-    const user = userEvent.setup();
-    const dryRunWorkspaceImport = vi
-      .fn()
-      .mockResolvedValueOnce(DRY_RUN)
-      .mockResolvedValue(nextReview);
-    const client = makeClient({
-      operations: {
-        'workspace.import-dry-run': dryRunWorkspaceImport,
-      },
-      app: {},
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expectReviewIdentities(nextReview, nextRequest);
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await reviewImport(user);
-    expectReviewSummary(DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-
-    const edited = field === 'source workspace ID' ? 'Source workspace ID' : 'Export ID';
-    const nextValue = field === 'source workspace ID' ? sourceWorkspaceId : exportId;
-    await user.clear(screen.getByRole('textbox', { name: edited }));
-    await user.type(screen.getByRole('textbox', { name: edited }), nextValue);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    await waitFor(() => expect(dryRunWorkspaceImport).toHaveBeenCalledTimes(2));
-    expect(dryRunWorkspaceImport.mock.calls[1]).toEqual([nextRequest]);
-    expectReviewSummary(nextReview);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
-    const acceptedImport = acceptedImportCommand(
-      vi.mocked(client.operations['workspace.import']),
-      0,
-      nextRequest
-    );
-    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1281,98 +718,6 @@ describe('Portability', () => {
       within(screen.getByRole('alert')).queryByRole('button', { name: 'Try again' })
     ).toBeNull();
     expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it('keeps import handles and offers safe retry after a typed import review failure', async () => {
-    const user = userEvent.setup();
-    const dryRunWorkspaceImport = vi
-      .fn()
-      .mockRejectedValue(privateFailure(400, 'workspace_import_dry_run_failed'));
-    const client = makeClient({
-      operations: {
-        'workspace.import-dry-run': dryRunWorkspaceImport,
-      },
-      app: {},
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await reviewImport(user);
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't review/i);
-    expect(alert).not.toHaveTextContent('portability-private failure');
-    expect(alert).not.toHaveTextContent('workspace_import_dry_run_failed');
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(dryRunWorkspaceImport.mock.calls).toEqual([[DRY_RUN_REQUEST]]);
-    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() =>
-      expect(dryRunWorkspaceImport.mock.calls).toEqual([[DRY_RUN_REQUEST], [DRY_RUN_REQUEST]])
-    );
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it('keeps the dry-run review and retries the exact import requestId after a typed import failure', async () => {
-    const user = userEvent.setup();
-    const importWorkspace = vi
-      .fn()
-      .mockRejectedValue(privateFailure(400, 'workspace_import_failed'));
-    const client = makeClient({
-      operations: {
-        'workspace.import': importWorkspace,
-      },
-      app: {},
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await reviewImport(user);
-    expect(await screen.findByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't import/i);
-    expect(alert).not.toHaveTextContent('portability-private failure');
-    expect(alert).not.toHaveTextContent('workspace_import_failed');
-    expect(screen.getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(importWorkspace).toHaveBeenCalledTimes(1);
-    const acceptedImport = acceptedImportCommand(importWorkspace);
-    expect(importWorkspace.mock.calls).toEqual([[acceptedImport]]);
-    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() =>
-      expect(importWorkspace.mock.calls).toEqual([[acceptedImport], [acceptedImport]])
-    );
-    expect(screen.getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
-    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
@@ -1445,8 +790,6 @@ describe('Portability', () => {
     );
     expect(vaultMaterialInput()).toHaveValue('');
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1503,8 +846,6 @@ describe('Portability', () => {
     expect(screen.queryByLabelText('Vault material')).not.toBeInTheDocument();
     expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1562,17 +903,13 @@ describe('Portability', () => {
     expect(screen.getByText(/no vault references/i)).toBeInTheDocument();
     expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
   it.each([
-    ['import', 'success'],
-    ['import', 'failure'],
     ['rebind', 'success'],
     ['rebind', 'failure'],
-  ] as const)('keeps user import global and a late Workspace rebind scoped for %s %s', async (operation, settlement) => {
+  ] as const)('keeps a late Workspace rebind scoped for %s %s', async (_operation, settlement) => {
     const user = userEvent.setup();
     const pending = createDeferred<unknown>();
     const listWorkspaces = vi.fn().mockResolvedValue({
@@ -1591,15 +928,7 @@ describe('Portability', () => {
       .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve(workspaceId === WORKSPACE.id ? VAULT_LIST : EMPTY_VAULT_B)
       );
-    const importWorkspace = vi.fn().mockImplementation((input: unknown) => {
-      if (operation === 'import') {
-        return pending.promise;
-      }
-      return Promise.resolve(importResultFor(input));
-    });
-    const rebindWorkspaceVaultReference = vi
-      .fn()
-      .mockReturnValue(operation === 'rebind' ? pending.promise : Promise.resolve(REBIND_MUTATION));
+    const rebindWorkspaceVaultReference = vi.fn().mockReturnValue(pending.promise);
     const client = makeClient({
       core: {},
       app: {},
@@ -1607,7 +936,6 @@ describe('Portability', () => {
       operations: {
         'vault.reference-list': listWorkspaceVaultReferences,
         'vault.reference-rebind': rebindWorkspaceVaultReference,
-        'workspace.import': importWorkspace,
         'workspace.list': listWorkspaces,
       },
     });
@@ -1618,27 +946,20 @@ describe('Portability', () => {
     ).toBeInTheDocument();
     expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
 
-    if (operation === 'import') {
-      await reviewImport(user);
-      expect(await screen.findByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-      await waitFor(() => expect(importWorkspace).toHaveBeenCalledTimes(1));
-    } else {
-      await user.type(vaultMaterialInput(), ASCII_VAULT_MATERIAL);
-      await user.click(rebindControl());
-      await confirmRebind(user);
-      await waitFor(() =>
-        expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
-          [
-            {
-              workspaceId: WORKSPACE.id,
-              referenceId: UNBOUND_REFERENCE.referenceId,
-              ...ASCII_REBIND_REQUEST,
-            },
-          ],
-        ])
-      );
-    }
+    await user.type(vaultMaterialInput(), ASCII_VAULT_MATERIAL);
+    await user.click(rebindControl());
+    await confirmRebind(user);
+    await waitFor(() =>
+      expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
+        [
+          {
+            workspaceId: WORKSPACE.id,
+            referenceId: UNBOUND_REFERENCE.referenceId,
+            ...ASCII_REBIND_REQUEST,
+          },
+        ],
+      ])
+    );
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     await waitFor(() =>
@@ -1648,60 +969,27 @@ describe('Portability', () => {
       ])
     );
     expect(await screen.findByText(WORKSPACE_B.name, { exact: true })).toBeInTheDocument();
-    if (operation === 'import') {
-      expect(screen.getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-      expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(
-        WORKSPACE.id
-      );
-      expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
-    } else {
-      expect(screen.queryByText(COLLISION.suggestedWorkspaceId)).not.toBeInTheDocument();
-    }
-    expect(screen.queryByText(IMPORTED_WORKSPACE.name)).not.toBeInTheDocument();
+    expect(screen.queryByText('ws_00000000-0000-7ca9-b277-954ac43692f1')).not.toBeInTheDocument();
+    expect(screen.queryByText('Imported research')).not.toBeInTheDocument();
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /rebind/i })).toBeNull();
     assertNoLeakedInternals(queryClient);
 
     await act(async () => {
       if (settlement === 'success') {
-        pending.resolve(
-          operation === 'import'
-            ? importResultFor(importWorkspace.mock.calls[0]?.[0])
-            : REBIND_MUTATION
-        );
+        pending.resolve(REBIND_MUTATION);
       } else {
-        pending.reject(
-          privateFailure(
-            400,
-            operation === 'import' ? 'workspace_import_failed' : 'vault_reference_rebind_failed'
-          )
-        );
+        pending.reject(privateFailure(400, 'vault_reference_rebind_failed'));
       }
       await pending.promise.catch(() => undefined);
     });
 
     const main = screen.getByRole('main');
-    if (operation === 'import') {
-      if (settlement === 'failure') {
-        expect(within(main).getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-        expect(within(main).queryByText(IMPORTED_WORKSPACE.name)).not.toBeInTheDocument();
-        expect(await within(main).findByRole('alert')).toHaveTextContent(/couldn't import/i);
-        expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-        expect(
-          within(main).queryByRole('button', { name: 'Open workspace' })
-        ).not.toBeInTheDocument();
-      } else {
-        await expectImportedSuccess({
-          id: COLLISION.suggestedWorkspaceId,
-          name: IMPORTED_WORKSPACE.name,
-        });
-        expect(within(main).queryByRole('alert')).not.toBeInTheDocument();
-      }
-    } else {
-      expect(within(main).queryByText(IMPORTED_WORKSPACE.name)).not.toBeInTheDocument();
-      expect(within(main).queryByText(COLLISION.suggestedWorkspaceId)).not.toBeInTheDocument();
-      expect(within(main).queryByRole('alert')).not.toBeInTheDocument();
-    }
+    expect(within(main).queryByText('Imported research')).not.toBeInTheDocument();
+    expect(
+      within(main).queryByText('ws_00000000-0000-7ca9-b277-954ac43692f1')
+    ).not.toBeInTheDocument();
+    expect(within(main).queryByRole('alert')).not.toBeInTheDocument();
     expect(within(main).queryByText('Active', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText(/couldn't rebind/i)).not.toBeInTheDocument();
     expect(screen.queryByText('portability-private failure')).not.toBeInTheDocument();
@@ -1709,8 +997,7 @@ describe('Portability', () => {
       [{ workspaceId: WORKSPACE.id }],
       [{ workspaceId: WORKSPACE_B.id }],
     ]);
-    expect(importWorkspace).toHaveBeenCalledTimes(operation === 'import' ? 1 : 0);
-    expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(operation === 'rebind' ? 1 : 0);
+    expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
@@ -1767,7 +1054,7 @@ describe('Portability', () => {
     assertNoLeakedInternals(queryClient);
   });
 
-  it('exports the selected personal Workspace and keeps user import available', async () => {
+  it('exports the selected personal Workspace', async () => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [PERSONAL_WORKSPACE].map((workspace) => ({
@@ -1785,7 +1072,6 @@ describe('Portability', () => {
       app: {},
 
       operations: {
-        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
         'vault.reference-list': vi
           .fn()
           .mockResolvedValue({ ...EMPTY_VAULT_B, workspaceId: PERSONAL_WORKSPACE.id }),
@@ -1817,8 +1103,6 @@ describe('Portability', () => {
     );
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Export workspace' }));
     await waitFor(() =>
       expect(vi.mocked(client.operations['workspace.export']).mock.calls).toEqual([
@@ -1826,46 +1110,8 @@ describe('Portability', () => {
       ])
     );
     expectDownloadArchiveLink(PERSONAL_WORKSPACE.id, EXPORT_ID);
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
-  });
-
-  it('keeps user-scoped import available when no Workspace is selected and does not describe it as selected-Workspace permission', async () => {
-    const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({
-      items: [].map((workspace) => ({
-        membershipStatus: 'active' as const,
-        accessCause: 'membership' as const,
-        workspace,
-        isOwner: true,
-        membershipRevision: 1,
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        registryRevision: 1,
-      })),
-    });
-    const client = makeClient({
-      core: {},
-      app: {},
-
-      operations: {
-        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
-        'workspace.list': listWorkspaces,
-      },
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
-    const main = screen.getByRole('main');
-    expect(main).toHaveTextContent(/select or create a project workspace/i);
-    expect(main).not.toHaveTextContent(/select or create a workspace to export, import/i);
-    expect(vaultQueryKeys(queryClient)).toEqual([]);
-    await proveUserScopedImport(user, client, queryClient);
   });
 
   it.each([
@@ -1908,7 +1154,6 @@ describe('Portability', () => {
     expect(within(vault).queryByLabelText('Vault material')).toBeNull();
     expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
-    expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
   });
 
   it('blocks an open rebind confirmation while the current Vault read is pending or denied', async () => {
@@ -2057,7 +1302,6 @@ describe('Portability', () => {
     await waitFor(() => {
       expect(listWorkspaces).toHaveBeenCalledTimes(2);
       expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
-      expect(screen.getByRole('region', { name: 'Import' })).toBeInTheDocument();
       expect(screen.getByRole('alert')).toHaveTextContent(/couldn't load workspaces/i);
       expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /rebind/i })).not.toBeInTheDocument();
@@ -2108,35 +1352,7 @@ describe('Portability', () => {
       command: 'export' as const,
       status: 403,
       code: 'workspace_access_denied',
-      copy: /access denied/i,
-      forbidden: /conflict|recovery required/i,
-    },
-    {
-      command: 'dry-run' as const,
-      status: 400,
-      code: 'workspace_import_dry_run_failed',
-      copy: /couldn't review|could not verify/i,
-      forbidden: /conflict|recovery required/i,
-    },
-    {
-      command: 'dry-run' as const,
-      status: 403,
-      code: 'workspace_import_forbidden',
-      copy: /forbidden|unavailable|access denied/i,
-      forbidden: /conflict|recovery required/i,
-    },
-    {
-      command: 'import' as const,
-      status: 403,
-      code: 'workspace_import_forbidden',
-      copy: /forbidden|unavailable|access denied/i,
-      forbidden: /conflict|recovery required/i,
-    },
-    {
-      command: 'import' as const,
-      status: 400,
-      code: 'workspace_import_failed',
-      copy: /couldn't import|could not verify or publish/i,
+      copy: /administrator authority/i,
       forbidden: /conflict|recovery required/i,
     },
     {
@@ -2174,14 +1390,6 @@ describe('Portability', () => {
       .fn()
       .mockRejectedValue(scenario.command === 'export' ? error : undefined)
       .mockResolvedValue(EXPORT_RESULT);
-    const dryRunWorkspaceImport = vi
-      .fn()
-      .mockRejectedValue(scenario.command === 'dry-run' ? error : undefined)
-      .mockResolvedValue(DRY_RUN);
-    const importWorkspace = vi
-      .fn()
-      .mockRejectedValue(scenario.command === 'import' ? error : undefined)
-      .mockImplementation((input: unknown) => Promise.resolve(importResultFor(input)));
     const rebindWorkspaceVaultReference = vi
       .fn()
       .mockRejectedValue(scenario.command === 'rebind' ? error : undefined)
@@ -2190,8 +1398,6 @@ describe('Portability', () => {
       operations: {
         'vault.reference-rebind': rebindWorkspaceVaultReference,
         'workspace.export': exportWorkspace,
-        'workspace.import-dry-run': dryRunWorkspaceImport,
-        'workspace.import': importWorkspace,
       },
       app: {},
     });
@@ -2205,16 +1411,6 @@ describe('Portability', () => {
       exportWorkspace.mockReset();
       exportWorkspace.mockRejectedValue(error);
       await user.click(screen.getByRole('button', { name: 'Export workspace' }));
-    } else if (scenario.command === 'dry-run') {
-      dryRunWorkspaceImport.mockReset();
-      dryRunWorkspaceImport.mockRejectedValue(error);
-      await reviewImport(user);
-    } else if (scenario.command === 'import') {
-      importWorkspace.mockReset();
-      importWorkspace.mockRejectedValue(error);
-      await reviewImport(user);
-      expect(await screen.findByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: 'Import workspace' }));
     } else {
       rebindWorkspaceVaultReference.mockReset();
       rebindWorkspaceVaultReference.mockRejectedValue(error);
@@ -2230,18 +1426,14 @@ describe('Portability', () => {
     if (scenario.code.includes('_')) {
       expect(alert).not.toHaveTextContent(scenario.code);
     }
-    if (scenario.command === 'import' || scenario.command === 'dry-run') {
-      expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-    } else {
-      expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    }
+    expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     assertNoLeakedInternals(queryClient);
   });
 
   it.each([
     ['zero workspaces', [] as const],
     ['only a personal Workspace', [PERSONAL_WORKSPACE]],
-  ] as const)('reaches user-scoped Portability from Settings with %s', async (_label, items) => {
+  ] as const)('reaches administration Portability from Settings with %s', async (_label, items) => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({
       items: [...items].map((workspace) => ({
@@ -2259,11 +1451,10 @@ describe('Portability', () => {
       app: {},
 
       operations: {
-        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
         'workspace.list': listWorkspaces,
       },
     });
-    const { queryClient } = renderApp('/', client);
+    renderApp('/', client);
 
     const appNav = await screen.findByRole('navigation', { name: 'Primary workspace navigation' });
     expect(within(appNav).queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
@@ -2274,10 +1465,6 @@ describe('Portability', () => {
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
     ).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Review import' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeInTheDocument();
     const expectWorkspaceSurface = () => {
       if (items.length === 0) expectVaultUiAbsent(client);
       else {
@@ -2290,70 +1477,6 @@ describe('Portability', () => {
       }
     };
     await waitFor(expectWorkspaceSurface);
-    await proveUserScopedImport(user, client, queryClient, expectWorkspaceSurface);
-  });
-
-  it('keeps user import visible, usable, and unremounted while the project Vault query is pending', async () => {
-    const user = userEvent.setup();
-    const pendingVault = createDeferred<typeof VAULT_LIST>();
-    const pendingImport = createDeferred<ReturnType<typeof importResultFor>>();
-    const listWorkspaceVaultReferences = vi.fn().mockReturnValue(pendingVault.promise);
-    const importWorkspace = vi.fn().mockReturnValue(pendingImport.promise);
-    const client = makeClient({
-      operations: {
-        'vault.reference-list': listWorkspaceVaultReferences,
-        'workspace.import': importWorkspace,
-      },
-      app: {},
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    await waitFor(() =>
-      expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
-        [{ workspaceId: WORKSPACE.id }],
-      ])
-    );
-    const importNode = await screen.findByRole('region', { name: 'Import' });
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeEnabled();
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
-
-    await reviewImport(user);
-    await waitFor(() =>
-      expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
-        [DRY_RUN_REQUEST],
-      ])
-    );
-    expectReviewSummary(DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
-    const acceptedImport = acceptedImportCommand(vi.mocked(client.operations['workspace.import']));
-    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
-    expect(importSection()).toBe(importNode);
-    expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
-    expect(client.operations['vault.reference-list']).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      pendingImport.resolve(importResultFor(acceptedImport));
-      pendingVault.resolve(VAULT_LIST);
-      await pendingImport.promise;
-    });
-
-    expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
-    expect(importSection()).toBe(importNode);
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
-    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
-    expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
-    assertNoLeakedInternals(queryClient);
   });
 
   it('requires a separate explicit Vault rebind confirmation whose Cancel makes zero API calls and Confirm makes one', async () => {
@@ -2374,9 +1497,6 @@ describe('Portability', () => {
     await user.type(vaultMaterialInput(), ASCII_VAULT_MATERIAL);
     const readsAfterLoad = {
       exportWorkspace: vi.mocked(client.operations['workspace.export']).mock.calls.length,
-      dryRunWorkspaceImport: vi.mocked(client.operations['workspace.import-dry-run']).mock.calls
-        .length,
-      importWorkspace: vi.mocked(client.operations['workspace.import']).mock.calls.length,
       listWorkspaceVaultReferences: vi.mocked(client.operations['vault.reference-list']).mock.calls
         .length,
       listWorkspaceVaultGrants: vi.mocked(client.operations['vault.grant-list']).mock.calls.length,
@@ -2400,12 +1520,6 @@ describe('Portability', () => {
     assertNoLeakedInternals(queryClient, 'cache');
     expect(vi.mocked(client.operations['workspace.export']).mock.calls.length).toBe(
       readsAfterLoad.exportWorkspace
-    );
-    expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls.length).toBe(
-      readsAfterLoad.dryRunWorkspaceImport
-    );
-    expect(vi.mocked(client.operations['workspace.import']).mock.calls.length).toBe(
-      readsAfterLoad.importWorkspace
     );
     expect(vi.mocked(client.operations['vault.reference-list']).mock.calls.length).toBe(
       readsAfterLoad.listWorkspaceVaultReferences
@@ -2438,8 +1552,6 @@ describe('Portability', () => {
       ],
     ]);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2453,30 +1565,17 @@ describe('Portability', () => {
     expect(roundTripped.every((byte, index) => byte === utf8[index])).toBe(true);
   });
 
-  it('keeps archive transport on File/Blob/ReadableStream and never JSON-base64 or host paths', () => {
+  it('keeps export archive href off JSON-base64 and host paths', () => {
     const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
-    expect(production).toMatch(/dryRunWorkspaceArchiveImport\(\s*file\s*\)/);
-    expect(production).toMatch(
-      /importWorkspaceArchive\(\s*command\.file,\s*command\.requestId\s*\)/
-    );
     expect(production).toMatch(/workspaceExportArchiveHref\(/);
-    expect(production).not.toMatch(/downloadWorkspaceExportArchive\(/);
     expect(production).not.toMatch(/createObjectURL/);
     expect(production).not.toMatch(/readAsDataURL/);
     expect(production).not.toMatch(/contentBase64/);
     expect(production).not.toMatch(/arrayBufferToBase64/);
     expect(production).not.toMatch(/sourcePath/);
-    expect(production).not.toMatch(/workspace-archive-requests/);
   });
 
-  it('reuses the same archive File identity for import retry and mints a new request after a different File', () => {
-    const first = archiveFile();
-    const second = archiveFile(SECOND_ARCHIVE_FILE_NAME);
-    const initial = nextArchiveImportCommand(undefined, first);
-    expect(nextArchiveImportCommand(initial, first)).toBe(initial);
-    const changed = nextArchiveImportCommand(initial, second);
-    expect(changed.file).toBe(second);
-    expect(changed.requestId).not.toBe(initial.requestId);
+  it('encodes export archive href paths without RangeError', () => {
     expect(workspaceExportArchiveHref(WORKSPACE.id, EXPORT_ID)).toBe(
       `/api/app/workspaces/${WORKSPACE.id}/exports/${EXPORT_ID}/archive`
     );
@@ -2498,325 +1597,6 @@ describe('Portability', () => {
     expect(link).toBeEnabled();
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
     expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-  });
-
-  it('reviews a local archive File, then imports that same File after preview', async () => {
-    const user = userEvent.setup();
-    const file = archiveFile();
-    const client = makeClient({
-      app: {
-        dryRunWorkspaceArchiveImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
-        importWorkspaceArchive: vi.fn().mockImplementation((_body: unknown, requestId?: string) =>
-          Promise.resolve(
-            importResultFor({
-              sourceWorkspaceId: EXPORTED_ABSENT_ID,
-              exportId: EXPORT_ID,
-              requestId,
-            })
-          )
-        ),
-      },
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    await selectArchive(user, file);
-    expect(screen.getByText(file.name)).toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: 'Source workspace ID' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: 'Export ID' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Use server export' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Review import' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    await waitFor(() => expect(client.app.dryRunWorkspaceArchiveImport).toHaveBeenCalledTimes(1));
-    expectBinaryArchiveBody(vi.mocked(client.app.dryRunWorkspaceArchiveImport).mock.calls[0]?.[0]);
-    expect(vi.mocked(client.app.dryRunWorkspaceArchiveImport).mock.calls[0]?.[0]).toBe(file);
-    expectReviewSummary(DRY_RUN_AVAILABLE);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspaceArchive).toHaveBeenCalledTimes(1));
-    const [importedBody, requestId] =
-      vi.mocked(client.app.importWorkspaceArchive).mock.calls[0] ?? [];
-    expectBinaryArchiveBody(importedBody);
-    expect(importedBody).toBe(file);
-    expect(requestId).toEqual(expect.any(String));
-    await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
-    expect(retainedPortabilityState(queryClient)).not.toContain(
-      btoa(String.fromCharCode(...ARCHIVE_BYTES))
-    );
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it('opens the imported Overview from cache while workspace refetch is still pending', async () => {
-    const user = userEvent.setup();
-    const importedWorkspaces = createDeferred<{ items: unknown[] }>();
-    const listWorkspaces = vi
-      .fn()
-      .mockResolvedValueOnce({
-        items: [WORKSPACE].map((workspace) => ({
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          workspace,
-          isOwner: true,
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        })),
-      })
-      .mockReturnValue(importedWorkspaces.promise);
-    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
-    renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await reviewImport(user);
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
-    await expectImportedSuccess({
-      id: COLLISION.suggestedWorkspaceId,
-      name: IMPORTED_WORKSPACE.name,
-    });
-    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-
-    await user.click(screen.getByRole('button', { name: 'Open workspace' }));
-    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(COLLISION.suggestedWorkspaceId);
-    expect(screen.getByRole('button', { name: IMPORTED_WORKSPACE.name })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(vi.mocked(client.operations['attention.list']).mock.calls).toEqual([
-        [{ workspaceId: COLLISION.suggestedWorkspaceId }],
-      ])
-    );
-    expect(vi.mocked(client.operations['conversation.navigation']).mock.calls).toEqual([
-      [{ workspaceId: COLLISION.suggestedWorkspaceId }],
-    ]);
-    expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
-    expect(listWorkspaces).toHaveBeenCalledTimes(2);
-  });
-
-  it('invalidates archive import until a new dry-run after a different File is selected', async () => {
-    const user = userEvent.setup();
-    const first = archiveFile();
-    const second = archiveFile(SECOND_ARCHIVE_FILE_NAME);
-    const dryRunWorkspaceArchiveImport = vi
-      .fn()
-      .mockResolvedValueOnce(DRY_RUN)
-      .mockResolvedValue(CHANGED_EXPORT_DRY_RUN);
-    const client = makeClient({ app: { dryRunWorkspaceArchiveImport } });
-    renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await selectArchive(user, first);
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    expectReviewSummary(DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-
-    await selectArchive(user, second);
-    expect(screen.getByText(second.name)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    await waitFor(() => expect(dryRunWorkspaceArchiveImport).toHaveBeenCalledTimes(2));
-    expect(dryRunWorkspaceArchiveImport.mock.calls[0]?.[0]).toBe(first);
-    expect(dryRunWorkspaceArchiveImport.mock.calls[1]?.[0]).toBe(second);
-    expectReviewSummary(CHANGED_EXPORT_DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspaceArchive).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(client.app.importWorkspaceArchive).mock.calls[0]?.[0]).toBe(second);
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-  });
-
-  it('retries the exact archive import requestId after a typed failure', async () => {
-    const user = userEvent.setup();
-    const file = archiveFile();
-    const importWorkspaceArchive = vi
-      .fn()
-      .mockRejectedValue(privateFailure(400, 'workspace_archive_import_failed'));
-    const client = makeClient({ app: { importWorkspaceArchive } });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await selectArchive(user, file);
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    expect(await screen.findByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't import/i);
-    expect(alert).not.toHaveTextContent('portability-private failure');
-    expect(importWorkspaceArchive).toHaveBeenCalledTimes(1);
-    const accepted = vi.mocked(importWorkspaceArchive).mock.calls[0];
-    expectBinaryArchiveBody(accepted?.[0]);
-    expect(accepted?.[0]).toBe(file);
-    expect(accepted?.[1]).toEqual(expect.any(String));
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(importWorkspaceArchive.mock.calls).toEqual([accepted, accepted]));
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it('keeps user-scoped archive import without a selected project Workspace', async () => {
-    const user = userEvent.setup();
-    const file = archiveFile();
-    const listWorkspaces = vi
-      .fn()
-      .mockResolvedValueOnce({
-        items: [].map((workspace) => ({
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          workspace,
-          isOwner: true,
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        })),
-      })
-      .mockResolvedValue({
-        items: [{ ...IMPORTED_WORKSPACE, id: EXPORTED_ABSENT_ID }].map((workspace) => ({
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          workspace,
-          isOwner: true,
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        })),
-      });
-    const client = makeClient({
-      core: {},
-      app: {
-        dryRunWorkspaceArchiveImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
-        importWorkspaceArchive: vi.fn().mockImplementation((_body: unknown, requestId?: string) =>
-          Promise.resolve(
-            importResultFor({
-              sourceWorkspaceId: EXPORTED_ABSENT_ID,
-              exportId: EXPORT_ID,
-              requestId,
-            })
-          )
-        ),
-      },
-
-      operations: { 'workspace.list': listWorkspaces },
-    });
-    const { queryClient } = renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('Portable archive')).toBeEnabled();
-    expectVaultUiAbsent(client);
-    await selectArchive(user, file);
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    expectReviewSummary(DRY_RUN_AVAILABLE);
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspaceArchive).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(client.app.importWorkspaceArchive).mock.calls[0]?.[0]).toBe(file);
-    await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
-    await user.click(screen.getByRole('button', { name: 'Open workspace' }));
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(EXPORTED_ABSENT_ID);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
-    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    assertNoLeakedInternals(queryClient);
-  });
-
-  it('hides server-export handles while an archive is selected and restores them after Use server export', async () => {
-    const user = userEvent.setup();
-    const file = archiveFile();
-    const client = makeClient();
-    renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await reviewImport(user);
-    expectReviewSummary(DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-
-    await selectArchive(user, file);
-    expect(screen.queryByRole('textbox', { name: 'Source workspace ID' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: 'Export ID' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Use server export' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
-    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Use server export' }));
-    expect(screen.getByLabelText('Portable archive')).toHaveValue('');
-    expect(screen.queryByRole('button', { name: 'Use server export' })).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
-    expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
-
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    await waitFor(() =>
-      expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(2)
-    );
-    expectReviewSummary(DRY_RUN);
-    expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-  });
-
-  it('locks archive file, Use server export, and review while archive import is pending', async () => {
-    const user = userEvent.setup();
-    const file = archiveFile();
-    const pending = createDeferred<ReturnType<typeof importResultFor>>();
-    const importWorkspaceArchive = vi.fn().mockReturnValue(pending.promise);
-    const client = makeClient({ app: { importWorkspaceArchive } });
-    renderApp('/settings/portability', client);
-
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Portability' })
-    ).toBeInTheDocument();
-    await selectArchive(user, file);
-    await user.click(screen.getByRole('button', { name: 'Review import' }));
-    expectReviewSummary(DRY_RUN);
-    await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(importWorkspaceArchive).toHaveBeenCalledTimes(1));
-    expect(importWorkspaceArchive.mock.calls[0]?.[0]).toBe(file);
-    expect(screen.getByLabelText('Portable archive')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Use server export' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Review import' })).toBeDisabled();
-    expect(screen.queryByRole('textbox', { name: 'Source workspace ID' })).not.toBeInTheDocument();
-
-    await act(async () => {
-      pending.resolve(
-        importResultFor({
-          sourceWorkspaceId: WORKSPACE.id,
-          exportId: EXPORT_ID,
-          requestId: importWorkspaceArchive.mock.calls[0]?.[1],
-        })
-      );
-      await pending.promise;
-    });
-    await expectImportedSuccess({
-      id: COLLISION.suggestedWorkspaceId,
-      name: IMPORTED_WORKSPACE.name,
-    });
-    expect(vi.mocked(importWorkspaceArchive).mock.calls[0]?.[0]).toBe(file);
   });
 
   it('does not offer an earlier export archive after the selected Workspace changes', async () => {

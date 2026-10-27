@@ -271,7 +271,7 @@ export const SURFACES: Surface[] = [
     title: 'Portability',
     path: '/settings/portability',
     tier: 'A',
-    nav: 'settings-user',
+    nav: 'settings-admin',
     icon: 'folder',
     board: '07',
     wp: 'WP-7',
