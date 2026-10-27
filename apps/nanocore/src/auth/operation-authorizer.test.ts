@@ -12,7 +12,7 @@ import { ApiErrorSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
-import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
+import { createBootReadinessSnapshot, refuseScope } from '../bootstrap/readiness.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -1467,6 +1467,30 @@ describe('central Workspace operation authorizer', () => {
       code: 'workspace_frozen',
       details: { workspaceId: fixture.workspace.id, retryable: true },
     });
+    expect(fixture.workspaceMutationAdmission.isClosed(fixture.workspace.id)).toBe(true);
+
+    refuseScope(fixture.dataRoot, {
+      scope: 'workspace',
+      id: fixture.workspace.id,
+      check: 'database',
+    });
+    const quarantined = await gateway();
+    expect(quarantined.status, await quarantined.clone().text()).toBe(409);
+    expect(quarantined.headers.get('content-type')).toContain('application/json');
+    const diagnosis = ApiErrorSchema.parse(await quarantined.json());
+    expect(diagnosis).toMatchObject({
+      code: 'recovery_required',
+      message: expect.stringContaining('quarantined'),
+    });
+    expect(JSON.stringify(diagnosis)).not.toContain(fixture.dataRoot);
+    expect(JSON.stringify(diagnosis)).not.toContain(fixture.turn.threadId);
+    fixture.actorState.current = {
+      kind: 'session',
+      userId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+    };
+    const deniedQuarantined = await gateway();
+    expect(deniedQuarantined.status).toBe(403);
+    expect(await deniedQuarantined.json()).toEqual(baselineDenial);
     expect(fixture.workspaceMutationAdmission.isClosed(fixture.workspace.id)).toBe(true);
   });
 
