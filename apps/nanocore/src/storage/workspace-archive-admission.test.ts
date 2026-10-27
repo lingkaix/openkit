@@ -70,6 +70,8 @@ async function archiveFixture(fileAdmission?: FileStorageAdmission) {
 
 /** Produces verified archive bytes through the retained download route, without fabricating archive authority. */
 async function exportedArchive(fixture: Awaited<ReturnType<typeof archiveFixture>>) {
+  // Only archive producers gain current administrator-session authority; import targets stay ordinary.
+  fixture.token('server-admin');
   const response = await fixture.app.request(
     ...operationRequest(
       'workspace.export',

@@ -41,8 +41,8 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
       }
       const token = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'workspace',
-        workspaceIds: [workspace.id],
+        scope: 'server-admin',
+        workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const app = new Hono<{ Variables: AuthVariables }>();
@@ -52,8 +52,8 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
           userId: 'usr_00000000-0000-7000-8000-000000000001',
           kind: 'token',
           tokenId: token.tokenId,
-          tokenScope: 'workspace',
-          tokenWorkspaceIds: [workspace.id],
+          tokenScope: 'server-admin',
+          tokenWorkspaceIds: [],
         });
         await next();
       });

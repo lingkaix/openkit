@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { isScopeAdmitted, refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
@@ -596,7 +597,7 @@ describe('workspace membership foundation', () => {
     }
   });
 
-  it('keeps same-deployment workspace exports private to users who can read the source', async () => {
+  it('keeps same-deployment administrator export handles private to their creator', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-membership-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -625,6 +626,12 @@ describe('workspace membership foundation', () => {
         coreDb,
         ownerUserId: 'usr_00000000-0000-778d-b552-9947e8876ed1',
         workspaceId: source.id,
+      });
+      createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'usr_00000000-0000-778d-b552-9947e8876ed1',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const exporterApp = createApp({
         auth: authForUser('usr_00000000-0000-778d-b552-9947e8876ed1'),

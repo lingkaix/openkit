@@ -1890,22 +1890,6 @@ it('preserves private Thread ownership only through the exact current deletion r
       applyScopedMigrations(db);
       return db;
     };
-    const ordinaryExportId = testEntityId('wsexp', 'ordinary-private-export');
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: ownerUserId,
-        coreDb,
-        dataRoot,
-        exportId: ordinaryExportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow('Private Thread history requires a separately authorized export.');
-    expect(
-      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, ordinaryExportId))
-    ).toBe(false);
-
     const requestId = '00000000-0000-4000-8000-000000000974';
     const request = createWorkspaceDeletionRequest(dataRoot, {
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
@@ -2084,23 +2068,6 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     const sourceTrace = JSON.parse(
       readFileSync(join(dataRoot, 'workspaces', workspace.id, traceRelativePath), 'utf8')
     );
-    const unauthorizedExportId = 'wsexp_00000000-0000-796a-a49a-520342225098';
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        exportId: unauthorizedExportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow('Notebook export requires current source disclosure authority.');
-    expect(
-      existsSync(
-        join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unauthorizedExportId)
-      )
-    ).toBe(false);
     const unboundRequestId = '00000000-0000-4000-8000-000000000903';
     const unboundExportId = workspaceDeletionRecoveryExportId(unboundRequestId);
     await expect(

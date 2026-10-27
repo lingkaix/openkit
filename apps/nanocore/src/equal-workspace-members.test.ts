@@ -176,17 +176,9 @@ it('admits member management and exact member deletion replay while preserving p
       { workspaceId: workspace.id },
       member.secret
     );
-    expect(ordinaryExport.status, await ordinaryExport.clone().text()).toBe(500);
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: USER_IDS.member,
-        coreDb,
-        dataRoot: root,
-        repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow('Private Thread history requires a separately authorized export.');
+    // Workspace Backup: membership supplies no outward export grant, including private history.
+    expect(ordinaryExport.status, await ordinaryExport.clone().text()).toBe(403);
+    expect(await ordinaryExport.json()).toMatchObject({ code: 'workspace_access_denied' });
     const missingDeletionRequestId = randomUUID();
     await expect(
       createVerifiedWorkspaceExport({

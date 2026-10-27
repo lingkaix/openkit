@@ -8,6 +8,7 @@ import { formatReferenceUri, KnowledgeNotebookPageSchema } from '@openkit/protoc
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
@@ -501,6 +502,9 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       threadId: sourceThread.id,
       userId: fixture.userId,
     });
+    expect(fixture.runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe(
+      'applied'
+    );
     const after = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,
@@ -628,8 +632,10 @@ interface Fixture {
   userId: string;
   notebook: KnowledgeNotebook;
   app: ReturnType<typeof createApp>;
+  runtimeConfigManager: ReturnType<typeof createRuntimeConfigManager>;
 }
 
+/** Initializes retained owners and effective runtime configuration for governed retrieval. */
 async function createFixture(
   label: string,
   initialKnowledge: Parameters<typeof notebookImportFixture>[0]['knowledge'] = []
@@ -673,6 +679,7 @@ async function createFixture(
       }));
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
   return {
     dataRoot,
     workspaceId: workspace.id,
@@ -682,7 +689,8 @@ async function createFixture(
     notebook: new KnowledgeNotebook({
       repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
     }),
-    app: createApp({ coreDb, dataRoot, store }),
+    app: createApp({ coreDb, dataRoot, store, runtimeConfigManager }),
+    runtimeConfigManager,
     access: {
       store,
       coreDb,

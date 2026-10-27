@@ -661,7 +661,7 @@ async function authorizeOperation(
   return authorizeWorkspaceOperation(context, actor, { ...route, access: route.access }, input);
 }
 
-/** Reads current identity facts once and asks the Kernel for the exact primary operation. */
+/** Reads current facts before the evaluator-only boundary; Server refusals retain their public causes. */
 export function evaluateProductAuthorization(
   coreDb: CoreDb,
   actor: Actor,
@@ -673,9 +673,17 @@ export function evaluateProductAuthorization(
   mutating = false,
   now = new Date()
 ): PolicyDecision {
-  return evaluateProductAccess(
-    readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now)
-  );
+  const input = readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now);
+  let decision: PolicyDecision;
+  try {
+    decision = evaluateProductAccess(input);
+  } catch (error) {
+    if (target.kind !== 'server') throw error;
+    throw new HTTPException(403, { res: workspaceAccessDenied(), cause: error });
+  }
+  if (target.kind === 'server' && decision.effect !== 'allow' && !input.facts.administrator)
+    throw new DeploymentAdminRequiredError();
+  return decision;
 }
 
 /** Keeps current authority-read failures outside the caller's evaluator-only refusal boundary. */

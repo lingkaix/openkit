@@ -7,6 +7,7 @@ import type {
 import { operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import { HTTPException } from 'hono/http-exception';
 import {
   authorizedWorkspaceSet,
   authorizeWorkspace,
@@ -56,8 +57,8 @@ export interface OperationAdmissionDependencies {
 }
 
 /** Uniform scope refusal reveals neither child content nor credential details. */
-function denied(): OperationError {
-  return new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+function denied(cause?: unknown): OperationError {
+  return new OperationError('workspace_access_denied', 'Workspace access denied.', 403, { cause });
 }
 /** Exhaustive strategy failure also rejects corrupted or unknown required discriminants at runtime. */
 function unknownStrategy(strategy: never): never {
@@ -248,8 +249,9 @@ export async function admitOperation(
               })
           ).effect !== 'allow'
         )
-          throw new DeploymentAdminRequiredError();
+          throw denied();
       } catch (error) {
+        if (error instanceof HTTPException && error.status === 403) throw denied(error);
         if (error instanceof DeploymentAdminRequiredError)
           throw new OperationError(
             'deployment_admin_required',

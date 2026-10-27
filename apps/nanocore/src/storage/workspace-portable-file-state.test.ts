@@ -1,13 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -80,7 +72,7 @@ function initializeNotebook(workspaceRoot: string): KnowledgeNotebook {
   return notebook;
 }
 
-/** Fresh current Workspace avoids unrelated Demo source disclosure in export-refusal tests. */
+/** Creates an isolated canonical Workspace for portable file and administrator export checks. */
 async function workspaceFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
   const coreDb = openCoreDb(dataRoot);
@@ -726,7 +718,7 @@ describe('workspace portable file state', () => {
     coreDb.sqlite.close();
   });
 
-  it('fails export before publication when a retained trace source is no longer readable', async () => {
+  it('preserves unavailable historical source references in administrator export', async () => {
     const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } =
       await workspaceFixture();
     const thread = await store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
@@ -770,6 +762,8 @@ describe('workspace portable file state', () => {
       ],
       createdAt: '2026-07-06T00:00:00.000Z',
     });
+    const tracePath = join(workspaceRoot, retrievalTraceRelativePath(reference));
+    const originalTrace = readFileSync(tracePath, 'utf8');
     const portableState = readWorkspacePortableFileState(workspaceRoot, {
       workspaceId,
       threads: [{ threadId: thread.id }],
@@ -795,15 +789,23 @@ describe('workspace portable file state', () => {
     );
     const body = await response.text();
 
-    expect(response.status, body).toBe(503);
-    expect(JSON.parse(body)).toMatchObject({ code: 'knowledge_source_unavailable' });
-    expect(body).not.toContain('restricted-same-path');
-    const workspaceExports = join(dataRoot, 'server', 'exports', 'workspaces', workspaceId);
-    expect(existsSync(workspaceExports) ? readdirSync(workspaceExports) : []).toEqual([]);
+    // Workspace Backup, Export And Import, Personal Data And Audience Coverage requires full closure.
+    expect(response.status, body).toBe(200);
+    const exported = WorkspaceExportResponseSchema.parse(JSON.parse(body));
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspaceId, exported.exportId),
+    });
+    expect(
+      JSON.parse(
+        verified.fileContents.get(`workspace-files/${retrievalTraceRelativePath(reference)}`)!
+      )
+    ).toEqual(JSON.parse(originalTrace));
+    // Retrieval Kernel, Knowledge Adapter: the stored query trace stays immutable.
+    expect(readFileSync(tracePath, 'utf8')).toBe(originalTrace);
     coreDb.sqlite.close();
   });
 
-  it('fails export without disclosure when a selected page becomes restricted', async () => {
+  it('exports the current restricted page and immutable historical selection for an administrator', async () => {
     const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } =
       await workspaceFixture();
     const thread = await store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
@@ -877,13 +879,25 @@ describe('workspace portable file state', () => {
     );
     const body = await response.text();
 
-    expect(response.status, body).toBe(403);
-    expect(JSON.parse(body)).toMatchObject({ code: 'workspace_access_denied' });
-    expect(body).not.toContain(page.id);
-    expect(body).not.toContain('This content must not leave after revocation.');
+    // Administrator export preserves current page bytes and every historical trace field.
+    expect(response.status, body).toBe(200);
+    const exported = WorkspaceExportResponseSchema.parse(JSON.parse(body));
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspaceId, exported.exportId),
+    });
+    expect(verified.manifest.knowledgeNotebookRevision).toBe(restrictedRevision);
+    expect(verified.fileContents.get(`workspace-files/knowledge/pages/${page.id}.md`)).toBe(
+      restrictedBytes
+    );
+    expect(
+      JSON.parse(
+        verified.fileContents.get(
+          `workspace-files/${retrievalTraceRelativePath(result.retrievalTraceRef!)}`
+        )!
+      )
+    ).toEqual(JSON.parse(originalTrace));
+    // Retrieval Kernel, Knowledge Adapter: the stored query trace stays immutable.
     expect(readFileSync(tracePath, 'utf8')).toBe(originalTrace);
-    const workspaceExports = join(dataRoot, 'server', 'exports', 'workspaces', workspaceId);
-    expect(existsSync(workspaceExports) ? readdirSync(workspaceExports) : []).toEqual([]);
     coreDb.sqlite.close();
   });
 });
