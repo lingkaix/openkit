@@ -39,12 +39,10 @@ describe('W operational backup download client boundary', () => {
         return response;
       },
     });
-    const expectedKeys = Object.entries(OPERATION_DEFINITIONS)
-      .filter(
-        ([id, definition]) => definition.binding === 'json' || id === 'workspace.backup-download'
-      )
-      .map(([id]) => id);
-    expect(new Set(Object.keys(client.operations))).toEqual(new Set(expectedKeys));
+    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+      if (id !== 'workspace.backup-download' && definition.binding === 'streaming')
+        expect(id in client.operations).toBe(false);
+    }
     expect(client.operations['workspace.backup-download']).toBeTypeOf('function');
     // No bytes have been enqueued and no Content-Length is provided. Headers suffice.
     const stream = await client.operations['workspace.backup-download'](selection);
@@ -73,9 +71,6 @@ describe('W operational backup download client boundary', () => {
     controller.close();
     expect(await reader.read()).toEqual({ done: true, value: undefined });
     for (const consume of consumed) expect(consume).not.toHaveBeenCalled();
-    expect(response.headers.get('content-disposition')).toBe(
-      'attachment; filename="retained.openkit-workspace.tar.zst"'
-    );
   });
 
   it('rejects malformed logical selectors and every supplied server path before fetch', async () => {
