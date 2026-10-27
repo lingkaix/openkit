@@ -48,9 +48,13 @@ export function WorkspaceFreezeRefusalPanel({
           )}
         </div>
         <ul className="flex flex-col gap-3" aria-label="Blockers">
-          {refusal.blockers.map((blocker, index) => (
+          {refusal.blockers.map((blocker) => (
             <li
-              key={`${blocker.kind}-${index}`}
+              key={
+                blocker.kind === 'unavailable'
+                  ? blocker.kind
+                  : `${blocker.kind}:${JSON.stringify(blocker.reference)}`
+              }
               className="flex flex-col gap-2 rounded-lg border border-border p-3"
             >
               <p className="text-sm font-bold text-fg-strong">
@@ -62,9 +66,9 @@ export function WorkspaceFreezeRefusalPanel({
               ) : null}
               {blocker.actions.length > 0 ? (
                 <div className="flex flex-wrap gap-2">
-                  {blocker.actions.map((action, actionIndex) => (
+                  {blocker.actions.map((action) => (
                     <QuickActionButton
-                      key={`${action.operationId}-${actionIndex}`}
+                      key={`${action.operationId}:${JSON.stringify(action.input)}`}
                       action={action}
                     />
                   ))}

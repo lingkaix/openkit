@@ -67,12 +67,12 @@ export function workspaceBlockerReferenceLabel(blocker: WorkspaceBlocker): strin
         `Thread ${blocker.reference.threadId}`,
         `Turn ${blocker.reference.turnId}`,
         blocker.reference.agentSessionId
-          ? `Agent session ${blocker.reference.agentSessionId}`
+          ? `AgentSession ${blocker.reference.agentSessionId}`
           : 'Prelaunch attempt',
       ].join(' · ');
     case 'worker-residency':
       return 'agentSessionId' in blocker.reference
-        ? `Agent session ${blocker.reference.agentSessionId}`
+        ? `AgentSession ${blocker.reference.agentSessionId}`
         : `Storage ${blocker.reference.storageRef}`;
     case 'pending-request':
       return `Thread ${blocker.reference.threadId}, Request ${blocker.reference.pendingRequestId}`;

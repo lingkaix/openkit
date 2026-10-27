@@ -2,7 +2,7 @@ import type { WorkspaceFreezeRefusal } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -114,6 +114,69 @@ describe('WorkspaceFreezeRefusalPanel', () => {
     expect(screen.getByText(/backup is in progress/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Retry shortly' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a pending interruption with its original Turn when blockers reorder', async () => {
+    let resolveInterrupt!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      resolveInterrupt = resolve;
+    });
+    const interrupt = vi.fn().mockReturnValue(pending);
+    const client = { operations: { 'turn.interrupt': interrupt } } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const original = blockedRefusal.blockers[0]!;
+    const otherTurnId = allocateEntityId('tu');
+    const other: WorkspaceFreezeRefusal['blockers'][number] = {
+      kind: 'turn',
+      reason: 'active-work',
+      reference: { threadId, turnId: otherTurnId },
+      actions: [
+        {
+          operationId: 'turn.interrupt',
+          input: { workspaceId, threadId, turnId: otherTurnId, requestId },
+        },
+      ],
+    };
+    const panel = (blockers: WorkspaceFreezeRefusal['blockers']) => (
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <MemoryRouter>
+            <WorkspaceFreezeRefusalPanel refusal={{ ...blockedRefusal, blockers }} />
+          </MemoryRouter>
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+    const { rerender, unmount } = render(panel([original, other]));
+    const actionFor = (blocker: WorkspaceFreezeRefusal['blockers'][number]) => {
+      const label = workspaceBlockerReferenceLabel(blocker)!;
+      const row = screen
+        .getAllByRole('listitem')
+        .find((candidate) => within(candidate).queryByText(label));
+      return within(row!).getByRole('button', { name: 'Interrupt turn' });
+    };
+
+    try {
+      await userEvent.click(actionFor(original));
+      await waitFor(() => {
+        expect(interrupt).toHaveBeenCalledWith({ workspaceId, threadId, turnId, requestId });
+        expect(actionFor(original)).toBeDisabled();
+        expect(actionFor(other)).toBeEnabled();
+      });
+      rerender(panel([other, original]));
+      await waitFor(() => {
+        expect(actionFor(original)).toBeDisabled();
+        expect(actionFor(other)).toBeEnabled();
+      });
+      expect(interrupt).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveInterrupt({});
+      await waitFor(() => {
+        expect(actionFor(original)).toBeEnabled();
+        expect(actionFor(other)).toBeEnabled();
+      });
+      unmount();
+      queryClient.clear();
+    }
   });
 
   it('maps inspect quick actions to existing views and mutating actions to operations', async () => {
