@@ -7,7 +7,7 @@ import {
   evaluateGoalTaskAdmission,
   type GoalTaskAccessInput,
 } from './goal-task-access.js';
-import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
+import { evaluateProductAccess } from './workspace-access.js';
 
 const workspaceId = testEntityId('ws', 'goal-task-kernel');
 const humanId = testEntityId('usr', 'goal-task-human');
@@ -55,7 +55,17 @@ function input(changes: Partial<GoalTaskAccessInput> = {}): GoalTaskAccessInput 
     resources: [resource],
     operation: 'tool.use',
     resource,
-    humanKernel: evaluateWorkspaceMemberAccess({ operation: 'tool.use' }),
+    humanKernel: evaluateProductAccess({
+      facts: {
+        userId: humanId,
+        activeUser: true,
+        administrator: false,
+        credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+      },
+      target: { kind: 'workspace', workspaceId: workspaceId, active: true, membership: 'member' },
+      operation: 'tool.use',
+      mutating: false,
+    }),
     ...changes,
   };
 }
@@ -68,7 +78,17 @@ describe('Goal Task native Kernel projection', () => {
       planVersionId: 'plan',
       agentId: 'design-worker',
       resources: [resource],
-      humanKernel: evaluateWorkspaceMemberAccess({ operation: 'turn.run' }),
+      humanKernel: evaluateProductAccess({
+        facts: {
+          userId: humanId,
+          activeUser: true,
+          administrator: false,
+          credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+        },
+        target: { kind: 'workspace', workspaceId: workspaceId, active: true, membership: 'member' },
+        operation: 'turn.run',
+        mutating: false,
+      }),
     };
     const result = evaluateGoalTaskAdmission(prepared);
     expect(result.kernel.effect).toBe('allow');
@@ -78,7 +98,24 @@ describe('Goal Task native Kernel projection', () => {
       { agentId: 'other-worker' },
       { planVersionId: 'obsolete-plan' },
       { resources: [{ ...resource, toolName: 'write' }] },
-      { humanKernel: evaluateWorkspaceMemberAccess({ operation: 'deployment.recover' }) },
+      {
+        humanKernel: evaluateProductAccess({
+          facts: {
+            userId: humanId,
+            activeUser: true,
+            administrator: false,
+            credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+          },
+          target: {
+            kind: 'workspace',
+            workspaceId: workspaceId,
+            active: true,
+            membership: 'member',
+          },
+          operation: 'deployment.recover',
+          mutating: false,
+        }),
+      },
     ])
       expect(evaluateGoalTaskAdmission({ ...prepared, ...change }).kernel.effect).toBe('deny');
   });
@@ -142,7 +179,17 @@ describe('Goal Task native Kernel projection', () => {
       expect(evaluateGoalTaskAccess(input({ subject: invalid })).kernel.effect).toBe('deny');
   });
   it('never overrides a current mandatory human Kernel refusal', () => {
-    const humanKernel = evaluateWorkspaceMemberAccess({ operation: 'deployment.recover' });
+    const humanKernel = evaluateProductAccess({
+      facts: {
+        userId: humanId,
+        activeUser: true,
+        administrator: false,
+        credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+      },
+      target: { kind: 'workspace', workspaceId: workspaceId, active: true, membership: 'member' },
+      operation: 'deployment.recover',
+      mutating: false,
+    });
     expect(humanKernel.effect).toBe('deny');
     expect(evaluateGoalTaskAccess(input({ humanKernel })).kernel).toEqual(humanKernel);
   });

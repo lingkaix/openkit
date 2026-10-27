@@ -2,14 +2,13 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type ArtifactSchema,
   compareCodeUnits,
-  ThreadSchema,
+  type ThreadSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 
 import {
-  evaluateWorkspaceResourceAccess,
+  evaluateThreadAuthorization,
   type ResourcePolicyActor,
 } from '../policy/workspace-resource-access.js';
 
@@ -22,40 +21,27 @@ export function isThreadVisible(
   thread: Thread,
   userId: string | undefined,
   administratorEligible = false,
-  operation: string | null = 'thread.read',
+  operation: string = 'thread.read',
   policyActor?: ResourcePolicyActor
 ): boolean {
-  if (!userId || !ThreadSchema.safeParse(thread).success || thread.owner.kind !== 'workspace')
-    return false;
-  const workspace = store.getWorkspace(workspaceIdForOwner(thread.owner));
-  if (
-    !administratorEligible &&
-    workspace.kind === 'personal' &&
-    workspace.id !== quickChatWorkspaceIdForUser(userId, store.getDataRoot())
-  )
-    return false;
-  if (
-    thread.visibility === 'private' &&
-    !administratorEligible &&
-    thread.privateOwnerUserId !== userId
-  )
-    return false;
-  if (operation === null) return true;
+  if (!userId) return false;
   try {
+    if (thread.owner.kind !== 'workspace') return false;
+    const workspaceId = workspaceIdForOwner(thread.owner);
+    const workspace = store.getWorkspace(workspaceId);
     return (
-      evaluateWorkspaceResourceAccess({
-        workspaceId: workspaceIdForOwner(thread.owner),
-        actor: policyActor ?? { kind: 'user', userId },
-        eligible: true,
-        resource: { family: 'thread', id: thread.id },
+      evaluateThreadAuthorization({
+        thread,
+        workspaceId,
+        userId,
+        administrator: administratorEligible,
+        personalWorkspaceId:
+          workspace.kind === 'personal'
+            ? quickChatWorkspaceIdForUser(userId, store.getDataRoot())
+            : undefined,
         operation,
-        policy:
-          thread.visibility === 'workspace' ||
-          (thread.visibility === 'private' &&
-            workspace.importedFrom !== undefined &&
-            !administratorEligible)
-            ? store.getWorkspaceResourceAccess(workspaceIdForOwner(thread.owner))
-            : EMPTY_POLICY_DOCUMENT,
+        policy: store.getWorkspaceResourceAccess(workspaceId),
+        actor: policyActor,
       }).effect === 'allow'
     );
   } catch {
@@ -81,7 +67,7 @@ export function isThreadIdVisible(
   threadId: string,
   userId: string | undefined,
   administratorEligible = false,
-  operation: string | null = 'thread.read',
+  operation: string = 'thread.read',
   policyActor?: ResourcePolicyActor
 ): boolean {
   try {
@@ -123,6 +109,7 @@ export function isArtifactVisible(
 }
 
 /** Preserves the source audience on product-managed transfers; matching Policy facts never grant source read authority. */
+// Deny-only audience containment stays here until Kernel support: GitHub #534 (after v0.1.0).
 export function canDiscloseThreadToAudience(
   store: Pick<FsStore, 'getWorkspaceResourceAccess'>,
   source: Thread,

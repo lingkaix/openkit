@@ -16,6 +16,7 @@ import { listWorkspaceAuditEvents } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
+  evaluateProductAuthorization,
   isCurrentServerPolicyAuthor,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
@@ -37,7 +38,6 @@ import {
   listServerPermissionDecisions,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
-import { evaluateServerAccess } from './server-access.js';
 import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
@@ -399,10 +399,13 @@ export function recordPolicyWriteDecision(input: {
   readonly turnId: string;
 }) {
   const administrator = requireCurrentDeploymentAdmin(input.coreDb, input.actor);
-  const kernel = evaluateServerAccess({
-    userId: input.actor.userId,
-    operation: 'workspace.configure',
-  });
+  const kernel = evaluateProductAuthorization(
+    input.coreDb,
+    input.actor,
+    { kind: 'server' },
+    'workspace.configure',
+    true
+  );
   const policyRevision = input.proposal.baseRevision;
   const authorizationRevision = policyDigest({
     administrator,

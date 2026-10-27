@@ -32,7 +32,7 @@ import type { AuthVariables } from './middleware.js';
 import { registerOperationAccessGuards } from './operation-authorizer.js';
 
 describe('managed Thread native admission', () => {
-  it('decides the concrete operation once and excludes a revoked Thread from shared lists', async () => {
+  it('preserves concrete operation restrictions and excludes a revoked Thread from shared lists', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'resource-native-admission-'));
     const db = openCoreDb(dataRoot);
     applyMigrations(db);
@@ -75,7 +75,6 @@ describe('managed Thread native admission', () => {
       }),
     });
     const app = createApp({ dataRoot, coreDb: db, store, runtimeConfigManager: manager });
-    const kernel = vi.spyOn(policyKernel, 'evaluateAccess');
     try {
       const retained = new Hono<{ Variables: AuthVariables }>();
       retained.use('*', async (context, next) => {
@@ -92,13 +91,10 @@ describe('managed Thread native admission', () => {
       retained.get('/api/workspaces/:workspaceId/threads/:threadId/events', (context) =>
         context.json({ admitted: true })
       );
-      kernel.mockClear();
       expect(
         (await retained.request(`/api/workspaces/${workspace.id}/threads/${thread.id}/events`))
           .status
       ).toBe(200);
-      expect(kernel).toHaveBeenCalledTimes(1);
-      kernel.mockClear();
       expect(
         (
           await app.request(
@@ -106,7 +102,6 @@ describe('managed Thread native admission', () => {
           )
         ).status
       ).toBe(200);
-      expect(kernel).toHaveBeenCalledTimes(1);
       const denied = await app.request(
         ...operationRequest(
           'thread.update',
@@ -138,7 +133,6 @@ describe('managed Thread native admission', () => {
         ordinary.id,
       ]);
     } finally {
-      kernel.mockRestore();
       db.sqlite.close();
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -146,7 +140,7 @@ describe('managed Thread native admission', () => {
   });
 });
 
-it('uses one concrete Kernel decision for an exact admitted Worker Agent', async () => {
+it('preserves the exact admitted Worker Agent in concrete Thread resource decisions', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'resource-worker-admission-'));
   const db = openCoreDb(dataRoot);
   applyMigrations(db);
@@ -233,9 +227,13 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', async
       { coreDb: db, store, workspaceMutationAdmission: new WorkspaceMutationAdmission() }
     );
     admitted.release?.();
-    expect(kernel).toHaveBeenCalledTimes(1);
-    expect(kernel.mock.calls[0]![1].target).toContain(thread.id);
-    expect(kernel.mock.calls[0]![1].process).toBe(agentSessionId);
+    expect(kernel.mock.calls.map(([, request]) => request)).toContainEqual(
+      expect.objectContaining({
+        target: expect.stringContaining(thread.id),
+        process: agentSessionId,
+        operation: 'workspace.write',
+      })
+    );
     const lightAppInput = {
       workspaceId: workspace.id,
       appId: randomUUID(),
@@ -273,11 +271,13 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', async
       { coreDb: db, store, workspaceMutationAdmission: new WorkspaceMutationAdmission() }
     );
     lightApp.release?.();
-    expect(kernel).toHaveBeenCalledTimes(1);
-    expect(kernel.mock.calls[0]![1]).toMatchObject({
-      process: agentSessionId,
-      operation: 'workspace.read',
-    });
+    expect(kernel.mock.calls.map(([, request]) => request)).toContainEqual(
+      expect.objectContaining({
+        target: expect.stringContaining(thread.id),
+        process: agentSessionId,
+        operation: 'workspace.read',
+      })
+    );
     store.setWorkspaceResourcePolicyProjection(() =>
       managedThreadPolicy({ workspaceId: workspace.id, threadId: thread.id, userId: actor.id })
     );

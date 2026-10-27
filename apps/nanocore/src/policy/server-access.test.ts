@@ -1,40 +1,40 @@
 import * as policyKernel from '@openkit/policy-kernel';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  evaluateAdministratorWorkspaceAccess,
-  evaluateServerAccess,
-  evaluateUserAccess,
-} from './server-access.js';
+import { evaluateProductAccess } from './workspace-access.js';
+
+const facts = {
+  userId: 'current-user',
+  activeUser: true,
+  administrator: true,
+  credential: { kind: 'session' as const, current: true, workspaceBound: false, readOnly: false },
+};
 
 describe('primary identity-scope Policy admission', () => {
-  it('maps the current actor and exact admitted scope to an explainable kernel decision', () => {
-    const userId = 'current-user';
-    const server = evaluateServerAccess({ userId, operation: 'audit.read' });
-    expect(server.effect).toBe('allow');
-    expect(server.trace).toMatchObject({
-      user: `user:${userId}`,
-      targetClosure: expect.arrayContaining(['object:server:administration']),
-      requiredAccessRights: ['ar:audit-read'],
-      matchedAssociations: ['assoc:server-administrator:administration'],
-    });
-    const user = evaluateUserAccess({ userId, operation: 'invitation.respond' });
-    expect(user.effect).toBe('allow');
-    expect(user.trace).toMatchObject({
-      targetClosure: expect.arrayContaining(['object:["user","current-user"]']),
-      requiredAccessRights: ['ar:invitation-respond'],
-      matchedAssociations: ['assoc:user-eligible-actor'],
-    });
-    const workspace = evaluateAdministratorWorkspaceAccess({
-      userId,
-      workspaceId: 'selected-workspace',
-      operation: 'workspace.read',
-    });
-    expect(workspace.effect).toBe('allow');
-    expect(workspace.trace).toMatchObject({
-      targetClosure: expect.arrayContaining(['object:["workspace","selected-workspace"]']),
-      requiredAccessRights: ['ar:workspace-read'],
-      matchedAssociations: ['assoc:workspace-eligible-actor'],
-    });
+  it('maps the current actor and exact admitted scope to an explainable Kernel decision', () => {
+    const requests = [
+      { target: { kind: 'server' as const }, operation: 'audit.read', right: 'ar:audit-read' },
+      {
+        target: { kind: 'user' as const },
+        operation: 'invitation.respond',
+        right: 'ar:invitation-respond',
+      },
+      {
+        target: {
+          kind: 'workspace' as const,
+          workspaceId: 'selected-workspace',
+          active: true,
+          membership: null,
+        },
+        operation: 'workspace.read',
+        right: 'ar:workspace-read',
+      },
+    ];
+    for (const request of requests) {
+      const decision = evaluateProductAccess({ ...request, facts, mutating: false });
+      expect(decision.effect).toBe('allow');
+      expect(decision.trace.user).toBe(`user:${facts.userId}`);
+      expect(decision.trace.requiredAccessRights).toEqual([request.right]);
+    }
   });
 
   it.each([
@@ -43,20 +43,19 @@ describe('primary identity-scope Policy admission', () => {
     { family: 'knowledge', operation: 'knowledge.read', right: 'ar:knowledge-read' },
     { family: 'knowledge', operation: 'knowledge.write', right: 'ar:knowledge-write' },
   ] as const)('evaluates current administrator allow and deny for $family/$operation', (input) => {
-    const request = { ...input, userId: 'current-user' };
-    const allowed = evaluateServerAccess(request);
+    const request = {
+      facts,
+      target: { kind: 'server' as const, family: input.family },
+      operation: input.operation,
+      mutating: false,
+    };
+    const allowed = evaluateProductAccess(request);
     expect(allowed.effect).toBe('allow');
-    expect(allowed.trace).toMatchObject({
-      user: 'user:current-user',
-      userClosure: expect.arrayContaining(['ua:server-administrator', 'pc:server']),
-      targetClosure: expect.arrayContaining([
-        `object:server:${input.family}`,
-        `oa:server-${input.family}`,
-        'pc:server',
-      ]),
-      requiredAccessRights: [input.right],
-      matchedAssociations: [`assoc:server-administrator:${input.family}`],
-    });
+    expect(allowed.trace.user).toBe(`user:${facts.userId}`);
+    expect(allowed.trace.requiredAccessRights).toEqual([input.right]);
+    const denied = evaluateProductAccess({ ...request, facts: { ...facts, administrator: false } });
+    expect(denied.effect).toBe('deny');
+    expect(denied.reasons).toContainEqual(expect.objectContaining({ code: 'missing-privilege' }));
     const actualEvaluate = policyKernel.evaluateAccess;
     const evaluate = vi
       .spyOn(policyKernel, 'evaluateAccess')
@@ -64,9 +63,12 @@ describe('primary identity-scope Policy admission', () => {
         actualEvaluate({ ...policy, associations: [] }, access)
       );
     try {
-      const denied = evaluateServerAccess(request);
-      expect(denied.effect).toBe('deny');
-      expect(denied.trace.targetClosure).toContain(`object:server:${input.family}`);
+      const noGrant = evaluateProductAccess(request);
+      expect(noGrant.effect).toBe('deny');
+      expect(noGrant.reasons).toContainEqual(
+        expect.objectContaining({ code: 'missing-privilege' })
+      );
+      // Accepted QP-2 brief13e: alternatives belong inside one evaluated graph.
       expect(evaluate).toHaveBeenCalledTimes(1);
     } finally {
       evaluate.mockRestore();
@@ -74,35 +76,49 @@ describe('primary identity-scope Policy admission', () => {
   });
 
   it('rejects an unknown family and does not borrow another family association', () => {
-    const input = { userId: 'current-user', operation: 'api.call', family: 'unknown' };
-    expect(evaluateServerAccess(input).effect).toBe('deny');
-    const mcp = { userId: 'current-user', operation: 'knowledge.write', family: 'mcp' };
-    expect(evaluateServerAccess(mcp).effect).toBe('deny');
-    const knowledge = { userId: 'current-user', operation: 'api.call', family: 'knowledge' };
-    expect(evaluateServerAccess(knowledge).effect).toBe('deny');
+    for (const target of [
+      { kind: 'server' as const, family: 'unknown' },
+      { kind: 'server' as const, family: 'mcp' },
+      { kind: 'server' as const, family: 'knowledge' },
+    ]) {
+      const operation = target.family === 'mcp' ? 'knowledge.write' : 'api.call';
+      expect(evaluateProductAccess({ facts, target, operation, mutating: false }).effect).toBe(
+        'deny'
+      );
+    }
   });
 
   it('does not grant unknown operations or the separately assigned maintenance effect', () => {
     for (const operation of ['unregistered.operation', 'administration.configuration.apply']) {
-      expect(evaluateServerAccess({ userId: 'current-user', operation }).effect).toBe('deny');
-      expect(evaluateUserAccess({ userId: 'current-user', operation }).effect).toBe('deny');
-      expect(
-        evaluateAdministratorWorkspaceAccess({
-          userId: 'current-user',
+      for (const target of [
+        { kind: 'server' as const },
+        { kind: 'user' as const },
+        {
+          kind: 'workspace' as const,
           workspaceId: 'selected-workspace',
-          operation,
-        }).effect
-      ).toBe('deny');
+          active: true,
+          membership: null,
+        },
+      ]) {
+        expect(evaluateProductAccess({ facts, target, operation, mutating: false }).effect).toBe(
+          'deny'
+        );
+      }
     }
   });
 
-  it('denies when the current identity or selected resource is missing', () => {
-    expect(evaluateServerAccess({ userId: '', operation: 'api.call' }).effect).toBe('deny');
+  it('does not treat a nonadministrator bearer as a User session', () => {
+    const request = {
+      target: { kind: 'user' as const },
+      operation: 'invitation.respond',
+      mutating: false,
+    };
+    const current = { ...facts, administrator: false };
+    expect(evaluateProductAccess({ ...request, facts: current }).effect).toBe('allow');
     expect(
-      evaluateAdministratorWorkspaceAccess({
-        userId: 'current-user',
-        workspaceId: '',
-        operation: 'workspace.read',
+      evaluateProductAccess({
+        ...request,
+        facts: { ...current, credential: { ...current.credential, kind: 'token' } },
       }).effect
     ).toBe('deny');
   });

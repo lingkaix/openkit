@@ -47,8 +47,8 @@ import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
-import { evaluateWorkspaceResourceAccess } from '../policy/workspace-resource-access.js';
+import { policyDigest } from '../policy/statements.js';
+import { evaluateThreadAuthorization } from '../policy/workspace-resource-access.js';
 import {
   mapCommandRequestRow,
   readCommandRequestRecordsFromSqlite,
@@ -798,28 +798,18 @@ function nativeThreadVisible(
   const thread = readProduct(db.sqlite, owner, 'thread', threadId);
   const workspace = readProduct(db.sqlite, owner, 'workspace', db.workspaceId);
   if (!thread || !workspace) return false;
-  const administrator = input.administrator?.userId === actor.userId;
-  if (
-    !administrator &&
-    workspace.record.kind === 'personal' &&
-    db.workspaceId !== quickChatWorkspaceIdForUser(actor.userId, db.dataRoot)
-  )
-    return false;
-  if (
-    thread.record.visibility === 'private' &&
-    !administrator &&
-    thread.record.privateOwnerUserId !== actor.userId
-  )
-    return false;
   return (
-    evaluateWorkspaceResourceAccess({
+    evaluateThreadAuthorization({
+      thread: ThreadSchema.parse(thread.record),
       workspaceId: db.workspaceId,
-      actor: { kind: 'user', userId: actor.userId },
-      eligible: true,
-      resource: { family: 'thread', id: threadId },
+      userId: actor.userId,
+      administrator: input.administrator?.userId === actor.userId,
+      personalWorkspaceId:
+        workspace.record.kind === 'personal'
+          ? quickChatWorkspaceIdForUser(actor.userId, db.dataRoot)
+          : undefined,
       operation: 'thread.read',
-      policy:
-        thread.record.visibility === 'workspace' ? input.resourcePolicy : EMPTY_POLICY_DOCUMENT,
+      policy: input.resourcePolicy,
     }).effect === 'allow'
   );
 }

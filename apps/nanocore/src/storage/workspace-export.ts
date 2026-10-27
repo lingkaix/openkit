@@ -211,8 +211,6 @@ export interface VerifiedWorkspaceExportTree {
 export interface WriteWorkspaceExportTreeInput {
   /** Current source root required when canonical Artifacts own file-backed originals. */
   sourceWorkspaceRoot?: string;
-  /** Trusted current administrator eligibility for including private project history; never caller input. */
-  administratorEligible?: boolean;
   /** Exact internal deletion owner, revalidated before preserving private history. */
   deletionRecoveryContext?: WorkspaceDeletionRecoveryExportContext;
   /** Export root directory to populate. */
@@ -378,7 +376,6 @@ export interface WorkspaceImportDryRunReport {
 export function writeWorkspaceExportTree(
   input: WriteWorkspaceExportTreeInput
 ): VerifiedWorkspaceExportTree {
-  let deletionRecoveryAuthorized = false;
   if (input.deletionRecoveryContext) {
     if (
       input.deletionRecoveryContext.workspaceId !== input.workspace.id ||
@@ -386,9 +383,7 @@ export function writeWorkspaceExportTree(
     ) {
       throw new Error('Workspace deletion recovery export target is inconsistent.');
     }
-    deletionRecoveryAuthorized = assertWorkspaceDeletionRecoveryExportAuthority(
-      input.deletionRecoveryContext
-    );
+    assertWorkspaceDeletionRecoveryExportAuthority(input.deletionRecoveryContext);
   }
   const history = parseCanonicalWorkspaceHistory({
     workspace: input.workspace,
@@ -400,13 +395,6 @@ export function writeWorkspaceExportTree(
     agentSessions: input.agentSessions,
     turnEvents: input.turnEvents,
   });
-  if (
-    !input.administratorEligible &&
-    !deletionRecoveryAuthorized &&
-    history.threads.some((thread) => thread.visibility === 'private')
-  ) {
-    throw new Error('Private Thread history requires a separately authorized export.');
-  }
   const recurringHistory = readRecurringPortableHistory(
     input.recurringHistory ??
       (input.portableFileState?.recurringHistory

@@ -68,6 +68,7 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from './auth/nanohost-transport-session.js';
+import { evaluateProductAuthorization } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import * as capabilityLedger from './capability/usage-ledger.js';
 import {
@@ -6280,11 +6281,12 @@ describe('worker MCP routes', () => {
       if (issuance === 'vault-denied-call' || issuance === 'vault-denied-list') {
         // Fault seam: deny the current Vault right while leaving real Tool evaluation unchanged.
         // This tests enforcement of denial, not configured mixed-right Policy support.
-        const evaluate = workspaceAccess.evaluateWorkspaceMemberAccess;
+        const evaluate = workspaceAccess.evaluateProductAccess;
         const currentPolicy = vi
-          .spyOn(workspaceAccess, 'evaluateWorkspaceMemberAccess')
+          .spyOn(workspaceAccess, 'evaluateProductAccess')
           .mockImplementation((input) =>
             evaluate({
+              ...input,
               operation:
                 input.operation === 'vault.use' ? 'sec2a-denied-vault-use' : input.operation,
             })
@@ -6295,7 +6297,15 @@ describe('worker MCP routes', () => {
           .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
           .get();
         try {
-          expect(evaluate({ operation: 'tool.use' }).effect).toBe('allow');
+          expect(
+            evaluateProductAuthorization(
+              coreDb,
+              { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+              { kind: 'workspace', workspaceId: environmentPackage.scope.workspaceId },
+              'tool.use',
+              true
+            ).effect
+          ).toBe('allow');
           const request =
             issuance === 'vault-denied-list'
               ? client.listTools()

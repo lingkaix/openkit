@@ -6,7 +6,7 @@ import {
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import {
-  authorizeWorkspaceEligibility,
+  authorizeWorkspace,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
@@ -79,7 +79,7 @@ export function createRecoveryOperationImplementations(
         const definition = RECOVERY_OPERATION_DEFINITIONS['recovery.checkpoint-retry'];
         if (
           context.kind !== 'public' ||
-          !authorizeWorkspaceEligibility(coreDb, context.actor, input.workspaceId, definition) ||
+          !authorizeWorkspace(coreDb, context.actor, input.workspaceId, definition) ||
           dependencies.workspaceMutationAdmission?.isClosed(input.workspaceId)
         )
           throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);

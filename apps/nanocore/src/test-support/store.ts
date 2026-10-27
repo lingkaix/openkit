@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, type WorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, type WorkspaceDb } from '../storage/db.js';
 import { coreDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -28,6 +28,17 @@ export function initializeTestCore(dataRoot: string): void {
       coreDb.sqlite.close();
     }
   }
+}
+
+/** Opens a migrated private Core fixture through its storage owner; the caller owns root removal. */
+export function createTestCoreDb(dataRoot: string): CoreDb {
+  initializeTestCore(dataRoot);
+  return openCoreDb(dataRoot);
+}
+
+/** Closes the exact caller-owned fixture handle after native work has drained. */
+export function closeTestCoreDb(coreDb: CoreDb): void {
+  if (coreDb.sqlite.open) coreDb.sqlite.close();
 }
 
 /**

@@ -1,6 +1,5 @@
 import type { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { WorkspaceImportDryRunResponseSchema } from '@openkit/app-api-schemas';
-import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type {
   OperationImplementations,
@@ -41,11 +40,9 @@ export function createWorkspaceTransferOperationImplementations(
           fileAdmission,
           authorityActor: context.actorRef,
           authorityUserId: actor.userId,
-          administratorEligible: Boolean(coreDb && isCurrentDeploymentAdministrator(coreDb, actor)),
           coreDb,
           dataRoot,
           repositoryWorkspaceDb: repositoryWorkspaceDb!,
-          requestActor: actor,
           store: store!,
           workspaceId: input.workspaceId,
         })

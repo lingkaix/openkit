@@ -24,6 +24,7 @@ import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   currentWorkspaceAuthority,
+  evaluateProductAuthorization,
   isCurrentServerPolicyAuthor,
 } from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -37,7 +38,6 @@ import {
   selectMcpToolPermissions,
 } from '../policy/mcp-tool-permissions.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
-import { evaluateAdministratorWorkspaceAccess } from '../policy/server-access.js';
 import { policyDigest } from '../policy/statements.js';
 import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -538,11 +538,13 @@ describe('administration catalog configuration', () => {
       expect(await storage.beginStage({ access, locator, maxByteLength: 3 })).toEqual({
         status: 'denied',
       });
-      const stageKernel = evaluateAdministratorWorkspaceAccess({
-        userId: f.actor.userId,
-        workspaceId: f.workspaceId,
-        operation: 'knowledge.write',
-      });
+      const stageKernel = evaluateProductAuthorization(
+        f.coreDb,
+        f.actor,
+        { kind: 'workspace', workspaceId: f.workspaceId },
+        'knowledge.write',
+        true
+      );
       const staged = policyConfiguration.readStorageLeaseAccess({
         ...input,
         statementId: 'stage-raw',
@@ -575,14 +577,22 @@ describe('administration catalog configuration', () => {
       expect(
         policyConfiguration.readStorageLeaseAccess({ ...input, anchorCurrent: () => false })
       ).toBeNull();
+      const revokedToken = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.actor.userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      revokeOpenKitAccessTokenRecord(f.coreDb, revokedToken.tokenId);
       expect(
         policyConfiguration.readStorageLeaseAccess({
           ...input,
-          kernel: evaluateAdministratorWorkspaceAccess({
-            userId: '',
-            workspaceId: f.workspaceId,
-            operation: 'knowledge.read',
-          }),
+          kernel: evaluateProductAuthorization(
+            f.coreDb,
+            { ...f.actor, tokenId: revokedToken.tokenId },
+            { kind: 'workspace', workspaceId: f.workspaceId },
+            'knowledge.read'
+          ),
         })
       ).toBeNull();
       expect(

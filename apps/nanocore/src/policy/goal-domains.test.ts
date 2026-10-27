@@ -24,7 +24,7 @@ import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
-import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
+import { evaluateProductAccess } from './workspace-access.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
@@ -214,7 +214,22 @@ describe('jointly approved Goal-domain publication', () => {
       agentId: 'design-worker',
       responsibleHumanId: f.actor.userId,
       resources: [resource],
-      humanKernel: evaluateWorkspaceMemberAccess({ operation: 'turn.run' }),
+      humanKernel: evaluateProductAccess({
+        facts: {
+          userId: f.actor.userId,
+          activeUser: true,
+          administrator: false,
+          credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+        },
+        target: {
+          kind: 'workspace',
+          workspaceId: f.key.workspaceId,
+          active: true,
+          membership: 'member',
+        },
+        operation: 'turn.run',
+        mutating: false,
+      }),
     });
     expect(prepared.kernel.effect).toBe('allow');
     expect(prepared.kernel.trace.process).toBeUndefined();
@@ -267,7 +282,22 @@ describe('jointly approved Goal-domain publication', () => {
           resources: [resource],
           operation: 'tool.use',
           resource,
-          humanKernel: evaluateWorkspaceMemberAccess({ operation: 'tool.use' }),
+          humanKernel: evaluateProductAccess({
+            facts: {
+              userId: f.actor.userId,
+              activeUser: true,
+              administrator: false,
+              credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+            },
+            target: {
+              kind: 'workspace',
+              workspaceId: f.key.workspaceId,
+              active: true,
+              membership: 'member',
+            },
+            operation: 'tool.use',
+            mutating: false,
+          }),
         }).kernel,
     });
     expect(decision.result).toBe('allow');

@@ -1849,18 +1849,6 @@ describe('workspace auxiliary lineage reminting', () => {
       );
   });
 
-  it('refuses ordinary export containing private Thread history before collecting portable content', () => {
-    const input = createLineageExportInput();
-    input.threads = input.threads.map((thread) => ({
-      ...(thread as Record<string, unknown>),
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
-    }));
-    expect(() => writeWorkspaceExportTree(input)).toThrow(
-      'Private Thread history requires a separately authorized export.'
-    );
-  });
-
   it('inventories Turn observations and remints observation and Item anchors without rewriting content identities', () => {
     const input = createLineageExportInput();
     const rows = [

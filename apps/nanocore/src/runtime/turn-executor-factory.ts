@@ -31,6 +31,7 @@ import {
 import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
+  readCurrentWorkspacePolicy,
 } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
@@ -38,7 +39,6 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
-import { readCurrentWorkspacePolicy } from '../policy/workspace-resource-access.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,

@@ -4,10 +4,8 @@ import {
   type WorkspacePolicySubject,
 } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
-import type { PolicyDocumentV1 } from '@openkit/protocol';
-import { isCurrentServerPolicyAuthor } from '../auth/operation-authorizer.js';
-import type { CoreDb } from '../storage/db.js';
-import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
+import { type PolicyDocumentV1, ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
+import type { z } from 'zod';
 import { WORKSPACE_MEMBER_OPERATIONS } from './workspace-access.js';
 
 /** Validates the activated Workspace subset without introducing another authored grammar. */
@@ -17,27 +15,6 @@ export function parseWorkspacePolicy(workspaceId: string, value: unknown): Polic
     const anchor = statement.lifetime.anchor;
     if (anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== workspaceId)
       throw new Error('Workspace Policy belongs to a different owner.');
-  }
-  return document;
-}
-
-/** Rereads current authors before projection; a lost boundary author never becomes an unmanaged resource. */
-export function readCurrentWorkspacePolicy(input: {
-  readonly coreDb: CoreDb;
-  readonly workspaceId: string;
-  readonly policy: unknown;
-}): PolicyDocumentV1 {
-  const document = parseWorkspacePolicy(input.workspaceId, input.policy);
-  for (const statement of document.statements) {
-    if (statement.state !== 'active') continue;
-    if (
-      statement.author.kind !== 'human' ||
-      !(
-        resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, statement.author.id) ||
-        isCurrentServerPolicyAuthor(input.coreDb, statement.author.id)
-      )
-    )
-      throw new Error('Workspace Policy author no longer has current authority.');
   }
   return document;
 }
@@ -76,13 +53,16 @@ function matches(subject: WorkspacePolicySubject, actor: ResourcePolicyActor): b
 }
 
 /**
- * Evaluates the current member/administrator baseline and an optional additional resource Policy class.
- * The caller establishes current identity, membership, credential, private audience and exact Agent facts.
+ * Evaluates exact Thread audience constraints and its optional additional resource Policy class.
+ * The caller independently requires current primary Workspace admission and exact Agent lineage.
  * Every allocation and prohibition is decided by the existing Kernel, including last-grant revocation.
  */
 export function evaluateWorkspaceResourceAccess(input: {
   readonly actor: ResourcePolicyActor;
-  readonly eligible: boolean;
+  readonly administrator: boolean;
+  readonly visibility: 'workspace' | 'private';
+  readonly privateOwnerUserId?: string | undefined;
+  readonly personalWorkspaceId?: string | undefined;
   readonly workspaceId: string;
   readonly policy: unknown;
   readonly resource: { readonly family: 'thread'; readonly id: string };
@@ -116,39 +96,85 @@ export function evaluateWorkspaceResourceAccess(input: {
     : null;
   const user = `user:${input.actor.userId}`;
   const target = `object:${JSON.stringify(input.resource)}`;
-  const baseline = 'ua:workspace-eligible';
+  const subject = 'ua:thread-subject';
+  const baseline = 'ua:thread-shared';
+  const privateOwner = 'ua:thread-private-owner';
+  const administrator = 'ua:thread-administrator';
   const objects = 'oa:workspace-resource';
-  const baselineClass = 'pc:workspace';
+  const baselineClass = 'pc:thread-audience';
   const operations = WORKSPACE_MEMBER_OPERATIONS.map(
     (operation) => [operation, PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] as const
   );
   const policy: PolicyState = {
     elements: [
       { id: user, kind: 'user' },
+      { id: subject, kind: 'userAttribute' },
       { id: baseline, kind: 'userAttribute' },
+      { id: privateOwner, kind: 'userAttribute' },
+      { id: administrator, kind: 'userAttribute' },
       { id: target, kind: 'object' },
       { id: objects, kind: 'objectAttribute' },
       { id: baselineClass, kind: 'policyClass' },
     ],
     assignments: [
-      ...(input.eligible && input.actor.userId ? [{ child: user, parent: baseline }] : []),
+      { child: user, parent: subject },
+      { child: subject, parent: baselineClass },
+      ...(input.visibility === 'workspace' ? [{ child: user, parent: baseline }] : []),
+      ...(input.visibility === 'private' && input.privateOwnerUserId === input.actor.userId
+        ? [{ child: user, parent: privateOwner }]
+        : []),
+      ...(input.administrator ? [{ child: user, parent: administrator }] : []),
+      { child: privateOwner, parent: baselineClass },
+      { child: administrator, parent: baselineClass },
       { child: baseline, parent: baselineClass },
       { child: target, parent: objects },
       { child: objects, parent: baselineClass },
     ],
-    associations: [
-      {
-        id: 'assoc:workspace-eligible',
-        userAttribute: baseline,
-        targetAttribute: objects,
-        accessRights: operations.map(([, right]) => right),
-      },
-    ],
+    associations: [baseline, privateOwner, administrator].map((attribute) => ({
+      id: `assoc:${attribute}`,
+      userAttribute: attribute,
+      targetAttribute: objects,
+      accessRights: operations.map(([, right]) => right),
+    })),
     operations: operations.map(([id, right]) => ({ id, accessRights: [right] })),
     ...(input.actor.kind === 'agent'
       ? { processUsers: [{ process: input.actor.processId, user }] }
       : {}),
   };
+  if (input.personalWorkspaceId !== undefined) {
+    const personalClass = 'pc:personal-workspace-audience';
+    const personalObjects = 'oa:personal-workspace';
+    const personalOwner = 'ua:personal-workspace-owner';
+    const personalAdministrator = 'ua:personal-workspace-administrator';
+    policy.elements = [
+      ...policy.elements,
+      { id: personalClass, kind: 'policyClass' },
+      { id: personalObjects, kind: 'objectAttribute' },
+      { id: personalOwner, kind: 'userAttribute' },
+      { id: personalAdministrator, kind: 'userAttribute' },
+    ];
+    policy.assignments = [
+      ...policy.assignments,
+      { child: subject, parent: personalClass },
+      { child: target, parent: personalObjects },
+      { child: personalObjects, parent: personalClass },
+      { child: personalOwner, parent: personalClass },
+      { child: personalAdministrator, parent: personalClass },
+      ...(input.workspaceId === input.personalWorkspaceId
+        ? [{ child: user, parent: personalOwner }]
+        : []),
+      ...(input.administrator ? [{ child: user, parent: personalAdministrator }] : []),
+    ];
+    policy.associations = [
+      ...policy.associations,
+      ...[personalOwner, personalAdministrator].map((attribute) => ({
+        id: `assoc:${attribute}`,
+        userAttribute: attribute,
+        targetAttribute: personalObjects,
+        accessRights: operations.map(([, right]) => right),
+      })),
+    ];
+  }
   if (managed) {
     const resourceClass = 'pc:managed-resource';
     const resourceObjects = 'oa:managed-resource';
@@ -212,6 +238,39 @@ export function evaluateWorkspaceResourceAccess(input: {
     user,
     ...(input.actor.kind === 'agent' ? { process: input.actor.processId } : {}),
     target,
+    operation: input.operation,
+  });
+}
+
+/** Requires the resource Kernel in addition to independently established primary Workspace admission. */
+export function evaluateThreadAuthorization(input: {
+  readonly thread: z.infer<typeof ThreadSchema>;
+  readonly workspaceId: string;
+  readonly userId: string;
+  readonly administrator: boolean;
+  readonly personalWorkspaceId?: string | undefined;
+  readonly policy: unknown;
+  readonly operation: string;
+  readonly actor?: ResourcePolicyActor | undefined;
+}): PolicyDecision {
+  if (
+    !input.userId ||
+    !ThreadSchema.safeParse(input.thread).success ||
+    input.thread.visibility === 'server' ||
+    input.thread.owner.kind !== 'workspace' ||
+    workspaceIdForOwner(input.thread.owner) !== input.workspaceId ||
+    (input.actor && input.actor.userId !== input.userId)
+  )
+    throw new Error('Thread authorization requires exact current audience and actor facts.');
+  return evaluateWorkspaceResourceAccess({
+    workspaceId: input.workspaceId,
+    actor: input.actor ?? { kind: 'user', userId: input.userId },
+    administrator: input.administrator,
+    visibility: input.thread.visibility,
+    privateOwnerUserId: input.thread.privateOwnerUserId,
+    personalWorkspaceId: input.personalWorkspaceId,
+    policy: input.policy,
+    resource: { family: 'thread', id: input.thread.id },
     operation: input.operation,
   });
 }

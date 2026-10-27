@@ -453,6 +453,49 @@ describe('central Workspace operation authorizer', () => {
     ).toBe(expectedAuthority);
   });
 
+  it('preserves a presented readonly credential limit during current effect authority checks', () => {
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    const token = createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: userId,
+      scope: 'workspace-readonly',
+      tokenId: 'token_current_readonly',
+      workspaceIds: [fixture.workspace.id],
+    }).record;
+    const requestActor = {
+      kind: 'token' as const,
+      userId,
+      tokenId: token.tokenId,
+      tokenScope: 'workspace-readonly' as const,
+      tokenWorkspaceIds: [fixture.workspace.id],
+    };
+    const actor = { kind: 'user' as const, id: userId };
+    // Core Policy's credential limits apply again at the governed effect boundary.
+    expect(
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        actor,
+        'runtime.launch',
+        true,
+        requestActor
+      )
+    ).toBeNull();
+    const read = () =>
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        actor,
+        'workspace.read',
+        true,
+        requestActor,
+        { mutating: false }
+      );
+    expect(read()).toBe('member');
+    expect(revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId)?.status).toBe('revoked');
+    expect(read()).toBeNull();
+  });
+
   it('binds a presented admin bearer to its active human owner without member fallback', () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -2128,7 +2171,25 @@ describe('canonical administration Workspace admission', () => {
         if (authority === 'administrator') {
           expect(response.status, transport).toBe(200);
           expect(value, transport).toEqual(expected);
-          expect(admission, transport).toHaveBeenCalledTimes(1);
+          if (strategy === 'body-workspace') {
+            expect(admission, transport).toHaveBeenCalledTimes(1);
+          } else {
+            // An opaque Turn requires primary Workspace admission and its exact Thread constraint.
+            expect(
+              admission.mock.calls.map(([, request]) => request),
+              transport
+            ).toEqual(
+              expect.arrayContaining(
+                [fixture.workspace.id, fixture.turn.threadId].map((targetId) =>
+                  expect.objectContaining({
+                    user: expect.stringContaining('usr_00000000-0000-7241-80d8-0d46cb74b40d'),
+                    operation: 'workspace.read',
+                    target: expect.stringContaining(targetId),
+                  })
+                )
+              )
+            );
+          }
           expect(execute, transport).toHaveBeenCalledTimes(1);
         } else {
           expect(response.status, transport).toBe(transport === 'HTTP' ? 403 : 200);

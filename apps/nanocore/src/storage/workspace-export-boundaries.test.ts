@@ -1592,9 +1592,9 @@ describe('workspace portable authority boundaries', () => {
       createOpenKitAccessTokenRecord(sourceCoreDb, {
         expiresAt: '2099-01-01T00:00:00.000Z',
         ownerUserId: 'usr_00000000-0000-7f08-b276-13c309e8c61d',
-        scope: 'workspace',
+        scope: 'server-admin',
         tokenId: 'token_source_authority',
-        workspaceIds: [sourceWorkspace.id],
+        workspaceIds: [],
       });
       const sourceApp = createApp({
         auth: authForUser('usr_00000000-0000-7f08-b276-13c309e8c61d'),

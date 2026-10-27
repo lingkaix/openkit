@@ -10,13 +10,14 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
 import {
-  evaluateAdministratorWorkspaceAccess,
-  evaluateUserAccess,
-} from '../policy/server-access.js';
-import {
-  evaluateWorkspaceMemberAccess,
+  evaluateProductAccess,
+  type ProductAccessTarget,
   type ProductOperation,
 } from '../policy/workspace-access.js';
+import {
+  evaluateThreadAuthorization,
+  parseWorkspacePolicy,
+} from '../policy/workspace-resource-access.js';
 import {
   findSchedulerAdmissionForTurn,
   findSchedulerAdmissionForWorkerLineage,
@@ -46,7 +47,6 @@ import {
   type PublicOperationAccess,
   type WorkspaceOperationAccess,
 } from './operation-access.js';
-import { isThreadIdVisible } from './thread-visibility.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const GatewayWorkspaceAttributionSchema = z
@@ -106,6 +106,8 @@ export interface WorkspaceAuthorityEvaluation {
 export interface WorkspaceAuthorityOptions {
   /** Evaluates a retained human Policy author directly, without manufacturing request credentials. */
   readonly retainedPolicyAuthor?: boolean;
+  /** Actual caller-owned mutation posture; effect paths default to mutating and reads opt out explicitly. */
+  readonly mutating?: boolean;
   /** Propagates resolver and callback failures; omission keeps the existing transient refusal. */
   readonly dependencyFailure?: 'throw';
   /** Receives a real Kernel result and safe current facts; missing eligibility emits no event. */
@@ -337,6 +339,27 @@ export function isCurrentServerPolicyAuthor(
   );
 }
 
+/** Rereads current resource Policy authors; lost author authority never makes a boundary unmanaged. */
+export function readCurrentWorkspacePolicy(input: {
+  readonly coreDb: CoreDb;
+  readonly workspaceId: string;
+  readonly policy: unknown;
+}) {
+  const document = parseWorkspacePolicy(input.workspaceId, input.policy);
+  for (const statement of document.statements) {
+    if (statement.state !== 'active') continue;
+    if (
+      statement.author.kind !== 'human' ||
+      !(
+        resolveWorkspaceMembershipRelation(input.coreDb, input.workspaceId, statement.author.id) ||
+        isCurrentServerPolicyAuthor(input.coreDb, statement.author.id)
+      )
+    )
+      throw new Error('Workspace Policy author no longer has current authority.');
+  }
+  return document;
+}
+
 /**
  * Composes current Workspace authority from one actor, active membership, policy operation, and caller-owned effect authority.
  *
@@ -371,44 +394,62 @@ export function currentWorkspaceAuthority(
         tokenId: requestActor.adminTokenId,
         tokenScope: 'server-admin',
       };
-    let relation: WorkspaceAuthority;
-    let responsibleUserId: string;
+    const responsibleUserId = responsibleUserIdForActor(actor);
+    if (!responsibleUserId) return null;
+    if (requestActor && requestActor.userId !== responsibleUserId) return null;
     if (
-      !requestActor &&
-      options?.retainedPolicyAuthor &&
-      actor.kind === 'user' &&
-      isCurrentServerPolicyAuthor(coreDb, actor.id)
-    ) {
-      if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) return null;
-      relation = 'administrator';
-      responsibleUserId = actor.id;
-    } else if (requestActor?.kind === 'token' && requestActor.tokenScope === 'server-admin') {
-      if (
-        actor.kind !== 'user' ||
-        actor.id !== requestActor.userId ||
-        !isUsablePresentedServerAdminToken(coreDb, requestActor) ||
-        !isActiveRegisteredWorkspace(coreDb, workspaceId)
-      ) {
-        return null;
-      }
-      relation = 'administrator';
-      responsibleUserId = actor.id;
-    } else {
-      const userId = responsibleUserIdForActor(actor);
-      if (!userId || !resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId)) {
-        return null;
-      }
-      relation = 'member';
-      responsibleUserId = userId;
-    }
-    const decision =
-      relation === 'administrator'
-        ? evaluateAdministratorWorkspaceAccess({
-            operation,
-            userId: responsibleUserId,
-            workspaceId,
-          })
-        : evaluateWorkspaceMemberAccess({ operation });
+      requestActor?.kind === 'token' &&
+      requestActor.tokenScope === 'server-admin' &&
+      actor.kind !== 'user'
+    )
+      return null;
+    const administrator = requestActor
+      ? requestActor.kind === 'token' &&
+        requestActor.tokenScope === 'server-admin' &&
+        isCurrentDeploymentAdministrator(coreDb, requestActor)
+      : !!(
+          options?.retainedPolicyAuthor &&
+          actor.kind === 'user' &&
+          isCurrentServerPolicyAuthor(coreDb, actor.id)
+        );
+    const membership = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
+    const activeUser = isCanonicalUserActive(coreDb, responsibleUserId);
+    const activeWorkspace = isActiveRegisteredWorkspace(coreDb, workspaceId);
+    const credentialCurrent = !requestActor || isUsablePresentedAccessToken(coreDb, requestActor);
+    const credentialBound =
+      !requestActor || tokenIncludesWorkspace(requestActor, workspaceId, undefined);
+    const decision = evaluateProductAccess({
+      facts: {
+        userId: responsibleUserId,
+        activeUser,
+        administrator,
+        credential: {
+          kind: requestActor?.kind ?? 'retained-author',
+          current: credentialCurrent,
+          workspaceBound: credentialBound,
+          readOnly:
+            requestActor?.kind === 'token' && requestActor.tokenScope === 'workspace-readonly',
+        },
+      },
+      target: {
+        kind: 'workspace',
+        workspaceId,
+        active: activeWorkspace,
+        membership,
+      },
+      operation,
+      // Effect paths cannot obtain a mutation association from a read-only credential.
+      mutating: options?.mutating ?? true,
+    });
+    // Missing eligibility facts publish no capture event; the Kernel still decides every complete request.
+    if (
+      !activeUser ||
+      !activeWorkspace ||
+      !credentialCurrent ||
+      (!administrator && (!membership || !credentialBound))
+    )
+      return null;
+    const relation: WorkspaceAuthority = administrator ? 'administrator' : 'member';
     // A capture callback cannot change the already evaluated authority result.
     const effect = decision.effect;
     if (options?.onEvaluation) {
@@ -540,35 +581,6 @@ export function currentWorkerLineageWorkspaceAuthority(
   );
 }
 
-/** Establishes trusted Worker scope and current credential eligibility before its one concrete primary decision. */
-export function currentWorkerLineageWorkspaceEligibility(
-  coreDb: CoreDb,
-  lineage: SchedulerExecutionLineage & { readonly triggerActor: ActorRef }
-): WorkspaceAuthority | null {
-  const admission = findSchedulerAdmissionForWorkerLineage(coreDb, lineage);
-  if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) return null;
-  if (admission.serverAdminTokenId !== null) {
-    if (!admission.serverAdminTokenId || admission.triggerActor.kind !== 'user') return null;
-    return authorizeWorkspaceEligibility(
-      coreDb,
-      {
-        kind: 'token',
-        tokenId: admission.serverAdminTokenId,
-        tokenScope: 'server-admin',
-        userId: admission.triggerActor.id,
-      },
-      admission.workspaceId,
-      { mutating: false }
-    )
-      ? 'administrator'
-      : null;
-  }
-  const userId = responsibleUserIdForActor(admission.triggerActor);
-  return userId && resolveWorkspaceMembershipRelation(coreDb, admission.workspaceId, userId)
-    ? 'member'
-    : null;
-}
-
 /**
  * Rechecks a product Turn's exact live admission before its Worker lease is created.
  *
@@ -649,23 +661,95 @@ async function authorizeOperation(
   return authorizeWorkspaceOperation(context, actor, { ...route, access: route.access }, input);
 }
 
-/** Intersects current canonical-user eligibility with its primary Policy decision; unexpected eligibility-read errors propagate to the caller. */
+/** Reads current identity facts once and asks the Kernel for the exact primary operation. */
+export function evaluateProductAuthorization(
+  coreDb: CoreDb,
+  actor: Actor,
+  target:
+    | { readonly kind: 'user' }
+    | { readonly kind: 'server'; readonly family?: string | undefined }
+    | { readonly kind: 'workspace'; readonly workspaceId: string },
+  operation: string,
+  mutating = false,
+  now = new Date()
+): PolicyDecision {
+  return evaluateProductAccess(
+    readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now)
+  );
+}
+
+/** Keeps current authority-read failures outside the caller's evaluator-only refusal boundary. */
+function readProductAuthorizationInput(
+  coreDb: CoreDb,
+  actor: Actor,
+  target:
+    | { readonly kind: 'user' }
+    | { readonly kind: 'server'; readonly family?: string | undefined }
+    | { readonly kind: 'workspace'; readonly workspaceId: string },
+  operation: string,
+  mutating = false,
+  now = new Date()
+): Parameters<typeof evaluateProductAccess>[0] {
+  const administrator = isCurrentDeploymentAdministrator(coreDb, actor, now);
+  const currentTarget: ProductAccessTarget =
+    target.kind === 'workspace'
+      ? {
+          ...target,
+          active: isActiveRegisteredWorkspace(coreDb, target.workspaceId),
+          membership: resolveWorkspaceMembershipRelation(coreDb, target.workspaceId, actor.userId),
+        }
+      : target;
+  return {
+    facts: {
+      userId: actor.userId,
+      activeUser: isCanonicalUserActive(coreDb, actor.userId),
+      administrator,
+      credential: {
+        kind: actor.kind,
+        current: isUsablePresentedAccessToken(coreDb, actor, now),
+        workspaceBound:
+          target.kind !== 'workspace' ||
+          tokenIncludesWorkspace(actor, target.workspaceId, undefined),
+        readOnly: actor.kind === 'token' && actor.tokenScope === 'workspace-readonly',
+      },
+    },
+    target: currentTarget,
+    operation,
+    mutating,
+  };
+}
+
+/** Requires the current administrator Kernel association; callers retain their dependency-error mapping. */
+export function requireAdministratorOperation(
+  coreDb: CoreDb,
+  actor: Actor | undefined,
+  operation: string,
+  now = new Date()
+): void {
+  if (!actor) throw new DeploymentAdminRequiredError();
+  if (
+    evaluateProductAuthorization(coreDb, actor, { kind: 'server' }, operation, false, now)
+      .effect !== 'allow'
+  )
+    throw new DeploymentAdminRequiredError();
+}
+
+/** Current canonical User admission is the primary Kernel result; dependency failures remain caller-owned. */
 export function isCanonicalUserOperationAuthorized(
   coreDb: CoreDb,
   actor: Actor,
   operation: string = 'api.call'
 ): boolean {
-  if (
-    !isCanonicalUserActive(coreDb, actor.userId) ||
-    !(
-      actor.kind === 'local' ||
-      actor.kind === 'session' ||
-      isCurrentDeploymentAdministrator(coreDb, actor)
-    )
-  )
-    return false;
+  const input = readProductAuthorizationInput(
+    coreDb,
+    actor,
+    { kind: 'user' },
+    operation,
+    false,
+    new Date()
+  );
   try {
-    return evaluateUserAccess({ userId: actor.userId, operation }).effect === 'allow';
+    return evaluateProductAccess(input).effect === 'allow';
   } catch {
     return false;
   }
@@ -745,9 +829,7 @@ async function authorizeWorkspaceOperation(
   if (!workspaceId) {
     return workspaceAccessDenied();
   }
-  const authorized = nonempty(context.req.param('threadId'))
-    ? authorizeWorkspaceEligibility(input.coreDb, actor, workspaceId, route.access)
-    : authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
+  const authorized = authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
   if (
     !authorized ||
     (route.access.resolver === 'actor-quick-chat-workspace' && !authorized.isOwner)
@@ -869,45 +951,25 @@ export function authorizeWorkspace(
     readonly authentication?: PublicOperationAccess['authentication'];
   }
 ): AuthorizedWorkspace | null {
-  const eligible = authorizeWorkspaceEligibility(coreDb, actor, workspaceId, access);
-  if (!eligible) return null;
+  const input = readProductAuthorizationInput(
+    coreDb,
+    actor,
+    { kind: 'workspace', workspaceId },
+    access.policyOperation,
+    access.mutating,
+    new Date()
+  );
   try {
-    const decision = isCurrentDeploymentAdministrator(coreDb, actor)
-      ? evaluateAdministratorWorkspaceAccess({
-          userId: actor.userId,
+    const decision = evaluateProductAccess(input);
+    return decision.effect === 'allow'
+      ? {
           workspaceId,
-          operation: access.policyOperation,
-        })
-      : evaluateWorkspaceMemberAccess({ operation: access.policyOperation });
-    return decision.effect === 'allow' ? eligible : null;
+          isOwner: input.target.kind === 'workspace' && input.target.membership === 'owner',
+        }
+      : null;
   } catch {
     return null;
   }
-}
-
-/** Establishes current scope eligibility before the native resolver selects its one primary Kernel target. */
-export function authorizeWorkspaceEligibility(
-  coreDb: CoreDb,
-  actor: Actor,
-  workspaceId: string,
-  access: Pick<PublicOperationAccess, 'mutating'> & {
-    readonly authentication?: PublicOperationAccess['authentication'];
-  }
-): AuthorizedWorkspace | null {
-  if (readonlyTokenCannotMutate(actor, access)) return null;
-  if (isCurrentDeploymentAdministrator(coreDb, actor)) {
-    if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) return null;
-  } else if (
-    !isUsablePresentedAccessToken(coreDb, actor) ||
-    !tokenIncludesWorkspace(actor, workspaceId, access.authentication) ||
-    !resolveWorkspaceMembershipRelation(coreDb, workspaceId, actor.userId)
-  ) {
-    return null;
-  }
-  return {
-    isOwner: resolveWorkspaceMembershipRelation(coreDb, workspaceId, actor.userId) === 'owner',
-    workspaceId,
-  };
 }
 
 /**
@@ -932,8 +994,21 @@ function denyIfThreadInaccessible(
   if (threadId === null) {
     return null;
   }
-  if (isThreadIdVisible(input.store, workspaceId, threadId, actor.userId, false, operation)) {
-    return null;
+  try {
+    const workspace = input.store.getWorkspace(workspaceId);
+    const decision = evaluateThreadAuthorization({
+      workspaceId,
+      thread: input.store.getThread(workspaceId, threadId),
+      userId: actor.userId,
+      administrator: isCurrentDeploymentAdministrator(input.coreDb, actor),
+      personalWorkspaceId:
+        workspace.kind === 'personal' ? input.quickChatWorkspaceIdForUser(actor.userId) : undefined,
+      policy: input.store.getWorkspaceResourceAccess(workspaceId),
+      operation,
+    });
+    if (decision.effect === 'allow') return null;
+  } catch {
+    // Missing, corrupt and inaccessible Thread facts share the existing non-disclosing response.
   }
   return threadNotFound();
 }
@@ -1156,9 +1231,13 @@ function threadNotFound(): Response {
 }
 
 /** Checks the existing current-administrator owner without treating unpresented Tokens as authority. */
-export function isCurrentDeploymentAdministrator(coreDb: CoreDb, actor: Actor): boolean {
+export function isCurrentDeploymentAdministrator(
+  coreDb: CoreDb,
+  actor: Actor,
+  now = new Date()
+): boolean {
   try {
-    requireCurrentDeploymentAdmin(coreDb, actor);
+    requireCurrentDeploymentAdmin(coreDb, actor, now);
     return true;
   } catch (error) {
     if (error instanceof DeploymentAdminRequiredError) return false;

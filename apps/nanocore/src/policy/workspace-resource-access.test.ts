@@ -1,6 +1,7 @@
 import type { PolicyDocumentV1 } from '@openkit/protocol';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { evaluateProductAccess } from './workspace-access.js';
 import {
   evaluateWorkspaceResourceAccess,
   type ResourcePolicyActor,
@@ -45,28 +46,89 @@ const decide = (
   statements: PolicyDocumentV1['statements'],
   operation = 'thread.read',
   current: ResourcePolicyActor = actor,
-  eligible = true
+  audience: Partial<
+    Pick<
+      Parameters<typeof evaluateWorkspaceResourceAccess>[0],
+      'administrator' | 'visibility' | 'privateOwnerUserId' | 'personalWorkspaceId'
+    >
+  > = {}
 ) =>
   evaluateWorkspaceResourceAccess({
     workspaceId,
     policy: { schemaVersion: 1, statements },
     actor: current,
-    eligible,
+    administrator: false,
+    visibility: 'workspace',
+    ...audience,
     resource,
     operation,
   });
 
 describe('named Workspace resource Kernel projection', () => {
-  it('requires both baseline eligibility and the additional exact resource association', () => {
+  it('requires the additional resource association independently of primary admission', () => {
     expect(decide([]).effect).toBe('allow');
     expect(decide([boundary, permission]).effect).toBe('allow');
-    expect(decide([boundary, permission]).trace.policyClasses).toHaveLength(2);
     expect(decide([boundary, permission], 'turn.run').effect).toBe('deny');
     expect(
       decide([boundary, permission], 'thread.read', { kind: 'user', userId: otherUserId }).effect
     ).toBe('deny');
-    expect(decide([boundary, permission], 'thread.read', actor, false).effect).toBe('deny');
-    expect(decide([boundary]).effect).toBe('deny');
+    // Core Policy: a resource allocation cannot restore missing current membership.
+    const primary = evaluateProductAccess({
+      facts: {
+        userId,
+        activeUser: true,
+        administrator: false,
+        credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+      },
+      target: { kind: 'workspace', workspaceId, active: true, membership: null },
+      operation: 'thread.read',
+      mutating: false,
+    });
+    expect(primary.effect).toBe('deny');
+    expect(decide([boundary, permission]).effect).toBe('allow');
+    const revoked = decide([boundary]);
+    expect(revoked.effect).toBe('deny');
+    expect(revoked.reasons).toContainEqual(expect.objectContaining({ code: 'missing-privilege' }));
+    expect(revoked.reasons).not.toContainEqual(expect.objectContaining({ code: 'invalid-policy' }));
+  });
+
+  it('keeps private and personal audiences mandatory beside exact allocation', () => {
+    const privateAudience = { visibility: 'private' as const, privateOwnerUserId: userId };
+    expect(decide([], 'thread.read', actor, privateAudience).effect).toBe('allow');
+    const otherActor = { kind: 'user' as const, userId: otherUserId };
+    const denied = decide([], 'thread.read', otherActor, privateAudience);
+    expect(denied.effect).toBe('deny');
+    expect(denied.reasons).toContainEqual(expect.objectContaining({ code: 'missing-privilege' }));
+    expect(denied.reasons).not.toContainEqual(expect.objectContaining({ code: 'invalid-policy' }));
+    expect(
+      decide([], 'thread.read', otherActor, { ...privateAudience, administrator: true }).effect
+    ).toBe('allow');
+    expect(
+      decide([boundary, permission], 'thread.read', actor, {
+        ...privateAudience,
+        privateOwnerUserId: otherUserId,
+      }).effect
+    ).toBe('deny');
+    expect(decide([], 'thread.read', actor, { personalWorkspaceId: workspaceId }).effect).toBe(
+      'allow'
+    );
+    const personalAudience = { personalWorkspaceId: allocateEntityId('ws') };
+    expect(decide([], 'thread.read', actor, personalAudience).effect).toBe('deny');
+    expect(
+      decide([], 'thread.read', actor, { ...personalAudience, administrator: true }).effect
+    ).toBe('allow');
+    expect(
+      decide([boundary], 'thread.read', actor, {
+        ...privateAudience,
+        administrator: true,
+      }).effect
+    ).toBe('deny');
+    expect(
+      decide([boundary, permission], 'thread.read', actor, {
+        ...privateAudience,
+        administrator: true,
+      }).effect
+    ).toBe('allow');
   });
 
   it('honors explicit prohibitions and narrows later operations without changing unrelated Threads', () => {

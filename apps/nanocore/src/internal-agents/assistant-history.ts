@@ -73,7 +73,8 @@ function requireAudience(input: AssistantHistoryContext): void {
       actorRef,
       'thread.read',
       true,
-      actor ?? input.nativeAuthority?.requestActor
+      actor ?? input.nativeAuthority?.requestActor,
+      { mutating: false }
     ) ||
     (actor &&
       !isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {

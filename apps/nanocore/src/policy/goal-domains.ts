@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
+  evaluateProductAuthorization,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
@@ -37,17 +38,13 @@ import {
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
-import { evaluateAdministratorWorkspaceAccess } from './server-access.js';
 import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
   policyScopeContains,
   validatePolicyDocument,
 } from './statements.js';
-import {
-  evaluateWorkspaceMemberAccess,
-  PRODUCT_OPERATION_ACCESS_RIGHTS,
-} from './workspace-access.js';
+import { PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 
 /** Existing delegation format with the Goal lineage required by its native consumer. */
 export type GoalDomainStatement = z.infer<typeof PolicyDelegationV1Schema>;
@@ -344,13 +341,13 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       })
     )
       throw new Error('Goal Coordinator human credential is no longer authorized.');
-    const kernel = isCurrentDeploymentAdministrator(deps.coreDb, actor)
-      ? evaluateAdministratorWorkspaceAccess({
-          userId: actor.userId,
-          workspaceId,
-          operation: 'workspace.configure',
-        })
-      : evaluateWorkspaceMemberAccess({ operation: 'workspace.configure' });
+    const kernel = evaluateProductAuthorization(
+      deps.coreDb,
+      actor,
+      { kind: 'workspace', workspaceId },
+      'workspace.configure',
+      true
+    );
     if (kernel.effect !== 'allow') throw new Error('Goal administration Kernel admission failed.');
     return kernel;
   }
@@ -410,13 +407,13 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     const kernel =
       administration?.kernel ??
       (context.actor
-        ? isCurrentDeploymentAdministrator(deps.coreDb, context.actor)
-          ? evaluateAdministratorWorkspaceAccess({
-              userId: context.actor.userId,
-              workspaceId: context.key.workspaceId,
-              operation: 'workspace.write',
-            })
-          : evaluateWorkspaceMemberAccess({ operation: 'workspace.write' })
+        ? evaluateProductAuthorization(
+            deps.coreDb,
+            context.actor,
+            { kind: 'workspace', workspaceId: context.key.workspaceId },
+            'workspace.write',
+            true
+          )
         : null);
     const subject =
       administration?.subject ??

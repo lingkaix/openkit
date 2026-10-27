@@ -561,7 +561,7 @@ describe('Workspace JSON transfer cutover', () => {
           policyOperation: 'workspace.export',
         }
       )
-    ).toBe(true);
+    ).toBe(false);
     const registry = db.sqlite
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
       .all();
@@ -573,8 +573,8 @@ describe('Workspace JSON transfer cutover', () => {
     // Parsing the complete response as this exact refusal proves no archive bytes were released.
     expect(JSON.parse(body.toString())).toEqual({
       protocolVersion: PROTOCOL_VERSION,
-      code: 'workspace_export_archive_forbidden',
-      message: 'Workspace export archive is unavailable.',
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
     });
     for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
       const response = await app.request(

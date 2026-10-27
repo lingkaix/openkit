@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import type { Actor } from './auth/identity.js';
 import {
   DeploymentAdminRequiredError,
-  requireCurrentDeploymentAdmin,
+  requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
@@ -232,7 +232,7 @@ export function createAdministratorCleanupOperationImplementations(
 /** Keeps authority loss distinct from safe source-specific uncertainty. */
 function requireAdministrator(coreDb: CoreDb, actor: Actor): void {
   try {
-    requireCurrentDeploymentAdmin(coreDb, actor);
+    requireAdministratorOperation(coreDb, actor, 'audit.read');
   } catch (error) {
     if (error instanceof DeploymentAdminRequiredError) {
       throw new OperationError(

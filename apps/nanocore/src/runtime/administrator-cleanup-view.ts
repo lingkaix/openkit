@@ -10,7 +10,7 @@ import {
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
-  requireCurrentDeploymentAdmin,
+  requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
@@ -192,7 +192,7 @@ export function readRuntimeCleanupView(input: ReadRuntimeCleanupViewInput): Runt
 /** Checks the existing authority owner without converting a denial into source availability. */
 function requireAdministrator(input: ReadRuntimeCleanupViewInput): void {
   try {
-    requireCurrentDeploymentAdmin(input.coreDb, input.actor, input.now);
+    requireAdministratorOperation(input.coreDb, input.actor, 'audit.read', input.now);
   } catch (error) {
     if (error instanceof DeploymentAdminRequiredError) throw error;
     throw unavailable(error);

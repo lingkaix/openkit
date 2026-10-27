@@ -61,7 +61,7 @@ import {
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
-import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
+import { evaluateProductAccess } from './workspace-access.js';
 
 /** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */
 async function retainCompletedTaskFixture(
@@ -491,7 +491,17 @@ async function fixture() {
     subject,
     operation: 'tool.use',
     resource,
-    humanKernel: evaluateWorkspaceMemberAccess({ operation: 'tool.use' }),
+    humanKernel: evaluateProductAccess({
+      facts: {
+        userId: userId,
+        activeUser: true,
+        administrator: false,
+        credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+      },
+      target: { kind: 'workspace', workspaceId: workspace.id, active: true, membership: 'member' },
+      operation: 'tool.use',
+      mutating: false,
+    }),
   };
   const grant: Parameters<Administer>[0]['grant'] = {
     id: 'issue-task-extension',

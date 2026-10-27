@@ -45,13 +45,8 @@ import {
   listPortableWorkspaceAuditEvents,
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
-import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import {
-  isCurrentDeploymentAdministrator,
-  isWorkspaceOperationAuthorized,
-} from '../auth/operation-authorizer.js';
-import { isThreadVisible } from '../auth/thread-visibility.js';
+import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
   finishCapabilityCall,
@@ -79,9 +74,7 @@ import {
   listStoredWorkspaceEvidenceBundles,
 } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
-import { assertConversationRetrievalTraceReadable } from '../internal-agents/assistant-history.js';
 import {
-  assertPortableWorkspaceNotebookDisclosure,
   bindImportedWorkspaceNotebookTraces,
   importedWorkspaceNotebookFiles,
   readPortableWorkspaceNotebookPages,
@@ -174,7 +167,6 @@ import {
   importLightAppFamilies,
   listExportableLightAppFamilies,
 } from './generative-portability.js';
-import { assertKnowledgeRetrievalTraceReadable } from './index-rebuild.js';
 import { applyScopedMigrations } from './migrate.js';
 import { exportRecurringPortableHistory } from './recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
@@ -220,7 +212,6 @@ import {
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
-  readWorkspaceExportThreads,
   readWorkspaceImportSnapshot,
   verifyImportedWorkerContextPackageSnapshot,
   type WorkspaceImportSnapshot,
@@ -291,7 +282,7 @@ export function importedWorkspaceExists(
 /**
  * Requires the creating actor's current source-export authority and persisted export attribution.
  *
- * The existing storage call and usage rows are the creator proof; missing or contradictory proof fails closed. Private history also requires the creator's current administrator eligibility, derived from verified content.
+ * The existing storage call and usage rows are the creator proof; missing or contradictory proof fails closed. Every download requires current administrator export authority, independent of the retained history audience.
  *
  * @param dataRoot Canonical data root carrying the current deployment marker.
  * @param _store Store supplied by unchanged archive callers; creator authority comes only from Core.
@@ -384,11 +375,7 @@ export function canReadWorkspaceExport(
             row.status === 'succeeded' &&
             row.workspace_id === verified.manifest.workspaceId &&
             row.responsible_user_id === actor.userId
-        ) &&
-        (!readWorkspaceExportThreads(verified.fileContents).some(
-          (thread) => thread.visibility === 'private'
-        ) ||
-          isCurrentDeploymentAdministrator(coreDb, actor))
+        )
       );
     } finally {
       workspaceDb.sqlite.close();
@@ -1421,29 +1408,22 @@ export async function recordVerifiedWorkspaceExportUsage(
 
 /** Publishes and verifies export bytes inside the existing synchronous capacity section. */
 function createVerifiedWorkspaceExportFiles({
-  authorityActor,
   authorityUserId,
-  administratorEligible = false,
   coreDb,
   dataRoot,
   deletionRecoveryRequestId,
   exportId = allocateEntityId('wsexp'),
   repositoryWorkspaceDb,
-  requestActor,
   store,
   workspaceId,
 }: {
-  readonly authorityActor?: ActorRef;
   readonly authorityUserId: string;
-  /** Trusted current administrator eligibility; JSON input cannot select this audience. */
-  readonly administratorEligible?: boolean;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string;
   /** Exact durable deletion request that grants only its recovery export authority. */
   readonly deletionRecoveryRequestId?: string;
   readonly exportId?: string;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly requestActor?: Actor;
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
@@ -1460,18 +1440,10 @@ function createVerifiedWorkspaceExportFiles({
           workspaceId,
         }
       : undefined;
-  const deletionRecoveryAuthorized = deletionRecoveryContext
-    ? assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext)
-    : false;
+  if (deletionRecoveryContext)
+    assertWorkspaceDeletionRecoveryExportAuthority(deletionRecoveryContext);
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
-  if (
-    !administratorEligible &&
-    !deletionRecoveryAuthorized &&
-    threads.some((thread) => thread.visibility === 'private')
-  ) {
-    throw new Error('Private Thread history requires a separately authorized export.');
-  }
   assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   assertCanonicalDirectory(dataRoot);
@@ -1630,30 +1602,7 @@ function createVerifiedWorkspaceExportFiles({
     : EMPTY_POLICY_DOCUMENT;
   if (!isDeepStrictEqual(authoredPolicy, store.getWorkspaceResourceAccess(workspaceId)))
     throw new Error('Workspace export requires matching saved and effective resource Policy.');
-  if (
-    !deletionRecoveryAuthorized &&
-    threads.some(
-      (thread) => !isThreadVisible(store, thread, authorityUserId, administratorEligible)
-    )
-  )
-    throw new Error('Workspace export source audience is unavailable.');
   const portableFileState = retainedPortableState;
-  if (!deletionRecoveryAuthorized) {
-    if (!requestActor || !portableFileState.notebookRevision)
-      throw new Error('Notebook export requires current source disclosure authority.');
-    assertPortableWorkspaceNotebookDisclosure({
-      dataRoot,
-      workspaceId,
-      notebookRevision: portableFileState.notebookRevision,
-      pages: portableFileState.nativeKnowledgePages,
-      access: {
-        store,
-        coreDb,
-        actor: authorityActor ?? { kind: 'user', id: authorityUserId },
-        requestActor,
-      },
-    });
-  }
   // A missing current file cannot establish that a reserved Turn was never published.
   if (coreDb) {
     const accepted = coreDb.sqlite
@@ -1679,44 +1628,9 @@ function createVerifiedWorkspaceExportFiles({
     retainedPortableState.recurringHistory ?? null,
     turns
   );
-  if (
-    portableFileState.retrievalTraceFiles.size > 0 &&
-    !deletionRecoveryAuthorized &&
-    (!authorityActor || !requestActor)
-  ) {
-    throw new Error('Workspace retrieval traces require current export authority.');
-  }
+  // Retained trace structure and digests remain required; administrator export has no per-source audience filter.
   for (const [path, trace] of portableFileState.retrievalTraceFiles) {
-    const { reference } = parseWorkspaceRetrievalTraceFile(
-      path,
-      serializeWorkspaceRetrievalTrace(trace),
-      workspaceId
-    );
-    if (!deletionRecoveryAuthorized) {
-      if ('sourceKind' in trace) {
-        if (!coreDb || !requestActor)
-          throw new Error('Conversation trace export requires current authority.');
-        assertConversationRetrievalTraceReadable({
-          store,
-          coreDb,
-          actor: requestActor,
-          workspaceId,
-          retrievalTraceRef: reference,
-        });
-        continue;
-      }
-      assertKnowledgeRetrievalTraceReadable({
-        dataRoot,
-        workspaceId,
-        access: {
-          store,
-          coreDb,
-          actor: authorityActor!,
-          requestActor: requestActor!,
-        },
-        retrievalTraceRef: reference,
-      });
-    }
+    parseWorkspaceRetrievalTraceFile(path, serializeWorkspaceRetrievalTrace(trace), workspaceId);
   }
   const workerContextTraces = [...portableFileState.workerContextPackageFiles]
     .filter(([path]) => path.endsWith('/context-package.json'))
@@ -1784,7 +1698,6 @@ function createVerifiedWorkspaceExportFiles({
   const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
   const exported = writeWorkspaceExportTree({
     sourceWorkspaceRoot: join(dataRoot, 'workspaces', workspaceId),
-    administratorEligible,
     ...(deletionRecoveryContext ? { deletionRecoveryContext } : {}),
     exportRoot,
     exportId,
@@ -1887,6 +1800,8 @@ function createVerifiedWorkspaceExportFiles({
 export async function createVerifiedWorkspaceExport(
   input: Parameters<typeof createVerifiedWorkspaceExportFiles>[0] & {
     readonly fileAdmission: FileStorageAdmission;
+    /** Actual actor retained only for usage attribution; primary admission precedes this writer. */
+    readonly authorityActor?: ActorRef;
   }
 ) {
   const exported = withCanonicalFileWriteAdmission(input.fileAdmission, () =>

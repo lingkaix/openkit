@@ -10,15 +10,13 @@ import Database from 'better-sqlite3';
 import {
   authorizedWorkspaceSet,
   authorizeWorkspace,
-  authorizeWorkspaceEligibility,
-  currentWorkerLineageWorkspaceEligibility,
+  currentWorkerLineageWorkspaceAuthority,
   DeploymentAdminRequiredError,
+  evaluateProductAuthorization,
   hasWorkspaceDeletionRetryAuthority,
   isCanonicalUserOperationAuthorized,
   isCurrentDeploymentAdministrator,
-  requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
-import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { readAutomationOperationLineage } from './automation-operations.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import { normalizeCapabilityRequestId } from './capability/usage-ledger.js';
@@ -33,11 +31,9 @@ import type {
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
-import { evaluateServerAccess } from './policy/server-access.js';
-import {
-  evaluateWorkspaceResourceAccess,
-  type ResourcePolicyActor,
-} from './policy/workspace-resource-access.js';
+import { evaluateProductAccess } from './policy/workspace-access.js';
+import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
+import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
 import { requireCoordinatorGoal } from './runtime/goal-owner.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -217,7 +213,42 @@ export async function admitOperation(
           503
         );
       try {
-        if (coreDb) requireCurrentDeploymentAdmin(coreDb, entry.actor);
+        if (
+          (coreDb
+            ? evaluateProductAuthorization(
+                coreDb,
+                entry.actor,
+                {
+                  kind: 'server',
+                  family:
+                    definition.target.kind === 'server' ? definition.target.family : undefined,
+                },
+                definition.policyOperation,
+                definition.mutating
+              )
+            : evaluateProductAccess({
+                facts: {
+                  userId: entry.actor.userId,
+                  activeUser: true,
+                  administrator: entry.actor.kind === 'local',
+                  credential: {
+                    current: entry.actor.kind === 'local',
+                    workspaceBound: false,
+                    readOnly: false,
+                    kind: entry.actor.kind,
+                  },
+                },
+                target: {
+                  kind: 'server',
+                  family:
+                    definition.target.kind === 'server' ? definition.target.family : undefined,
+                },
+                operation: definition.policyOperation,
+                mutating: definition.mutating,
+              })
+          ).effect !== 'allow'
+        )
+          throw new DeploymentAdminRequiredError();
       } catch (error) {
         if (error instanceof DeploymentAdminRequiredError)
           throw new OperationError(
@@ -235,18 +266,6 @@ export async function admitOperation(
           );
         throw error;
       }
-      try {
-        if (
-          evaluateServerAccess({
-            userId: entry.actor.userId,
-            operation: definition.policyOperation,
-            family: definition.target.kind === 'server' ? definition.target.family : undefined,
-          }).effect !== 'allow'
-        )
-          throw denied();
-      } catch {
-        throw denied();
-      }
       scope = { kind: 'server' };
       break;
     case 'authorized-workspace-set':
@@ -256,7 +275,7 @@ export async function admitOperation(
           !store ||
           !dependencies.repositoryWorkspaceDb ||
           admission.isClosed(entry.workspaceId) ||
-          !authorizeWorkspaceEligibility(coreDb, entry.actor, entry.workspaceId, definition)
+          !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
         )
           throw denied();
         const db = dependencies.repositoryWorkspaceDb(entry.workspaceId);
@@ -339,23 +358,22 @@ export async function admitOperation(
       if (entry.kind === 'worker' && workspaceId !== entry.lineage.workspaceId) throw denied();
       const authorized =
         entry.kind === 'worker'
-          ? currentWorkerLineageWorkspaceEligibility(coreDb, {
-              ...entry.lineage,
-              triggerActor: actorRef,
-            })
-          : authorizeWorkspaceEligibility(coreDb, entry.actor, workspaceId, definition);
+          ? currentWorkerLineageWorkspaceAuthority(
+              coreDb,
+              {
+                ...entry.lineage,
+                triggerActor: actorRef,
+              },
+              definition.policyOperation,
+              true
+            )
+          : authorizeWorkspace(coreDb, entry.actor, workspaceId, definition);
       if (
         definition.scope.kind === 'actor-quick-chat-workspace' &&
         (!authorized || typeof authorized === 'string' || !authorized.isOwner)
       )
         throw denied();
       if (definition.target.kind === 'workspace-deletion') {
-        if (
-          authorized &&
-          entry.kind !== 'worker' &&
-          !authorizeWorkspace(coreDb, entry.actor, workspaceId, definition)
-        )
-          throw denied();
         if (
           entry.kind !== 'public' ||
           (!authorized &&
@@ -408,19 +426,6 @@ export async function admitOperation(
         workspaceId,
         definition.policyOperation
       );
-      if (
-        entry.kind !== 'worker' &&
-        definition.target.kind !== 'addressed-thread' &&
-        definition.target.kind !== 'addressed-turn' &&
-        !(
-          definition.target.kind === 'optional-addressed-thread' &&
-          input[definition.target.threadField] !== undefined
-        ) &&
-        !resolvedLineage?.threadId &&
-        definition.target.kind !== 'workspace-deletion' &&
-        !authorizeWorkspace(coreDb, entry.actor, workspaceId, definition)
-      )
-        throw denied();
       if (
         entry.kind === 'worker' &&
         definition.target.kind !== 'addressed-thread' &&
@@ -494,17 +499,6 @@ function requireThreadAudience(
 ): void {
   const userId =
     entry.kind === 'worker' ? responsibleUserIdForActor(entry.actor) : entry.actor.userId;
-  if (
-    !isThreadIdVisible(
-      store,
-      workspaceId,
-      threadId,
-      userId ?? undefined,
-      entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
-      null
-    )
-  )
-    throw new OperationError('not_found', 'Thread not found.', 404);
   try {
     let actor: ResourcePolicyActor = { kind: 'user', userId: userId! };
     if (entry.kind === 'worker') {
@@ -518,11 +512,17 @@ function requireThreadAudience(
       };
     }
     if (
-      evaluateWorkspaceResourceAccess({
+      evaluateThreadAuthorization({
         workspaceId,
+        thread: store.getThread(workspaceId, threadId),
+        userId: userId!,
+        administrator:
+          entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
+        personalWorkspaceId:
+          store.getWorkspace(workspaceId).kind === 'personal'
+            ? quickChatWorkspaceIdForUser(userId!, store.getDataRoot())
+            : undefined,
         actor,
-        eligible: true,
-        resource: { family: 'thread', id: threadId },
         operation,
         policy: store.getWorkspaceResourceAccess(workspaceId),
       }).effect !== 'allow'
@@ -719,15 +719,7 @@ export function admitInternalOperation(
     !coreDb ||
     !store ||
     coreDb.dataRoot !== store.getDataRoot() ||
-    !authorizeWorkspaceEligibility(coreDb, entry.actor, entry.workspaceId, definition) ||
-    !isThreadIdVisible(
-      store,
-      entry.workspaceId,
-      entry.threadId,
-      entry.actor.userId,
-      isCurrentDeploymentAdministrator(coreDb, entry.actor),
-      null
-    )
+    !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
   )
     throw denied();
   try {

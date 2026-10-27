@@ -20,6 +20,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
@@ -33,7 +34,6 @@ import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
-import { evaluateWorkspaceMemberAccess } from '../policy/workspace-access.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
@@ -460,7 +460,13 @@ async function fixture() {
       credentialKind: 'worker-package' as const,
       responsibleHumanId: userId,
     },
-    humanKernel: evaluateWorkspaceMemberAccess({ operation: 'tool.use' }),
+    humanKernel: evaluateProductAuthorization(
+      coreDb,
+      actor,
+      { kind: 'workspace', workspaceId: workspace.id },
+      'tool.use',
+      true
+    ),
   };
   const input = {
     taskThreadId: thread.id,

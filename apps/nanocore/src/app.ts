@@ -61,6 +61,7 @@ import {
   authorizeWorkspace,
   currentWorkspaceAuthority,
   isWorkspaceOperationAuthorized,
+  readCurrentWorkspacePolicy,
   registerOperationAccessGuards,
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
@@ -70,7 +71,6 @@ import {
   restoreWorkspaceRetirementAdmission,
 } from './bootstrap/readiness.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
-
 import {
   type ChannelServices,
   createChannelServices,
@@ -148,7 +148,6 @@ import {
   isResourcePolicyRequesterCurrent,
 } from './policy/resource-policy-requests.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
-import { readCurrentWorkspacePolicy } from './policy/workspace-resource-access.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
