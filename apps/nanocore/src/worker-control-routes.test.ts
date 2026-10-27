@@ -78,6 +78,7 @@ import {
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 // The real client retry owner uses timers/promises; route tests control only its clock.
 vi.mock('node:timers/promises', async (original) => {
@@ -116,7 +117,9 @@ async function createWorkerControlRouteFixture(
   lineage: WorkerControlLineage;
   store: FsStore;
   token: string;
+  workspaceMutationAdmission: WorkspaceMutationAdmission;
 }> {
+  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const store = await createDemoStore();
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
@@ -168,8 +171,14 @@ async function createWorkerControlRouteFixture(
   const registration = gateway.registerSession(environmentPackage);
 
   return {
-    app: createApp({ mode: 'server', store, workerControlGateway: gateway }),
+    app: createApp({
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+      workspaceMutationAdmission,
+    }),
     environmentPackage,
+    workspaceMutationAdmission,
     gateway,
     lineage: {
       agentSessionId: testEntityId('as', 'as_control_route_1'),
@@ -445,6 +454,7 @@ describe('worker control routes', () => {
       binding
     );
     const app = createApp({
+      workspaceMutationAdmission: fixture.workspaceMutationAdmission,
       coreDb,
       mode: 'server',
       store: fixture.store,
@@ -771,6 +781,7 @@ describe('worker control routes', () => {
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
       const firstApp = createApp({
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store: fixture.store,
@@ -815,6 +826,7 @@ describe('worker control routes', () => {
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
       const restartedApp = createApp({
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store: fixture.store,
@@ -1140,7 +1152,8 @@ describe('worker control routes', () => {
   it('never persists worker bearer tokens in sequenced control state', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-token-redaction-'));
     const coreDb = openCoreDb(dataRoot);
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture();
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture();
     const token = 'okw_sequence_fingerprint_secret';
 
     try {
@@ -1158,7 +1171,13 @@ describe('worker control routes', () => {
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
       gateway.registerSession(environmentPackage);
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = createApp({
+        workspaceMutationAdmission,
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+      });
       const requests = [
         {
           accepted: heartbeatEnvelope(lineage, 1, 'running', 'alive'),
@@ -1634,7 +1653,8 @@ describe('worker control routes', () => {
 
   it('rejects non-lease tokens on the default database gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-non-lease-')));
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture();
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture();
 
     try {
       applyMigrations(coreDb);
@@ -1650,7 +1670,13 @@ describe('worker control routes', () => {
         environmentPackage,
         'lease-binding:missing_lease'
       );
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = createApp({
+        workspaceMutationAdmission,
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+      });
       const response = await app.request('/api/worker-control/heartbeat', {
         body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running')),
         headers: {
@@ -1670,7 +1696,8 @@ describe('worker control routes', () => {
 
   it('keeps worker-control database failures as internal server errors', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-db-error-')));
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture();
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture();
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
@@ -1683,7 +1710,12 @@ describe('worker control routes', () => {
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:database_failure',
     });
-    const app = createApp({ mode: 'server', store, workerControlGateway: gateway });
+    const app = createApp({
+      workspaceMutationAdmission,
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+    });
 
     coreDb.sqlite.close();
     const response = await app.request('/api/worker-control/heartbeat', {
@@ -2163,7 +2195,8 @@ describe('worker control routes', () => {
 
   it('resolves a live final-status binding inside its Core transaction', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-live-race-')));
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture();
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture();
 
     try {
       applyMigrations(coreDb);
@@ -2192,7 +2225,13 @@ describe('worker control routes', () => {
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = createApp({
+        workspaceMutationAdmission,
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+      });
       const response = await app.request('/api/worker-control/final-status', {
         body: JSON.stringify({
           body: { status: 'completed', stopReason: 'completed' },
@@ -2244,7 +2283,8 @@ describe('worker control routes', () => {
 
   it('rejects exact final-status replay when the authority deadline expires at transaction entry', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-race-')));
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture();
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture();
     let transactionCount = 0;
 
     try {
@@ -2305,7 +2345,13 @@ describe('worker control routes', () => {
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = createApp({
+        workspaceMutationAdmission,
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+      });
       const request = {
         body: JSON.stringify({
           body: { status: 'completed', stopReason: 'completed' },
@@ -2355,15 +2401,16 @@ describe('worker control routes', () => {
   it('retains the backend handle in the canonical Workspace across final-status replay', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-workspace-')));
     const sourceCommit = 'a'.repeat(40);
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture([
-      {
-        access: 'read-write',
-        id: 'repo_default',
-        sourceCommit,
-        sourceKind: 'remote-git',
-        workerPath: '/workspace/repo',
-      },
-    ]);
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture([
+        {
+          access: 'read-write',
+          id: 'repo_default',
+          sourceCommit,
+          sourceKind: 'remote-git',
+          workerPath: '/workspace/repo',
+        },
+      ]);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
     try {
@@ -2412,7 +2459,13 @@ describe('worker control routes', () => {
       recordWorkspaceInputSnapshots(workspaceDb, inputSnapshots);
       recordWorkspaceMaterializationRecords(workspaceDb, materializations);
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = createApp({
+        workspaceMutationAdmission,
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+      });
       const request = {
         body: JSON.stringify({
           body: { status: 'completed', stopReason: 'completed' },
@@ -2437,6 +2490,7 @@ describe('worker control routes', () => {
 
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       const restartedApp = createApp({
+        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -2549,7 +2603,8 @@ describe('worker control routes', () => {
 
   it('replays only exact final status while its lease is releasing', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-')));
-    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture();
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture();
 
     try {
       applyMigrations(coreDb);
@@ -2566,7 +2621,13 @@ describe('worker control routes', () => {
         'final_status_replay'
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = createApp({
+        workspaceMutationAdmission,
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+      });
       const authorization = `Bearer ${workerRouteToken(binding, 'worker-control')}`;
       const finalStatusBody = JSON.stringify({
         body: { status: 'completed', stopReason: 'completed' },
@@ -2595,6 +2656,7 @@ describe('worker control routes', () => {
       });
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       const restartedApp = createApp({
+        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,

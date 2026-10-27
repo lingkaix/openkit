@@ -1054,10 +1054,27 @@ describe('Workspace synchronization native projections', () => {
     const before = f.observed();
     const response = await f.http(id, input);
     const code =
-      condition === 'closed readiness' ? 'product_work_unavailable' : 'workspace_access_denied';
-    expect(response.status).toBe(condition === 'closed readiness' ? 503 : 403);
-    expect(await response.json()).toMatchObject({ code });
-    expect(await f.mcp(id, input)).toMatchObject({ isError: true, value: { code } });
+      condition === 'closed readiness'
+        ? 'product_work_unavailable'
+        : condition === 'deletion fence'
+          ? 'workspace_frozen'
+          : 'workspace_access_denied';
+    const refusal = {
+      code,
+      ...(condition === 'deletion fence'
+        ? {
+            details: {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              retryable: true,
+            },
+          }
+        : {}),
+    };
+    expect(response.status).toBe(
+      condition === 'closed readiness' ? 503 : condition === 'deletion fence' ? 409 : 403
+    );
+    expect(await response.json()).toMatchObject(refusal);
+    expect(await f.mcp(id, input)).toMatchObject({ isError: true, value: refusal });
     expect(f.observed()).toEqual(before);
   });
 });

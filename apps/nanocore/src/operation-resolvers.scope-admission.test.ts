@@ -67,6 +67,17 @@ describe('quarantined Workspace native admission', () => {
       expect(ownerFailure.message).not.toContain(thread.name);
       expect(await refusal(outsiderId)).toBe(outsiderBefore);
       expect(reads).not.toHaveBeenCalled();
+      const frozen = admission.tryFreeze(workspace.id, () => []);
+      expect(frozen.status).toBe('frozen');
+      if (frozen.status !== 'frozen') throw new Error('Expected real target capture exclusion.');
+      try {
+        expect(JSON.parse((await refusal(ownerUserId))!)).toEqual(ownerFailure);
+        expect(await refusal(outsiderId)).toBe(outsiderBefore);
+        expect(reads).not.toHaveBeenCalled();
+        expect(admission.isClosed(workspace.id)).toBe(true);
+      } finally {
+        frozen.release();
+      }
       reads.mockRestore();
     } finally {
       await shutdownControlStoreWorkerClient();
