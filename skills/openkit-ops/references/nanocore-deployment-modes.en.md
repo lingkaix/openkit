@@ -90,6 +90,8 @@ A missing, invalid, or wrong key leaves Vault locked and readiness degraded with
 
 ## Core Modes
 
+The source `start` and `dev` commands default `UV_THREADPOOL_SIZE` to `16`, matching the App image. Set it explicitly on the command to keep a different operator-selected value. A direct `node` invocation does not apply the source command's default.
+
 ### Local Mode
 
 Local mode reuses the recorded canonical local User. Product APIs use that identity without a server-mode session cookie.
