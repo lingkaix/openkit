@@ -998,15 +998,16 @@ export function recoverRunningCapabilityCalls(input: RecoverRunningCapabilityCal
  *
  * @param workspaceDb Workspace database that owns the ledger rows.
  * @param workspaceId Workspace id to export.
+ * @param selection Optional unsettled-only read without full-export contact annotations.
  * @returns Capability call records in stable storage order.
  */
 export function listWorkspaceCapabilityCalls(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
-  statuses?: readonly ('running' | 'unknown')[]
+  selection?: 'unsettled'
 ): CapabilityCallLedgerRecord[] {
   const noContact = new Set<string>();
-  for (const decision of statuses
+  for (const decision of selection
     ? []
     : listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)) {
     const context = decision.contextSummary;
@@ -1025,10 +1026,10 @@ export function listWorkspaceCapabilityCalls(
   return workspaceDb.sqlite
     .prepare(
       `SELECT * FROM capability_calls
-       WHERE workspace_id = ? ${statuses ? `AND (status IN (${statuses.map(() => '?').join(',')}) OR status NOT IN (${CapabilityCallStatusSchema.options.map(() => '?').join(',')}))` : ''}
+       WHERE workspace_id = ? ${selection ? `AND (status IN ('running','unknown') OR status NOT IN (${CapabilityCallStatusSchema.options.map(() => '?').join(',')}))` : ''}
        ORDER BY started_at, call_id`
     )
-    .all(workspaceId, ...(statuses ? [...statuses, ...CapabilityCallStatusSchema.options] : []))
+    .all(workspaceId, ...(selection ? CapabilityCallStatusSchema.options : []))
     .map((row) => {
       const call = capabilityCallFromRow(row);
       return noContact.has(call.id) ? { ...call, upstreamContacted: false as const } : call;
