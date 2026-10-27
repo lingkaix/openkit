@@ -204,9 +204,12 @@ export function createAdministrationOperationImplementations(input: Administrati
         const workspace = store.getWorkspace(workspaceId);
         if (workspace.kind !== 'personal')
           throw new OperationError('administration_failed', 'Administration failed.', 500);
-        const currentThread = store
-          .listThreads(workspaceId)
-          .find((thread) => thread.id === threadId);
+        let currentThread: ReturnType<FsStore['getThread']> | undefined;
+        try {
+          currentThread = store.getThread(workspaceId, threadId);
+        } catch (error) {
+          if (!(error instanceof StoreRecordNotFoundError)) throw error;
+        }
         if (request.threadId && !currentThread) {
           throw new OperationError('target_missing', 'Administration Thread is unavailable.', 409);
         }
@@ -232,11 +235,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 { visibility: 'private', privateOwnerUserId: actor.userId }
               ));
             const turnId = administrationTurnId(actor.userId, thread.id, request.requestId);
-            if (
-              store
-                .listThreadTurns(workspaceId, thread.id)
-                .some((candidate) => candidate.id === turnId)
-            ) {
+            if (administrationTurnExists(store, workspaceId, thread.id, turnId)) {
               throw new AdministrationRecoveryRequiredError();
             }
             const triggerActor = { kind: 'user', id: actor.userId } as const satisfies ActorRef;
@@ -267,11 +266,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 completedAt: createdAt,
               });
             } catch (error) {
-              if (
-                store
-                  .listThreadTurns(workspaceId, thread.id)
-                  .some((candidate) => candidate.id === turnId)
-              ) {
+              if (administrationTurnExists(store, workspaceId, thread.id, turnId)) {
                 throw new AdministrationRecoveryRequiredError();
               }
               throw error;
@@ -838,6 +833,24 @@ function replayAdministrationTurn(
   }
 }
 
+/** Checks the current parent and selected Turn; only a missing selected Turn means absence. */
+function administrationTurnExists(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): boolean {
+  store.getThread(workspaceId, threadId);
+  try {
+    store.getTurn(workspaceId, threadId, turnId);
+    return true;
+  } catch (error) {
+    if (error instanceof StoreRecordNotFoundError) return false;
+    throw error;
+  }
+}
+
+/** Classifies partial state without replacing the original failure when inspection fails. */
 function hasAdministrationTurn(
   store: FsStore,
   workspaceId: string,
@@ -845,7 +858,7 @@ function hasAdministrationTurn(
   turnId: string
 ): boolean {
   try {
-    return store.listThreadTurns(workspaceId, threadId).some((turn) => turn.id === turnId);
+    return administrationTurnExists(store, workspaceId, threadId, turnId);
   } catch {
     return false;
   }

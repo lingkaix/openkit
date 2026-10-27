@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, type Thread } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -12,7 +12,7 @@ import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { ResolvedInternalRoleProfile } from '../internal-agents/profile-resolver.js';
-import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -21,7 +21,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -40,6 +40,32 @@ const profileResolverFixture = vi.hoisted(() => ({
     | typeof import('../internal-agents/profile-resolver.js').resolveInternalRoleProfile,
   resolveInternalRoleProfile: vi.fn(),
 }));
+
+const retainedBodyObservation = vi.hoisted(() => ({
+  active: undefined as { itemIds: Set<string>; bodies: number } | undefined,
+}));
+
+// Observe actual retained bytes without replacing Store reads or filesystem effects.
+vi.mock('node:fs', async (load) => {
+  const actual = await load<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      const value = Reflect.apply(actual.readFileSync, actual, args);
+      const active = retainedBodyObservation.active;
+      if (active) {
+        let id: string | undefined;
+        try {
+          id = JSON.parse(value.toString())?.id;
+        } catch {
+          // Other content is outside the retained Item-body observation.
+        }
+        if (id && active.itemIds.has(id)) active.bodies++;
+      }
+      return value;
+    }) as typeof actual.readFileSync,
+  };
+});
 
 vi.mock('../internal-agents/profile-resolver.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../internal-agents/profile-resolver.js')>();
@@ -67,6 +93,124 @@ afterEach(async () => {
 });
 
 describe('administration conversation route', () => {
+  it('refuses an incomplete request without growing unrelated retained-body work', async () => {
+    const samples: number[] = [];
+    for (const count of [1, 6]) {
+      const observed = { itemIds: new Set<string>(), bodies: 0 };
+      let inspect!: () => unknown;
+      let before: unknown;
+      let result: Awaited<ReturnType<typeof postAdministrationAdmissionTurn>>;
+      try {
+        result = await postAdministrationAdmissionTurn({
+          label: `incomplete-history-${count}`,
+          toolCall: true,
+          prepare: async (store, thread, requestId) => {
+            const workspaceId = quickChatWorkspaceIdForUser(thread.privateOwnerUserId!);
+            for (let index = 0; index < count; index++) {
+              const turn = await store.createTurn(workspaceId, thread.id, 'Other work', {
+                kind: 'user',
+                id: thread.privateOwnerUserId!,
+              });
+              const item = await store.createItem({
+                id: allocateEntityId('it'),
+                owner: turn.owner,
+                threadId: thread.id,
+                turnId: turn.id,
+                type: 'assistant-message',
+                status: 'completed',
+                text: `Unrelated retained answer ${index}`,
+                createdAt: turn.startedAt!,
+                completedAt: turn.startedAt!,
+              });
+              observed.itemIds.add(item.id);
+              await store.completeTurn(turn.id, {
+                status: 'completed',
+                completedAt: turn.startedAt!,
+              });
+            }
+            await store.createTurn(
+              workspaceId,
+              thread.id,
+              'Original incomplete request',
+              { kind: 'user', id: thread.privateOwnerUserId! },
+              null,
+              {
+                turnId: deriveEntityId('tu', [
+                  'administration',
+                  thread.privateOwnerUserId!,
+                  thread.id,
+                  requestId,
+                ]),
+              }
+            );
+            inspect = () => ({
+              turns: store.listThreadTurns(workspaceId, thread.id),
+              items: store.listThreadItems(workspaceId, thread.id),
+              receipts: store.listCommandRequests(),
+            });
+            before = inspect();
+            retainedBodyObservation.active = observed;
+            // Full history must see real bodies before this observer can decide admission cost.
+            expect(store.listThreadItems(workspaceId, thread.id)).toHaveLength(count);
+            expect(observed.bodies).toBeGreaterThanOrEqual(count);
+            observed.bodies = 0;
+          },
+        });
+      } finally {
+        retainedBodyObservation.active = undefined;
+      }
+      expect(result.status).toBe(409);
+      expect(result.body).toMatchObject({ code: 'recovery_required' });
+      expect(result.createResponses).not.toHaveBeenCalled();
+      expect(inspect()).toEqual(before);
+      samples.push(observed.bodies);
+    }
+    // R2767 QP-3: unrelated retained history must not increase exact admission work.
+    expect(samples[1]).toBeLessThanOrEqual(samples[0]);
+  });
+
+  it('refuses unsupported required Thread metadata without treating it as absent', async () => {
+    let inspect!: () => Buffer;
+    let before: Buffer;
+    let privateThreadId: string;
+    let closeDatabase = () => {};
+    let result: Awaited<ReturnType<typeof postAdministrationAdmissionTurn>>;
+    try {
+      result = await postAdministrationAdmissionTurn({
+        label: 'required-thread-metadata-failure',
+        toolCall: true,
+        prepare: async (store, thread) => {
+          const workspaceId = quickChatWorkspaceIdForUser(thread.privateOwnerUserId!);
+          privateThreadId = thread.id;
+          expect(store.listThreadTurns(workspaceId, thread.id)).toEqual([]);
+          await shutdownControlStoreWorkerClient();
+          const database = openWorkspaceDb(store.getDataRoot()!, workspaceId);
+          closeDatabase = () => database.sqlite.close();
+          const original = database.sqlite
+            .prepare('SELECT record_json FROM control_threads WHERE id=?')
+            .get(thread.id) as { record_json: string };
+          // Damage acknowledged metadata only after its writer has stopped; all readers must refuse it.
+          expect(
+            database.sqlite
+              .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+              .run(
+                JSON.stringify({ ...JSON.parse(original.record_json), schemaVersion: 2 }),
+                thread.id
+              ).changes
+          ).toBe(1);
+          inspect = () => database.sqlite.serialize();
+          before = inspect();
+        },
+      });
+      expect(result.status).toBe(500);
+      expect(JSON.stringify(result.body)).not.toContain(privateThreadId!);
+      expect(result.createResponses).not.toHaveBeenCalled();
+      expect(inspect()).toEqual(before!);
+    } finally {
+      closeDatabase();
+    }
+  });
+
   it.each([
     false,
     true,
@@ -963,6 +1107,7 @@ async function postAdministrationAdmissionTurn(options: {
   readonly label: string;
   readonly toolCall: boolean;
   readonly stripContextManagement?: boolean;
+  readonly prepare?: (store: FsStore, thread: Thread, requestId: string) => Promise<void>;
 }): Promise<{
   readonly status: number;
   readonly body: {
@@ -1108,6 +1253,8 @@ async function postAdministrationAdmissionTurn(options: {
     },
   });
 
+  const requestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await options.prepare?.(store, thread, requestId);
   const response = await app.request(
     ...operationRequest(
       'administration.conversation-submit',
@@ -1117,7 +1264,7 @@ async function postAdministrationAdmissionTurn(options: {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           input: 'List retained Worker environments in my current Quick Chat Workspace.',
-          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          requestId,
           threadId: thread.id,
         }),
       }
@@ -1125,7 +1272,9 @@ async function postAdministrationAdmissionTurn(options: {
   );
   return {
     status: response.status,
-    body: (await response.json()) as {
+    body: (response.headers.get('content-type')?.includes('application/json')
+      ? await response.json()
+      : { message: await response.text() }) as {
       outcome: string;
       explanation: string;
       turn: { status: string; error: { code: string } | null };
