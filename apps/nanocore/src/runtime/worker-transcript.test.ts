@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
+import { allocateEntityId } from '@openkit/protocol';
+import { afterEach, describe, expect, expectTypeOf, it, onTestFinished, vi } from 'vitest';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -33,14 +34,44 @@ import {
   type WorkerTranscriptPayload,
 } from './worker-transcript.js';
 
+const retainedBodyObservation = vi.hoisted(() => ({
+  active: undefined as { itemIds: Set<string>; bodies: number } | undefined,
+}));
+
+// Observe actual retained bytes without replacing Store reads or filesystem effects.
+vi.mock('node:fs', async (load) => {
+  const actual = await load<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      const value = Reflect.apply(actual.readFileSync, actual, args);
+      const active = retainedBodyObservation.active;
+      if (active) {
+        let id: string | undefined;
+        try {
+          id = JSON.parse(value.toString())?.id;
+        } catch {
+          // Other content is outside the retained Item-body observation.
+        }
+        if (id && active.itemIds.has(id)) active.bodies++;
+      }
+      return value;
+    }) as typeof actual.readFileSync,
+  };
+});
+
 /**
  * Creates a package fixture for transcript import tests.
  *
+ * @param beforeSource Optional acknowledged history setup before the active source Turn.
  * @returns Store, turn id, and environment package.
  */
-async function createTranscriptFixture() {
+async function createTranscriptFixture(
+  beforeSource?: (store: Awaited<ReturnType<typeof createDemoStore>>) => Promise<void>
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-transcript-'));
   const store = await createDemoStore({ dataRoot });
+  await beforeSource?.(store);
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -981,6 +1012,124 @@ function prepareCandidate(
 }
 
 describe('live Artifact Material candidate validation', () => {
+  it('prepares the same exact source candidate without growing unrelated retained-body work', async () => {
+    const samples: number[] = [];
+    for (const count of [1, 6]) {
+      const observed = { itemIds: new Set<string>(), bodies: 0 };
+      const fixture = await createTranscriptFixture(async (historyStore) => {
+        const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+        const threadId = 'th_00000000-0000-7000-8000-000000000001';
+        for (let index = 0; index < count; index++) {
+          const turn = await historyStore.createTurn(workspaceId, threadId, 'Other work', {
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          });
+          const item = await historyStore.createItem({
+            id: allocateEntityId('it'),
+            owner: turn.owner,
+            threadId,
+            turnId: turn.id,
+            type: 'assistant-message',
+            status: 'completed',
+            // Core Storage's 65,536-byte inline boundary leaves these real bodies file-backed.
+            text: `Unrelated answer ${index}: ${'x'.repeat(70_000)}`,
+            createdAt: turn.startedAt!,
+            completedAt: turn.startedAt!,
+          });
+          observed.itemIds.add(item.id);
+          await historyStore.completeTurn(turn.id, {
+            status: 'completed',
+            completedAt: turn.startedAt!,
+          });
+        }
+      });
+      const { store, workspaceDb, environmentPackage } = fixture;
+      const { workspaceId, threadId } = environmentPackage.scope;
+      await shutdownControlStoreWorkerClient();
+      const source = store.getTurnById(fixture.turn.id);
+      expect(source).toMatchObject({
+        agentId: environmentPackage.agent.agentId,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+      });
+      const before = workspaceDb.sqlite.serialize();
+      const expected = prepareCandidate(fixture);
+      let candidate: ReturnType<typeof prepareCandidate>;
+      try {
+        retainedBodyObservation.active = observed;
+        // The real history read must see the bodies before this observer can decide its cost.
+        expect(store.listThreadItems(workspaceId, threadId)).toHaveLength(count);
+        expect(observed.bodies).toBeGreaterThanOrEqual(count);
+        observed.bodies = 0;
+        candidate = prepareCandidate(fixture);
+      } finally {
+        retainedBodyObservation.active = undefined;
+      }
+      expect(candidate).toEqual(expected);
+      expect(candidate).toMatchObject({
+        artifact: {
+          id: testEntityId('ar', 'worker-artifact-candidate'),
+          workspaceId,
+          threadId,
+          turnId: fixture.turn.id,
+          contentDigest: artifactDigest(Buffer.from('# Candidate\n')),
+          origin: {
+            kind: 'turn-output',
+            threadId,
+            turnId: fixture.turn.id,
+            requestId: 'request_file',
+          },
+        },
+        reviewInput: {
+          sourceThreadId: threadId,
+          sourceTurnId: fixture.turn.id,
+          sourceAgentId: environmentPackage.agent.agentId,
+          materialProposal: null,
+        },
+      });
+      expect(store.getTurnById(fixture.turn.id)).toEqual(source);
+      expect(importedOwnerCounts(fixture)).toEqual({
+        artifacts: 0,
+        references: 0,
+        reviews: { count: 0 },
+      });
+      expect(workspaceDb.sqlite.serialize()).toEqual(before);
+      samples.push(observed.bodies);
+    }
+    // R2767 QP-3: unrelated retained history must not increase exact source preparation work.
+    expect(samples[1]).toBeLessThanOrEqual(samples[0]);
+  });
+
+  it('refuses unsupported current Thread metadata before otherwise valid candidate preparation', async () => {
+    const fixture = await createTranscriptFixture();
+    expect(prepareCandidate(fixture).reviewInput).toMatchObject({
+      sourceThreadId: fixture.turn.threadId,
+      sourceTurnId: fixture.turn.id,
+      sourceAgentId: fixture.environmentPackage.agent.agentId,
+    });
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
+    await shutdownControlStoreWorkerClient();
+    const { sqlite } = fixture.workspaceDb;
+    const original = sqlite
+      .prepare('SELECT record_json FROM control_threads WHERE id=?')
+      .get(fixture.turn.threadId) as { record_json: string };
+    // Damage acknowledged metadata only after its writer stops; selected content cannot replace it.
+    expect(
+      sqlite
+        .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+        .run(
+          JSON.stringify({ ...JSON.parse(original.record_json), schemaVersion: 2 }),
+          fixture.turn.threadId
+        ).changes
+    ).toBe(1);
+    const before = sqlite.serialize();
+    expect(() => prepareCandidate(fixture)).toThrow();
+    expect(sqlite.serialize()).toEqual(before);
+  });
+
   it('requires exact canonical source assignment before candidate publication', async () => {
     const fixture = await createTranscriptFixture();
     await fixture.store.updateTurn(fixture.turn.id, { agentId: 'other-agent' });

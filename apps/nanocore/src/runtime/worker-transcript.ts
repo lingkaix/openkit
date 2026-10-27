@@ -18,6 +18,7 @@ import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
   type FsStore,
+  StoreRecordNotFoundError,
 } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { artifactReferenceItemId } from '../storage/workspace-file-records.js';
@@ -316,9 +317,18 @@ export function prepareWorkerArtifact(input: {
   } = input;
   if (workspaceDb.workspaceId !== environmentPackage.scope.workspaceId)
     throw transcriptError('recovery_required', 'Artifact Workspace authority is mismatched.');
-  const sourceTurn = store
-    .listThreadTurns(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)
-    .find((turn) => turn.id === environmentPackage.scope.turnId);
+  // Required current parent failures must not become selected-Turn absence.
+  store.getThread(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId);
+  let sourceTurn: ReturnType<FsStore['getTurn']> | undefined;
+  try {
+    sourceTurn = store.getTurn(
+      environmentPackage.scope.workspaceId,
+      environmentPackage.scope.threadId,
+      environmentPackage.scope.turnId
+    );
+  } catch (error) {
+    if (!(error instanceof StoreRecordNotFoundError)) throw error;
+  }
   const sourceAgentId = sourceTurn?.agentId ?? null;
   if (
     !sourceTurn ||
