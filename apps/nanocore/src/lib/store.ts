@@ -1,3 +1,5 @@
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+
 export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-request-records.js';
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -1341,6 +1343,7 @@ export class FsStore {
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private turnAdmissionHooks: TurnAdmissionHooks | null = null;
   private terminalHookDepth = 0;
+  private workspaceMutationAdmission?: WorkspaceMutationAdmission;
   private readonly dataRoot: string | null;
 
   /** Validates native product closure and file-owned resources after their native journals are present. */
@@ -3288,6 +3291,34 @@ export class FsStore {
     return page;
   }
 
+  /** Joins every native publisher to the same application-owned Workspace gate, including background admissions. */
+  public setWorkspaceMutationAdmission(admission: WorkspaceMutationAdmission): void {
+    if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
+      throw new Error('Store already has a different Workspace mutation owner.');
+    if (this.dataRoot) getControlStoreWorkerClient(admission);
+    this.workspaceMutationAdmission = admission;
+  }
+
+  /** Acquires the existing gate for a direct producer; this creates no separate writer registry. */
+  public enterWorkspaceMutation(
+    workspaceId: string,
+    exclusion: 'ordinary' | 'capture' = 'ordinary'
+  ): () => void {
+    const release = this.workspaceMutationAdmission?.enter(workspaceId, exclusion);
+    if (release === null)
+      throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+        details: {
+          workspaceId,
+          operation: 'capture',
+          retryable: true,
+          blockers: [
+            { kind: 'publication', reason: 'frozen', reference: { workspaceId }, actions: [] },
+          ],
+        },
+      });
+    return release ?? (() => undefined);
+  }
+
   /** Orders head capture through ACK; file/effect owners stay outside this boundary. */
   private publishTurn<I, T>(
     owner: ControlProductOwner,
@@ -3298,13 +3329,19 @@ export class FsStore {
   ): Promise<T> {
     if (!this.dataRoot) return prepare(input);
     const scope = this.nativeScope(owner);
-    return getControlStoreWorkerClient().runTurnPublication(
-      `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
-      turns,
-      input,
-      prepare,
-      closeoutCallId
-    );
+    const release =
+      owner.kind === 'workspace'
+        ? this.enterWorkspaceMutation(owner.workspaceId, 'capture')
+        : () => undefined;
+    return getControlStoreWorkerClient()
+      .runTurnPublication(
+        `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
+        turns,
+        input,
+        prepare,
+        closeoutCallId
+      )
+      .finally(release);
   }
 
   /** Releases the native boundary before hooks, while retaining their shutdown lifetime. */
@@ -3409,35 +3446,43 @@ export class FsStore {
     journalIntents?: readonly ExecutionJournalIntent[],
     pending?: readonly ControlPendingCommandInput[]
   ): Promise<string | undefined> {
-    const client = getControlStoreWorkerClient();
-    const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
-    await client.open({
-      database,
-      path: scope.path,
-      dataRoot: this.dataRoot!,
-      create: false,
-      initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    if (admission)
-      return (
-        await client.transition(database, {
-          ...admission,
-          products,
-          entries,
-          ...(pending?.length ? { pending: [...pending] } : {}),
-        })
-      ).response.id;
-    await client.products(database, {
-      products,
-      entries,
-      ...(pending?.length ? { pending: [...pending] } : {}),
-      ...(journalIntents?.length
-        ? { journalIntents: journalIntents.map(encodeExecutionJournalValue) }
-        : {}),
-    });
-    return undefined;
+    const release =
+      scope.owner.kind === 'workspace'
+        ? this.enterWorkspaceMutation(scope.owner.workspaceId, 'capture')
+        : () => undefined;
+    try {
+      const client = getControlStoreWorkerClient();
+      const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot!,
+        create: false,
+        initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      if (admission)
+        return (
+          await client.transition(database, {
+            ...admission,
+            products,
+            entries,
+            ...(pending?.length ? { pending: [...pending] } : {}),
+          })
+        ).response.id;
+      await client.products(database, {
+        products,
+        entries,
+        ...(pending?.length ? { pending: [...pending] } : {}),
+        ...(journalIntents?.length
+          ? { journalIntents: journalIntents.map(encodeExecutionJournalValue) }
+          : {}),
+      });
+      return undefined;
+    } finally {
+      release();
+    }
   }
 
   /** Completes only the declared post-terminal Item/event publication under its unchanged native Turn. */
@@ -4631,7 +4676,13 @@ export class FsStore {
    * @returns Created turn.
    * @throws Error when the requested turn id already exists or file publication fails; retained files remain intact.
    */
-  public async createTurn(
+  public async createTurn(...args: Parameters<FsStore['createTurnPublication']>): Promise<Turn> {
+    const release = this.enterWorkspaceMutation(args[0]);
+    return this.createTurnPublication(...args).finally(release);
+  }
+
+  /** Prepares and publishes one Turn while its common admission remains held. */
+  private async createTurnPublication(
     workspaceId: string,
     threadId: string,
     input: string,

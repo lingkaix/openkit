@@ -14,7 +14,7 @@ type Identical<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 /** Exactly the definition's ids are callable on this client surface. */
 export type ExactClientKeys = AssertTrue<
-  Identical<keyof CoreClient['operations'], JsonOperationId>
+  Identical<keyof CoreClient['operations'], JsonOperationId | 'workspace.backup-download'>
 >;
 /** diagnostics.app follows the client reader; other operations follow the server output schema. */
 type ExpectedClientResult<K extends JsonOperationId> = K extends 'diagnostics.app'

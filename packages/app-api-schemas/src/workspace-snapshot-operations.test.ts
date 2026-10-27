@@ -19,13 +19,18 @@ const operationIds = [
   'workspace.move-reactivate',
 ] as const;
 
-/** Accepted W preparation declares existing recovery verbs without activating incomplete handlers. */
+/** C-a activates complete capture/verify/download; seven recovery verbs retain their W preparation. */
 describe('Workspace snapshot operation contract', () => {
-  it('keeps the exact administrator family uncomposed until real lifecycle handlers exist', () => {
+  it('composes exactly the three C-a handlers and leaves seven recovery definitions uncomposed', () => {
+    const composed = new Set<string>([
+      'workspace.backup-capture',
+      'workspace.backup-verify',
+      'workspace.backup-download',
+    ]);
     const definitions = schemas.WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS;
     expect(Object.keys(definitions).sort()).toEqual([...operationIds].sort());
     for (const id of operationIds) {
-      expect(Object.hasOwn(schemas.OPERATION_DEFINITIONS, id)).toBe(false);
+      expect(Object.hasOwn(schemas.OPERATION_DEFINITIONS, id)).toBe(composed.has(id));
       expect(definitions[id].scope).toEqual({ kind: 'server' });
       expect(definitions[id].policyOperation).toBe('api.call');
       expect([...definitions[id].credentials].sort()).toEqual(

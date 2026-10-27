@@ -262,7 +262,7 @@ const bootResult = await runBootPhases({
         });
         applyMigrations(coreDb);
         restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
-        restoreWorkspaceRecoveryAdmission(coreDb);
+        restoreWorkspaceRecoveryAdmission(coreDb, workspaceMutationAdmission);
         recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         // Only active server registry facts establish an expected Workspace; deletion may remove roots.
         for (const { workspaceId } of coreDb.sqlite
@@ -279,6 +279,7 @@ const bootResult = await runBootPhases({
           FsStore.validateFileAuthority(dataRoot);
         });
         sharedStore ??= new FsStore({ dataRoot });
+        sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
         recordBootStartAudit({
           coreDb,
@@ -370,6 +371,7 @@ const bootResult = await runBootPhases({
         // A later read-only Store construction must not remove another live request's bytes.
         discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
+        sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
         await recoverServerKnowledgeManagerTurns(sharedStore);
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(

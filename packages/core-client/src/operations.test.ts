@@ -5,7 +5,7 @@ import { createCoreClient } from './client.js';
 import { ProtocolValidationError } from './errors.js';
 
 describe('definition-derived client operations', () => {
-  it('uses exactly the JSON definition keys and validates before transport', async () => {
+  it('uses composed JSON keys plus the backup stream and validates before transport', async () => {
     let calls = 0;
     const client = createCoreClient({
       baseUrl: 'http://nanocore.test',
@@ -16,7 +16,9 @@ describe('definition-derived client operations', () => {
     });
     expect(Object.keys(client.operations)).toEqual(
       Object.entries(OPERATION_DEFINITIONS)
-        .filter(([, definition]) => definition.binding === 'json')
+        .filter(
+          ([id, definition]) => definition.binding === 'json' || id === 'workspace.backup-download'
+        )
         .map(([id]) => id)
     );
     for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
@@ -29,7 +31,7 @@ describe('definition-derived client operations', () => {
     }
     expect(calls).toBe(0);
     for (const [id] of Object.entries(OPERATION_DEFINITIONS).filter(
-      ([, definition]) => definition.binding === 'streaming'
+      ([id, definition]) => definition.binding === 'streaming' && id !== 'workspace.backup-download'
     ))
       expect(client.operations).not.toHaveProperty(id);
     expect(client.app).toHaveProperty('downloadWorkspaceExportArchive');
