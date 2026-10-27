@@ -145,8 +145,11 @@ it('allows the administrator recovery-state read through a closed mutation gate 
         }
       )
     );
-    expect(mutation.status).toBe(403);
-    expect(await mutation.json()).toMatchObject({ code: 'workspace_access_denied' });
+    expect(mutation.status).toBe(409);
+    expect(await mutation.json()).toMatchObject({
+      code: 'workspace_frozen',
+      details: { workspaceId: f.workspaceId, retryable: true },
+    });
     expect(f.coreDb.sqlite.prepare('SELECT * FROM workspace_registry').all()).toEqual(
       beforeRegistry
     );
@@ -518,8 +521,11 @@ it.each([
     const response = await f.app.request(
       ...operationRequest(id, {}, { body: JSON.stringify(input) })
     );
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: 'workspace_frozen',
+      details: { workspaceId: f.workspaceId, retryable: true },
+    });
     expect(
       f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_invitations WHERE invitation_id = ?')
