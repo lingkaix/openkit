@@ -85,7 +85,10 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     vi.fn(() => ({ layoutVersion: 1 })),
     vi.fn(() => ({ acquisition: 'fixture' })),
     vi.fn(() => []),
-    Object.assign(vi.fn(), { validateFileAuthority: vi.fn() }),
+    Object.assign(vi.fn(), {
+      validateFileAuthority: vi.fn(),
+      prototype: { setWorkspaceMutationAdmission: vi.fn() },
+    }),
     vi.fn(() => true),
     vi.fn(
       (dataRoot: string, workspaceId: string) =>
