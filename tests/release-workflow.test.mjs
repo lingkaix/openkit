@@ -387,7 +387,8 @@ test('release workflow runs the fixed-path NanoHost installer gate in one host j
   const [jobId, job] = matches[0];
   assert.match(jobId, /nanohost.*installer|installer.*nanohost/u);
   assert.equal(job.container, undefined, 'the Bubblewrap gate must not run in test-env');
-  assert.match(String(job['runs-on']), /^ubuntu-/u);
+  assert.equal(job['runs-on'], actionExpression('matrix.runner'));
+  assert.deepEqual(job.strategy.matrix.runner, ['ubuntu-24.04', 'ubuntu-26.04']);
   const commands = (job.steps ?? [])
     .map((candidate) => candidate.run)
     .filter(Boolean)
@@ -544,42 +545,43 @@ test('release notes are checked before publication and verified against the gene
 // P15 re-records only github-release and verify-release for the fifth attachment and downloaded-manifest check.
 // Complete main verification adds L4 to main/release gates and the registry dependency; all other Web and registry steps stay unchanged.
 // New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
+// #533 re-records runner selection and the two-LTS installer matrix; all other job bytes stay frozen.
 const unchangedJobBaseline = {
-  'container-image-matrix': '83615f34105ada997ed8c01f6fd06e95f87e9d5c05ffccc8c877069b1bfe849e',
-  'build-app-candidate': 'ccc3d6de18d40f9370808e897ac8b2a6dd1dadca8a40d811b5526708c3659da6',
+  'container-image-matrix': 'aaf9dbadd90c16a7be23c7198f043c96a0903ed9673f9692d070ff9a6d18a88d',
+  'build-app-candidate': '11ee3d0655617efd27aaeaca35f343f331565e9423dac70191a178be29276e23',
   'smoke-app-native': '2038f6417de2a540d8f1ae7e2cba81124fae00d9ebf63cd854b570fc8e82dc5a',
-  'publish-app-image': '5e08a75e1d96fd0c79c995303fe8f165d80c7559f9456736e845e11f8a9c1ce5',
-  'test-image': '0d81160a9862d26aa5c5174e1ecfd58cc0dadeebda8cad23bec0db370661871b',
-  'pr-check': '21bf4f4ac3b3d36600ca9d88daf93ac86c613397e545f1560b37a3fa63fd2885',
-  'nanohost-installer': 'f35f045c1d0c11bcd897038d29e53341cbfd12ab3ed4570aadf0875896b44be2',
-  'release-preflight': 'b25f38ec37f6cb1e8524a84f981f8cc21f243c5bd5e8ce7d568c550a65b70ab8',
+  'publish-app-image': 'fd091214aaa75266c7e6556ce159ca083a1267906d8203c4a44888b6832c1b43',
+  'test-image': 'eeae1d9c7553046e9cf830853571cd207733a866eabb4eddcccee0a1eea2f369',
+  'pr-check': 'cd25e65862cb5e88de536194e5b12295c895d4135e447fa64674c29c6db0e876',
+  'nanohost-installer': 'cca844e482336a7509a30d3c21f86a19ab1f516746bcebbffc12a2ffbbe7cf79',
+  'release-preflight': '08f1323789664bc8fbf73981b43f4a6824671abd1b646d1f549dfa3a903f1b46',
   'workspace-portability-source':
-    'e33d1577679a0bba824a60d2ab8a2bf24e2f1a47608e872c824951efa70c6ace',
+    '3523621ad7a5e44d89f31c0fa8a16e36d52851bed3f7ed465fa524a0834d1cb3',
   'workspace-portability-target':
-    '797453722686d9086ed90ccc253580ee7c74a87c3d41b2dec96a3b50bf6fcd27',
-  'web-e2e': 'cfd8ea150eb0ba8ae949c5f557bf95d6efac7c043613bc2c5a6962f5cb865140',
-  smoke: '809f71ab17a0109adbc1775f9d7dcdb37118c99d38f30f8842981a09a925d048',
+    '888af356cec6dcbda583fbd282374b15ff1b631039ed72fab02622c4cfb4d075',
+  'web-e2e': 'e3cea381fd7e8d5b8e35ea3dae9de4b1cd861138f3846652daa0a09a2660a1c4',
+  smoke: '3c5008e35fa7e6d3b985442158e07f2943b5d84486e2aec38007791bbcfc629f',
   'build-nanohost-amd64': '346b895871f280deff3d571843906b4952431d5dcf4870f64a53b7f140169180',
   'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
-  'package-release-assets': '9bb6035b4d43646481b89f1a40651ec23203e343a29a9506d209e5f551de4eea',
+  'package-release-assets': '7ca8192b75b1e6edcc18311c9592fd1a32304aea9394e201952a7be794412d5c',
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
-  'publish-container-images': 'f27ed3a02d3135abb2dd6a026fd1c732a0149239b369c4c2f6120b9d85609c64',
-  'github-release': 'f1258c06feaca85253fdaf3dd822151cfe731c10373d614ce8c86eac3a541b14',
-  'verify-release': 'aadccb3f97bfdb37c6d65dcb2bc5592bebdbe9d3bbb05001e1625efd305e727a',
+  'publish-container-images': '6007299806f13e1efff7c11e96f3f471b060e09d8887d1c06324fdaf418df6f0',
+  'github-release': 'f8ce0250a5d129eda5de0c8e014221f3fe38ccff26b57fe2a920efd33025b720',
+  'verify-release': '91c626072cb2dbe43b842c8ea833133a8b79ebedc3ac6e793e73f09423e2e592',
 };
 
 const candidateJobBaseline = {
-  'candidate-registry': '7fed89b69381edeadaf15a2f7cb01b3eea585f9ed27bf54bc6868f96aa108cf9',
-  'candidate-plan': 'c043add46eb7d92273ec28af77bb7b896c333cdede70a3b71a123e006b86d033',
+  'candidate-registry': '0c3c8d8b738e5ce1a8f3d254441eeeac45fa219e989a2c59879a7ede943d7588',
+  'candidate-plan': 'db39756a270124246cc1baa3586d4102530fa2af0cf4bd0efe276bd6092dc68d',
   'candidate-images': 'a0740482ba092070384eaadcc824d002b6ab9e593a3bf4d4f028ff8b4da81c7a',
-  'candidate-index': '205763b1d946f852ef1cf2ae51b98bcd6adbba4b127c00bfc32f2e2ce410e89f',
+  'candidate-index': '70619d1d39162da573cf6081651c89affe331cde53eb95b073f86da848f4dd0a',
 };
 
 const shardJobBaseline = {
-  'l0-l2-plan': '23d1b0909aa51ceafd306c2ff3471183a8dafdeaa3f6303b4ecac741be066f63',
-  'l0-l2-shards': '3f645fb3015a57d0b4c5ff0e716f3d8ce5f1b64b23d55feca2cd6f4bfc80f60c',
-  'l0-l2-coverage': '3a7e95119aac0372aa828c9e1806f0f476cc8cdf5d1c95b7bf2a49ce1bdb8a78',
-  'l0-l2': 'b6457a2076a878e997a3416dc226a006e9e97098170798e9167edeb6f59eb1e0',
+  'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
+  'l0-l2-shards': '97539c19600c69fc5c37e47fbbe54021011cc079f362e19793712bac6f22f371',
+  'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
+  'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
 };
 
 test('publication and complete job graphs match their frozen implementation baselines', () => {
@@ -984,9 +986,9 @@ test('Worker publication and final verification retain the reviewed cadence step
     ].map((match) => [match[1], match[2]])
   );
   const old = {
-    'publish-container-images': 'b57d664fa2429d70e32d736f2bbd8045e08b95b145895600371d4eadbd366386',
-    'github-release': 'cf24c8b6455a061dc22969b5965ea64a851c2145ac72e73b0453e629a8a9ace3',
-    'verify-release': '81dc2791581d3d9b957f763167fd133728b8c9501ceafdec267c0bdd2c53540b',
+    'publish-container-images': 'd815c292f966f1f5f99a1cb622304379c1c51101bbf85efb2f3517f2ebab11f5',
+    'github-release': '164bbfa536d6b14d53b74b960234a5e6038a6f5bfecf5088b14f6e501291ec9a',
+    'verify-release': '670f751bd1aba453021c52f18bba320544d9e09aecda5f1d861807fa71e9f16c',
   };
   for (const [name, digest] of Object.entries(old)) {
     const normalized = blocks

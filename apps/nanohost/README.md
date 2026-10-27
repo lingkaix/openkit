@@ -9,6 +9,8 @@ NanoHost is the OpenKit execution-host service: one Rust binary crate that owns 
 - The official OpenShell SDK fixed by Cargo, external release identities under `openshell/release.json`, and three source-backed transport assumptions under `openshell/`
 - Controlled `linux/amd64` and `linux/arm64` distributions with a verified installer that never manages service lifecycle, plus one schema-version-2 static capability profile admitting both targets; release-time hosted qualification wiring is implemented, but an actual hosted pass has not run yet
 
+The live installer writes payload bytes through each claimed temporary inode before setting its final mode. Caught failure and signal cleanup can therefore identify the invocation's files through publication. Staging retains its separate private-directory identity.
+
 ## Internal roles
 
 These are responsibility boundaries inside one binary, not separate crates, plugins, or public interfaces:

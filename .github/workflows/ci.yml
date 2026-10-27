@@ -54,6 +54,7 @@ concurrency:
   group: ${{ startsWith(github.ref, 'refs/tags/v') && 'openkit-release' || format('openkit-ci-{0}', github.ref) }}
   cancel-in-progress: false
 
+# Keep ordinary runners on 24.04 while the 26.04 slowdown is investigated in #533.
 jobs:
   # Every any-placed gate below runs inside this image. Admitted host leaves use
   # their named non-container jobs. The image is authoritative for any placement;
@@ -63,7 +64,7 @@ jobs:
   test-image:
     name: Test execution image
     if: github.event_name != 'workflow_dispatch' || inputs.gate != 'registry-admission'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -157,7 +158,7 @@ jobs:
     name: PR lightweight repo check
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.gate == 'pr-check')
     needs: test-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -185,9 +186,13 @@ jobs:
         run: pnpm -w check:repo
 
   nanohost-installer:
-    name: NanoHost installer fixed-path gate
+    name: NanoHost installer fixed-path gate (${{ matrix.runner }})
     if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gate != 'registry-admission')
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-26.04]
     permissions:
       contents: read
     steps:
@@ -208,7 +213,7 @@ jobs:
     name: Release preflight
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: test-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -242,7 +247,7 @@ jobs:
   l0-l2-plan:
     name: L0-L2 shard inventory
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       coverage: ${{ steps.plan.outputs.coverage }}
@@ -259,7 +264,7 @@ jobs:
     name: L0-L2 shard (${{ matrix.id }})
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
     needs: [test-image, l0-l2-plan]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Bound hung installs while retaining every in-case test deadline.
     timeout-minutes: 120
     permissions:
@@ -348,7 +353,7 @@ jobs:
     name: L0-L2 coverage (${{ matrix.id }})
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
     needs: [test-image, l0-l2-plan, l0-l2-shards]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Bound hung installs while retaining every in-case test deadline.
     timeout-minutes: 120
     permissions:
@@ -431,7 +436,7 @@ jobs:
     name: L0-L2 static, unit, contract
     if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate)))
     needs: [l0-l2-plan, l0-l2-shards, l0-l2-coverage]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every shard job
         env:
@@ -454,7 +459,7 @@ jobs:
     name: L3 NanoCore e2e
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["nano-core-e2e","release-gate","full"]'), inputs.gate))
     needs: test-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -508,7 +513,7 @@ jobs:
     name: Workspace portability source
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["nano-core-e2e","release-gate","full"]'), inputs.gate))
     needs: test-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -551,7 +556,7 @@ jobs:
     needs:
       - test-image
       - workspace-portability-source
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -591,7 +596,7 @@ jobs:
     name: L4 Web e2e
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["web-e2e","release-gate","full"]'), inputs.gate))
     needs: test-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -632,7 +637,7 @@ jobs:
     name: L5 smoke
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate))
     needs: test-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -662,7 +667,7 @@ jobs:
   app-image-admin-recovery:
     name: L5 app-image stopped-server recovery
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -762,7 +767,7 @@ jobs:
       - workspace-portability-target
       - build-nanohost-amd64
       - build-nanohost-arm64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
@@ -1081,7 +1086,7 @@ jobs:
   container-image-matrix:
     name: Container image release matrix
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       app-matrix: ${{ steps.matrix.outputs.app-matrix }}
@@ -1132,7 +1137,7 @@ jobs:
   candidate-plan:
     name: Prerelease candidate inputs
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       enabled: ${{ steps.plan.outputs.enabled }}
       tag: ${{ steps.plan.outputs.tag }}
@@ -1209,7 +1214,7 @@ jobs:
     name: Candidate index (${{ matrix.id }})
     if: needs.candidate-plan.outputs.enabled == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["release-gate","full"]'), inputs.gate)))
     needs: [candidate-plan, candidate-images, container-image-matrix]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -1250,7 +1255,7 @@ jobs:
     name: Prerelease registry admission
     if: always() && ((needs.candidate-plan.outputs.enabled == 'true' && needs.candidate-index.result == 'success' && needs.l0-l2.result == 'success' && needs.nano-core-e2e.result == 'success' && needs.web-e2e.result == 'success' && needs.smoke.result == 'success' && needs.workspace-portability-target.result == 'success' && needs.app-image-admin-recovery.result == 'success' && needs.nanohost-installer.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.gate == 'registry-admission'))
     needs: [candidate-plan, candidate-index, l0-l2, nano-core-e2e, web-e2e, smoke, workspace-portability-target, app-image-admin-recovery, nanohost-installer]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read
@@ -1329,7 +1334,7 @@ jobs:
       - workspace-portability-target
       - container-image-matrix
       - qualify-nanohost
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read
@@ -1533,7 +1538,7 @@ jobs:
       - workspace-portability-target
       - container-image-matrix
       - qualify-nanohost
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -1781,7 +1786,7 @@ jobs:
       - workspace-portability-target
       - container-image-matrix
       - qualify-nanohost
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -2031,7 +2036,7 @@ jobs:
       - qualify-nanohost
       - publish-container-images
       - publish-app-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -2108,7 +2113,7 @@ jobs:
       - github-release
       - publish-container-images
       - publish-app-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read

@@ -56,6 +56,15 @@ WORK_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$WORK_ROOT"' EXIT HUP INT TERM
 PYTHON_STDLIB="$(python3 -I -B -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
 LIB_ARCH_DIR="$(readlink -f "$(ldd /bin/sh | awk '/libc\.so/{print $3; exit}')" | xargs dirname)"
+RUNTIME_LIBRARY_FILES=()
+if [[ "$LIB_ARCH_DIR" == /usr/lib ]]; then
+  # A whole-directory bind would hide the invocation-owned /usr/lib and its cleanup targets.
+  mapfile -t RUNTIME_LIBRARY_FILES < <(
+    ldd /bin/sh /usr/bin/{bash,cat,chmod,cmp,dirname,flock,install,ln,python3,stat,timeout} \
+      "$PYTHON_STDLIB"/lib-dynload/{_bz2,_hashlib,_lzma,zlib}.*.so |
+      awk '/ => \// { print $3 } $1 ~ /^\// && $1 !~ /:$/ { print $1 }' | sort -u
+  )
+fi
 
 write_elf() {
   local path=$1
@@ -119,6 +128,11 @@ new_case() {
   STUBS="${CASE_ROOT}/stubs"
   CONTROL="${CASE_ROOT}/control"
   mkdir -p "$LIVE/var/lib" "$LIVE/etc" "$LIVE/usr/bin" "$LIVE/proc" "$LIVE/dev" "$LIVE/sys/fs/cgroup" "$LIVE/tmp" "$LIVE/usr/lib/openkit" "$LIVE/etc/systemd/system" "$LIVE/run/systemd/system" "$BUNDLE/licenses" "$STUBS" "$CONTROL"
+  # Namespace mountpoints belong to fixture setup, before the no-write byte observation.
+  for library in "${RUNTIME_LIBRARY_FILES[@]}"; do
+    mkdir -p "$LIVE$(dirname -- "$library")"
+    : >"$LIVE$library"
+  done
   cp "$INSTALLER" "$BUNDLE/install.sh"
   chmod 0755 "$BUNDLE/install.sh"
   write_elf "$BUNDLE/nanohost"
@@ -160,7 +174,6 @@ namespace_command() {
     --ro-bind /lib /lib
     # Ubuntu 26.04 coreutils symlinks need their target directory before stub mounts.
     --ro-bind-try /usr/lib/cargo/bin/coreutils /usr/lib/cargo/bin/coreutils
-    --ro-bind "$LIB_ARCH_DIR" "$LIB_ARCH_DIR"
     --ro-bind "$PYTHON_STDLIB" "$PYTHON_STDLIB"
     --proc /proc --dev /dev
     --ro-bind /sys/fs/cgroup /sys/fs/cgroup
@@ -175,6 +188,11 @@ namespace_command() {
     --ro-bind "$STUBS/systemd-analyze" "$(readlink -f /usr/bin/systemd-analyze)"
     --chdir "$BUNDLE"
   )
+  if [[ "$LIB_ARCH_DIR" == /usr/lib ]]; then
+    for library in "${RUNTIME_LIBRARY_FILES[@]}"; do args+=(--ro-bind "$library" "$library"); done
+  else
+    args+=(--ro-bind "$LIB_ARCH_DIR" "$LIB_ARCH_DIR")
+  fi
   if [[ -d /lib64 ]]; then args+=(--ro-bind /lib64 /lib64); fi
   if [[ -z "$extra_stub" ]]; then extra_stub=$STUBS; fi
   args+=(--setenv PATH "$extra_stub:/usr/bin:/bin" --setenv OPENKIT_INSTALLER_CONTROL "$CONTROL" -- /bin/sh "$BUNDLE/install.sh" "$@")
@@ -342,18 +360,16 @@ test_partial_cleanup() {
   new_case
   local injected="${CASE_ROOT}/partial-bin"
   cp -a "$STUBS" "$injected"
-  cat >"$injected/install" <<'EOF'
+  cat >"$injected/cat" <<'EOF'
 #!/usr/bin/env bash
-target=${@: -1}
-source=${@: -2:1}
-if [[ "$target" == /usr/lib/openkit/.nanohost.openkit-install ]]; then
-  head -c 8 "$source" >"$target"
-  chmod 0755 "$target"
+source=${@: -1}
+if [[ "$source" == nanohost ]]; then
+  head -c 8 "$source"
   exit 42
 fi
-exec /usr/bin/install "$@"
+exec /usr/bin/cat "$@"
 EOF
-  chmod 0755 "$injected/install"
+  chmod 0755 "$injected/cat"
   run_case partial "$injected"
   [[ "$RESULT" -ne 0 ]] || fail 'injected partial write returned success'
   [[ ! -e "$LIVE/usr/lib/openkit/.nanohost.openkit-install" ]] || fail 'caught partial write left its reserved temporary file'
@@ -387,15 +403,17 @@ test_live_signal_cleanup() {
   new_case
   local interrupted="${CASE_ROOT}/interrupted-bin"
   cp -a "$STUBS" "$interrupted"
-  cat >"$interrupted/install" <<'EOF'
+  # Interrupt after payload writes, before the first destination is published.
+  cat >"$interrupted/ln" <<'EOF'
 #!/usr/bin/env bash
 target=${@: -1}
-/usr/bin/install "$@" || exit
-if [[ "$target" == /usr/lib/openkit/.nanohost.openkit-install ]]; then
+if [[ "$target" == /usr/lib/openkit/nanohost ]]; then
   kill -TERM "$PPID"
+  exit 0
 fi
+exec /usr/bin/ln "$@"
 EOF
-  chmod 0755 "$interrupted/install"
+  chmod 0755 "$interrupted/ln"
   run_case live-term "$interrupted"
   [[ "$RESULT" -eq 143 ]] || fail "caught live TERM returned status $RESULT instead of 143; stderr=$ERROR"
   [[ ! -e "$LIVE/usr/lib/openkit/.nanohost.openkit-install" ]] || fail 'caught live TERM left its invocation-owned temporary file'
@@ -452,16 +470,17 @@ test_noncooperating_publication_race() {
   new_case
   local paused="${CASE_ROOT}/paused-bin"
   cp -a "$STUBS" "$paused"
-  cat >"$paused/install" <<'EOF'
+  # Pause after payload writes so a non-cooperating publisher can win.
+  cat >"$paused/ln" <<'EOF'
 #!/usr/bin/env bash
 target=${@: -1}
-/usr/bin/install "$@"
-if [[ "$target" == /usr/lib/openkit/.nanohost.openkit-install ]]; then
+if [[ "$target" == /usr/lib/openkit/nanohost ]]; then
   : >"$OPENKIT_INSTALLER_CONTROL/prepared"
   while [[ ! -e "$OPENKIT_INSTALLER_CONTROL/continue" ]]; do /bin/sleep 0.01; done
 fi
+exec /usr/bin/ln "$@"
 EOF
-  chmod 0755 "$paused/install"
+  chmod 0755 "$paused/ln"
   set +e
   namespace_command "$paused" >"$CASE_ROOT/race.out" 2>"$CASE_ROOT/race.err" &
   local process=$!

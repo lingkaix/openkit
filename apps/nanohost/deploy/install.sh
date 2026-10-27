@@ -853,15 +853,19 @@ if [ ! -d /usr/lib/openkit ]; then
 fi
 if [ "$nanohost_dest_state" = absent ] && [ "$nanohost_temp_state" = absent ]; then
   created_nanohost_identity=$(claim_temporary "$NANOHOST_TEMP") || fail 'destination-conflict'
-  install -m 0755 -- "$NANOHOST_SOURCE" "$NANOHOST_TEMP"
+  # Preserve the claimed inode so caught failures remove only this invocation's temporary.
+  cat -- "$NANOHOST_SOURCE" >"$NANOHOST_TEMP"
+  chmod 0755 -- "$NANOHOST_TEMP"
 fi
 if [ "$gateway_dest_state" = absent ] && [ "$gateway_temp_state" = absent ]; then
   created_gateway_identity=$(claim_temporary "$GATEWAY_TEMP") || fail 'destination-conflict'
-  install -m 0755 -- "$GATEWAY_SOURCE" "$GATEWAY_TEMP"
+  cat -- "$GATEWAY_SOURCE" >"$GATEWAY_TEMP"
+  chmod 0755 -- "$GATEWAY_TEMP"
 fi
 if [ "$unit_dest_state" = absent ] && [ "$unit_temp_state" = absent ]; then
   created_unit_identity=$(claim_temporary "$UNIT_TEMP") || fail 'destination-conflict'
-  install -m 0644 -- "$UNIT_SOURCE" "$UNIT_TEMP"
+  cat -- "$UNIT_SOURCE" >"$UNIT_TEMP"
+  chmod 0644 -- "$UNIT_TEMP"
 fi
 
 if [ "$nanohost_dest_state" = absent ]; then
