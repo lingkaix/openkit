@@ -33,6 +33,7 @@ import {
 } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
@@ -231,6 +232,7 @@ describe('workspace portable file state', () => {
       workspaceRoot: sourceRoot,
       notebook,
     } = await workspaceFixture();
+    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
       dataRoot,
       scope: { kind: 'workspace', workspaceId: sourceWorkspaceId },
@@ -409,7 +411,7 @@ describe('workspace portable file state', () => {
       producer: { kind: 'agent', id: 'agent_knowledge', responsibleUserId: LOCAL_USER_ID },
       createdAt: firstTimestamp,
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = createApp({ coreDb, dataRoot, store, workspaceMutationAdmission });
     const review = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.proposal.decide',
@@ -668,7 +670,12 @@ describe('workspace portable file state', () => {
       expectedImportedAcceptedPageBytes
     );
 
-    const reopenedApp = createApp({ dataRoot, coreDb, store: restartedStore });
+    const reopenedApp = createApp({
+      dataRoot,
+      coreDb,
+      store: restartedStore,
+      workspaceMutationAdmission,
+    });
     const disputed = await reopenedApp.request(
       ...knowledgeOperationRequest(
         'knowledge.retrieval',

@@ -2135,6 +2135,7 @@ describe('app api openapi projection', () => {
       'workspace.archive-download',
       'workspace.archive-import-dry-run',
       'workspace.archive-import',
+      'workspace.backup-download',
       'knowledge.package.export',
       'knowledge.package.import',
       'artifact.version-file-commit',

@@ -1043,6 +1043,7 @@ describe('remote MCP App endpoint', () => {
         'workspace.archive-download',
         'workspace.archive-import',
         'workspace.archive-import-dry-run',
+        'workspace.backup-download',
       ]);
       for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS)) {
         const search = JSON.parse(
