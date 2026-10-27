@@ -9,8 +9,8 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 337;
-const EXPECTED_SERVER_SIZE = 86;
+const EXPECTED_CATALOG_SIZE = 340;
+const EXPECTED_SERVER_SIZE = 89;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 248;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
@@ -18,10 +18,16 @@ const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
 const SERVER_WEB_OPERATIONS = {
   'administration.mcp-discovery-preview': { disposition: 'live', surface: 'Shared MCP' },
+  'workspace.backup-capture': { disposition: 'roadmap', roadmap: 'R048' },
+  'workspace.backup-verify': { disposition: 'roadmap', roadmap: 'R048' },
+  'workspace.backup-download': { disposition: 'roadmap', roadmap: 'R048' },
 };
 
-/** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
+/** Operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
+  ['workspace.backup-capture', 'R048'],
+  ['workspace.backup-verify', 'R048'],
+  ['workspace.backup-download', 'R048'],
   ['workspace.delete', 'R049'],
   ['workspace.resource-access-request', 'R033'],
   ['workspace.resource-access-apply', 'R033'],

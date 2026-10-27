@@ -12,21 +12,31 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { zstdDecompressSync } from 'node:zlib';
 import { WorkspaceSnapshotReportSchema } from '@openkit/app-api-schemas';
+import * as policyKernel from '@openkit/policy-kernel';
 import { ApiErrorSchema, allocateEntityId } from '@openkit/protocol';
 import * as durableBytes from '@openkit/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listServerAuditEvents } from './audit-events.js';
+import * as accessTokens from './auth/access-token-store.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { FsStore } from './lib/store.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
+import { coreDbPath } from './storage/fs-layout.js';
 import * as captureProtection from './storage/workspace-capture-protection.js';
 import { type CreateAppOptions, createAppWithLocalIdentity } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { closeTestCoreDb, createTestCoreDb } from './test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, createTestSqliteError } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import { getWorkspaceRegistryLifecycleFact, listWorkspaceMembers } from './workspace-sharing.js';
 
 const roots: string[] = [];
 const workspaceId = DEMO_WORKSPACE_ID;
@@ -80,6 +90,37 @@ async function fixture(
   return { dataRoot, store, coreDb, ownerId, admission, fileAdmission, appOptions, app };
 }
 
+/** Observes retained snapshot bytes and canonical authority, allowing only bearer-use metadata to advance. */
+function snapshotAuthorityState(f: Awaited<ReturnType<typeof fixture>>, includeCoreBytes = false) {
+  const corePath = coreDbPath(f.dataRoot);
+  return {
+    registry: getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId),
+    members: listWorkspaceMembers(f.coreDb, workspaceId),
+    audit: listServerAuditEvents(f.coreDb),
+    files: Object.fromEntries(
+      readdirSync(f.dataRoot, { recursive: true, withFileTypes: true })
+        .filter((entry) => {
+          const path = join(entry.parentPath, entry.name);
+          return (
+            !entry.name.endsWith('-shm') &&
+            (includeCoreBytes || (path !== corePath && !path.startsWith(`${corePath}-`)))
+          );
+        })
+        .map((entry) => {
+          const path = join(entry.parentPath, entry.name);
+          return [
+            path.slice(f.dataRoot.length + 1),
+            entry.isFile()
+              ? createHash('sha256').update(readFileSync(path)).digest('hex')
+              : entry.isDirectory()
+                ? 'directory'
+                : 'nonregular',
+          ];
+        })
+    ),
+  };
+}
+
 /** Reads standard USTAR entries independently; only exact payload bytes decide the bundle oracle. */
 function archiveFiles(compressed: Buffer): Map<string, Buffer> {
   const tar = zstdDecompressSync(compressed);
@@ -117,6 +158,259 @@ afterEach(async () => {
 });
 
 describe('C-a composed snapshot App API', () => {
+  it('requires Core authority for every snapshot route before any lifecycle or source effects', async () => {
+    const f = await fixture();
+    try {
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      const original = WorkspaceSnapshotReportSchema.parse(await captured.json());
+      // Local initial Server admission is real; the snapshot owner still needs Core facts.
+      const missingCore = createAppWithLocalIdentity({ ...f.appOptions, coreDb: undefined });
+      const effects = [
+        vi.spyOn(f.admission, 'tryFreeze'),
+        vi.spyOn(captureProtection, 'protectCapture'),
+        vi.spyOn(f.fileAdmission, 'reserve'),
+        vi.spyOn(durableBytes, 'copyVerifiedFile'),
+      ];
+      const before = snapshotAuthorityState(f, true);
+      for (const operation of [
+        'workspace.backup-capture',
+        'workspace.backup-verify',
+        'workspace.backup-download',
+      ]) {
+        const response = await request(missingCore, operation, {
+          workspaceId,
+          backupId: operation === 'workspace.backup-capture' ? allocateEntityId('wsbak') : backupId,
+          ...(operation === 'workspace.backup-capture' ? { purpose: 'backup' } : {}),
+        });
+        expect(response.status, await response.clone().text()).toBe(503);
+        expect(ApiErrorSchema.parse(await response.json())).toMatchObject({
+          code: 'recovery_required',
+        });
+        for (const effect of effects) expect(effect).not.toHaveBeenCalled();
+        expect(f.admission.isClosed(workspaceId)).toBe(false);
+        expect(snapshotAuthorityState(f, true)).toEqual(before);
+      }
+      const verified = await request(f.app, 'workspace.backup-verify', { workspaceId, backupId });
+      expect(verified.status, await verified.clone().text()).toBe(200);
+      expect(
+        WorkspaceSnapshotReportSchema.parse(await verified.json()).capture!.manifestDigest
+      ).toBe(original.capture!.manifestDigest);
+    } finally {
+      vi.restoreAllMocks();
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it.each([
+    'SQLITE_BUSY',
+    'SQLITE_LOCKED',
+    'unexpected',
+  ] as const)('preserves a current-administrator %s facts failure at each snapshot owner before effects', async (fault) => {
+    const f = await fixture();
+    try {
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      const original = WorkspaceSnapshotReportSchema.parse(await captured.json());
+      const issued = accessTokens.createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.ownerId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const authenticated = (operation: string, input: Record<string, unknown>) =>
+        server.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${issued.secret}`,
+          },
+          body: JSON.stringify(input),
+        });
+      const admitted = await authenticated('workspace.backup-verify', { workspaceId, backupId });
+      expect(admitted.status, await admitted.clone().text()).toBe(200);
+      expect(
+        WorkspaceSnapshotReportSchema.parse(await admitted.json()).capture!.manifestDigest
+      ).toBe(original.capture!.manifestDigest);
+
+      const privateMarker = `private-current-admin-facts:${f.dataRoot}`;
+      const failure =
+        fault === 'unexpected'
+          ? new Error(privateMarker)
+          : createTestSqliteError(privateMarker, fault);
+      const actualRead = accessTokens.listOpenKitAccessTokenRecords;
+      const actualEvaluate = policyKernel.evaluateAccess;
+      let armed = false;
+      const phases: string[] = [];
+      const read = vi
+        .spyOn(accessTokens, 'listOpenKitAccessTokenRecords')
+        .mockImplementation((coreDb) => {
+          if (armed) {
+            phases.push('facts-fault');
+            throw failure;
+          }
+          return actualRead(coreDb);
+        });
+      const evaluate = vi
+        .spyOn(policyKernel, 'evaluateAccess')
+        .mockImplementation((policy, call) => {
+          const decision = actualEvaluate(policy, call);
+          if (
+            call.target === 'object:server:administration' &&
+            call.operation === 'api.call' &&
+            decision.effect === 'allow'
+          ) {
+            phases.push('server-allow');
+            armed = true;
+          }
+          return decision;
+        });
+      const effects = [
+        vi.spyOn(f.admission, 'tryFreeze'),
+        vi.spyOn(captureProtection, 'protectCapture'),
+        vi.spyOn(f.fileAdmission, 'reserve'),
+        vi.spyOn(durableBytes, 'copyVerifiedFile'),
+      ];
+      const before = snapshotAuthorityState(f);
+      for (const operation of [
+        'workspace.backup-capture',
+        'workspace.backup-verify',
+        'workspace.backup-download',
+      ]) {
+        phases.length = 0;
+        armed = operation === 'workspace.backup-download';
+        const response = await authenticated(operation, {
+          workspaceId,
+          backupId: operation === 'workspace.backup-capture' ? allocateEntityId('wsbak') : backupId,
+          ...(operation === 'workspace.backup-capture' ? { purpose: 'backup' } : {}),
+        });
+        expect(phases).toContain('facts-fault');
+        if (operation !== 'workspace.backup-download') {
+          expect(phases.indexOf('server-allow')).toBeGreaterThanOrEqual(0);
+          expect(phases.indexOf('facts-fault')).toBeGreaterThan(phases.indexOf('server-allow'));
+        }
+        const text = await response.text();
+        expect(response.status, text).toBe(fault === 'unexpected' ? 500 : 503);
+        if (fault !== 'unexpected') {
+          expect(ApiErrorSchema.parse(JSON.parse(text))).toMatchObject({
+            code: 'operation_storage_unavailable',
+          });
+        }
+        expect(text).not.toContain(privateMarker);
+        expect(text).not.toContain(f.dataRoot);
+        expect(text).not.toMatch(
+          /SQLITE|workspace_access_denied|deployment_admin_required|\bat .+\(/
+        );
+        for (const effect of effects) expect(effect).not.toHaveBeenCalled();
+        expect(f.admission.isClosed(workspaceId)).toBe(false);
+        expect(snapshotAuthorityState(f)).toEqual(before);
+      }
+      read.mockRestore();
+      evaluate.mockRestore();
+      const verified = await authenticated('workspace.backup-verify', { workspaceId, backupId });
+      expect(verified.status, await verified.clone().text()).toBe(200);
+      expect(
+        WorkspaceSnapshotReportSchema.parse(await verified.json()).capture!.manifestDigest
+      ).toBe(original.capture!.manifestDigest);
+    } finally {
+      vi.restoreAllMocks();
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it('shares the real fixture owner across views and starts a fresh owner only after native shutdown', async () => {
+    const f = await fixture();
+    const { workspaceMutationAdmission: originalOwner, ...defaultOptions } = f.appOptions;
+    const firstClient = getControlStoreWorkerClient();
+    let frozen: ReturnType<WorkspaceMutationAdmission['tryFreeze']> | undefined;
+    let reopenedCore: ReturnType<typeof createTestCoreDb> | undefined;
+    try {
+      const view = createAppWithLocalIdentity(defaultOptions);
+      frozen = originalOwner.tryFreeze(workspaceId, () => []);
+      expect(frozen.status).toBe('frozen');
+      if (frozen.status !== 'frozen') throw new Error('Expected the original fixture freeze.');
+      const beforeThreads = f.store.listThreads(workspaceId);
+      for (const app of [f.app, view]) {
+        const response = await request(app, 'thread.create', {
+          workspaceId,
+          name: 'No second-view admission through the original freeze',
+          visibility: 'workspace',
+          requestId: randomUUID(),
+        });
+        expect(response.status, await response.clone().text()).toBe(409);
+        expect(ApiErrorSchema.parse(await response.json())).toMatchObject({
+          code: 'workspace_frozen',
+          details: { workspaceId, retryable: true },
+        });
+      }
+
+      const differentOwner = new WorkspaceMutationAdmission();
+      expect(() =>
+        createAppWithLocalIdentity({ ...f.appOptions, workspaceMutationAdmission: differentOwner })
+      ).toThrow();
+      expect(getControlStoreWorkerClient()).toBe(firstClient);
+      expect(originalOwner.isClosed(workspaceId)).toBe(true);
+      await expect(
+        f.store.createThread(workspaceId, 'The rejected App cannot replace the Store owner')
+      ).rejects.toMatchObject({ code: 'workspace_frozen' });
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      const database = `workspace:${join(f.dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite')}`;
+      await expect(firstClient.checkpoint(database)).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      expect(
+        post.mock.calls.filter(
+          ([message]) =>
+            message !== null && typeof message === 'object' && message.database === database
+        )
+      ).toHaveLength(0);
+      expect(f.store.listThreads(workspaceId)).toEqual(beforeThreads);
+
+      // End the old process lifetime explicitly; no old App is invoked afterwards.
+      // There is no durable capture/deletion fact, so its transient freeze must not
+      // become the new process's default owner or be silently reopened by the helper.
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(f.coreDb);
+      reopenedCore = createTestCoreDb(f.dataRoot);
+      const reopenedStore = new FsStore({ dataRoot: f.dataRoot });
+      const restarted = createAppWithLocalIdentity({
+        ...defaultOptions,
+        coreDb: reopenedCore,
+        store: reopenedStore,
+      });
+      expect(getControlStoreWorkerClient()).not.toBe(firstClient);
+      expect(originalOwner.isClosed(workspaceId)).toBe(true);
+      const accepted = await request(restarted, 'thread.create', {
+        workspaceId,
+        name: 'Fresh owner after completed native shutdown',
+        visibility: 'workspace',
+        requestId: randomUUID(),
+      });
+      expect(accepted.status, await accepted.clone().text()).toBe(200);
+      const thread = (await accepted.json()) as { id: string };
+      expect(reopenedStore.getThread(workspaceId, thread.id).name).toBe(
+        'Fresh owner after completed native shutdown'
+      );
+      expect(originalOwner.isClosed(workspaceId)).toBe(true);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      if (frozen?.status === 'frozen') frozen.release();
+      if (reopenedCore) closeTestCoreDb(reopenedCore);
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 60_000);
+
   it('refuses unknown installed identity before capture or source admission without changing retained facts', async () => {
     const f = await fixture();
     try {
