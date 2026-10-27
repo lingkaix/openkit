@@ -65,6 +65,7 @@ import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { listWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -1278,6 +1279,7 @@ describe('C-a private target refusal ordering', () => {
     });
     const invitation = f.coreDb.sqlite.transaction(() =>
       createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(f.coreDb, f.ownerId, workspaceId),
         coreDb: f.coreDb,
         workspaceId,
         inviterUserId: f.ownerId,

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import Database from 'better-sqlite3';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
@@ -11,6 +12,11 @@ import {
 import { coreDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+
+/** Constructs the genuine storage-owner error class without opening a test database. */
+export function createTestSqliteError(message: string, code: 'SQLITE_BUSY' | 'SQLITE_LOCKED') {
+  return new Database.SqliteError(message, code);
+}
 
 /**
  * Creates a Store after initializing the native Core schema in a caller-owned fixture root.
