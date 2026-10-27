@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-11
+updated: 2026-10-27
 ---
 # Storage Model
 
@@ -14,7 +14,7 @@ Cross-release continuity follows [Contract Evolution](contract-evolution.md#reta
 
 ## Principles
 
-Each mutable control-state transition MUST commit in exactly one transaction in its owning scope store. Related local product records, execution facts and request receipts share that commit. Files hold immutable content made durable before its digest reference is committed; readable record files are projections, not a second authority. Publish observable state only after commit. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces file-first control authority to remove split-publication recovery, not to add a journal beside it.
+Each mutable control-state transition MUST commit in exactly one transaction in its owning scope store. Related local product records, execution facts and request receipts share that commit. Files hold immutable content made durable before its digest reference is committed. Bounded retained work-entry bodies may instead reside as exact bytes in the owning control database under the Item log rule below. Readable record files are projections, not a second authority. Publish observable state only after commit. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces file-first control authority to remove split-publication recovery, not to add a journal beside it.
 
 Each Workspace MUST retain independently backupable and movable control data and locally retained content inside its own directory. Server-owned physical state and global capacity remain separate. An operation across those scopes is an effect with intent and outcome, not one transaction across stores. External references, retained Worker volumes and Vault material require explicit coverage; local content identity does not make them portable bytes.
 
@@ -112,6 +112,8 @@ Item writes SHOULD persist the `protocolVersion` that was active when the item e
 Implementations SHOULD use a single-writer or equivalent atomic append discipline per item log scope so replay cannot observe partial item events.
 
 Compaction MAY materialize completed item snapshots, but it MUST NOT change item IDs, causation links, or the final meaning of completed items.
+
+Native retained Item and Item-event entry bodies with an exact UTF-8 byte length of at most 65,536 bytes MUST use the control database's inline representation for new revisions; larger bodies MUST keep their immutable-file representation. The writer MUST verify exact bytes, length, digest, retained format and lineage before the owning FULL transaction acknowledges them. It MUST NOT parse and re-encode a body to manufacture its byte proof. The existing file descriptor remains a current representation without conversion or reinterpretation; prior file references retain their exact bytes and ordinary holds and retention. Unknown required representation semantics MUST fail closed. This choice changes no Item identity, sequence, revision, current-authority check, Turn CAS, ordered acknowledgement or completed meaning. It adds no second writer, byte store or public wire class. The [inline retained work-body decision](../decisions/20261027-inline_retained_work_bodies.md) records this narrow addition to the file-content boundary.
 
 ### Persistent Worker Working Storage
 
