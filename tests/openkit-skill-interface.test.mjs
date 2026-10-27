@@ -608,6 +608,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'workspace.archive-download',
       'workspace.archive-import',
       'workspace.archive-import-dry-run',
+      'workspace.backup-download',
     ]
   );
   for (const exclusion of operationExclusions) {
@@ -797,7 +798,9 @@ test('one catalog covers the checked App API and public Core projection', async 
         appSchemas.OPERATION_DEFINITIONS[entry.id]?.binding === 'json'
           ? entry.clientMethod === `operations.${entry.id}` &&
               String(entry.handler).includes('client.operations[id]')
-          : String(entry.handler).includes(`client.${entry.clientMethod}`),
+          : String(entry.handler).includes(`client.${entry.clientMethod}`) ||
+              (entry.clientMethod === `operations.${entry.id}` &&
+                String(entry.handler).includes(`client.operations['${entry.id}']`)),
         `${entry.id} handler must invoke ${entry.clientMethod}`
       );
     }
@@ -1010,6 +1013,9 @@ test('one catalog covers the checked App API and public Core projection', async 
       'worker-environment.recover',
       'workspace.access-recover',
       'workspace.access-recovery-read',
+      'workspace.backup-capture',
+      'workspace.backup-download',
+      'workspace.backup-verify',
       'workspace.retire-quarantined',
     ]
   );

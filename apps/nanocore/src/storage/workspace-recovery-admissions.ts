@@ -25,7 +25,13 @@ import type {
 
 /** Closed proof retained by the offline admission owner, not the command receipt ledger. */
 export interface RecoveryProof {
-  readonly input: WorkspaceRecoveryCliArgs;
+  readonly input:
+    | WorkspaceRecoveryCliArgs
+    | (Omit<Extract<WorkspaceRecoveryCliArgs, { command: 'capture' }>, 'source'> & {
+        readonly source:
+          | Extract<WorkspaceRecoveryCliArgs, { command: 'capture' }>['source']
+          | { readonly kind: 'live-workspace' };
+      });
   readonly manifest: WorkspaceBackupManifest;
   readonly capture: WorkspaceBackupReport;
   result: WorkspaceRecoveryCliReport;

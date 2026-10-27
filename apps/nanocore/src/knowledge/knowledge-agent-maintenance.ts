@@ -55,10 +55,7 @@ import {
 } from '../storage/control-store-products.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import {
-  ensureCanonicalDirectoryAsync,
-  nativeProductScope,
-} from '../storage/workspace-file-records.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
@@ -416,7 +413,6 @@ export async function admitControlMaintenance(
     dataRoot,
     workspaceId === undefined ? { kind: 'server' } : { kind: 'workspace', workspaceId }
   );
-  await ensureCanonicalDirectoryAsync(scope.contentMount.root);
   const path = scope.path;
   const database = workspaceId === undefined ? `core:${path}` : `workspace:${path}`;
   const client = getControlStoreWorkerClient();
