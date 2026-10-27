@@ -37,6 +37,7 @@ import {
   type ControlMaterialCommandResult,
   prepareControlMaterialTransfer,
 } from '../workspace-materials.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import {
@@ -161,7 +162,9 @@ interface Pending {
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
-  readonly reject: (error: ControlStoreWorkerError | PendingRequestCommandError) => void;
+  readonly reject: (
+    error: ControlStoreWorkerError | PendingRequestCommandError | OperationError
+  ) => void;
 }
 
 /** Exact live product publication; this is not retained state or permission to retry. */
@@ -180,9 +183,12 @@ let singleton: ControlStoreWorkerClient | undefined;
  *
  * @returns Shared coordinator for admitted database scopes, never a synchronous SQL facade.
  */
-export function getControlStoreWorkerClient(): ControlStoreWorkerClient {
+export function getControlStoreWorkerClient(
+  admission?: WorkspaceMutationAdmission
+): ControlStoreWorkerClient {
   if (!isMainThread) throw new ControlStoreWorkerError('unavailable', 'not-committed');
   if (singleton === undefined || singleton.isClosed) singleton = new ControlStoreWorkerClient();
+  if (admission) singleton.setWorkspaceMutationAdmission(admission);
   return singleton;
 }
 
@@ -217,6 +223,8 @@ class ControlStoreWorkerClient {
   private shutdownPromise: Promise<void> | undefined;
   private backupHold: PostingHold | undefined;
   private readonly databaseHolds = new Map<string, PostingHold>();
+  /** The application's one gate survives cold scope close/open for this native client lifetime. */
+  private workspaceMutationAdmission: WorkspaceMutationAdmission | undefined;
 
   /** Starts the native host on first command; retaining a shutdown owner alone needs no thread. */
   private startWorker(host: WriterHost): Worker {
@@ -911,6 +919,23 @@ class ControlStoreWorkerClient {
    * @param database Exact database key, or all databases for the existing backup capture.
    * @returns An idempotent release, which the caller must invoke in finally.
    */
+  /** Binds the application's same gate without creating a native host, connection or hold. */
+  setWorkspaceMutationAdmission(admission: WorkspaceMutationAdmission): void {
+    if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
+      throw new Error('Native client already has a different Workspace mutation owner.');
+    this.workspaceMutationAdmission = admission;
+  }
+
+  /** Installs the existing target hold without joining a competing target or global hold. Only posted ACKs may settle. */
+  tryPauseForWorkspaceCapture(
+    database: string,
+    admission?: WorkspaceMutationAdmission
+  ): Promise<() => void> | null {
+    if (this.backupHold || this.databaseHolds.has(database)) return null;
+    if (admission) this.setWorkspaceMutationAdmission(admission);
+    return this.pauseForDataRootBackup(database);
+  }
+
   async pauseForDataRootBackup(database?: string): Promise<() => void> {
     this.assertAccepting();
     const failed = () =>
@@ -1203,6 +1228,42 @@ class ControlStoreWorkerClient {
 
   /** Posts an admitted message once, after its scope ACK and any data-root capture hold. */
   private post(entry: Pending): void {
+    if (entry.posted) return;
+    const opening =
+      'database' in entry.command ? this.openings.get(entry.command.database) : undefined;
+    const owner =
+      entry.command.operation === 'open'
+        ? entry.command.productOwner
+        : opening?.command.productOwner;
+    if (
+      owner?.kind === 'workspace' &&
+      this.workspaceMutationAdmission?.isClosed(owner.workspaceId, 'capture')
+    ) {
+      const members = entry.cohort?.frame.requests.map(
+        (request) => this.pending.get(request.id)!
+      ) ?? [entry];
+      for (const member of members)
+        this.complete(
+          member.request.id,
+          undefined,
+          new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+            details: {
+              workspaceId: owner.workspaceId,
+              operation: 'capture',
+              retryable: true,
+              blockers: [
+                {
+                  kind: 'publication',
+                  reason: 'frozen',
+                  reference: { workspaceId: owner.workspaceId },
+                  actions: [],
+                },
+              ],
+            },
+          })
+        );
+      return;
+    }
     if (
       entry.posted ||
       !entry.ready ||
@@ -1256,7 +1317,7 @@ class ControlStoreWorkerClient {
   private complete(
     id: number,
     reply?: Success,
-    error?: ControlStoreWorkerError | PendingRequestCommandError,
+    error?: ControlStoreWorkerError | PendingRequestCommandError | OperationError,
     releaseMaterialBytes = true
   ): void {
     const entry = this.pending.get(id);
