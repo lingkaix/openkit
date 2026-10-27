@@ -249,18 +249,18 @@ describe('C-a composed snapshot App API', () => {
         fault === 'unexpected'
           ? new Error(privateMarker)
           : createTestSqliteError(privateMarker, fault);
-      const actualRead = accessTokens.listOpenKitAccessTokenRecords;
+      const actualRead = accessTokens.getOpenKitAccessTokenRecord;
       const actualEvaluate = policyKernel.evaluateAccess;
       let armed = false;
       const phases: string[] = [];
       const read = vi
-        .spyOn(accessTokens, 'listOpenKitAccessTokenRecords')
-        .mockImplementation((coreDb) => {
-          if (armed) {
+        .spyOn(accessTokens, 'getOpenKitAccessTokenRecord')
+        .mockImplementation((coreDb, tokenId) => {
+          if (armed && tokenId === issued.tokenId) {
             phases.push('facts-fault');
             throw failure;
           }
-          return actualRead(coreDb);
+          return actualRead(coreDb, tokenId);
         });
       const evaluate = vi
         .spyOn(policyKernel, 'evaluateAccess')
@@ -819,19 +819,31 @@ describe('C-a composed snapshot App API', () => {
     const mutablePath = join(f.dataRoot, 'workspaces', workspaceId, 'files', 'capture-cut.txt');
     mkdirSync(join(f.dataRoot, 'workspaces', workspaceId, 'files'), { recursive: true });
     writeFileSync(mutablePath, 'A real target mutable file copied inside the capture fence.');
-    const original = durableBytes.copyVerifiedFile;
+    const emit = Worker.prototype.emit;
     let first = true;
-    const intercept = vi
-      .spyOn(durableBytes, 'copyVerifiedFile')
-      .mockImplementation(async (input) => {
-        if (first && input.sourcePath === mutablePath) {
-          first = false;
-          expect(f.admission.isClosed(workspaceId)).toBe(true);
-          entered();
-          await barrier;
-        }
-        return original(input);
-      });
+    const intercept = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event,
+      ...args
+    ) {
+      const message = args[0];
+      if (
+        first &&
+        event === 'message' &&
+        message !== null &&
+        typeof message === 'object' &&
+        message.kind === 'phase' &&
+        message.phase === 'db-backup'
+      ) {
+        first = false;
+        expect(f.admission.isClosed(workspaceId)).toBe(true);
+        entered();
+        // Withhold the real acknowledged cut frame; native replies continue through unchanged.
+        void barrier.then(() => Reflect.apply(emit, this, [event, ...args]));
+        return true;
+      }
+      return Reflect.apply(emit, this, [event, ...args]);
+    });
     const capturing = request(f.app, 'workspace.backup-capture', {
       workspaceId,
       backupId: allocateEntityId('wsbak'),
@@ -841,7 +853,7 @@ describe('C-a composed snapshot App API', () => {
       await Promise.race([
         observed,
         capturing.then((response) => {
-          throw new Error(`Capture did not reach target mutable copy: ${response.status}`);
+          throw new Error(`Capture did not reach the target database cut: ${response.status}`);
         }),
       ]);
       const target = await request(f.app, 'thread.create', {
