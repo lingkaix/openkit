@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { copyVerifiedFile, publishDurableFile } from './local.js';
+import { copyFileForCut, copyVerifiedFile, publishDurableFile } from './local.js';
 
 const faults = vi.hoisted(() => ({
   sync: false,
@@ -91,6 +91,75 @@ describe('snapshot Storage byte primitives', () => {
     await writeFile(f.sourcePath, 'A later source mutation');
     await rm(f.sourcePath);
     expect(await readFile(f.destinationPath)).toEqual(original);
+  });
+
+  it('copies an independent unverified cut without hashing or synchronizing payload bytes', async () => {
+    const f = await fixture();
+    const hashPrototype = Object.getPrototypeOf(createHash('sha256'));
+    const hashing = vi.spyOn(hashPrototype, 'update');
+    const finishingDigest = vi.spyOn(hashPrototype, 'digest');
+    faults.sync = true;
+    try {
+      const cut = await copyFileForCut({
+        sourcePath: f.sourcePath,
+        destinationPath: f.destinationPath,
+        maxBytes: original.length,
+        mode: 0o640,
+      });
+      expect(cut).toMatchObject({ bytes: original.length, mode: 0o640 });
+      expect(cut).not.toHaveProperty('sha256');
+      expect(hashing).not.toHaveBeenCalled();
+      expect(finishingDigest).not.toHaveBeenCalled();
+    } finally {
+      faults.sync = false;
+      hashing.mockRestore();
+      finishingDigest.mockRestore();
+    }
+    expect(await readFile(f.destinationPath)).toEqual(original);
+    expect((await stat(f.destinationPath)).mode & 0o777).toBe(0o640);
+    expect((await stat(f.destinationPath)).ino).not.toBe((await stat(f.sourcePath)).ino);
+    await writeFile(f.sourcePath, 'Changed after the cut');
+    await rm(f.sourcePath);
+    expect(await readFile(f.destinationPath)).toEqual(original);
+  });
+
+  it('keeps cut copying bounded and refuses a substituted source parent without reading outside', async () => {
+    const f = await fixture();
+    await expect(
+      copyFileForCut({
+        sourcePath: f.sourcePath,
+        destinationPath: f.destinationPath,
+        maxBytes: original.length - 1,
+      })
+    ).rejects.toThrow();
+    expect(await readdir(f.root)).toEqual(['source']);
+    const parent = join(f.root, 'cut-source');
+    const moved = join(f.root, 'held-source');
+    const outside = join(f.root, 'outside');
+    await mkdir(parent);
+    await mkdir(outside);
+    const sourcePath = join(parent, 'payload');
+    await writeFile(sourcePath, original);
+    await writeFile(join(outside, 'payload'), Buffer.alloc(original.length, 0x42));
+    let substituted = false;
+    let outsideOpens = 0;
+    faults.opened = (path) => {
+      if (path === outside || path.startsWith(`${outside}/`)) outsideOpens += 1;
+    };
+    faults.afterParentInspection = async (path) => {
+      if (path !== parent || substituted) return;
+      substituted = true;
+      await rename(parent, moved);
+      await symlink(outside, parent);
+    };
+    await expect(
+      copyFileForCut({ sourcePath, destinationPath: f.destinationPath, maxBytes: original.length })
+    ).rejects.toThrow();
+    expect(substituted).toBe(true);
+    expect(outsideOpens).toBe(0);
+    expect(await readFile(join(moved, 'payload'))).toEqual(original);
+    expect(await readFile(join(outside, 'payload'))).toEqual(Buffer.alloc(original.length, 0x42));
+    expect(await readdir(f.root)).not.toContain('destination');
   });
 
   it.each([
