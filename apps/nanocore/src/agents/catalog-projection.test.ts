@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
-import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createTestStore } from '../test-support/store.js';
 import { projectAgentCatalogEntries, projectAgentCatalogEntry } from './catalog-projection.js';
 import { computeReadiness } from './readiness.js';
 
@@ -71,7 +75,12 @@ describe('projectAgentCatalogEntry', () => {
       agentId: 'agent_later',
       displayName: 'Later Worker',
     }).manifest;
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'catalog-projection-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Catalog projection');
     let manifests = [configured];
     store.setWorkspaceAgentCatalogProjection(() => projectAgentCatalogEntries(manifests));
