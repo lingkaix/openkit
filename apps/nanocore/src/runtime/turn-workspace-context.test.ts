@@ -1,9 +1,12 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   resolveWorkspaceDataSourceReference,
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -15,6 +18,11 @@ import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 
 const REMOTE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const REMOTE_URL = 'https://git.example.test/openkit/repository.git';
+let dataRoot: string | undefined;
+
+beforeEach(() => {
+  dataRoot = mkdtempSync(join(tmpdir(), 'turn-workspace-context-'));
+});
 
 describe('turn workspace context', () => {
   it.each([
@@ -38,7 +46,7 @@ describe('turn workspace context', () => {
         },
       ],
     });
-    const fixtureStore = await createDemoStore();
+    const fixtureStore = await createDemoStore({ dataRoot });
     expect(() =>
       materializeWorkspaceRootsForTurn(
         snapshot,
@@ -68,7 +76,7 @@ describe('turn workspace context', () => {
         ],
       },
     };
-    const fixtureStore = await createDemoStore();
+    const fixtureStore = await createDemoStore({ dataRoot });
     expect(() =>
       materializeWorkspaceRootsForTurn(
         createInMemoryRuntimeConfigSnapshot({ dataRoot: null }),
@@ -86,7 +94,7 @@ describe('turn workspace context', () => {
     );
   });
   it('admits an empty source input list into a plain work slot', async () => {
-    const store = await createDemoStore();
+    const store = await createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup();
     agentSetup.manifest.workspace = { inputs: [] };
     const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
@@ -122,7 +130,7 @@ describe('turn workspace context', () => {
     );
   });
   it('resolves one authored remote Git source without projecting a NanoCore host path', async () => {
-    const store = await createDemoStore();
+    const store = await createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup({ imageRef: 'openkit/worker-codex:dev' });
     const manifest = {
       ...agentSetup.manifest,
@@ -264,7 +272,7 @@ describe('turn workspace context', () => {
       ],
     });
 
-    const fixtureStore = await createDemoStore();
+    const fixtureStore = await createDemoStore({ dataRoot });
     expect(() =>
       materializeWorkspaceRootsForTurn(
         snapshot,
@@ -307,4 +315,6 @@ function remoteGitCatalog(
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
+  dataRoot = undefined;
 });
