@@ -183,11 +183,17 @@ async function retainCompletedTaskFixture(
   } catch (error) {
     rmSync(workspaceRoot, { recursive: true, force: true });
     renameSync(retainedRoot, workspaceRoot);
-    Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+    Object.defineProperties(
+      db,
+      Object.getOwnPropertyDescriptors(openWorkspaceDb(dataRoot, db.workspaceId))
+    );
     throw error;
   }
   // Keep every existing fixture consumer on the newly admitted owning handle.
-  Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+  Object.defineProperties(
+    db,
+    Object.getOwnPropertyDescriptors(openWorkspaceDb(dataRoot, db.workspaceId))
+  );
   rmSync(retainedRoot, { recursive: true, force: true });
 }
 
