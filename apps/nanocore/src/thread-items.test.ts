@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -6,7 +9,12 @@ import { createDemoStore } from './test-support/demo-store.js';
 
 describe('thread item replay app API', () => {
   it('returns ordered durable thread items for reload and right-sidebar replay', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'thread-items-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Replay thread'
