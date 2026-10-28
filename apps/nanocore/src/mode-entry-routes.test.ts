@@ -869,7 +869,7 @@ describe('conversation.submit worker storage choice', () => {
         await Promise.allSettled(itemPublications.map((publication) => publication.completion));
       } finally {
         publicationObservation.mockRestore();
-        loopObservation.mockRestore();
+        if (loopOwners.runWorkerTurnLoop === loopObservation) loopObservation.mockRestore();
         await shutdownControlStoreWorkerClient();
         await native.restore();
         coreDb.sqlite.close();
@@ -1127,7 +1127,7 @@ describe('conversation.submit worker storage choice', () => {
           .map((result) => result.value)
       );
       publications.mockRestore();
-      loops.mockRestore();
+      if (loopOwners.runWorkerTurnLoop === loops) loops.mockRestore();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
@@ -1431,7 +1431,7 @@ describe('conversation.submit worker acceptance wait', () => {
         await Promise.allSettled(itemPublications.map((publication) => publication.completion));
       } finally {
         publicationObservation.mockRestore();
-        loopObservation.mockRestore();
+        if (loopOwners.runWorkerTurnLoop === loopObservation) loopObservation.mockRestore();
         await shutdownControlStoreWorkerClient();
         await native.restore();
         coreDb.sqlite.close();
@@ -1773,7 +1773,7 @@ describe('conversation.submit worker acceptance wait', () => {
         await Promise.allSettled(itemPublications.map((publication) => publication.completion));
       } finally {
         publicationObservation.mockRestore();
-        loopObservation.mockRestore();
+        if (loopOwners.runWorkerTurnLoop === loopObservation) loopObservation.mockRestore();
         await shutdownControlStoreWorkerClient();
         await native.restore();
         coreDb.sqlite.close();
@@ -1917,7 +1917,7 @@ describe('mode command failure diagnostics', () => {
         )
       );
     } finally {
-      diagnostics.mockRestore();
+      if (console.error === diagnostics) diagnostics.mockRestore();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -1981,7 +1981,6 @@ describe('mode command failure diagnostics', () => {
         ],
       ]);
     } finally {
-      vi.restoreAllMocks();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -2161,8 +2160,12 @@ describe('reasoning effort admission and replay', () => {
       // Join the real lifecycle and its final display publication before disposing native owners.
       for (const owner of [products, loops, starts, creates, updates]) {
         await Promise.allSettled(owner.mock.results.map((result) => result.value));
-        owner.mockRestore();
       }
+      if (productOwners.startProductTurn === products) products.mockRestore();
+      if (loopOwners.runWorkerTurnLoop === loops) loops.mockRestore();
+      starts.mockRestore();
+      if (storeOwner.createItem === creates) creates.mockRestore();
+      if (storeOwner.updateItem === updates) updates.mockRestore();
       try {
         await shutdownControlStoreWorkerClient();
       } finally {
@@ -2978,8 +2981,9 @@ describe('Task durable admission response', () => {
       await setImmediate();
       receiptPublication.mockRestore();
       terminalPublication.mockRestore();
-      loopObservation.mockRestore();
-      collectionObservation.mockRestore();
+      if (loopOwners.runWorkerTurnLoop === loopObservation) loopObservation.mockRestore();
+      if (recoveryOwners.clearWorkerCheckpointAfterTerminalState === collectionObservation)
+        collectionObservation.mockRestore();
       await native.restore();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
@@ -3325,9 +3329,10 @@ describe('Task terminal replay closeout ownership', () => {
           .map((result) => result.value)
       );
       publications.mockRestore();
-      admissions.mockRestore();
-      loopCloseout?.mockRestore();
-      collector.mockRestore();
+      if (productOwners.observeTurnAdmission === admissions) admissions.mockRestore();
+      if (loopCloseout && loopOwners.runWorkerTurnLoop === loopCloseout) loopCloseout.mockRestore();
+      if (recoveryOwners.clearWorkerCheckpointAfterTerminalState === collector)
+        collector.mockRestore();
       await native.restore();
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
@@ -3707,7 +3712,7 @@ describe('exact Task Agent selection', () => {
       expect(f.prepare).not.toHaveBeenCalled();
       expect(f.executor.launches).toBe(0);
     } finally {
-      knowledge.mockRestore();
+      if (knowledgeOwners.createTaskKnowledgePreparation === knowledge) knowledge.mockRestore();
       await f.cleanup();
     }
   });
@@ -3744,7 +3749,7 @@ describe('exact Task Agent selection', () => {
       expect(f.prepare).not.toHaveBeenCalled();
       expect(f.executor.launches).toBe(0);
     } finally {
-      knowledge.mockRestore();
+      if (knowledgeOwners.createTaskKnowledgePreparation === knowledge) knowledge.mockRestore();
       await f.cleanup();
     }
   });
@@ -4074,7 +4079,7 @@ describe('route B queued Task receipts', () => {
           .map((r) => r.value)
       );
       submitObservation.mockRestore();
-      admissions.mockRestore();
+      if (productOwners.observeTurnAdmission === admissions) admissions.mockRestore();
       await native.restore();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
@@ -4765,7 +4770,6 @@ async function assistantWiringFixture(
     dispatchCount: () => createResponses.mock.calls.length + createChatCompletion.mock.calls.length,
     close: async () => {
       await shutdownControlStoreWorkerClient();
-      vi.restoreAllMocks();
       syncBuiltinESMExports();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -4922,8 +4926,22 @@ function skillModelObservations(
 }
 
 describe('#144 real Assistant command wiring', () => {
-  it('uses actual Assistant Memory tell and ask with User publication, citations and separate role usage', async () => {
+  it('uses actual Assistant Memory tell and ask with User publication, citations and separate role usage', async ({
+    onTestFailed,
+  }) => {
+    const phases = {
+      setup: 'entered',
+      firstSubmit: 'pending',
+      replay: 'pending',
+      retrievalClose: 'pending',
+      fixtureClose: 'pending',
+    };
+    // This hook runs after teardown; the fixed states describe only this fixture.
+    onTestFailed(() => {
+      process.stderr.write(`mode-fixture memory ${JSON.stringify(phases)}\n`);
+    });
     const f = await assistantWiringFixture(false, undefined, false, undefined, true);
+    phases.setup = 'settled';
     const citation = () =>
       formatReferenceUri({
         scopeId: `page/user/${f.actorUserId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.actorUserId } })}`,
@@ -5003,7 +5021,9 @@ describe('#144 real Assistant command wiring', () => {
         })
       ).toThrow('Notebook recovery required.');
       expect(fs.existsSync(notebookPath)).toBe(false);
+      phases.firstSubmit = 'entered';
       const response = await f.submit();
+      phases.firstSubmit = 'settled';
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(body.turn.status).toBe('completed');
@@ -5047,16 +5067,37 @@ describe('#144 real Assistant command wiring', () => {
         )
       ).toBe(true);
       const beforeReplay = f.createResponses.mock.calls.length;
-      expect((await f.submit()).status).toBe(200);
+      phases.replay = 'entered';
+      const replay = await f.submit();
+      phases.replay = 'settled';
+      expect(replay.status).toBe(200);
       expect(f.createResponses).toHaveBeenCalledTimes(beforeReplay);
     } finally {
+      phases.retrievalClose = 'entered';
       await closeRetrievalServices();
+      phases.retrievalClose = 'settled';
+      phases.fixtureClose = 'entered';
       await f.close();
+      phases.fixtureClose = 'settled';
     }
   }, 120_000);
 
-  it('assembles the fixed native Generative family and binds a distinct command after an accepted Skill call', async () => {
+  it('assembles the fixed native Generative family and binds a distinct command after an accepted Skill call', async ({
+    onTestFailed,
+  }) => {
+    const phases = {
+      setup: 'entered',
+      firstSubmit: 'pending',
+      replay: 'pending',
+      nextCommand: 'pending',
+      fixtureClose: 'pending',
+    };
+    // Failure evidence identifies this fixture, not a global shutdown caller.
+    onTestFailed(() => {
+      process.stderr.write(`mode-fixture generative ${JSON.stringify(phases)}\n`);
+    });
     const f = await assistantWiringFixture(true);
+    phases.setup = 'settled';
     const original = privateInvocationOwners.createOperationEngine;
     const invoked = vi.fn();
     vi.spyOn(privateInvocationOwners, 'createOperationEngine').mockImplementation(
@@ -5097,7 +5138,9 @@ describe('#144 real Assistant command wiring', () => {
       ],
     });
     try {
+      phases.firstSubmit = 'entered';
       const response = await f.submit();
+      phases.firstSubmit = 'settled';
       expect(response.status, await response.clone().text()).toBe(200);
       const body = SubmitConversationResponseSchema.parse(await response.json());
       expect(f.createResponses.mock.calls[0]![1].tools?.map((tool) => tool.name)).toEqual([
@@ -5154,7 +5197,9 @@ describe('#144 real Assistant command wiring', () => {
       expect(skillModelObservations(f.createResponses.mock.calls[2]![1]).join('')).toContain(
         apps.items[0]!.appId
       );
+      phases.replay = 'entered';
       const replay = await f.submit();
+      phases.replay = 'settled';
       expect(replay.status).toBe(200);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(body);
       expect(invoked).toHaveBeenCalledOnce();
@@ -5174,7 +5219,9 @@ describe('#144 real Assistant command wiring', () => {
           },
         ],
       });
+      phases.nextCommand = 'entered';
       const next = await f.submit(nextRequest);
+      phases.nextCommand = 'settled';
       expect(next.status, await next.clone().text()).toBe(200);
       expect(invoked).toHaveBeenCalledTimes(2);
       expect(invoked.mock.calls[1]![1]).toMatchObject({
@@ -5192,7 +5239,9 @@ describe('#144 real Assistant command wiring', () => {
       expect(invoked.mock.calls[1]![1].requestId).not.toBe(requestId);
       expect(listLightApps(f.dataRoot, workspaceIdForOwner(f.thread.owner)).items).toHaveLength(2);
     } finally {
+      phases.fixtureClose = 'entered';
       await f.close();
+      phases.fixtureClose = 'settled';
     }
   });
 
@@ -6168,7 +6217,6 @@ describe('#144 real Assistant command wiring', () => {
       const response = await f.submit();
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(f.dispatchCount()).toBe(0);
-      vi.restoreAllMocks();
       expect(f.environments()).toHaveLength(condition === 'immutable conflict' ? 1 : 0);
       expect(
         f.store
@@ -6285,7 +6333,9 @@ describe('#144 real Assistant command wiring', () => {
   });
 });
 
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+// Restore shared callables before native drain; a timed-out body can still finish later.
 afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   await shutdownControlStoreWorkerClient();
 });
