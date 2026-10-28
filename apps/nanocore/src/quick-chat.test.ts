@@ -3542,19 +3542,35 @@ describe('Ordinary Assistant admission defaults', () => {
       internalRoleProfiles,
       llmGatewayDispatcher: { createResponses: dispatch } as never,
     });
-    const response = await fixture.submit('Explain a short concept.');
-    expect(response.status, await response.clone().text()).toBe(200);
-    const body = SubmitConversationResponseSchema.parse(await response.json());
-    const expected = {
-      roleId: 'quick-chat',
-      profileId: options.profileId,
-      limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: options.expectedDeadlineMs },
-    };
-    expect(admittedAtInference?.status).toBe('running');
-    expect(admittedAtInference?.internalExecution).toMatchObject(expected);
-    expect(body.turn.internalExecution).toMatchObject(expected);
-    expect(fixture.store.getTurnById(body.turn.id).internalExecution).toMatchObject(expected);
-    expect(dispatch).toHaveBeenCalledOnce();
+    // Use controlled time for admission metadata while native fixture I/O remains real.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    // Node's native abort timer is outside Vitest's clock; bind it to the same controlled clock.
+    const deadlineTimeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException('Deadline elapsed.', 'TimeoutError')),
+        milliseconds
+      ).unref();
+      return controller.signal;
+    });
+    try {
+      const response = await fixture.submit('Explain a short concept.');
+      expect(response.status, await response.clone().text()).toBe(200);
+      const body = SubmitConversationResponseSchema.parse(await response.json());
+      const expected = {
+        roleId: 'quick-chat',
+        profileId: options.profileId,
+        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: options.expectedDeadlineMs },
+      };
+      expect(admittedAtInference?.status).toBe('running');
+      expect(admittedAtInference?.internalExecution).toMatchObject(expected);
+      expect(body.turn.internalExecution).toMatchObject(expected);
+      expect(fixture.store.getTurnById(body.turn.id).internalExecution).toMatchObject(expected);
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally {
+      deadlineTimeout.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 
