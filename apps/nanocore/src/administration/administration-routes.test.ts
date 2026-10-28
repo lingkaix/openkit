@@ -27,6 +27,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -40,32 +41,6 @@ const profileResolverFixture = vi.hoisted(() => ({
     | typeof import('../internal-agents/profile-resolver.js').resolveInternalRoleProfile,
   resolveInternalRoleProfile: vi.fn(),
 }));
-
-const retainedBodyObservation = vi.hoisted(() => ({
-  active: undefined as { itemIds: Set<string>; bodies: number } | undefined,
-}));
-
-// Observe actual retained bytes without replacing Store reads or filesystem effects.
-vi.mock('node:fs', async (load) => {
-  const actual = await load<typeof import('node:fs')>();
-  return {
-    ...actual,
-    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
-      const value = Reflect.apply(actual.readFileSync, actual, args);
-      const active = retainedBodyObservation.active;
-      if (active) {
-        let id: string | undefined;
-        try {
-          id = JSON.parse(value.toString())?.id;
-        } catch {
-          // Other content is outside the retained Item-body observation.
-        }
-        if (id && active.itemIds.has(id)) active.bodies++;
-      }
-      return value;
-    }) as typeof actual.readFileSync,
-  };
-});
 
 vi.mock('../internal-agents/profile-resolver.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../internal-agents/profile-resolver.js')>();
@@ -97,6 +72,9 @@ describe('administration conversation route', () => {
     const samples: number[] = [];
     for (const count of [1, 6]) {
       const observed = { itemIds: new Set<string>(), bodies: 0 };
+      const inlineItemIds = new Set<string>();
+      const fileItemIds = new Set<string>();
+      let restoreObservation = () => {};
       let inspect!: () => unknown;
       let before: unknown;
       let result: Awaited<ReturnType<typeof postAdministrationAdmissionTurn>>;
@@ -111,18 +89,25 @@ describe('administration conversation route', () => {
                 kind: 'user',
                 id: thread.privateOwnerUserId!,
               });
-              const item = await store.createItem({
-                id: allocateEntityId('it'),
-                owner: turn.owner,
-                threadId: thread.id,
-                turnId: turn.id,
-                type: 'assistant-message',
-                status: 'completed',
-                text: `Unrelated retained answer ${index}`,
-                createdAt: turn.startedAt!,
-                completedAt: turn.startedAt!,
-              });
-              observed.itemIds.add(item.id);
+              // Storage Item Log Invariants select inline bytes at <=65,536 bytes and files above it.
+              for (const [itemIds, text] of [
+                [inlineItemIds, `Unrelated retained answer ${index}`],
+                [fileItemIds, `Unrelated retained answer ${index} ${'x'.repeat(65_537)}`],
+              ] as const) {
+                const item = await store.createItem({
+                  id: allocateEntityId('it'),
+                  owner: turn.owner,
+                  threadId: thread.id,
+                  turnId: turn.id,
+                  type: 'assistant-message',
+                  status: 'completed',
+                  text,
+                  createdAt: turn.startedAt!,
+                  completedAt: turn.startedAt!,
+                });
+                observed.itemIds.add(item.id);
+                itemIds.add(item.id);
+              }
               await store.completeTurn(turn.id, {
                 status: 'completed',
                 completedAt: turn.startedAt!,
@@ -149,15 +134,28 @@ describe('administration conversation route', () => {
               receipts: store.listCommandRequests(),
             });
             before = inspect();
-            retainedBodyObservation.active = observed;
+            const observation = observeRetainedItemBodies(observed);
+            restoreObservation = observation.restore;
             // Full history must see real bodies before this observer can decide admission cost.
-            expect(store.listThreadItems(workspaceId, thread.id)).toHaveLength(count);
+            expect(store.listThreadItems(workspaceId, thread.id)).toHaveLength(2 * count);
             expect(observed.bodies).toBeGreaterThanOrEqual(count);
+            expect(observed.bodies).toBeGreaterThanOrEqual(2 * count);
+            // Each representation must expose a deliberate full-history walk through the same seam.
+            for (const itemId of inlineItemIds) {
+              const read = observation.bodyReads.get(itemId);
+              expect(read?.count).toBeGreaterThanOrEqual(1);
+              expect(read!.byteLength).toBeLessThanOrEqual(65_536);
+            }
+            for (const itemId of fileItemIds) {
+              const read = observation.bodyReads.get(itemId);
+              expect(read?.count).toBeGreaterThanOrEqual(1);
+              expect(read!.byteLength).toBeGreaterThan(65_536);
+            }
             observed.bodies = 0;
           },
         });
       } finally {
-        retainedBodyObservation.active = undefined;
+        restoreObservation();
       }
       expect(result.status).toBe(409);
       expect(result.body).toMatchObject({ code: 'recovery_required' });

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
-import { afterEach, describe, expect, expectTypeOf, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -13,6 +13,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
@@ -33,32 +34,6 @@ import {
   type WorkerTranscriptImportOptions,
   type WorkerTranscriptPayload,
 } from './worker-transcript.js';
-
-const retainedBodyObservation = vi.hoisted(() => ({
-  active: undefined as { itemIds: Set<string>; bodies: number } | undefined,
-}));
-
-// Observe actual retained bytes without replacing Store reads or filesystem effects.
-vi.mock('node:fs', async (load) => {
-  const actual = await load<typeof import('node:fs')>();
-  return {
-    ...actual,
-    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
-      const value = Reflect.apply(actual.readFileSync, actual, args);
-      const active = retainedBodyObservation.active;
-      if (active) {
-        let id: string | undefined;
-        try {
-          id = JSON.parse(value.toString())?.id;
-        } catch {
-          // Other content is outside the retained Item-body observation.
-        }
-        if (id && active.itemIds.has(id)) active.bodies++;
-      }
-      return value;
-    }) as typeof actual.readFileSync,
-  };
-});
 
 /**
  * Creates a package fixture for transcript import tests.
@@ -1016,6 +991,8 @@ describe('live Artifact Material candidate validation', () => {
     const samples: number[] = [];
     for (const count of [1, 6]) {
       const observed = { itemIds: new Set<string>(), bodies: 0 };
+      const inlineItemIds = new Set<string>();
+      const fileItemIds = new Set<string>();
       const fixture = await createTranscriptFixture(async (historyStore) => {
         const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
         const threadId = 'th_00000000-0000-7000-8000-000000000001';
@@ -1024,19 +1001,25 @@ describe('live Artifact Material candidate validation', () => {
             kind: 'user',
             id: 'usr_00000000-0000-7000-8000-000000000001',
           });
-          const item = await historyStore.createItem({
-            id: allocateEntityId('it'),
-            owner: turn.owner,
-            threadId,
-            turnId: turn.id,
-            type: 'assistant-message',
-            status: 'completed',
-            // Core Storage's 65,536-byte inline boundary leaves these real bodies file-backed.
-            text: `Unrelated answer ${index}: ${'x'.repeat(70_000)}`,
-            createdAt: turn.startedAt!,
-            completedAt: turn.startedAt!,
-          });
-          observed.itemIds.add(item.id);
+          // Storage Item Log Invariants select inline bytes at <=65,536 bytes and files above it.
+          for (const [itemIds, text] of [
+            [inlineItemIds, `Unrelated answer ${index}`],
+            [fileItemIds, `Unrelated answer ${index}: ${'x'.repeat(65_537)}`],
+          ] as const) {
+            const item = await historyStore.createItem({
+              id: allocateEntityId('it'),
+              owner: turn.owner,
+              threadId,
+              turnId: turn.id,
+              type: 'assistant-message',
+              status: 'completed',
+              text,
+              createdAt: turn.startedAt!,
+              completedAt: turn.startedAt!,
+            });
+            observed.itemIds.add(item.id);
+            itemIds.add(item.id);
+          }
           await historyStore.completeTurn(turn.id, {
             status: 'completed',
             completedAt: turn.startedAt!,
@@ -1054,15 +1037,27 @@ describe('live Artifact Material candidate validation', () => {
       const before = workspaceDb.sqlite.serialize();
       const expected = prepareCandidate(fixture);
       let candidate: ReturnType<typeof prepareCandidate>;
+      const observation = observeRetainedItemBodies(observed);
       try {
-        retainedBodyObservation.active = observed;
         // The real history read must see the bodies before this observer can decide its cost.
-        expect(store.listThreadItems(workspaceId, threadId)).toHaveLength(count);
+        expect(store.listThreadItems(workspaceId, threadId)).toHaveLength(2 * count);
         expect(observed.bodies).toBeGreaterThanOrEqual(count);
+        expect(observed.bodies).toBeGreaterThanOrEqual(2 * count);
+        // Each representation must expose a deliberate full-history walk through the same seam.
+        for (const itemId of inlineItemIds) {
+          const read = observation.bodyReads.get(itemId);
+          expect(read?.count).toBeGreaterThanOrEqual(1);
+          expect(read!.byteLength).toBeLessThanOrEqual(65_536);
+        }
+        for (const itemId of fileItemIds) {
+          const read = observation.bodyReads.get(itemId);
+          expect(read?.count).toBeGreaterThanOrEqual(1);
+          expect(read!.byteLength).toBeGreaterThan(65_536);
+        }
         observed.bodies = 0;
         candidate = prepareCandidate(fixture);
       } finally {
-        retainedBodyObservation.active = undefined;
+        observation.restore();
       }
       expect(candidate).toEqual(expected);
       expect(candidate).toMatchObject({
