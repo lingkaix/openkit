@@ -1,17 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  ApiErrorSchema,
-  deriveEntityId,
-  formatReferenceUri,
-  parseReferenceUri,
-} from '@openkit/protocol';
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
+import { deriveEntityId, formatReferenceUri, parseReferenceUri } from '@openkit/protocol';
+import { describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   KnowledgePageValidationError,
   parseOkfDocument,
@@ -20,208 +13,32 @@ import {
 import { FsStore } from '../lib/store.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
-import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb } from './db.js';
+import {
+  authorityRequestId,
+  call,
+  candidatePage,
+  createFixture,
+  createOwners,
+  currentPage,
+  decide,
+  decisionInput,
+  digest,
+  draft,
+  expectAuthorityFailure,
+  type Fixture,
+  type Owners,
+  PRODUCER,
+  workspacePageScope,
+} from '../test-support/knowledge-proposal-authority.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
-import { applyMigrations } from './migrate.js';
 
-const CREATED_AT = '2026-07-12T00:00:00.000Z';
 const DECIDED_AT = '2026-07-12T01:00:00.000Z';
-const PRODUCER = {
-  kind: 'agent',
-  id: 'agent_knowledge',
-  responsibleUserId: FIXTURE_LOCAL_USER_ID,
-} as const;
 const REVIEWER = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
-type Proposal = ReturnType<FsStore['createKnowledgeProposal']>;
-
-/** Hashes exact retained bytes independently of the Proposal reader. */
-function digest(content: string): string {
-  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
-}
-
-/** Derives one deterministic command UUID from a readable fixture label. */
-function authorityRequestId(label: string): string {
-  const suffix = createHash('sha256').update(label, 'utf8').digest('hex').slice(0, 12);
-  return `00000000-0000-4000-8000-${suffix}`;
-}
-
-/** Authors the current exact owner profile; accepted bytes still require a real human Review. */
-function candidatePage(
-  workspaceId: string,
-  knowledgePageId: string,
-  sourceReference: string,
-  includeStandardStatus = true
-): string {
-  return [
-    '---',
-    'type: "KnowledgePage"',
-    'title: "Review authority lesson"',
-    `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
-    'schema_version: "openkit-scope-knowledge-schema-v4"',
-    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
-    'openkit_status: "active"',
-    ...(includeStandardStatus ? ['status: "stable"'] : []),
-    `scope: ${JSON.stringify({ kind: 'workspace', workspaceId })}`,
-    `source_refs: ${JSON.stringify([sourceReference])}`,
-    'review_state: "accepted"',
-    'sensitivity: "normal"',
-    'freshness: "current"',
-    `created_at: ${JSON.stringify(CREATED_AT)}`,
-    `updated_at: ${JSON.stringify(CREATED_AT)}`,
-    '---',
-    'Keep proposal application under one append-only human Review authority.',
-    '',
-  ].join('\n');
-}
-
-/** Creates fresh real Git and current Core membership; no standalone page mutation is admitted. */
-async function createOwners(registerCleanup = onTestFinished) {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-proposal-authority-'));
-  const coreDb = openCoreDb(dataRoot);
-  registerCleanup(async () => {
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
-  applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
-  const workspaceId = (await store.createWorkspace('Knowledge proposal authority')).id;
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: FIXTURE_LOCAL_USER_ID });
-  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-  const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
-  return {
-    dataRoot,
-    coreDb,
-    store,
-    workspaceId,
-    workspaceRoot,
-    repositoryPath,
-    notebook: new KnowledgeNotebook({ repositoryPath }),
-    app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
-  };
-}
-type Owners = Awaited<ReturnType<typeof createOwners>>;
-
-/** Calls the actual native operation and preserves its failure code and status for refusal assertions. */
-async function call(f: Owners, operation: string, input: Record<string, unknown>) {
-  const { requestId, ...body } = input;
-  const response = await f.app.request(`/api/app/operations/${operation}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
-    },
-    body: JSON.stringify({ workspaceId: f.workspaceId, ...body }),
-  });
-  const result = await response.json();
-  if (response.status !== 200) {
-    const failure = ApiErrorSchema.parse(result);
-    throw Object.assign(new Error(failure.message), failure, { status: response.status });
-  }
-  return result;
-}
-
-/** Reads exact bytes from the published tree, independent of materialized projections. */
-function currentPage(f: Owners, id: string) {
-  return f.notebook.readRevision(f.notebook.publishedRevision()).files[`${id}.md`];
-}
-
-/** Drafts through the existing Proposal owner against the actual current Git base. */
-function draft(
-  f: Owners,
-  sourceReference: string,
-  label: string,
-  id: string,
-  includeStatus = true
-) {
-  const canonicalPageBytes = candidatePage(f.workspaceId, id, sourceReference, includeStatus);
-  return f.store.createKnowledgeProposal({
-    workspaceId: f.workspaceId,
-    requestId: authorityRequestId(label),
-    baseRevision: f.notebook.publishedRevision(),
-    knowledgePageId: id,
-    canonicalPageBytes,
-    contentDigest: digest(canonicalPageBytes),
-    sourceReferences: [sourceReference],
-    rationale: 'This bounded rule is supported by the cited Workspace evidence.',
-    confidence: 0.9,
-    verifiedExternalReferences: [],
-    producer: PRODUCER,
-    createdAt: CREATED_AT,
-  });
-}
-
-/** Publishes genuine human evidence, then retains a fixed-base Agent candidate for human Review. */
-async function createFixture(
-  label = 'proposal-authority-draft',
-  includeStatus = true,
-  registerCleanup = onTestFinished
-) {
-  const f = await createOwners(registerCleanup);
-  const publication = await call(f, 'knowledge.notebook.create', {
-    requestId: authorityRequestId('human-source'),
-    baseRevision: f.notebook.publishedRevision(),
-    path: 'evidence/human-review' + '.md',
-    content: serializeKnowledgePageFixture(
-      {
-        title: 'Existing review evidence',
-        content: 'A human Review is the only activation authority.',
-        sourceReferences: [],
-        createdAt: '2026-10-19T00:00:00.000Z',
-        updatedAt: '2026-10-19T00:00:00.000Z',
-      },
-      { kind: 'workspace', workspaceId: f.workspaceId }
-    ),
-    summary: 'Publish explicit full-page fixture',
-  });
-  expect(publication.changedPageIds).toEqual(['evidence/human-review']);
-  const source = { id: 'evidence/human-review' };
-  const sourceReference = formatReferenceUri(
-    { scopeId: workspacePageScope(f), objectId: source.id },
-    digest(currentPage(f, source.id)!)
-  );
-  const knowledgePageId = 'review/review-authority-lesson';
-  const proposal = draft(f, sourceReference, label, knowledgePageId, includeStatus);
-  return {
-    ...f,
-    proposal,
-    knowledgePageId,
-    sourceReference,
-    canonicalPageBytes: proposal.canonicalPageBytes,
-    contentDigest: proposal.contentDigest,
-    proposalPath: join(f.workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`),
-    reviewPath: join(f.workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`),
-  };
-}
-type Fixture = Awaited<ReturnType<typeof createFixture>>;
-
-/** Binds every human decision to the exact immutable Proposal document, base and candidate. */
-function decisionInput(f: Owners, proposal: Proposal, decision: string, label: string) {
-  return {
-    requestId: authorityRequestId(label),
-    proposalId: proposal.id,
-    decision,
-    proposalDigest: digest(
-      readFileSync(join(f.workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`), 'utf8')
-    ),
-    baseRevision: proposal.baseRevision,
-    candidateRevision: proposal.candidateRevision,
-  };
-}
-
-/** Uses the actual Review operation and shared publisher, including ordinary command receipts. */
-function decide(f: Fixture, decision: 'accepted' | 'deferred' | 'rejected', label: string) {
-  return call(f, 'knowledge.proposal.decide', decisionInput(f, f.proposal, decision, label));
-}
 
 /** Reverses through the common fixed-base publisher with exact human removal confirmation. */
 function reverse(
@@ -267,14 +84,6 @@ function removeCandidateBlob(f: Fixture) {
   expect(existsSync(path)).toBe(true);
   rmSync(path);
   return path;
-}
-
-/** Requires a named authority failure for both synchronous readers and native async operations. */
-async function expectAuthorityFailure(
-  action: () => unknown,
-  code: 'conflict' | 'recovery_required'
-) {
-  await expect(Promise.resolve().then(action)).rejects.toMatchObject({ code });
 }
 
 /** Supplies real current caller identity and membership for retrieval and source-audience checks. */
@@ -667,118 +476,6 @@ describe('knowledge proposal authority', () => {
     expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
   });
 
-  describe('annotated retained Reviews', () => {
-    let baseline: Fixture;
-    let deferred: Awaited<ReturnType<typeof decide>>;
-    let accepted: Awaited<ReturnType<typeof decide>>;
-    let annotatedBytes: string;
-    let dispose: (() => void) | undefined;
-    beforeAll(async () => {
-      baseline = await createFixture('proposal-annotated-review', true, (cleanup) => {
-        dispose = cleanup;
-      });
-      deferred = await decide(baseline, 'deferred', 'review-annotated-deferred');
-      accepted = await decide(baseline, 'accepted', 'review-annotated-accepted');
-      const retained = JSON.parse(readFileSync(baseline.reviewPath, 'utf8'));
-      retained.futureNote = 'Retained Review description';
-      for (const review of retained.decisions) {
-        review.futureNote = 'Retained decision description';
-        review.actor.futureNote = 'Retained attribution description';
-      }
-      annotatedBytes = `${JSON.stringify(retained, null, 2)}\n`;
-      writeFileSync(baseline.reviewPath, annotatedBytes);
-      await shutdownControlStoreWorkerClient();
-      baseline.coreDb.sqlite.close();
-    });
-    afterAll(() => dispose?.());
-
-    /** Copies closed native owners; each corruption gets independent bytes, receipts and Git objects. */
-    function reviewedFixture(): Fixture {
-      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-annotated-review-'));
-      cpSync(baseline.dataRoot, dataRoot, { recursive: true });
-      const coreDb = openCoreDb(dataRoot);
-      onTestFinished(async () => {
-        coreDb.sqlite.close();
-        await shutdownControlStoreWorkerClient();
-        rmSync(dataRoot, { recursive: true, force: true });
-      });
-      const store = new FsStore({ dataRoot });
-      const workspaceRoot = join(dataRoot, 'workspaces', baseline.workspaceId);
-      const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
-      return {
-        ...baseline,
-        dataRoot,
-        coreDb,
-        store,
-        workspaceRoot,
-        repositoryPath,
-        notebook: new KnowledgeNotebook({ repositoryPath }),
-        app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
-        proposalPath: join(workspaceRoot, 'knowledge', 'proposals', `${baseline.proposal.id}.md`),
-        reviewPath: join(workspaceRoot, 'knowledge', 'reviews', `${baseline.proposal.id}.json`),
-      };
-    }
-
-    it('projects annotated retained Reviews without rewriting their bytes', async () => {
-      const f = reviewedFixture();
-      expect(accepted.review.proposalDigest).toBe(digest(readFileSync(f.proposalPath, 'utf8')));
-      expect(accepted.review.proposalDigest).not.toBe(f.contentDigest);
-      f.store = new FsStore({ dataRoot: f.dataRoot });
-      f.app = createAppWithLocalIdentity({
-        coreDb: f.coreDb,
-        dataRoot: f.dataRoot,
-        store: f.store,
-      });
-      expect(
-        f.store.projectKnowledgeProposalDecision(f.workspaceId, deferred.review.reviewId)
-      ).toEqual(deferred);
-      expect(
-        f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId)
-      ).toEqual(accepted);
-      expect(await decide(f, 'accepted', 'review-annotated-accepted')).toEqual(accepted);
-      expect(readFileSync(f.reviewPath, 'utf8')).toBe(annotatedBytes);
-    });
-
-    it.each([
-      ['decision', 'rejected'],
-      ['proposalDigest', `sha256:${'0'.repeat(64)}`],
-      ['contentDigest', `sha256:${'1'.repeat(64)}`],
-      ['knowledgePageId', 'review/foreign-page'],
-      ['requestId', authorityRequestId('foreign-review-request')],
-      ['reviewId', testEntityId('kr', 'foreign-review')],
-      ['workspaceId', testEntityId('ws', 'foreign-workspace')],
-      ['ownerScope', { kind: 'workspace', workspaceId: testEntityId('ws', 'foreign-owner') }],
-      ['baseRevision', '0'.repeat(40)],
-      ['candidateRevision', '1'.repeat(40)],
-      ['actor', { kind: 'user', id: testEntityId('usr', 'foreign-reviewer') }],
-    ] as const)('refuses changed ordered decision core: %s', async (key, value) => {
-      const f = reviewedFixture();
-      const changed = JSON.parse(annotatedBytes);
-      changed.decisions[1][key] = value;
-      writeFileSync(f.reviewPath, `${JSON.stringify(changed, null, 2)}\n`);
-      await expectAuthorityFailure(
-        () => f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId),
-        'recovery_required'
-      );
-      await expectAuthorityFailure(
-        async () => await decide(f, 'accepted', 'review-annotated-accepted'),
-        'recovery_required'
-      );
-      expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
-    });
-
-    it('refuses reversed retained decision order', async () => {
-      const f = reviewedFixture();
-      const retained = JSON.parse(annotatedBytes);
-      retained.decisions.reverse();
-      writeFileSync(f.reviewPath, `${JSON.stringify(retained, null, 2)}\n`);
-      await expectAuthorityFailure(
-        () => f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId),
-        'recovery_required'
-      );
-    });
-  });
-
   it('fails closed when durable Review bytes contradict the accepted proposal', async () => {
     const f = await createFixture('proposal-review-tamper');
     const accepted = await decide(f, 'accepted', 'review-tamper');
@@ -1043,8 +740,3 @@ describe('knowledge proposal authority', () => {
     expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
   });
 });
-
-/** Reads the actual Workspace binding without allocating fixture authority. */
-function workspacePageScope(f: Owners): string {
-  return `page/workspace/${f.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspaceId } })}`;
-}
