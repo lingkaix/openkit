@@ -1,8 +1,9 @@
-import { mkdtempSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
@@ -93,12 +94,25 @@ describe('Task terminal and Goal wake shared commit', () => {
   });
   it('survives closing and reopening SQLite and leaves the Goal open', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-wake-'));
-    const core = openCoreDb(root);
+    const absentRoot = mkdtempSync(join(tmpdir(), 'goal-wake-absent-history-'));
+    let core: ReturnType<typeof openCoreDb> | undefined;
+    let db: ReturnType<typeof openWorkspaceDb> | undefined;
+    onTestFinished(async () => {
+      if (db?.sqlite.open) db.sqlite.close();
+      if (core?.sqlite.open) core.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(absentRoot, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    });
+    core = openCoreDb(root);
     applyMigrations(core);
     core.sqlite.close();
     const store = new FsStore({ dataRoot: root });
     const ws = await store.createWorkspace('Wake');
-    let db = openWorkspaceDb(root, ws.id);
+    // Retain valid empty authority before the original Goal and Task history exists.
+    await shutdownControlStoreWorkerClient();
+    cpSync(root, absentRoot, { recursive: true });
+    db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     const view = await executeGoalOperation(
       'goal.create',
@@ -154,7 +168,7 @@ describe('Task terminal and Goal wake shared commit', () => {
       await recoverTaskTerminalFacts(restarted, db);
       expect(restarted.getTurnById(turn.id).status).toBe('completed');
       await recoverTaskTerminalFacts(restarted, db);
-      const absentHistory = new FsStore();
+      const absentHistory = new FsStore({ dataRoot: absentRoot });
       await recoverTaskTerminalFacts(absentHistory, db);
       expect(absentHistory.listThreads(ws.id)).toEqual([]);
       const recovered = readGoalView(store, db, goal.goalId).goal!;
