@@ -18,7 +18,7 @@ import {
   updateOkfFrontmatter,
 } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
-import { createApp } from '../test-support/app.js';
+import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -106,7 +106,7 @@ async function createOwners(registerCleanup = onTestFinished) {
     workspaceRoot,
     repositoryPath,
     notebook: new KnowledgeNotebook({ repositoryPath }),
-    app: createApp({ coreDb, dataRoot, store }),
+    app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
   };
 }
 type Owners = Awaited<ReturnType<typeof createOwners>>;
@@ -515,7 +515,7 @@ describe('knowledge proposal authority', () => {
     const afterAnalysis = f.notebook.publishedRevision();
     expect(afterAnalysis).not.toBe(reversed.application.notebookRevision);
     f.store = new FsStore({ dataRoot: f.dataRoot });
-    f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    f.app = createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
     expect(await decide(f, 'accepted', 'review-accepted-page')).toEqual(first);
     expect(f.notebook.publishedRevision()).toBe(afterAnalysis);
     expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
@@ -687,6 +687,7 @@ describe('knowledge proposal authority', () => {
       }
       annotatedBytes = `${JSON.stringify(retained, null, 2)}\n`;
       writeFileSync(baseline.reviewPath, annotatedBytes);
+      await shutdownControlStoreWorkerClient();
       baseline.coreDb.sqlite.close();
     });
     afterAll(() => dispose?.());
@@ -712,7 +713,7 @@ describe('knowledge proposal authority', () => {
         workspaceRoot,
         repositoryPath,
         notebook: new KnowledgeNotebook({ repositoryPath }),
-        app: createApp({ coreDb, dataRoot, store }),
+        app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
         proposalPath: join(workspaceRoot, 'knowledge', 'proposals', `${baseline.proposal.id}.md`),
         reviewPath: join(workspaceRoot, 'knowledge', 'reviews', `${baseline.proposal.id}.json`),
       };
@@ -723,7 +724,11 @@ describe('knowledge proposal authority', () => {
       expect(accepted.review.proposalDigest).toBe(digest(readFileSync(f.proposalPath, 'utf8')));
       expect(accepted.review.proposalDigest).not.toBe(f.contentDigest);
       f.store = new FsStore({ dataRoot: f.dataRoot });
-      f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+      f.app = createAppWithLocalIdentity({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
       expect(
         f.store.projectKnowledgeProposalDecision(f.workspaceId, deferred.review.reviewId)
       ).toEqual(deferred);
@@ -1007,7 +1012,7 @@ describe('knowledge proposal authority', () => {
     expect(edited).toContain('manual_note: "preserve this edit"');
     f.store = new FsStore({ dataRoot: f.dataRoot });
     await f.store.updateWorkspace(f.workspaceId, { name: 'Persist unrelated workspace change' });
-    f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    f.app = createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
     await expectAuthorityFailure(
       async () => await reverse(f, accepted.review.reviewId),
       'conflict'
