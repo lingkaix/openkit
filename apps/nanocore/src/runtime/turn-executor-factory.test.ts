@@ -8749,6 +8749,8 @@ describe('createConfiguredTurnExecutor', () => {
           agentSessionId: siblingAgentSessionId,
           candidateAgentSessionId: siblingAgentSessionId,
         });
+        // Peer acceptance can precede the executor's startup ACK and credential receipt publication.
+        await native.waitForStartup(siblingEntry.turnId);
         const backend = native.executor.executionBackend as WorkerGovernanceBackend;
         const collect = backend.collectTranscript.bind(backend);
         const firstCloseoutPaused = Promise.withResolvers<void>();

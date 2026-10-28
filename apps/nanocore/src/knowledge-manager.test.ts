@@ -36,6 +36,7 @@ import {
   createDemoStore,
   createDemoWorkspaceForUser,
   DEMO_WORKSPACE_ID,
+  seedDemoWorkspace,
 } from './test-support/demo-store.js';
 import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
@@ -982,7 +983,9 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb, false);
-    const store = await createDemoStore({ dataRoot });
+    // This query uses only Demo Workspace; omit unrelated Quick Chat publication.
+    const store = new FsStore({ dataRoot });
+    await seedDemoWorkspace(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
