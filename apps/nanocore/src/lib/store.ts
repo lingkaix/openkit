@@ -5721,6 +5721,31 @@ export class FsStore {
     return updated;
   }
 
+  /** Rechecks the acknowledged Session's selected owner without substituting a later Session head. */
+  private assertAgentSessionResultAvailable(agentSession: AgentSession): void {
+    const { workspaceId, id } = agentSession;
+    const unavailable = () => new StoreRecordNotFoundError(`AgentSession not found: ${id}`);
+    if (!isScopeAdmitted(this.dataRoot!, 'workspace', workspaceId)) throw unavailable();
+    const root = join(this.dataRoot!, 'workspaces', workspaceId);
+    const path = join(root, 'db', 'workspace.sqlite');
+    try {
+      assertCanonicalDirectory(root);
+      assertCanonicalDirectory(dirname(path));
+      assertCanonicalRegularFile(path);
+      const reader = openControlStoreProductReadHandle(path, { kind: 'workspace', workspaceId });
+      try {
+        if (!reader.get('workspace', workspaceId))
+          throw new Error('The native Workspace identity is unavailable.');
+      } finally {
+        reader.close();
+      }
+    } catch {
+      refuseScope(this.dataRoot!, { scope: 'workspace', id: workspaceId, check: 'database' });
+      throw unavailable();
+    }
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
+  }
+
   public async createAgentSession(input: AgentSessionInput): Promise<AgentSession> {
     this.getWorkspace(input.workspaceId);
     if (!input.threadId) {
@@ -5763,7 +5788,8 @@ export class FsStore {
         this.nativeScope({ kind: 'workspace', workspaceId: input.workspaceId }),
         [{ kind: 'agent-session', expectedRevision: 0, record: writeRetainedV1(agentSession) }]
       );
-      return this.getAgentSession(agentSession.id);
+      this.assertAgentSessionResultAvailable(agentSession);
+      return agentSession;
     }
     this.agentSessions.set(agentSession.id, agentSession);
     return agentSession;
@@ -5872,7 +5898,8 @@ export class FsStore {
           record: writeRetainedV1({ ...previous!.record, ...updated }),
         },
       ]);
-      return this.getAgentSession(agentSessionId);
+      this.assertAgentSessionResultAvailable(updated);
+      return updated;
     }
     this.agentSessions.set(agentSessionId, updated);
     return updated;
