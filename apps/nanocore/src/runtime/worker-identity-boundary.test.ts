@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -14,7 +17,12 @@ import { WorkerImageSettlementIdentitySchema } from './worker-image-settlements.
 
 /** Builds a preparation boundary whose first backend read is observable and deliberately unavailable. */
 async function fixture() {
-  const store = await createDemoStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'worker-identity-boundary-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
