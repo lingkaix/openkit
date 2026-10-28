@@ -15,7 +15,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -32,7 +32,8 @@ async function fixture(snapshotRoot?: string) {
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = snapshotRoot ? new FsStore({ dataRoot }) : await createDemoStore({ dataRoot });
+    const store = new FsStore({ dataRoot });
+    if (!snapshotRoot) await seedDemoWorkspace(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
