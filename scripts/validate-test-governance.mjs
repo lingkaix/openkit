@@ -230,6 +230,10 @@ const STORAGE_TEST_GRANDFATHERED_PATHS = new Set([
   'apps/nanocore/src/memory-source-operation-projections.test.ts',
   'apps/nanocore/src/meta.test.ts',
   'apps/nanocore/src/migrated-execution-retirement.test.ts',
+  // Existing Mode assertions moved unchanged to isolated files; no new storage-coupled cases.
+  'apps/nanocore/src/mode-entry-assistant.test.ts',
+  'apps/nanocore/src/mode-entry-effort.test.ts',
+  'apps/nanocore/src/mode-entry-memory.test.ts',
   'apps/nanocore/src/mode-entry-routes.test.ts',
   'apps/nanocore/src/notifications/attention.test.ts',
   'apps/nanocore/src/operation-error.test.ts',
