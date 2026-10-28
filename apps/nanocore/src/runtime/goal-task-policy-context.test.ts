@@ -170,11 +170,17 @@ async function retainCompletedTaskFixture(
   } catch (error) {
     rmSync(workspaceRoot, { recursive: true, force: true });
     renameSync(retainedRoot, workspaceRoot);
-    Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+    Object.defineProperties(
+      db,
+      Object.getOwnPropertyDescriptors(openWorkspaceDb(dataRoot, db.workspaceId))
+    );
     throw error;
   }
   // Keep every existing fixture consumer on the newly admitted owning handle.
-  Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+  Object.defineProperties(
+    db,
+    Object.getOwnPropertyDescriptors(openWorkspaceDb(dataRoot, db.workspaceId))
+  );
   rmSync(retainedRoot, { recursive: true, force: true });
 }
 
@@ -806,9 +812,31 @@ it('keeps identical retained context for a real captured request after source cl
   const f = await fixture();
   const original = f.read();
   const captured = await f.capture();
+  // Warm the old ORM so rebinding must replace its closed-connection view.
+  const alias = f.db;
+  const oldSqlite = alias.sqlite;
+  const oldOrm = alias.db;
+  expect(
+    oldOrm.query.controlTurns
+      .findFirst({ where: (turns, { eq }) => eq(turns.id, f.lineage.turnId) })
+      .sync()
+  ).toMatchObject({ id: f.lineage.turnId });
   await f.closeSource();
+  expect(f.db).toBe(alias);
+  expect(oldSqlite.open).toBe(false);
+  const currentSqlite = alias.sqlite;
+  expect(currentSqlite).not.toBe(oldSqlite);
+  expect(currentSqlite.open).toBe(true);
+  const orm = alias.db;
+  expect('$client' in orm && orm.$client).toBe(currentSqlite);
+  expect(
+    orm.query.controlTurns
+      .findFirst({ where: (turns, { eq }) => eq(turns.id, f.lineage.turnId) })
+      .sync()
+  ).toMatchObject({ id: f.lineage.turnId, status: 'completed' });
   expect(f.read()).toEqual(original);
   await f.reopen();
+  expect(currentSqlite.open).toBe(false);
   const retained = readPendingRequest(f.db.sqlite, captured.requestId)!;
   expect(retained.state).toBe('pending');
   expect(retained.canonicalArgumentsJson).toBe(captured.canonicalArgumentsJson);

@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -20,6 +21,7 @@ import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
+  bindWorkspaceSqlite,
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openCoreDb,
@@ -66,6 +68,67 @@ function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
 }
 
 describe('scoped storage databases', () => {
+  it('binds Workspace ORM reads and transactions to the supplied connection without hiding raw writes', () => {
+    const root = createDataRoot();
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const original = openWorkspaceDb(root, workspaceId);
+    const sqlite = original.sqlite;
+    try {
+      applyScopedMigrations(original);
+      sqlite.exec('CREATE TEMP TABLE binding_marker (value TEXT NOT NULL)');
+      const before = sqlite.serialize();
+      const bound = bindWorkspaceSqlite(sqlite, root, workspaceId);
+      expect(bound).toMatchObject({ scope: 'workspace', dataRoot: root, workspaceId });
+      expect(bound.sqlite).toBe(sqlite);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.serialize()).toEqual(before);
+      const refusal = new Error('Roll back the supplied binding transaction.');
+      let caught: unknown;
+      try {
+        sqlite.transaction(() => {
+          sqlite.prepare('INSERT INTO binding_marker VALUES (?)').run('raw before ORM use');
+          expect(bound.db.all(sql`SELECT value FROM binding_marker`)).toEqual([
+            { value: 'raw before ORM use' },
+          ]);
+          expect(bound.db.query.workspaceMaterials.findMany().sync()).toEqual([]);
+          bound.db.run(sql`INSERT INTO binding_marker VALUES ('ORM in raw transaction')`);
+          expect(sqlite.prepare('SELECT value FROM binding_marker').all()).toEqual([
+            { value: 'raw before ORM use' },
+            { value: 'ORM in raw transaction' },
+          ]);
+          throw refusal;
+        })();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(refusal);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.prepare('SELECT value FROM binding_marker').all()).toEqual([]);
+      expect(sqlite.serialize()).toEqual(before);
+
+      bound.db.transaction((tx) => {
+        tx.run(sql`INSERT INTO binding_marker VALUES ('ORM committed')`);
+        expect(sqlite.prepare('SELECT value FROM binding_marker').get()).toEqual({
+          value: 'ORM committed',
+        });
+      });
+      expect(() =>
+        bound.db.transaction((tx) => {
+          tx.run(sql`INSERT INTO binding_marker VALUES ('ORM rolled back')`);
+          throw refusal;
+        })
+      ).toThrow(refusal);
+      const { db } = bound;
+      expect(bound.db).toBe(db);
+      expect({ ...bound }.db).toBe(db);
+      expect(db.all(sql`SELECT value FROM binding_marker`)).toEqual([{ value: 'ORM committed' }]);
+      expect(sqlite.inTransaction).toBe(false);
+    } finally {
+      sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('T1 reopens the native Workspace journal under FULL without changing its closed column contract', ({
     skip,
   }) => {

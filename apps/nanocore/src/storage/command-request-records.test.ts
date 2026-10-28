@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EntityKind } from '@openkit/protocol';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { prepareAuditEvent } from '../audit-events.js';
 import type {
@@ -23,6 +24,7 @@ import { openControlStoreProductReadHandle } from './control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { bindWorkspaceSqlite, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
+import { controlThreads } from './schema/index.js';
 
 /** Installs retained bytes with the live writer stopped; this fixture proves decoding, not command acceptance. */
 function seedRetainedReceipt(db: WorkspaceDb, record: CommandRequestRecord): void {
@@ -382,6 +384,12 @@ describe('native receipt ownership and replay', () => {
     );
     try {
       const db = bindWorkspaceSqlite(reader.sqlite, dataRoot, workspace.id);
+      const readThread = (id: string) =>
+        db.db.query.controlThreads.findFirst({ where: eq(controlThreads.id, id) }).sync();
+      expect(readThread(threadId)).toMatchObject({ id: threadId, workspaceId: workspace.id });
+      expect(reader.sqlite.readonly).toBe(true);
+      expect(reader.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      expect(reader.sqlite.inTransaction).toBe(false);
       expect(getCommandRequestRecordFromDb(db, receipt.key, receipt.createdAt)).toEqual(receipt);
       expect(reader.get('thread', threadId)?.record.id).toBe(threadId);
       expect(
@@ -395,6 +403,12 @@ describe('native receipt ownership and replay', () => {
         threads: reader.sqlite.prepare('SELECT * FROM control_threads').all(),
       });
       const committed = rows();
+      // The same-connection ORM view must preserve SQLite's original readonly refusal.
+      expect(() =>
+        db.db.delete(controlThreads).where(eq(controlThreads.id, threadId)).run()
+      ).toThrowError(expect.objectContaining({ name: 'SqliteError', code: 'SQLITE_READONLY' }));
+      expect(rows()).toEqual(committed);
+      expect(reader.sqlite.inTransaction).toBe(false);
       expect(
         reader.sqlite
           .prepare('SELECT audit_event_id FROM audit_events WHERE action = ? AND request_id = ?')
@@ -431,6 +445,12 @@ describe('native receipt ownership and replay', () => {
         )
       ).rejects.toThrow();
       expect(rows()).toEqual(committed);
+      const laterThread = await store.createThread(workspace.id, 'Fresh bound ORM read');
+      expect(readThread(laterThread.id)).toMatchObject({
+        id: laterThread.id,
+        workspaceId: workspace.id,
+      });
+      expect(reader.sqlite.inTransaction).toBe(false);
     } finally {
       reader.close();
     }

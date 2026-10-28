@@ -83,13 +83,23 @@ export function bindCoreSqlite(
   };
 }
 
-/** Binds a supplied Workspace connection to its same-connection ORM view; the admitting caller owns identity and lifetime. */
+/** Binds a supplied Workspace connection; raw-only readers avoid ORM construction, while the admitting caller owns identity and lifetime. */
 export function bindWorkspaceSqlite(
   sqlite: Database.Database,
   dataRoot: string,
   workspaceId: string
 ): WorkspaceDb {
-  return { scope: 'workspace', sqlite, db: drizzle(sqlite, { schema }), dataRoot, workspaceId };
+  let db: WorkspaceDb['db'] | undefined;
+  return {
+    scope: 'workspace',
+    sqlite,
+    get db() {
+      db ??= drizzle(sqlite, { schema });
+      return db;
+    },
+    dataRoot,
+    workspaceId,
+  };
 }
 
 let singleton: CoreDb | undefined;
