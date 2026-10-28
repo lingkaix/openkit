@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,7 +7,7 @@ import {
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -61,6 +61,9 @@ async function createRestorableWorkerControlFixture(
   vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
   const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+  });
 
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -69,7 +72,13 @@ async function createRestorableWorkerControlFixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const store = await createDemoStore();
+  // Demo supplies the AEP input without populating the independent rebuild target.
+  const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-source-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(sourceRoot, { recursive: true, force: true });
+  });
+  const store = await createDemoStore({ dataRoot: sourceRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',

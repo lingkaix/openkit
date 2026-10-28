@@ -1,8 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   GetAgentCatalogEntryResponseSchema,
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -12,7 +15,12 @@ import { operationRequest } from './test-support/operation-request.js';
 
 describe('Agent inventory and health operations', () => {
   it('lists and reads product-visible Agent Catalog entries', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-health-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
@@ -58,7 +66,12 @@ describe('Agent inventory and health operations', () => {
   });
 
   it('refreshes workspace agent health for Settings Diagnostics', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-health-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
