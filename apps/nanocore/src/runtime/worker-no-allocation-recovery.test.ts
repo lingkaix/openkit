@@ -16,12 +16,17 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import {
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+  seedDemoWorkspace,
+} from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
@@ -120,7 +125,8 @@ async function stoppedOriginalWorker() {
   let coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  let store: FsStore = await createDemoStore({ dataRoot });
+  let store: FsStore = createTestStore({ dataRoot });
+  await seedDemoWorkspace(store);
   let workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   cleanup.push(async () => {
     await shutdownControlStoreWorkerClient();

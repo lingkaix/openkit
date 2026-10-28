@@ -21,11 +21,12 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
-import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from '../test-support/demo-store.js';
 import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
@@ -33,7 +34,8 @@ import { updateOkfFrontmatter } from './okf.js';
 /** Real operation admission, notebooks and runtime; only Provider transport is replaced. */
 async function fixture(enableMaintenance = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-result-api-'));
-  const store = await createDemoStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
+  await seedDemoWorkspace(store);
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
