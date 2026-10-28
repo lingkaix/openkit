@@ -77,6 +77,10 @@ import {
 } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
+  type ControlTerminalTransition,
+  openControlStoreProductReadHandle,
+} from './control-store-products.js';
+import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
@@ -91,7 +95,7 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './workspace-backup-bundle.js';
 import { abandonCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
-import { nativeProductScope } from './workspace-file-records.js';
+import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import { endRecoveryAdmission, readRecoveryAdmission } from './workspace-recovery-admissions.js';
 
 const namespaceSyncFault = vi.hoisted(() => ({
@@ -2118,6 +2122,18 @@ describe('C-a capture and existing deletion ownership', () => {
       'A native retained payload must outlive the mutable capture fence.',
       { kind: 'user', id: f.ownerId }
     );
+    // Step A keeps small bodies inline; this owner-authored body selects the immutable-file family.
+    await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'x'.repeat(65_537),
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    });
     await f.store.completeTurn(turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
@@ -2477,6 +2493,209 @@ describe('C-a independent sealed generations', () => {
     );
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
   });
+
+  it('drains a real inline terminal ACK into the target cut while refusing new target publication and preserving sibling ACKs', async () => {
+    const f = await fixture();
+    const sibling = await f.store.createWorkspace('Inline composition sibling');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: sibling.id,
+      ownerUserId: f.ownerId,
+    });
+    await f.store.createThread(sibling.id, 'Initialize sibling native writer');
+    const turn = await f.store.createTurn(
+      workspaceId,
+      DEMO_THREAD_ID,
+      'Retain exact inline bytes.',
+      {
+        kind: 'user',
+        id: f.ownerId,
+      }
+    );
+    const item: Parameters<FsStore['createItem']>[0] = {
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Exact inline bytes: café, 雪.\nSecond line.\n',
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+    const client = getControlStoreWorkerClient();
+    const targetDatabase = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    let terminal: ControlTerminalTransition | undefined;
+    let forwardAck: (() => void) | undefined;
+    let forwarded = false;
+    let arrived!: () => void;
+    const ackArrived = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    captureWorkerProbe.onNativeMessage = (worker, value) => {
+      if (!value || typeof value !== 'object' || !('id' in value)) return false;
+      const request = post.mock.calls.find(
+        ([message]) =>
+          message &&
+          message.operation === 'terminal' &&
+          message.database === targetDatabase &&
+          message.input.turn.record.id === turn.id
+      )?.[0];
+      if (!request || value.id !== request.id || forwardAck) return false;
+      terminal = request.input;
+      forwardAck = () => {
+        if (forwarded) return;
+        forwarded = true;
+        captureWorkerProbe.onNativeMessage = undefined;
+        worker.emit('message', value);
+      };
+      arrived();
+      return true;
+    };
+    let acknowledged = false;
+    const publication = f.store
+      .completeTurn(
+        turn.id,
+        { status: 'completed', completedAt: item.completedAt },
+        { items: [item] }
+      )
+      .then((completed) => {
+        acknowledged = true;
+        return completed;
+      });
+    let resume!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    let entered!: () => void;
+    const cutEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let cutReached = false;
+    const cut = holdCapturePhase('db-backup', async () => {
+      expect(acknowledged).toBe(true);
+      cutReached = true;
+      entered();
+      await barrier;
+    });
+    const phase = captureWorkerProbe.onPhase!;
+    let draining!: () => void;
+    const drainEntered = new Promise<void>((resolve) => {
+      draining = resolve;
+    });
+    captureWorkerProbe.onPhase = (worker, message) => {
+      if (message.phase === 'drain') draining();
+      return phase(worker, message);
+    };
+    let capturing: ReturnType<typeof createWorkspaceBackup> | undefined;
+    try {
+      await Promise.race([
+        ackArrived,
+        publication.then(() => {
+          throw new Error('Terminal publication did not expose its real native ACK.');
+        }),
+      ]);
+      expect(acknowledged).toBe(false);
+      expect(readBlockers({ ...f, workspaceId })).toEqual([]);
+      expect(terminal!.entries.map((entry) => entry.kind)).toEqual(['item', 'event']);
+      const expectedBodies = terminal!.entries.map((entry) => {
+        expect(entry.content.reference.representation).toBe('inline');
+        if (entry.content.reference.representation !== 'inline')
+          throw new Error('The real terminal producer did not select inline retention.');
+        const body = Buffer.from(entry.content.reference.body, 'utf8');
+        expect(body.length).toBeLessThanOrEqual(65_536);
+        expect(body.length).toBe(entry.content.byteLength);
+        expect(digest(body)).toBe(entry.content.reference.contentDigest);
+        return Buffer.from(body);
+      });
+      expect(JSON.parse(expectedBodies[0]!.toString())).toMatchObject({
+        id: item.id,
+        turnId: turn.id,
+        threadId: turn.threadId,
+        text: item.text,
+      });
+      const input = f.input();
+      capturing = createWorkspaceBackup(input);
+      await Promise.race([
+        drainEntered,
+        capturing.then(() => {
+          throw new Error('Capture did not drain the already-posted terminal ACK.');
+        }),
+      ]);
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(acknowledged).toBe(false);
+      expect(cutReached).toBe(false);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+      await expect(client.terminal(targetDatabase, terminal!)).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      const siblingThread = await f.store.createThread(
+        sibling.id,
+        'Sibling ACK during inline drain'
+      );
+      expect(f.store.getThread(sibling.id, siblingThread.id).name).toBe(
+        'Sibling ACK during inline drain'
+      );
+      expect(acknowledged).toBe(false);
+      expect(cutReached).toBe(false);
+      forwardAck!();
+      const completed = await publication;
+      await Promise.race([
+        cutEntered,
+        capturing.then(() => {
+          throw new Error('Capture did not reach its target cut after the real terminal ACK.');
+        }),
+      ]);
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      const terminalPosts = () =>
+        post.mock.calls.filter(
+          ([message]) => message?.operation === 'terminal' && message.database === targetDatabase
+        );
+      expect(terminalPosts()).toHaveLength(1);
+      resume();
+      const captured = await capturing;
+      expect(captured.disposition).toBe('sealed');
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      await f.store.createThread(workspaceId, 'Only in the later live source');
+      expect(terminalPosts()).toHaveLength(1);
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.workspaceRoot, { recursive: true });
+      await f.read(captured.manifest.backupId, async (bundle) => {
+        const scope = nativeProductScope(join(f.root, 'verified-inline-replay'), turn.owner);
+        mkdirSync(dirname(scope.path), { recursive: true });
+        writeFileSync(scope.path, await bytes(bundle, 'db/workspace.sqlite'));
+        expect(readNativeTurnHistory(scope, turn.id)?.turn).toEqual(completed);
+        const reader = openControlStoreProductReadHandle(scope.path, turn.owner);
+        try {
+          for (const [index, entry] of terminal!.entries.entries()) {
+            const retained = reader
+              .entries(turn.id, entry.kind)
+              .find((row) => row.sequence === entry.sequence);
+            expect(retained).toBeDefined();
+            expect(retained!.content).toEqual(entry.content);
+            const reference = retained!.content.reference;
+            expect(reference.representation).toBe('inline');
+            if (reference.representation !== 'inline') throw new Error('Lost inline retention.');
+            const actual = Buffer.from(reference.body, 'utf8');
+            expect(actual).toEqual(expectedBodies[index]);
+            expect(actual.length).toBe(retained!.content.byteLength);
+            expect(digest(actual)).toBe(reference.contentDigest);
+          }
+        } finally {
+          reader.close();
+        }
+      });
+    } finally {
+      forwardAck?.();
+      resume();
+      cut.mockRestore();
+      captureWorkerProbe.onNativeMessage = undefined;
+      await Promise.allSettled([publication, ...(capturing ? [capturing] : [])]);
+      post.mockRestore();
+    }
+  }, 120_000);
 
   it.each([
     'capture-worker-loss',
