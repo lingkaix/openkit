@@ -258,8 +258,6 @@ describe('workspace portable file state', () => {
         updates: { openkit_entry_id: pageFixture.id },
       })
     );
-    publishFixturePages(notebook, { [knowledge.path]: knowledge.content });
-
     const firstClaimId = 'claims/first';
     const secondClaimId = 'claims/source-backed';
     const fact = (
@@ -293,7 +291,7 @@ describe('workspace portable file state', () => {
       { scopeId: sourcePageScopeId, objectId: secondClaimId },
       `sha256:${createHash('sha256').update(secondClaim).digest('hex')}`
     );
-    publishFixturePages(notebook, {
+    const initialClaimPages = {
       [`${firstClaimId}.md`]: firstClaim,
       [`${secondClaimId}.md`]: secondClaim,
       'assessments/first.md': fact(
@@ -320,7 +318,7 @@ describe('workspace portable file state', () => {
           conflict_status: 'resolved',
         }
       ),
-    });
+    };
     const workspaceConfig = [
       '{',
       '  // This workspace-local policy comment must survive transfer.',
@@ -364,9 +362,15 @@ describe('workspace portable file state', () => {
     mkdirSync(join(sourceRoot, 'config'), { recursive: true });
     writeFileSync(join(sourceRoot, 'config', 'workspace.jsonc'), workspaceConfig);
     writeFileSync(join(sourceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), workspaceSchema);
-    publishFixturePages(notebook, { 'portable-file.md': portablePage }, [
-      formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
-    ]);
+    publishFixturePages(
+      notebook,
+      {
+        [knowledge.path]: knowledge.content,
+        ...initialClaimPages,
+        'portable-file.md': portablePage,
+      },
+      [formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id })]
+    );
 
     const knowledgePageBytes = readWorkspaceKnowledgePage(sourceRoot, knowledge.id)!;
     const knowledgeReference = formatReferenceUri(
