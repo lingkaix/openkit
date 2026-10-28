@@ -73,6 +73,7 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
+import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -7324,11 +7325,10 @@ function readNativeEventBytes(f: Pick<FailedStartFixture, 'dataRoot' | 'turnId'>
       .all(f.turnId) as { content_json: string }[];
     return rows
       .map((row) => {
-        const reference = JSON.parse(row.content_json).reference;
-        const bytes =
-          reference.representation === 'inline'
-            ? reference.body
-            : readFileSync(join(scope.contentMount.root, reference.locator.path), 'utf8');
+        const bytes = readRetainedBodyBytes(
+          scope.contentMount.root,
+          JSON.parse(row.content_json)
+        ).toString('utf8');
         return `${bytes}\n`;
       })
       .join('');

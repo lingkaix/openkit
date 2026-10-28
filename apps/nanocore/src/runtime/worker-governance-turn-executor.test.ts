@@ -135,6 +135,7 @@ import {
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -6148,10 +6149,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           .all(turn.id) as { content_json: string }[]
       )
         .map((row) => {
-          const reference = JSON.parse(row.content_json).reference;
-          return reference.representation === 'inline'
-            ? reference.body
-            : readFileSync(join(scope.contentMount.root, reference.locator.path), 'utf8');
+          return readRetainedBodyBytes(
+            scope.contentMount.root,
+            JSON.parse(row.content_json)
+          ).toString('utf8');
         })
         .join('\n');
       historyDb.sqlite.close();

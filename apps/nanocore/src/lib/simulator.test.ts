@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -53,6 +53,7 @@ import { createAppWithLocalIdentity as createApp } from '../test-support/app.js'
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
 import type { FsStore } from './store.js';
@@ -1313,12 +1314,7 @@ describe('SimulatedTurnExecutor', () => {
             const content = JSON.parse(row.content_json);
             return {
               ...row,
-              bytes:
-                content.reference.representation === 'inline'
-                  ? Buffer.from(content.reference.body, 'utf8')
-                  : readFileSync(
-                      join(historyScope.contentMount.root, content.reference.locator.path)
-                    ),
+              bytes: readRetainedBodyBytes(historyScope.contentMount.root, content),
             };
           });
         };

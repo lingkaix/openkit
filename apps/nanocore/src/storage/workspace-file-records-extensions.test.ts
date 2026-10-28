@@ -22,6 +22,7 @@ import { updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -653,10 +654,7 @@ describe('retained Item Actor annotations on native revision', () => {
           const content = JSON.parse(row.content_json);
           return {
             row,
-            bytes:
-              content.reference.representation === 'inline'
-                ? Buffer.from(content.reference.body, 'utf8')
-                : readFileSync(join(scope.contentMount.root, content.reference.locator.path)),
+            bytes: readRetainedBodyBytes(scope.contentMount.root, content),
             value: readImmutableProductJson(scope.contentMount, scope.owner, content) as Record<
               string,
               unknown

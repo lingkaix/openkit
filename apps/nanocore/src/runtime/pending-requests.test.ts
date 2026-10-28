@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalJsonText } from '@openkit/protocol';
@@ -25,6 +25,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -1616,9 +1617,7 @@ describe('pending requests', () => {
           .all() as Array<{ content_json: string }>;
         const bytes = entries.map((row) => {
           const content = JSON.parse(row.content_json);
-          return content.reference.representation === 'inline'
-            ? Buffer.from(content.reference.body, 'utf8')
-            : readFileSync(join(scope.contentMount.root, content.reference.locator.path));
+          return readRetainedBodyBytes(scope.contentMount.root, content);
         });
         return { turns, entries, bytes };
       };

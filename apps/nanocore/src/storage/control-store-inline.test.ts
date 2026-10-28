@@ -88,6 +88,32 @@ function boundaryItem(f: Awaited<ReturnType<typeof fixture>>, byteLength: number
   return item;
 }
 
+/** Describes the same supplied original JSON bytes in either existing retained representation. */
+function retainedContent(owner: ReturnType<typeof nativeProductScope>['owner'], body: string) {
+  const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+  const metadata = { byteLength: Buffer.byteLength(body), mediaType: 'application/json' };
+  return {
+    inline: {
+      ...metadata,
+      reference: { representation: 'inline' as const, body, contentDigest, ownerScope: owner },
+    },
+    file: {
+      ...metadata,
+      reference: {
+        knowledgeBaseId: null,
+        contentDigest,
+        locator: {
+          ownerScope: owner,
+          mount: 'backend-evidence',
+          path: `sha256/${contentDigest.slice('sha256:'.length)}`,
+        },
+        range: null,
+        availability: 'available' as const,
+      },
+    },
+  };
+}
+
 /** Observes the storage-owned exact representation through the native reader's public descriptor. */
 function exactBytes(f: Awaited<ReturnType<typeof fixture>>, content: unknown): Buffer {
   const descriptor = content as {
@@ -110,7 +136,6 @@ async function expectFreshProcessBytes(
 ) {
   const child = await new Promise<{
     error: Error | undefined;
-    status: string | number;
     stdout: string;
     stderr: string;
   }>((resolve) => {
@@ -161,15 +186,13 @@ process.stdout.write(JSON.stringify({ pid: process.pid, entries }));`,
         new URL('./control-store-products.ts', import.meta.url).href,
       ],
       { encoding: 'utf8' },
-      (error, stdout, stderr) =>
-        resolve({ error: error ?? undefined, status: error?.code ?? 0, stdout, stderr })
+      (error, stdout, stderr) => resolve({ error: error ?? undefined, stdout, stderr })
     );
     processChild.stdin!.end(
       JSON.stringify({ dataRoot: f.root, owner: f.scope.owner, turnId: f.turn.id })
     );
   });
-  expect(child.error).toBeUndefined();
-  expect(child.status, child.stderr).toBe(0);
+  expect(child.error, child.stderr).toBeUndefined();
   const observed = JSON.parse(child.stdout);
   expect(observed.pid).not.toBe(process.pid);
   for (const { kind, row, bytes } of expected) {
@@ -343,35 +366,13 @@ describe('native inline retained work bodies', () => {
         turnId,
         sequence: index + 1,
         expectedRevision: 0,
-        content: {
-          reference: {
-            representation: 'inline' as const,
-            body,
-            ownerScope: owner,
-            contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-          },
-          byteLength: Buffer.byteLength(body),
-          mediaType: 'application/json',
-        },
+        content: retainedContent(owner, body).inline,
       };
     });
     expect(entries.map((entry) => entry.content.byteLength)).toEqual(Array(17).fill(65_536));
     const fileEntries = entries.map(({ content, ...entry }) => ({
       ...entry,
-      content: {
-        ...content,
-        reference: {
-          knowledgeBaseId: null,
-          contentDigest: content.reference.contentDigest,
-          locator: {
-            ownerScope: owner,
-            mount: 'backend-evidence',
-            path: `sha256/${content.reference.contentDigest.slice('sha256:'.length)}`,
-          },
-          range: null,
-          availability: 'available',
-        },
-      },
+      content: retainedContent(owner, content.reference.body).file,
     }));
     const terminal = {
       owner,
@@ -464,31 +465,6 @@ describe('native inline retained work bodies', () => {
     const owner = { kind: 'workspace' as const, workspaceId };
     const now = '2026-10-27T00:00:00.000Z';
     const requestId = randomUUID();
-    const content = (value: unknown) => {
-      const body = JSON.stringify(writeRetainedV1(value));
-      const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-      const metadata = { byteLength: Buffer.byteLength(body), mediaType: 'application/json' };
-      return {
-        inline: {
-          ...metadata,
-          reference: { representation: 'inline' as const, body, contentDigest, ownerScope: owner },
-        },
-        file: {
-          ...metadata,
-          reference: {
-            knowledgeBaseId: null,
-            contentDigest,
-            locator: {
-              ownerScope: owner,
-              mount: 'backend-evidence',
-              path: `sha256/${contentDigest.slice('sha256:'.length)}`,
-            },
-            range: null,
-            availability: 'available' as const,
-          },
-        },
-      };
-    };
     const frozen = Array.from({ length: 16 }, (_, index) => {
       const item = ItemSchema.parse({
         id: allocateEntityId('it'),
@@ -505,7 +481,7 @@ describe('native inline retained work bodies', () => {
       item.text += 'x'.repeat(65_536 - Buffer.byteLength(JSON.stringify(writeRetainedV1(item))));
       return {
         entry: { kind: 'item' as const, turnId, sequence: index + 1, expectedRevision: 0 },
-        content: content(item),
+        content: retainedContent(owner, JSON.stringify(writeRetainedV1(item))),
       };
     });
     expect(frozen.map((item) => item.content.inline.byteLength)).toEqual(Array(16).fill(65_536));
@@ -523,7 +499,7 @@ describe('native inline retained work bodies', () => {
       description: 'Approve the exact Plan and typed Goal domain.',
       createdAt: now,
     });
-    const pendingContent = content(pendingItem);
+    const pendingContent = retainedContent(owner, JSON.stringify(writeRetainedV1(pendingItem)));
     const goalId = 'goal-envelope';
     const goal = {
       version: CONTROL_WORKER_VERSION,
@@ -690,7 +666,7 @@ describe('native inline retained work bodies', () => {
           sequence: index === 0 ? 1 : index,
           expectedRevision: 0,
         },
-        content: content(value),
+        content: retainedContent(owner, JSON.stringify(writeRetainedV1(value))),
       }));
       const file = {
         version: CONTROL_WORKER_VERSION,
@@ -821,8 +797,6 @@ describe('native inline retained work bodies', () => {
     expect(cold.getTurnById(f.turn.id).items).toEqual([small, boundary, large]);
     expect(cold.getTurnEventsForExport(f.turn.id)).toEqual(events);
     expect(cut(f)).toEqual(before);
-    // Storage, Item Log Invariants: reopen preserves exact original bytes, not only decoded values.
-    for (const { row, bytes } of expected) expect(exactBytes(f, row.content)).toEqual(bytes);
     await expectFreshProcessBytes(f, expected);
   });
 
@@ -928,16 +902,7 @@ describe('native inline retained work bodies', () => {
         turnId: f.turn.id,
         sequence: index + 1,
         expectedRevision: 0,
-        content: {
-          reference: {
-            representation: 'inline' as const,
-            body,
-            ownerScope: f.scope.owner,
-            contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-          },
-          byteLength: Buffer.byteLength(body),
-          mediaType: 'application/json',
-        },
+        content: retainedContent(f.scope.owner, body).inline,
       })),
     };
     // The specimen crosses the existing frame limit; exact retained bodies keep their separate byte charge.
@@ -1029,15 +994,16 @@ describe('native inline retained work bodies', () => {
       ...(fault === 'lineage' ? { turnId: allocateEntityId('tu') } : {}),
     };
     const body = JSON.stringify(value);
+    const original = retainedContent(f.scope.owner, body).inline;
     const content = {
+      ...original,
       reference: {
+        ...original.reference,
         representation: fault === 'representation' ? 'unknown-required-inline' : 'inline',
-        body,
-        ownerScope: f.scope.owner,
-        contentDigest: `sha256:${fault === 'digest' ? '0'.repeat(64) : createHash('sha256').update(body).digest('hex')}`,
+        contentDigest:
+          fault === 'digest' ? `sha256:${'0'.repeat(64)}` : original.reference.contentDigest,
       },
-      byteLength: Buffer.byteLength(body) + (fault === 'length' ? 1 : 0),
-      mediaType: 'application/json',
+      byteLength: original.byteLength + (fault === 'length' ? 1 : 0),
     };
     const before = cut(f);
     const input = candidate(f, content);

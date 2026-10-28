@@ -7,13 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { nativeProductScope, readNativeProductEntries } from '../storage/workspace-file-records.js';
+import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
 import { createTestStore } from '../test-support/store.js';
 import { FsStore, StoreRecordNotFoundError } from './store.js';
 
 const observation = vi.hoisted(() => ({
-  active: undefined as
-    | { root: string; priorIds: Set<string>; metadata: number; priorBodies: number }
-    | undefined,
+  active: undefined as { root: string; metadata: number } | undefined,
 }));
 
 // Observe actual Main filesystem work. All calls, bytes and native worker effects pass through.
@@ -30,19 +29,6 @@ vi.mock('node:fs', async (load) => {
       return Reflect.apply(actual[name], actual, args);
     };
   }
-  observed.readFileSync = ((...args: unknown[]) => {
-    const value = Reflect.apply(actual.readFileSync, actual, args);
-    const active = observation.active;
-    if (active) {
-      try {
-        const record = JSON.parse(value.toString());
-        if (active.priorIds.has(record?.id)) active.priorBodies++;
-      } catch {
-        // Non-JSON files are outside the retained Item-body observation.
-      }
-    }
-    return value;
-  }) as typeof actual.readFileSync;
   return observed;
 });
 
@@ -52,7 +38,7 @@ type Turn = ReturnType<FsStore['getTurnById']>;
 type Item = ReturnType<typeof message>;
 
 /** Builds an ordinary Core-minted Item, not a retained-ID import candidate. */
-function message(turn: Turn, index: number) {
+function message(turn: Turn, index: number, text = `Message ${index}`) {
   return ItemSchema.parse({
     id: allocateEntityId('it'),
     owner: turn.owner,
@@ -60,8 +46,7 @@ function message(turn: Turn, index: number) {
     turnId: turn.id,
     type: 'user-message',
     actor,
-    // Keep the filesystem observer's positive history-read control on real file bodies.
-    text: `Message ${index}`.padEnd(70_000, '.'),
+    text,
     status: 'completed',
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
@@ -83,7 +68,7 @@ async function fixture() {
 }
 
 /** Reaches short or long retained history through acknowledged public writes only. */
-async function history(f: Awaited<ReturnType<typeof fixture>>, count: number) {
+async function history(f: Awaited<ReturnType<typeof fixture>>, count: number, fileCount = 0) {
   const thread = await f.store.createThread(f.workspace.id, `History ${count}`);
   const turn = await f.store.createTurn(f.workspace.id, thread.id, 'Write messages', actor);
   const expected: Item[] = [];
@@ -92,7 +77,15 @@ async function history(f: Awaited<ReturnType<typeof fixture>>, count: number) {
     expect(await f.store.createItem(item)).toEqual(item);
     expected.push(item);
   }
-  return { turn, expected };
+  // One short-arm file and two long-arm files expose file-history growth independently.
+  const fileIds = new Set<string>();
+  for (let index = 0; index < fileCount; index++) {
+    const item = message(turn, count + index, '.'.repeat(65_537));
+    expect(await f.store.createItem(item)).toEqual(item);
+    expected.push(item);
+    fileIds.add(item.id);
+  }
+  return { turn, expected, fileIds };
 }
 
 /** Measures a real ACK and proves its retained native bytes separately from the cost observation. */
@@ -104,22 +97,23 @@ async function sample(
   const item = message(h.turn, h.expected.length);
   const active = {
     root: f.root,
-    priorIds: new Set(h.expected.map((value) => value.id)),
     metadata: 0,
-    priorBodies: 0,
   };
+  const observed = { itemIds: new Set(h.expected.map((value) => value.id)), bodies: 0 };
+  const bodyObserver = observeRetainedItemBodies(observed);
   observation.active = active;
   let returned: Item;
   try {
     returned = await f.store.createItem(item);
   } finally {
     observation.active = undefined;
+    bodyObserver.restore();
   }
   expect(returned).toEqual(item);
   h.expected.push(item);
 
   // Time a separate uninstrumented real write. Timing informs the scale comparison;
-  // filesystem counts decide it, so host load cannot turn the regression green or red.
+  // observed work decides it, so host load cannot turn the regression green or red.
   const timed = message(h.turn, h.expected.length);
   const started = performance.now();
   const timedResult = await f.store.createItem(timed);
@@ -129,20 +123,13 @@ async function sample(
 
   // A fresh reader proves that an in-memory result cannot satisfy either arm.
   const cold = new FsStore({ dataRoot: f.root });
-  const control = {
-    ...active,
-    priorIds: new Set(h.expected.map((value) => value.id)),
-    metadata: 0,
-    priorBodies: 0,
-  };
+  const control = { root: f.root, metadata: 0 };
   observation.active = control;
   try {
-    expect(cold.getTurnById(h.turn.id).items).toEqual(h.expected);
+    expectHistoryBodies(cold, h);
   } finally {
     observation.active = undefined;
   }
-  // Explicit history reads must exercise the observer: a detached hook cannot pass the cost check.
-  expect(control.priorBodies).toBeGreaterThanOrEqual(h.expected.length);
   expect(control.metadata).toBeGreaterThan(0);
   const rows = readNativeProductEntries(
     nativeProductScope(f.root, h.turn.owner),
@@ -152,9 +139,34 @@ async function sample(
   expect(rows.map((row) => [row.sequence, row.id, row.revision])).toEqual(
     h.expected.map((value, index) => [index + 1, value.id, 1])
   );
-  const result = { label, metadata: active.metadata, priorBodies: active.priorBodies, elapsedMs };
+  const result = {
+    label,
+    metadata: active.metadata,
+    priorBodies: observed.bodies,
+    ...bodyObserver.counts(),
+    elapsedMs,
+  };
   console.info('PERF-READ', JSON.stringify(result));
   return result;
+}
+
+/** Qualifies both retained representations against a complete public history read. */
+function expectHistoryBodies(store: FsStore, h: Awaited<ReturnType<typeof history>>) {
+  const control = { itemIds: new Set(h.expected.map((item) => item.id)), bodies: 0 };
+  const observer = observeRetainedItemBodies(control);
+  try {
+    expect(store.getTurnById(h.turn.id).items).toEqual(h.expected);
+  } finally {
+    observer.restore();
+  }
+  expect(control.bodies).toBeGreaterThanOrEqual(h.expected.length);
+  for (const item of h.expected) {
+    const body = observer.bodyReads.get(item.id);
+    expect(body?.count).toBeGreaterThan(0);
+    if (h.fileIds.has(item.id)) expect(body!.byteLength).toBeGreaterThan(65_536);
+    else expect(body!.byteLength).toBeLessThanOrEqual(65_536);
+  }
+  console.info('PERF-READ history control', JSON.stringify([...observer.bodyReads]));
 }
 
 afterEach(async () => {
@@ -171,24 +183,38 @@ afterEach(async () => {
 describe('Store native write complexity', () => {
   it('does no more filesystem discovery with eight Workspaces than with one', async () => {
     const f = await fixture();
-    const one = await sample(f, await history(f, 1), '1 Workspace, 1 prior Item');
+    const one = await sample(f, await history(f, 1, 1), '1 Workspace, 1 inline Item, 1 file Item');
     for (let index = 1; index < 8; index++) await f.store.createWorkspace(`Sibling ${index}`);
-    const eight = await sample(f, await history(f, 1), '8 Workspaces, 1 prior Item');
+    const eight = await sample(
+      f,
+      await history(f, 1, 1),
+      '8 Workspaces, 1 inline Item, 1 file Item'
+    );
     expect(eight.metadata).toBeLessThanOrEqual(one.metadata);
   });
 
   it('does no more retained-body work with long history than with short history', async () => {
     const f = await fixture();
-    const short = await sample(f, await history(f, 1), '1 Workspace, 1 prior Item');
-    const long = await sample(f, await history(f, 32), '1 Workspace, 32 prior Items');
+    const short = await sample(
+      f,
+      await history(f, 1, 1),
+      '1 Workspace, 1 inline Item, 1 file Item'
+    );
+    const long = await sample(
+      f,
+      await history(f, 32, 2),
+      '1 Workspace, 32 prior inline Items, 2 file Items'
+    );
     expect(long.priorBodies).toBeLessThanOrEqual(short.priorBodies);
+    expect(long.inlineBodies).toBeLessThanOrEqual(short.inlineBodies);
+    expect(long.fileBodies).toBeLessThanOrEqual(short.fileBodies);
     expect(long.metadata).toBeLessThanOrEqual(short.metadata);
   });
 });
 
 /** Appends real canonical events and checks their complete retained order after reopen. */
 async function eventSample(f: Awaited<ReturnType<typeof fixture>>, count: number, label: string) {
-  const h = await history(f, count);
+  const h = await history(f, count, count === 1 ? 1 : 2);
   const input = (item: Item) => ({
     event: 'item.created' as const,
     workspaceId: f.workspace.id,
@@ -202,19 +228,20 @@ async function eventSample(f: Awaited<ReturnType<typeof fixture>>, count: number
   }
   const active = {
     root: f.root,
-    priorIds: new Set(h.expected.map((item) => item.id)),
     metadata: 0,
-    priorBodies: 0,
   };
+  const observed = { itemIds: new Set(h.expected.map((item) => item.id)), bodies: 0 };
+  const bodyObserver = observeRetainedItemBodies(observed);
   observation.active = active;
   try {
     expected.push(await f.store.persistTurnEvent(h.turn.id, input(h.expected.at(-1)!)));
   } finally {
     observation.active = undefined;
+    bodyObserver.restore();
   }
   expect(expected.map((event) => event.sequence)).toEqual(h.expected.map((_, index) => index + 1));
   const cold = new FsStore({ dataRoot: f.root });
-  expect(cold.getTurnById(h.turn.id).items).toEqual(h.expected);
+  expectHistoryBodies(cold, h);
   expect(cold.getTurnEventsForExport(h.turn.id)).toEqual(expected);
   const rows = readNativeProductEntries(
     nativeProductScope(f.root, h.turn.owner),
@@ -224,7 +251,12 @@ async function eventSample(f: Awaited<ReturnType<typeof fixture>>, count: number
   expect(rows.map((row) => [row.sequence, row.revision])).toEqual(
     expected.map((event) => [event.sequence, 1])
   );
-  const result = { label, metadata: active.metadata, priorBodies: active.priorBodies };
+  const result = {
+    label,
+    metadata: active.metadata,
+    priorBodies: observed.bodies,
+    ...bodyObserver.counts(),
+  };
   console.info('PERF-READ event append', JSON.stringify(result));
   return result;
 }
@@ -238,8 +270,12 @@ describe('Store addressed event and current metadata reads', () => {
     const long = await eventSample(f, 32, '8 Workspaces, long history');
     expect(eight.metadata).toBeLessThanOrEqual(one.metadata);
     expect(eight.priorBodies).toBeLessThanOrEqual(one.priorBodies);
+    expect(eight.inlineBodies).toBeLessThanOrEqual(one.inlineBodies);
+    expect(eight.fileBodies).toBeLessThanOrEqual(one.fileBodies);
     expect(long.metadata).toBeLessThanOrEqual(eight.metadata);
     expect(long.priorBodies).toBeLessThanOrEqual(eight.priorBodies);
+    expect(long.inlineBodies).toBeLessThanOrEqual(eight.inlineBodies);
+    expect(long.fileBodies).toBeLessThanOrEqual(eight.fileBodies);
   });
 
   it('returns actual current metadata for point hints and preserves lookup and storage errors', async () => {
@@ -250,20 +286,21 @@ describe('Store addressed event and current metadata reads', () => {
     const { items: _items, ...expected } = f.store.getTurnById(h.turn.id);
     const active = {
       root: f.root,
-      priorIds: new Set(h.expected.map((item) => item.id)),
       metadata: 0,
-      priorBodies: 0,
     };
+    const observed = { itemIds: new Set(h.expected.map((item) => item.id)), bodies: 0 };
+    const bodyObserver = observeRetainedItemBodies(observed);
     observation.active = active;
     let metadata: ReturnType<FsStore['getTurnMetadata']>;
     try {
       metadata = f.store.getTurnMetadata(f.workspace.id, h.turn.threadId, h.turn.id);
     } finally {
       observation.active = undefined;
+      bodyObserver.restore();
     }
     expect(metadata).toEqual(expected);
     expect(metadata).not.toHaveProperty('items');
-    expect(active.priorBodies).toBe(0);
+    expect(observed.bodies).toBe(0);
     // Hints locate a point read; only the actual returned owner and Thread are authority.
     for (const [workspaceId, threadId] of [
       [sibling.id, h.turn.threadId],
@@ -277,9 +314,6 @@ describe('Store addressed event and current metadata reads', () => {
     expect(() =>
       f.store.getTurnMetadata(f.workspace.id, h.turn.threadId, allocateEntityId('tu'))
     ).toThrow(StoreRecordNotFoundError);
-    // Keep all file bodies in the metadata observation, then bound the completion event's current Item snapshot.
-    for (const item of h.expected)
-      await f.store.updateItem(item.id, { text: item.text.slice(0, 128) });
     await f.store.completeTurn(h.turn.id, {
       status: 'completed',
       completedAt: h.turn.startedAt!,

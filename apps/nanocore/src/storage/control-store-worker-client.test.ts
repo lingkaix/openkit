@@ -1,14 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  linkSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +16,7 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -1398,10 +1391,7 @@ describe('control writer parent admission', () => {
       const scope = nativeProductScope(backupRoot, turn.owner);
       for (const json of entries) {
         const content = JSON.parse(json);
-        const bytes =
-          content.reference.representation === 'inline'
-            ? Buffer.from(content.reference.body, 'utf8')
-            : readFileSync(join(scope.contentMount.root, content.reference.locator.path));
+        const bytes = readRetainedBodyBytes(scope.contentMount.root, content);
         expect(bytes.length).toBe(content.byteLength);
         expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(
           content.reference.contentDigest

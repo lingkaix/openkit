@@ -37,6 +37,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
 import {
   createWorkspaceMaterial,
   getWorkspaceMaterialRevision,
@@ -51,30 +52,6 @@ import {
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
 import { readWorkerRawOutput } from './worker-raw-output.js';
-
-const retainedBodyObservation = vi.hoisted(() => ({
-  active: undefined as { itemIds: Set<string>; bodies: number } | undefined,
-}));
-
-// Observe retained Item bodies without replacing Store reads or filesystem effects.
-vi.mock('node:fs', async (load) => {
-  const actual = await load<typeof import('node:fs')>();
-  return {
-    ...actual,
-    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
-      const value = Reflect.apply(actual.readFileSync, actual, args);
-      const active = retainedBodyObservation.active;
-      if (active) {
-        try {
-          if (active.itemIds.has(JSON.parse(value.toString())?.id)) active.bodies++;
-        } catch {
-          // Other retained content is outside this Item-body observation.
-        }
-      }
-      return value;
-    }) as typeof actual.readFileSync,
-  };
-});
 
 it('advertises the canonical Knowledge and Work Tool projections in their fixed order', () => {
   expect(OPENKIT_WORK_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
@@ -290,11 +267,14 @@ it('refuses old and unregistered Work spellings before an owner effect', async (
 });
 
 it('keeps current Work admission body work flat as irrelevant Item history grows', async () => {
-  const samples: number[] = [];
+  const samples: { bodies: number; inlineBodies: number; fileBodies: number }[] = [];
   for (const count of [1, 16]) {
     const fixture = await submissionFixture();
     const items = [];
-    for (let index = 0; index < count; index++) {
+    const fileIds = new Set<string>();
+    // Both byte representations must grow under a public full-history intervention.
+    const fileCount = count === 1 ? 1 : 2;
+    for (let index = 0; index < count + fileCount; index++) {
       items.push(
         await fixture.store.createItem({
           id: allocateEntityId('it'),
@@ -303,15 +283,15 @@ it('keeps current Work admission body work flat as irrelevant Item history grows
           turnId: fixture.turn.id,
           type: 'assistant-message',
           status: 'completed',
-          // Keep the full-history control observable through actual file reads.
-          text: `Unrelated retained message ${index}`.padEnd(70_000, '.'),
+          text: index < count ? `Unrelated retained message ${index}` : '.'.repeat(65_537),
           createdAt: fixture.environmentPackage.createdAt,
           completedAt: fixture.environmentPackage.createdAt,
         })
       );
+      if (index >= count) fileIds.add(items.at(-1)!.id);
     }
     const observed = { itemIds: new Set(items.map((item) => item.id)), bodies: 0 };
-    retainedBodyObservation.active = observed;
+    const bodyObserver = observeRetainedItemBodies(observed);
     try {
       await expect(
         dispatchOpenkitWorkTool(fixture.input, 'work_peer_list', {})
@@ -324,24 +304,34 @@ it('keeps current Work admission body work flat as irrelevant Item history grows
         dispatchOpenkitWorkTool(fixture.input, 'work_peer_read', { handle: 'unlisted-peer' })
       ).rejects.toMatchObject({ code: 'peer_not_found' });
     } finally {
-      retainedBodyObservation.active = undefined;
+      bodyObserver.restore();
     }
-    samples.push(observed.bodies);
+    samples.push({ bodies: observed.bodies, ...bodyObserver.counts() });
 
     // A real full-history read must exercise the observer before it can decide cost.
     const control = { ...observed, bodies: 0 };
-    retainedBodyObservation.active = control;
+    const controlObserver = observeRetainedItemBodies(control);
     try {
       expect(fixture.store.getTurnById(fixture.turn.id).items).toEqual(items);
     } finally {
-      retainedBodyObservation.active = undefined;
+      controlObserver.restore();
     }
-    expect(control.bodies).toBeGreaterThanOrEqual(count);
+    expect(control.bodies).toBeGreaterThanOrEqual(items.length);
+    for (const item of items) {
+      const body = controlObserver.bodyReads.get(item.id);
+      expect(body?.count).toBeGreaterThan(0);
+      if (fileIds.has(item.id)) expect(body!.byteLength).toBeGreaterThan(65_536);
+      else expect(body!.byteLength).toBeLessThanOrEqual(65_536);
+    }
+    console.info('PERF-READ Work history control', JSON.stringify([...controlObserver.bodyReads]));
+    console.info('PERF-READ Work admission', JSON.stringify(samples.at(-1)));
     expect(fixture.captureArtifact).not.toHaveBeenCalled();
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   }
   // R2767 relevant-history reads: unrelated retained bodies cannot increase admission work.
-  expect(samples[1]).toBeLessThanOrEqual(samples[0]);
+  expect(samples[1]!.bodies).toBeLessThanOrEqual(samples[0]!.bodies);
+  expect(samples[1]!.inlineBodies).toBeLessThanOrEqual(samples[0]!.inlineBodies);
+  expect(samples[1]!.fileBodies).toBeLessThanOrEqual(samples[0]!.fileBodies);
 });
 
 /** Extracts the acknowledged id without inferring successful publication from assistant text. */

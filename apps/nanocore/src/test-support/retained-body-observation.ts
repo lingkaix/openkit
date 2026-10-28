@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { vi } from 'vitest';
 
 /** Counts actual decoded retained Item bodies, independently of their byte storage. */
@@ -30,5 +32,30 @@ export function observeRetainedItemBodies(observed: RetainedBodyObservation) {
       }
       return value;
     });
-  return { bodyReads, restore: () => spy.mockRestore() };
+  return {
+    bodyReads,
+    // Storage's Item Log Invariants select representation by exact retained UTF-8 bytes.
+    counts: () => {
+      let inlineBodies = 0;
+      let fileBodies = 0;
+      for (const { count, byteLength } of bodyReads.values()) {
+        if (byteLength <= 65_536) inlineBodies += count;
+        else fileBodies += count;
+      }
+      return { inlineBodies, fileBodies };
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+/** Reads original retained bytes for independent test assertions without decoding them. */
+export function readRetainedBodyBytes(
+  contentRoot: string,
+  content: {
+    reference: { representation?: string; body?: string; locator?: { path: string } };
+  }
+): Buffer {
+  return content.reference.representation === 'inline'
+    ? Buffer.from(content.reference.body!, 'utf8')
+    : readFileSync(join(contentRoot, content.reference.locator!.path));
 }
