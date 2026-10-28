@@ -232,6 +232,7 @@ async function runEntrypoint({
   const curlCount = join(fixtureRoot, 'curl-count.txt');
   const curlRecord = join(fixtureRoot, 'curl-argv.txt');
   const curlStarted = join(fixtureRoot, 'curl-started.txt');
+  const nodeReadyRecord = join(fixtureRoot, 'node-ready.txt');
   const nodeStopRecord = join(fixtureRoot, 'node-stop.txt');
   const coreModeRecord = join(fixtureRoot, 'core-mode.txt');
   const httpPort = '44321';
@@ -243,6 +244,7 @@ async function runEntrypoint({
       `#!/bin/sh
 printf '%s\n' "$OPENKIT_CORE_MODE" > "$OPENKIT_TEST_CORE_MODE_RECORD"
 trap 'printf "stopped\\n" > "$OPENKIT_TEST_NODE_STOP_RECORD"; exit 0' TERM INT
+printf 'ready\n' > "$OPENKIT_TEST_NODE_READY_RECORD"
 if [ -n "$OPENKIT_TEST_NODE_EXIT" ]; then
   while [ ! -f "$OPENKIT_TEST_CADDY_RECORD" ]; do /bin/sleep 0.01; done
   /bin/sleep 0.1
@@ -256,6 +258,8 @@ done
     writeExecutable(
       join(binRoot, 'curl'),
       `#!/bin/sh
+# NanoCore installs signal handlers before boot can expose its health endpoint.
+while [ ! -f "$OPENKIT_TEST_NODE_READY_RECORD" ]; do /bin/sleep 0.01; done
 printf 'started\n' > "$OPENKIT_TEST_CURL_STARTED"
 if [ "$OPENKIT_TEST_READINESS" = 'blocking' ]; then
   /bin/sleep 0.2
@@ -282,12 +286,13 @@ done
     writeExecutable(
       join(binRoot, 'caddy'),
       `#!/bin/sh
+# Publish startup only after the process can handle the test's shutdown signal.
+trap 'printf "stopped\n" > "$OPENKIT_TEST_CADDY_STOP_RECORD"; exit 0' TERM INT
 printf '%s\n' "$CADDY_BIND_HOST" > "$OPENKIT_TEST_CADDY_BIND_RECORD"
 printf '%s\n' "$@" > "$OPENKIT_TEST_CADDY_RECORD"
 if [ -n "$OPENKIT_TEST_CADDY_EXIT" ]; then
   exit "$OPENKIT_TEST_CADDY_EXIT"
 fi
-trap 'printf "stopped\n" > "$OPENKIT_TEST_CADDY_STOP_RECORD"; exit 0' TERM INT
 while :; do
   /bin/sleep 1
 done
@@ -313,6 +318,7 @@ done
       OPENKIT_TEST_CURL_RECORD: curlRecord,
       OPENKIT_TEST_CURL_STARTED: curlStarted,
       OPENKIT_TEST_HEALTH_URL: healthUrl,
+      OPENKIT_TEST_NODE_READY_RECORD: nodeReadyRecord,
       OPENKIT_TEST_NODE_STOP_RECORD: nodeStopRecord,
       OPENKIT_TEST_NODE_EXIT: nodeExit,
       OPENKIT_TEST_READINESS: readiness,
