@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { waitForWorkerTurnTerminalState } from './task-turn-wait.js';
 
 const SENTINEL = Symbol('still-waiting');
+let dataRoot: string | null = null;
 
 /**
  * Races the bounded waiter against a short timer so a non-resolving wait fails
@@ -33,7 +37,8 @@ async function settleOrSentinel(
  * @returns Store and the created turn id.
  */
 async function createWorkerTurn(turnId: string): Promise<{ store: FsStore; turnId: string }> {
-  const store = await createDemoStore();
+  dataRoot = mkdtempSync(join(tmpdir(), 'task-turn-wait-'));
+  const store = await createDemoStore({ dataRoot });
   const thread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Worker turn wait',
@@ -57,7 +62,7 @@ async function createWorkerTurn(turnId: string): Promise<{ store: FsStore; turnI
 describe('waitForWorkerTurnTerminalState', () => {
   it('settles on a Turn that is already cancelled', async () => {
     const { store, turnId } = await createWorkerTurn('tu_00000000-0000-7802-96a2-d58cd74af20e');
-    await store.updateTurn(turnId, { status: 'cancelled' });
+    await store.updateTurn(turnId, { status: 'cancelled', completedAt: new Date().toISOString() });
 
     const settled = await settleOrSentinel(store, turnId);
 
@@ -68,22 +73,32 @@ describe('waitForWorkerTurnTerminalState', () => {
   it('settles when a waited Turn becomes cancelled', async () => {
     const { store, turnId } = await createWorkerTurn('tu_00000000-0000-7016-930d-e39a543eda32');
     const threadId = store.getTurnById(turnId).threadId;
-    const settled = settleOrSentinel(store, turnId);
-    const cancelled = await store.updateTurn(turnId, { status: 'cancelled' });
+    // This case proves event-driven settlement, independent of native publication latency.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const settled = settleOrSentinel(store, turnId);
+      const cancelled = await store.updateTurn(turnId, {
+        status: 'cancelled',
+        completedAt: new Date().toISOString(),
+      });
 
-    const event = await store.persistTurnEvent(turnId, {
-      data: { type: 'turn-updated', turn: cancelled },
-      event: 'turn.updated',
-      threadId,
-      turnId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    store.emitTurnEvent(turnId, event);
+      const event = await store.persistTurnEvent(turnId, {
+        data: { type: 'turn-updated', turn: cancelled },
+        event: 'turn.updated',
+        threadId,
+        turnId,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      store.emitTurnEvent(turnId, event);
+      await vi.advanceTimersByTimeAsync(50);
 
-    const result = await settled;
+      const result = await settled;
 
-    expect(result).not.toBe(SENTINEL);
-    expect(result).toMatchObject({ id: turnId, status: 'cancelled' });
+      expect(result).not.toBe(SENTINEL);
+      expect(result).toMatchObject({ id: turnId, status: 'cancelled' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps waiting on a Turn that is still running', async () => {
@@ -96,4 +111,8 @@ describe('waitForWorkerTurnTerminalState', () => {
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  if (dataRoot) {
+    rmSync(dataRoot, { recursive: true, force: true });
+    dataRoot = null;
+  }
 });
