@@ -24,7 +24,7 @@ import {
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -988,7 +988,13 @@ async function startGatewayCall(
 async function createImportFixture(prefix: string): Promise<ImportFixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  const store = await createDemoStore();
+  // Keep native source publication separate from the importer's empty database.
+  const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-source-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(sourceRoot, { recursive: true, force: true });
+  });
+  const store = await createDemoStore({ dataRoot: sourceRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
