@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -177,6 +177,166 @@ describe('addressed retained Item required semantics', () => {
 });
 
 describe('retained native metadata reader lifetime', () => {
+  it('bounds readers across matching and nonmatching Workspaces and releases them through owned close and shutdown', async () => {
+    const f = await fixture();
+    const workspaces = [
+      f.workspace,
+      await f.store.createWorkspace('First nonmatching Workspace'),
+      await f.store.createWorkspace('Second nonmatching Workspace'),
+    ];
+    const sibling = await f.store.createThread(workspaces[1]!.id, 'Nonmatching native scope');
+    const paths = workspaces.map(
+      (workspace) =>
+        nativeProductScope(f.root, { kind: 'workspace', workspaceId: workspace.id }).path
+    );
+    // Exclude setup readers through the existing public eviction owner.
+    for (const workspace of workspaces) f.store.evictWorkspace(workspace.id);
+    expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual([]);
+
+    // Workspace reader lifetime: nonmatching scopes share the same finite one-reader bound.
+    for (let lookup = 0; lookup < 3; lookup++) {
+      expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+      });
+      const retained = observation.readers.filter((sqlite) => sqlite.open);
+      expect(retained.length).toBeLessThanOrEqual(paths.length);
+      expect(new Set(retained.map((sqlite) => sqlite.name))).toEqual(new Set(paths));
+    }
+
+    const retained = observation.readers.filter((sqlite) => sqlite.open);
+    const closingPath = paths[1]!;
+    const target = retained.find((sqlite) => sqlite.name === closingPath)!;
+    // The sibling's acknowledged Thread publication opened this exact native scope.
+    for (const suffix of ['-wal', '-shm']) expect(existsSync(`${closingPath}${suffix}`)).toBe(true);
+    await getControlStoreWorkerClient().close(`workspace:${closingPath}`);
+    expect(target.open).toBe(false);
+    expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual(
+      retained.filter((sqlite) => sqlite !== target)
+    );
+
+    // Clean scope close must checkpoint acknowledged data without sidecars at rest.
+    for (const suffix of ['-wal', '-shm'])
+      expect.soft(existsSync(`${closingPath}${suffix}`)).toBe(false);
+    expect(f.store.getThread(workspaces[1]!.id, sibling.id)).toEqual(sibling);
+
+    // Read-only discovery can reopen the closed scope without leaking its predecessor.
+    expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+    });
+    const reopened = observation.readers.filter((sqlite) => sqlite.open);
+    expect(reopened.length).toBeLessThanOrEqual(paths.length);
+    expect(new Set(reopened.map((sqlite) => sqlite.name))).toEqual(new Set(paths));
+    // Give the read-only reopened scope a real native writer lifetime before global shutdown.
+    const revisedSibling = await f.store.updateThread(workspaces[1]!.id, sibling.id, {
+      name: 'Acknowledged before global shutdown',
+    });
+    expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+    });
+    for (const suffix of ['-wal', '-shm'])
+      expect(existsSync(`${f.scope.path}${suffix}`)).toBe(true);
+    await shutdownControlStoreWorkerClient();
+    expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual([]);
+    for (const path of paths)
+      for (const suffix of ['-wal', '-shm'])
+        expect.soft(existsSync(`${path}${suffix}`)).toBe(false);
+    expect(f.store.getThread(workspaces[1]!.id, sibling.id)).toEqual(revisedSibling);
+    expect(f.store.getTurnById(f.turn.id).items).toContainEqual(f.item);
+  });
+
+  it('reuses the Workspace reader for public opaque lookups and sees later native acknowledgements', async () => {
+    const f = await fixture();
+    const peer = new FsStore({ dataRoot: f.root });
+    const readers = () => observation.readers.filter((sqlite) => sqlite.name === f.scope.path);
+    const expected = f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id);
+    expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+    });
+    const reader = readers().find((sqlite) => sqlite.open)!;
+    const opened = readers().length;
+    const prepared = vi.spyOn(Database.prototype, 'prepare');
+    for (const store of [f.store, peer]) {
+      expect(store.getTurnLineage(f.turn.id)).toEqual({
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+      });
+    }
+    const lookupOpens = readers().length - opened;
+    const metadataPreparations = prepared.mock.calls.filter(
+      ([sql], index) =>
+        /SELECT \* FROM control_workspaces WHERE id=/.test(sql) &&
+        (prepared.mock.contexts[index] as Database.Database).name === f.scope.path
+    ).length;
+    prepared.mockRestore();
+
+    // DX committed reads: the same opaque path must observe later real native ACKs.
+    const revised = { ...f.item, text: 'Acknowledged after opaque lookup warming' };
+    await expect(peer.createItem(revised)).resolves.toEqual(revised);
+    await peer.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    const current = f.store.getTurnById(f.turn.id);
+    expect(current).toMatchObject({
+      id: expected.id,
+      owner: expected.owner,
+      threadId: expected.threadId,
+      status: 'completed',
+    });
+    expect(current.items.find((item) => item.id === f.item.id)).toEqual(revised);
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).toEqual(
+      peer.getThread(f.workspace.id, f.thread.id)
+    );
+    expect(reader.inTransaction).toBe(false);
+    expect(
+      observation.readers.filter((sqlite) => sqlite.name.endsWith('/core.sqlite') && sqlite.open)
+    ).toEqual([]);
+
+    // The existing Workspace owner retains connections and metadata statements, never rows.
+    expect(lookupOpens).toBe(0);
+    expect(metadataPreparations).toBe(0);
+    expect(readers().filter((sqlite) => sqlite.open)).toEqual([reader]);
+  });
+
+  it('invalidates the exact retained Workspace reader after a public opaque selector failure', async () => {
+    const f = await fixture();
+    const expected = f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id);
+    const reader = observation.readers.find(
+      (sqlite) => sqlite.name === f.scope.path && sqlite.open
+    )!;
+    const failure = new Error('Injected opaque selector preparation failure');
+    const prepare = Database.prototype.prepare;
+    const fault = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+      this: Database.Database,
+      sql: string
+    ) {
+      // Fail the real SQLite crossing once, without replacing rows or acknowledgements.
+      if (
+        this.name === f.scope.path &&
+        /SELECT schema_version,thread_id FROM control_turns WHERE id=/.test(sql)
+      ) {
+        throw failure;
+      }
+      return prepare.call(this, sql);
+    });
+    try {
+      expect(() => f.store.getTurnById(f.turn.id)).toThrow(failure);
+    } finally {
+      fault.mockRestore();
+    }
+    const invalidated = !reader.open;
+    // A closed registry entry must not poison the next normal public metadata read.
+    expect(f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)).toEqual(expected);
+    expect(f.store.getTurnById(f.turn.id).id).toBe(f.turn.id);
+    expect(invalidated).toBe(true);
+    const retained = observation.readers.filter(
+      (sqlite) => sqlite.name === f.scope.path && sqlite.open
+    );
+    expect(retained).toHaveLength(1);
+    expect(retained[0]).not.toBe(reader);
+  });
+
   it('reuses statements and fresh snapshots, then closes readers through complete and repeated shutdown', async () => {
     const f = await fixture();
     const peer = new FsStore({ dataRoot: f.root });

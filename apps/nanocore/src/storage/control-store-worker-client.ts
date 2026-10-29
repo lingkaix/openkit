@@ -893,6 +893,8 @@ class ControlStoreWorkerClient {
   async close(database: string): Promise<void> {
     const opening = this.openings.get(database);
     try {
+      // Idle readers must not prevent the writer's final close from checkpointing at rest.
+      if (opening) closeWorkspaceProductReadHandles(opening.path);
       await this.request({ operation: 'close', database });
       if (this.openings.get(database) === opening) this.openings.delete(database);
     } finally {
@@ -979,6 +981,8 @@ class ControlStoreWorkerClient {
           for (const outcome of outcomes)
             if (outcome.status === 'rejected') failures.push(outcome.reason);
         }
+        // Accepted ACK continuations have finished; release readers before final writer close.
+        closeWorkspaceProductReadHandles();
         const shutdowns = await Promise.allSettled(
           this.hosts
             .filter((host) => host.worker && !host.failed)
@@ -1192,12 +1196,18 @@ class ControlStoreWorkerClient {
         );
       } else if (!deferPost) this.post(entry);
     });
-    if (ready !== undefined) {
-      // Shutdown drains the original admitted request, including its unposted open wait.
-      this.operations.set(result, undefined);
-      const release = () => this.operations.delete(result);
-      void result.then(release, release);
-    }
+    // Drain ordinary request settlement without promoting its caller-owned error to shutdown.
+    // Opening-dependent requests retain their original shutdown failure reporting.
+    const operation =
+      ready === undefined
+        ? result.then(
+            () => undefined,
+            () => undefined
+          )
+        : result;
+    this.operations.set(operation, undefined);
+    const release = () => this.operations.delete(operation);
+    void operation.then(release, release);
     return result;
   }
 
