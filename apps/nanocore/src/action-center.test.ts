@@ -1026,7 +1026,13 @@ describe('action center app API', () => {
 
   it('projects only the exact unresolved current ready turn-output Artifact Review', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = await store.createWorkspace('Versioned Artifact Review');
     const thread = await store.createThread(workspace.id, 'Review worker output');
     const turn = await store.createTurn(
@@ -1520,7 +1526,13 @@ describe('action center app API', () => {
 
   it('projects recovery evidence into the unified action center', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Recovery evidence'
@@ -1717,7 +1729,13 @@ describe('action center app API', () => {
 
   it('projects durable staged workspace reviews when artifact rows are not available', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = await store.createWorkspace('Durable workspace review');
     const patchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
@@ -1862,7 +1880,13 @@ describe('action center app API', () => {
     expectOriginIds,
   }) => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = await store.createWorkspace(`${origin} workspace review origin`);
 
     try {
@@ -1935,7 +1959,13 @@ describe('action center app API', () => {
 
   it('keeps contradictory Review owners inspect-only after the workspace review is resolved', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = await store.createWorkspace('Resolved durable workspace review');
     const thread = await store.createThread(workspace.id, 'Resolved workspace review worker');
     const turn = await store.createTurn(
@@ -2096,7 +2126,13 @@ describe('action center app API', () => {
 
   it('projects requires-human workspace recovery rows and omits terminal reconciliation records', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspace = await store.createWorkspace('Workspace recovery review');
 
     try {
