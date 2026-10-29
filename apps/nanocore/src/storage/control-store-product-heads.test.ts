@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -184,7 +184,7 @@ describe('retained native metadata reader lifetime', () => {
       await f.store.createWorkspace('First nonmatching Workspace'),
       await f.store.createWorkspace('Second nonmatching Workspace'),
     ];
-    await f.store.createThread(workspaces[1]!.id, 'Nonmatching native scope');
+    const sibling = await f.store.createThread(workspaces[1]!.id, 'Nonmatching native scope');
     const paths = workspaces.map(
       (workspace) =>
         nativeProductScope(f.root, { kind: 'workspace', workspaceId: workspace.id }).path
@@ -208,11 +208,17 @@ describe('retained native metadata reader lifetime', () => {
     const closingPath = paths[1]!;
     const target = retained.find((sqlite) => sqlite.name === closingPath)!;
     // The sibling's acknowledged Thread publication opened this exact native scope.
+    for (const suffix of ['-wal', '-shm']) expect(existsSync(`${closingPath}${suffix}`)).toBe(true);
     await getControlStoreWorkerClient().close(`workspace:${closingPath}`);
     expect(target.open).toBe(false);
     expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual(
       retained.filter((sqlite) => sqlite !== target)
     );
+
+    // Clean scope close must checkpoint acknowledged data without sidecars at rest.
+    for (const suffix of ['-wal', '-shm'])
+      expect.soft(existsSync(`${closingPath}${suffix}`)).toBe(false);
+    expect(f.store.getThread(workspaces[1]!.id, sibling.id)).toEqual(sibling);
 
     // Read-only discovery can reopen the closed scope without leaking its predecessor.
     expect(f.store.getTurnLineage(f.turn.id)).toEqual({
@@ -222,8 +228,23 @@ describe('retained native metadata reader lifetime', () => {
     const reopened = observation.readers.filter((sqlite) => sqlite.open);
     expect(reopened.length).toBeLessThanOrEqual(paths.length);
     expect(new Set(reopened.map((sqlite) => sqlite.name))).toEqual(new Set(paths));
+    // Give the read-only reopened scope a real native writer lifetime before global shutdown.
+    const revisedSibling = await f.store.updateThread(workspaces[1]!.id, sibling.id, {
+      name: 'Acknowledged before global shutdown',
+    });
+    expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+    });
+    for (const suffix of ['-wal', '-shm'])
+      expect(existsSync(`${f.scope.path}${suffix}`)).toBe(true);
     await shutdownControlStoreWorkerClient();
     expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual([]);
+    for (const path of paths)
+      for (const suffix of ['-wal', '-shm'])
+        expect.soft(existsSync(`${path}${suffix}`)).toBe(false);
+    expect(f.store.getThread(workspaces[1]!.id, sibling.id)).toEqual(revisedSibling);
+    expect(f.store.getTurnById(f.turn.id).items).toContainEqual(f.item);
   });
 
   it('reuses the Workspace reader for public opaque lookups and sees later native acknowledgements', async () => {
