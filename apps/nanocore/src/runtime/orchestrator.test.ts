@@ -23,6 +23,7 @@ import {
   seedDemoWorkspace,
 } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { initializeTestCore } from '../test-support/store.js';
 import { startTurn } from './orchestrator.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
 
@@ -470,6 +471,13 @@ describe('startTurn orchestrator', () => {
 
   it('runs selector, creates the turn, then starts the executor in order', async () => {
     const sequence: string[] = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-tail-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    initializeTestCore(storeRoot);
     const store = new (class extends FsStore {
       /**
        * Records turn creation order.
@@ -483,7 +491,7 @@ describe('startTurn orchestrator', () => {
         sequence.push('store.createTurn');
         return await super.createTurn(workspaceId, threadId, input, triggerActor);
       }
-    })();
+    })({ dataRoot: storeRoot });
     await seedDemoWorkspace(store);
     const turnExecutor = new (class extends RecordingTurnExecutor {
       /**
@@ -758,7 +766,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('blocks authored workspace source refs before creating a turn when the catalog source is missing', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-tail-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const config: AgentManifest = {
       ...manifest('agent_codex_host', {}),
