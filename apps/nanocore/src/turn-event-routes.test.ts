@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ApiErrorSchema, SseEventEnvelopeSchema } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { FsStore } from './lib/store.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -122,7 +126,13 @@ async function createReplayTurn(
 
 describe('turn event routes', () => {
   it('replays turn events after the since cursor without duplicates', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-event-routes-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ store });
     const { workspaceId, threadId, turnId } = await createReplayTurn(store);
 
@@ -150,7 +160,13 @@ describe('turn event routes', () => {
   });
 
   it('returns no content when the since cursor is already terminal', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-event-routes-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ store });
     const { workspaceId, threadId, turnId } = await createReplayTurn(store);
     const terminalSequence = store
@@ -167,7 +183,13 @@ describe('turn event routes', () => {
   });
 
   it('keeps non-terminal empty replays open instead of returning no content', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-event-routes-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const unsubscribe = vi.fn();
 
     vi.spyOn(store, 'addTurnListener').mockReturnValue(unsubscribe);
@@ -201,7 +223,13 @@ describe('turn event routes', () => {
   });
 
   it('preserves events emitted while retained events are being replayed', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-event-routes-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const thread = await store.createThread(workspaceId, 'Replay race thread');
     const turn = await store.createTurn(workspaceId, thread.id, 'Preserve replay ordering', {
@@ -299,7 +327,13 @@ describe('turn event routes', () => {
   });
 
   it('returns cursor_expired when since is older than the retained event window', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-event-routes-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ store });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -358,7 +392,13 @@ describe('turn event routes', () => {
   });
 
   it('does not replay a turn through a different workspace and thread path', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-event-routes-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const otherWorkspace = await store.createWorkspace('Other event workspace');
     const { turnId } = await createReplayTurn(store, otherWorkspace.id);
     const app = createApp({ store });
