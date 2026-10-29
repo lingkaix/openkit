@@ -14,6 +14,7 @@ import { importWorkspaceSkill, loadWorkspaceResourceCatalog } from '../catalog/r
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
+  loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -726,6 +727,239 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
     await native.restore();
     await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+};
+
+/** Runs the original independent Tasks admission and native closeout case. */
+export const independentTasksAdmissionOwnership: () => Promise<void> = async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'route-b-two-tasks-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = await createDemoStore({ dataRoot, knowledge: [] });
+  const setup = createTestAgentSetup({
+    requiredCapabilities: ['trusted-worker-inference-relay'],
+  });
+  const config = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      agentManifests: [setup.manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      openKitConfig: {
+        defaults: { defaultAgentId: setup.manifest.id },
+        nanohost: { maxActiveTurnsPerSandbox: 1 },
+      },
+    } as unknown as Parameters<typeof createInMemoryRuntimeConfigSnapshot>[0]),
+  });
+  const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    readRuntimeConfig: () => config.current(),
+  });
+  const executor = native.executor;
+  const backend = executor.executionBackend!;
+  const submit = backend.submit.bind(backend);
+  const ackEntered = Promise.withResolvers<void>();
+  const ackRelease = Promise.withResolvers<void>();
+  let firstSubmit: Parameters<typeof submit>[0] | undefined;
+  // Hold only delivery of the real native ACK; Main still owns an unknown submit.
+  const submitObservation = vi.spyOn(backend, 'submit').mockImplementation(async (input) => {
+    if (firstSubmit) return submit(input);
+    firstSubmit = input;
+    const result = await submit(input);
+    ackEntered.resolve();
+    await ackRelease.promise;
+    return result;
+  });
+  const admissions = vi.spyOn(productOwners, 'observeTurnAdmission');
+  let secondExecution: ReturnType<typeof native.executionFor> | undefined;
+  let dispatch: ReturnType<typeof runSchedulerDispatchLoop> | undefined;
+  const attempts = (turn: { id: string; threadId: string }) =>
+    listSchedulerExecutionAttemptsForTurn(coreDb, {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: turn.threadId,
+      turnId: turn.id,
+    });
+  const app = createAppWithWorkspaceAuthority({
+    coreDb,
+    dataRoot,
+    store,
+    turnExecutor: executor,
+    runtimeConfigManager: config,
+    fileAdmission: native.fileAdmission,
+    workerControlGateway: native.workerControlGateway,
+  });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
+  await store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Independent Task',
+    'th_00000000-0000-7097-b0d8-3022e574cd4d'
+  );
+  const post = (requestId: string, threadId = 'th_00000000-0000-7000-8000-000000000001') =>
+    app.request(
+      ...operationRequest(
+        'task.start',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            input: 'Implement a focused change and run its tests.',
+          }),
+        }
+      )
+    );
+  try {
+    const firstResponse = await post('0190f4c8-0000-7000-8000-000000000991');
+    expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
+    const first = await firstResponse.json();
+    const firstCloseout = admissions.mock.results.find((r) => r.type === 'return')?.value.closeout;
+    expect(firstCloseout).toBeDefined();
+    await Promise.race([executor.launched.promise, firstCloseout!]);
+    await Promise.race([ackEntered.promise, firstCloseout!]);
+    expect(firstSubmit).toBeDefined();
+    const secondResponse = await post(
+      '0190f4c8-0000-7000-8000-000000000992',
+      'th_00000000-0000-7097-b0d8-3022e574cd4d'
+    );
+    expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
+    const second = await secondResponse.json();
+    expect(second.turn.threadId).not.toBe(first.turn.threadId);
+    expect(second.turn.id).not.toBe(first.turn.id);
+    expect(second.turn).toMatchObject({ status: 'pending' });
+    expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([
+      expect.objectContaining({ turnId: second.turn.id, status: 'queued' }),
+    ]);
+    expect(attempts(second.turn)).toEqual([]);
+    expect(attempts(first.turn)).toEqual([
+      expect.objectContaining({
+        phase: 'open',
+        disposition: 'unknown',
+        operationId: firstSubmit!.operationId,
+        fenceRef: null,
+      }),
+    ]);
+    const queuedDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      const checkpoint = getWorkerCheckpoint(
+        queuedDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7097-b0d8-3022e574cd4d',
+        second.turn.id
+      )!;
+      await expect(
+        classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          coreDb,
+          store,
+          workspaceDb: queuedDb,
+          checkpoint: { ...checkpoint, requestInputHash: 'contradictory-hash' },
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      for (let pass = 0; pass < 2; pass++) {
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store: await createDemoStore({ dataRoot }),
+            workspaceDb: queuedDb,
+            checkpoint,
+          })
+        ).resolves.toBe('live');
+        expect(
+          getWorkerCheckpoint(
+            queuedDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7097-b0d8-3022e574cd4d',
+            second.turn.id
+          )
+        ).toEqual(checkpoint);
+      }
+    } finally {
+      queuedDb.sqlite.close();
+    }
+    expect(second.state).toBe('queued');
+    expect(second.turn.agentSessionId ?? null).toBeNull();
+    expect(executor.launches).toBe(1);
+    expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([
+      expect.objectContaining({ turnId: second.turn.id, status: 'queued' }),
+    ]);
+    ackRelease.resolve();
+    executor.completion.resolve();
+    await native.executionFor(first.turn.id).execution;
+    await firstCloseout;
+    expect(attempts(first.turn)[0]).toMatchObject({
+      phase: 'closed',
+      disposition: 'accepted',
+      fenceRef: expect.any(String),
+    });
+    expect(store.getTurnById(first.turn.id).status).toBe('completed');
+    secondExecution = native.executionFor(second.turn.id);
+    void secondExecution.execution.catch(() => undefined);
+    dispatch = runSchedulerDispatchLoop({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      agentManifests: [setup.manifest],
+      providerRegistry: config.current().providerRegistry,
+      gatewayConfig: config.current().gatewayConfig,
+      executionBackend: backend,
+      maxDispatches: 1,
+    });
+    void dispatch.catch(() => undefined);
+    await Promise.race([secondExecution.launched.promise, dispatch]);
+    expect(executor.launches).toBe(2);
+    secondExecution.completion.resolve();
+    await secondExecution.execution;
+    await dispatch;
+    await Promise.all([...getSchedulerPreparationClaims(coreDb).values()]);
+    expect(
+      attempts(second.turn).find((a) => a.inputRef === executor.nativeLineage?.packageSnapshotId)
+    ).toMatchObject({
+      phase: 'closed',
+      disposition: 'accepted',
+      fenceRef: expect.any(String),
+    });
+    expect(store.getTurnById(second.turn.id).status).toBe('completed');
+    const replay = await post(
+      '0190f4c8-0000-7000-8000-000000000992',
+      'th_00000000-0000-7097-b0d8-3022e574cd4d'
+    );
+    expect(replay.status).toBe(202);
+    expect((await replay.json()).turn.id).toBe(second.turn.id);
+    expect(executor.launches).toBe(2);
+    expect(attempts(second.turn).filter((a) => a.disposition === 'accepted')).toHaveLength(1);
+  } finally {
+    ackRelease.resolve();
+    executor.completion.resolve();
+    secondExecution?.completion.resolve();
+    if (dispatch) await Promise.allSettled([dispatch]);
+    await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+    await Promise.allSettled(
+      admissions.mock.results.filter((r) => r.type === 'return').map((r) => r.value.closeout)
+    );
+    await Promise.allSettled(
+      vi
+        .mocked(executor.startTurn)
+        .mock.results.filter((r) => r.type === 'return')
+        .map((r) => r.value)
+    );
+    submitObservation.mockRestore();
+    if (productOwners.observeTurnAdmission === admissions) admissions.mockRestore();
+    await native.restore();
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }

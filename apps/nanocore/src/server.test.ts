@@ -10953,7 +10953,10 @@ describe('nanocore server', () => {
     }
   }, 60_000);
 
-  it('fails closed when an applied proposal lacks its receipt or Audit evidence', async () => {
+  it.each([
+    'receipt',
+    'audit',
+  ] as const)('fails closed when an applied proposal lacks its %s evidence', async (missingEvidence) => {
     const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -10964,65 +10967,57 @@ describe('nanocore server', () => {
     const app = await createApp({ coreDb, store });
 
     try {
-      for (const missingEvidence of ['receipt', 'audit'] as const) {
-        const fixture = await draftKnowledgeProposalFixture(
-          app,
-          store,
-          `missing-${missingEvidence}`
-        );
-        const requestId = knowledgeProposalRequestId(`decision-missing-${missingEvidence}`);
-        const completed = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          fixture.proposalId,
-          requestId,
-          'accepted'
-        );
-        expect(completed.status, await completed.clone().text()).toBe(200);
+      const fixture = await draftKnowledgeProposalFixture(app, store, `missing-${missingEvidence}`);
+      const requestId = knowledgeProposalRequestId(`decision-missing-${missingEvidence}`);
+      const completed = await submitKnowledgeProposalDecision(
+        app,
+        store,
+        fixture.proposalId,
+        requestId,
+        'accepted'
+      );
+      expect(completed.status, await completed.clone().text()).toBe(200);
 
-        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-        if (missingEvidence === 'receipt') {
-          workspaceDb.sqlite
-            .prepare(
-              `DELETE FROM idempotency_requests
-               WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-            )
-            .run(requestId);
-        } else {
-          workspaceDb.sqlite
-            .prepare('DELETE FROM audit_events WHERE request_id = ?')
-            .run(requestId);
-        }
-        workspaceDb.sqlite.close();
-
-        const replay = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          fixture.proposalId,
-          requestId,
-          'accepted'
-        );
-        expect(replay.status).toBe(409);
-        await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
-        expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBe(
-          fixture.canonicalPageBytes
-        );
-
-        const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-        const remaining =
-          missingEvidence === 'receipt'
-            ? evidenceDb.sqlite
-                .prepare(
-                  `SELECT COUNT(*) AS count FROM idempotency_requests
-                   WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-                )
-                .get(requestId)
-            : evidenceDb.sqlite
-                .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
-                .get(requestId);
-        evidenceDb.sqlite.close();
-        expect(remaining).toEqual({ count: 0 });
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      if (missingEvidence === 'receipt') {
+        workspaceDb.sqlite
+          .prepare(
+            `DELETE FROM idempotency_requests
+             WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+          )
+          .run(requestId);
+      } else {
+        workspaceDb.sqlite.prepare('DELETE FROM audit_events WHERE request_id = ?').run(requestId);
       }
+      workspaceDb.sqlite.close();
+
+      const replay = await submitKnowledgeProposalDecision(
+        app,
+        store,
+        fixture.proposalId,
+        requestId,
+        'accepted'
+      );
+      expect(replay.status).toBe(409);
+      await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBe(
+        fixture.canonicalPageBytes
+      );
+
+      const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      const remaining =
+        missingEvidence === 'receipt'
+          ? evidenceDb.sqlite
+              .prepare(
+                `SELECT COUNT(*) AS count FROM idempotency_requests
+                 WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+              )
+              .get(requestId)
+          : evidenceDb.sqlite
+              .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
+              .get(requestId);
+      evidenceDb.sqlite.close();
+      expect(remaining).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }
