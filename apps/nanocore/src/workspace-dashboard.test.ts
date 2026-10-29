@@ -111,7 +111,15 @@ describe('workspace dashboard app API', () => {
   });
 
   it('summarizes active work, completions, and attention-needed items', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-dashboard-work-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const activeThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Active worker turn'
@@ -216,7 +224,16 @@ describe('workspace dashboard app API', () => {
       createdAt: activeTurn.startedAt ?? completedAt,
       updatedAt: activeTurn.startedAt ?? completedAt,
     });
-    const app = createApp({ store });
+    coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    for (const workspace of store.listWorkspaces()) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId: workspace.id,
+      });
+    }
+    const app = createApp({ store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -386,7 +403,15 @@ describe('workspace dashboard app API', () => {
   });
 
   it('does not surface secret pending decision items as actionable', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-dashboard-secret-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Invalid dashboard attention'
@@ -424,7 +449,16 @@ describe('workspace dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const app = createApp({ store });
+    coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    for (const workspace of store.listWorkspaces()) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId: workspace.id,
+      });
+    }
+    const app = createApp({ store, coreDb });
 
     const response = await app.request(
       ...operationRequest('workspace.dashboard', {
