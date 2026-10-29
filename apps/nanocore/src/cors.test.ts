@@ -1,11 +1,16 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  createAppWithWorkspaceAuthority as createApp,
+  createApp as createPlainApp,
+} from './test-support/app.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { initializeTestCore } from './test-support/store.js';
+import { createTestStore, initializeTestCore } from './test-support/store.js';
 
 /**
  * Creates the smallest signed-out Better Auth surface needed by CORS tests.
@@ -21,7 +26,15 @@ function signedOutAuth(): BetterAuthServer {
 
 describe('browser CORS', () => {
   it('allows only exact configured origins with credentials in server mode', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-server-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const app = createApp({
+      store,
       auth: signedOutAuth(),
       mode: 'server',
       openKitConfig: {
@@ -57,7 +70,14 @@ describe('browser CORS', () => {
   });
 
   it('allows loopback browser origins by default in local mode', async () => {
-    const app = createApp();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-local-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const app = createPlainApp({ store });
     const loopback = await app.request('/api/health', {
       headers: { origin: 'http://localhost:5173' },
     });
