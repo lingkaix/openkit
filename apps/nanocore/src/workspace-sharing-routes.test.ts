@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
@@ -12,6 +12,8 @@ import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { getRegisteredAppApiOperationIds } from './openapi.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -105,7 +107,7 @@ async function createFixture(): Promise<RouteFixture> {
     insertUser(coreDb, userId, email);
   }
 
-  const store = new FsStore();
+  const store = new FsStore({ dataRoot });
   const workspaceId = (await store.createWorkspace('Shared Workspace')).id;
   const foreignWorkspaceId = (await store.createWorkspace('Foreign Workspace')).id;
   recordWorkspaceOwnerMembership({
@@ -164,9 +166,12 @@ async function createFixture(): Promise<RouteFixture> {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const coreDb of openDatabases.splice(0)) {
+    closeWorkspaceProductReadHandles(coreDb.dataRoot);
     coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
   }
 });
 
