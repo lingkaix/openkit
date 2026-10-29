@@ -13,11 +13,13 @@ import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-mana
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
@@ -100,7 +102,15 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
     producer: actor,
     instructionReference: 'fixture:human-workspace-creation',
   };
-  const imported = await new FsStore().createWorkspace('Authored initial notebook');
+  const sourceRoot = mkdtempSync(join(tmpdir(), 'tell-intake-source-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(sourceRoot);
+    rmSync(sourceRoot, { recursive: true, force: true });
+  });
+  const imported = await createTestStore({ dataRoot: sourceRoot }).createWorkspace(
+    'Authored initial notebook'
+  );
   const initialFiles: Record<string, string> =
     initial === 'authored-index'
       ? { 'index.md': authoredIndex }

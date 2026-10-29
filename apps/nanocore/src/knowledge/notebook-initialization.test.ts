@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RequestIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -205,7 +205,13 @@ User-authored note.
       await shutdownControlStoreWorkerClient();
       return rmSync(dataRoot, { recursive: true, force: true });
     });
-    const source = new FsStore();
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'notebook-unattributed-source-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(sourceRoot);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    });
+    const source = createTestStore({ dataRoot: sourceRoot });
     const workspace = await source.createWorkspace('Unattributed import');
     const target = createTestStore({ dataRoot });
     await expect(
