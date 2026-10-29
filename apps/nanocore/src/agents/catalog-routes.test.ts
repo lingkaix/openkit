@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,7 +7,7 @@ import {
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
@@ -425,7 +425,12 @@ describe('agent.list and agent.read operations', () => {
       },
       workspace: { env: { OPENAI_API_KEY: secretEnv } },
     };
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'agent-catalog-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
       capabilities: [],
       defaultProfileId: null,

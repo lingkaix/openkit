@@ -443,7 +443,9 @@ describe('deployment model extension catalog', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const store = await createDemoStore();
+    const storeDataRoot = mkdtempSync(join(tmpdir(), 'model-catalog-store-'));
+    roots.push(storeDataRoot);
+    const store = await createDemoStore({ dataRoot: storeDataRoot });
     registerOperationJsonRoutes({
       app,
       coreDb,

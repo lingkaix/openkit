@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -54,7 +57,12 @@ it('preserves authored errors and route-specific code and status', async () => {
   const command = asCommandError(error, 'command_missing', 409);
   expect(command.status).toBe(409);
   expect(await command.json()).toMatchObject({ code: 'command_missing', message: error.message });
-  const store = await createDemoStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'api-errors-store-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = await createDemoStore({ dataRoot });
   const app = createAppWithWorkspaceAuthority({ store });
   vi.spyOn(store, 'listThreads').mockImplementation(() => {
     throw error;
