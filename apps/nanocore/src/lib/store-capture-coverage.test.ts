@@ -231,10 +231,21 @@ describe('Turn capture coverage binding', () => {
   });
 
   it('keeps a running Turn pair unchanged and does not interrupt when the live switch changes', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-pair-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Capture mid-turn'
+    );
+    // Both Threads predate the switch to distinguish Turn admission from Thread creation.
+    const nextThread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture after switch'
     );
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -248,7 +259,7 @@ describe('Turn capture coverage binding', () => {
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual(DEFAULT_CAPTURE_COVERAGE_BINDING);
     const next = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
+      nextThread.id,
       'Next turn sees the new pair',
       LOCAL_ACTOR
     );
