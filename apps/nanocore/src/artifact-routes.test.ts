@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,7 +9,7 @@ import {
   SubmitArtifactReviewDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import { GetArtifactResponseSchema, ListArtifactsResponseSchema } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createArtifactReview,
   deriveArtifactReviewFollowUpTurnId,
@@ -30,6 +30,7 @@ import {
 } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
@@ -175,7 +176,13 @@ async function createReviewFixture(
 
 describe('Core artifact routes', () => {
   it('lists and reads exact markdown inline Artifact content', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-markdown-read-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact content thread'
@@ -240,7 +247,13 @@ describe('Core artifact routes', () => {
   });
 
   it('reads exact text and JSON inline Artifact content with their recorded formats', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-formats-read-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact format thread'
