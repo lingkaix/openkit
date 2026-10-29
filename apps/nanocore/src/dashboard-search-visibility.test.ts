@@ -9,6 +9,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -16,11 +17,18 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('dashboard and search Thread audiences', () => {
   it('binds private creation to the actor and keeps explicitly shared work shared', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-dashboard-audience-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Creation team');
     const app = createApp({ store });
     for (const visibility of ['private', 'workspace'] as const) {
@@ -62,7 +70,13 @@ describe('dashboard and search Thread audiences', () => {
   });
 
   it('keeps visibility and private ownership immutable under metadata updates', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-dashboard-audience-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Immutable audience');
     const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
       visibility: 'private',
@@ -81,7 +95,13 @@ describe('dashboard and search Thread audiences', () => {
   });
 
   it('requires shared inception for formal Task and Goal work without converting private history', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-dashboard-audience-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Formal admission');
     const thread = await store.createThread(
       workspace.id,
