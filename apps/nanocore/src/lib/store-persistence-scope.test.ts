@@ -1,3 +1,4 @@
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -1026,6 +1027,8 @@ describe('native Workspace absence classification', () => {
         }),
       ])
     );
+    // Release borrowed readers before the writer's final close settles SQLite sidecars.
+    closeWorkspaceProductReadHandles(f.dataRoot);
     // Stop the Workspace writer before relocating complete retained authority.
     await shutdownControlStoreWorkerClient();
     if (kind === 'retained-registered') renameSync(canonicalRoot, retainedRoot);
@@ -1071,6 +1074,8 @@ describe('native Workspace absence classification', () => {
     expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
     expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
     expect(existsSync(canonicalRoot)).toBe(false);
+    // End synchronous reader lifetimes before the stopped-scope SQL and file samples.
+    closeWorkspaceProductReadHandles(f.dataRoot);
     expect(serverRows()).toEqual(serverAuthority);
     expect(healthyRows()).toEqual(healthyAuthority);
     expect(retainedFiles()).toEqual(retainedBytes);
