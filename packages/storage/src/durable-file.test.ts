@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
+  type FileHandle,
   mkdir,
   mkdtemp,
   readdir,
@@ -20,7 +21,7 @@ const faults = vi.hoisted(() => ({
   sync: false,
   directorySync: false,
   afterParentInspection: undefined as undefined | ((path: string) => Promise<void>),
-  opened: undefined as undefined | ((path: string) => void),
+  opened: undefined as undefined | ((path: string, handle: FileHandle) => void),
 }));
 vi.mock('node:fs/promises', async (original) => {
   const actual = await original<typeof import('node:fs/promises')>();
@@ -35,7 +36,7 @@ vi.mock('node:fs/promises', async (original) => {
       const handle = await actual.open(...args);
       if (faults.opened || faults.afterParentInspection) {
         const resolved = String(await actual.realpath(`/proc/self/fd/${handle.fd}`));
-        faults.opened?.(resolved);
+        faults.opened?.(resolved, handle);
         await faults.afterParentInspection?.(resolved);
       }
       const sync = handle.sync.bind(handle);
@@ -121,6 +122,37 @@ describe('snapshot Storage byte primitives', () => {
     await writeFile(f.sourcePath, 'Changed after the cut');
     await rm(f.sourcePath);
     expect(await readFile(f.destinationPath)).toEqual(original);
+  });
+
+  it('removes an incomplete cut after a positive short write fails', async () => {
+    const f = await fixture();
+    const authored = Buffer.from('An independently authored positive partial cut. '.repeat(100));
+    await writeFile(f.sourcePath, authored);
+    const handles: FileHandle[] = [];
+    let partial = Buffer.alloc(0);
+    let writes = 0;
+    faults.opened = (path, handle) => {
+      if (path === f.sourcePath || path === f.destinationPath) handles.push(handle);
+      if (path !== f.destinationPath) return;
+      const write = handle.write.bind(handle);
+      handle.write = (async (buffer: Buffer, offset: number, length: number) => {
+        if (writes++ === 0) return write(buffer, offset, Math.min(length, 7));
+        partial = await readFile(f.destinationPath);
+        throw new Error('Injected cut failure after a real positive short write.');
+      }) as typeof handle.write;
+    };
+    await expect(copyFileForCut({ ...f, maxBytes: authored.length, mode: 0o640 })).rejects.toThrow(
+      'Injected cut failure after a real positive short write.'
+    );
+    expect(writes).toBe(2);
+    expect(partial.length).toBeGreaterThan(0);
+    expect(partial.length).toBeLessThan(authored.length);
+    expect(partial).toEqual(authored.subarray(0, partial.length));
+    expect(await readdir(f.root)).toEqual(['source']);
+    expect(await readFile(f.sourcePath)).toEqual(authored);
+    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o640);
+    expect(handles).toHaveLength(2);
+    expect(handles.map((handle) => handle.fd)).toEqual([-1, -1]);
   });
 
   it('keeps cut copying bounded and refuses a substituted source parent without reading outside', async () => {
