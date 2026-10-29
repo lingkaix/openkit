@@ -336,7 +336,15 @@ describe('workspace dashboard app API', () => {
       count: 0,
     },
   ] as const)('preserves completion selection: $name', async ({ artifacts, summary, count }) => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-dashboard-completion-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Completion selection'
@@ -350,38 +358,56 @@ describe('workspace dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const otherTurn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Thread preview',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
+    const completedAt = '2026-07-19T00:04:00.000Z';
+    // Fresh Artifact references need a live producer; finish exact outputs before the next Turn.
+    for (const scope of ['exact', 'other'] as const) {
+      if (scope === 'other') {
+        await store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
       }
-    );
-    for (const [id, scope, minute, artifactSummary] of artifacts) {
-      const turnId = scope === 'exact' ? completedTurn.id : otherTurn.id;
-      await store.createArtifact({
-        id,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        turnId,
-        kind: 'summary',
-        title: id,
-        status: 'ready',
-        summary: artifactSummary,
-        version: 1,
-        content: { format: 'markdown', body: id },
-        contentDigest: `sha256:${createHash('sha256').update(id, 'utf8').digest('hex')}`,
-        lastMutationRequestId: id,
-        origin: { kind: 'turn-output', threadId: thread.id, turnId, requestId: id },
-        createdAt: '2026-07-19T00:00:00.000Z',
-        updatedAt: `2026-07-19T00:0${minute}:00.000Z`,
+      const turn =
+        scope === 'exact'
+          ? completedTurn
+          : await store.createTurn(
+              'ws_00000000-0000-7000-8000-000000000001',
+              thread.id,
+              'Thread preview',
+              {
+                kind: 'user',
+                id: 'usr_00000000-0000-7000-8000-000000000001',
+              }
+            );
+      for (const [id, artifactScope, minute, artifactSummary] of artifacts) {
+        if (artifactScope !== scope) continue;
+        const turnId = turn.id;
+        await store.createArtifact({
+          id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          turnId,
+          kind: 'summary',
+          title: id,
+          status: 'ready',
+          summary: artifactSummary,
+          version: 1,
+          content: { format: 'markdown', body: id },
+          contentDigest: `sha256:${createHash('sha256').update(id, 'utf8').digest('hex')}`,
+          lastMutationRequestId: id,
+          origin: { kind: 'turn-output', threadId: thread.id, turnId, requestId: id },
+          createdAt: '2026-07-19T00:00:00.000Z',
+          updatedAt: `2026-07-19T00:0${minute}:00.000Z`,
+        });
+      }
+    }
+    coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    for (const workspace of store.listWorkspaces()) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId: workspace.id,
       });
     }
-    const completedAt = '2026-07-19T00:04:00.000Z';
-    await store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
-    const app = createApp({ store });
+    const app = createApp({ store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
