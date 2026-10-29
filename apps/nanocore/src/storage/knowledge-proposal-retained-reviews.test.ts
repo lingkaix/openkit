@@ -1,7 +1,7 @@
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
+import { afterAll, describe, expect, it, onTestFinished } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
@@ -24,36 +24,62 @@ describe('knowledge proposal authority', () => {
     let deferred: Awaited<ReturnType<typeof decide>>;
     let accepted: Awaited<ReturnType<typeof decide>>;
     let annotatedBytes: string;
-    let dispose: (() => void) | undefined;
-    beforeAll(async () => {
-      baseline = await createFixture('proposal-annotated-review', true, (cleanup) => {
-        dispose = cleanup;
-      });
-      deferred = await decide(baseline, 'deferred', 'review-annotated-deferred');
-      accepted = await decide(baseline, 'accepted', 'review-annotated-accepted');
-      const retained = JSON.parse(readFileSync(baseline.reviewPath, 'utf8'));
-      retained.futureNote = 'Retained Review description';
-      for (const review of retained.decisions) {
-        review.futureNote = 'Retained decision description';
-        review.actor.futureNote = 'Retained attribution description';
-      }
-      annotatedBytes = `${JSON.stringify(retained, null, 2)}\n`;
-      writeFileSync(baseline.reviewPath, annotatedBytes);
+    let dispose: (() => void | Promise<void>) | undefined;
+    let preparation: Promise<void> | undefined;
+    let preparationSettled = false;
+    let preparationAbandoned = false;
+    afterAll(async () => {
+      await preparation?.catch(() => undefined);
       await shutdownControlStoreWorkerClient();
-      baseline.coreDb.sqlite.close();
+      await dispose?.();
     });
-    afterAll(() => dispose?.());
 
-    /** Copies closed native owners; each corruption gets independent bytes, receipts and Git objects. */
-    function reviewedFixture(): Fixture {
-      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-annotated-review-'));
-      cpSync(baseline.dataRoot, dataRoot, { recursive: true });
-      const coreDb = openCoreDb(dataRoot);
+    /** Shares one closed native baseline within the first case's original budget; never retries it. */
+    async function reviewedFixture(): Promise<Fixture> {
+      let finished = false;
+      let dataRoot: string | undefined;
+      let coreDb: ReturnType<typeof openCoreDb> | undefined;
       onTestFinished(async () => {
-        coreDb.sqlite.close();
+        finished = true;
+        if (!preparationSettled) preparationAbandoned = true;
+        await preparation?.catch(() => undefined);
         await shutdownControlStoreWorkerClient();
-        rmSync(dataRoot, { recursive: true, force: true });
+        if (coreDb?.sqlite.open) coreDb.sqlite.close();
+        if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
       });
+      const requireActivePreparation = () => {
+        if (finished || preparationAbandoned) {
+          throw new Error('Annotated Review fixture preparation ended before completion');
+        }
+      };
+      preparation ??= (async () => {
+        baseline = await createFixture('proposal-annotated-review', true, (cleanup) => {
+          dispose = cleanup;
+        });
+        requireActivePreparation();
+        deferred = await decide(baseline, 'deferred', 'review-annotated-deferred');
+        requireActivePreparation();
+        accepted = await decide(baseline, 'accepted', 'review-annotated-accepted');
+        requireActivePreparation();
+        const retained = JSON.parse(readFileSync(baseline.reviewPath, 'utf8'));
+        retained.futureNote = 'Retained Review description';
+        for (const review of retained.decisions) {
+          review.futureNote = 'Retained decision description';
+          review.actor.futureNote = 'Retained attribution description';
+        }
+        annotatedBytes = `${JSON.stringify(retained, null, 2)}\n`;
+        writeFileSync(baseline.reviewPath, annotatedBytes);
+        await shutdownControlStoreWorkerClient();
+        requireActivePreparation();
+        baseline.coreDb.sqlite.close();
+      })().finally(() => {
+        preparationSettled = true;
+      });
+      await preparation;
+      requireActivePreparation();
+      dataRoot = mkdtempSync(join(tmpdir(), 'openkit-annotated-review-'));
+      cpSync(baseline.dataRoot, dataRoot, { recursive: true });
+      coreDb = openCoreDb(dataRoot);
       const store = new FsStore({ dataRoot });
       const workspaceRoot = join(dataRoot, 'workspaces', baseline.workspaceId);
       const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
@@ -72,7 +98,7 @@ describe('knowledge proposal authority', () => {
     }
 
     it('projects annotated retained Reviews without rewriting their bytes', async () => {
-      const f = reviewedFixture();
+      const f = await reviewedFixture();
       expect(accepted.review.proposalDigest).toBe(digest(readFileSync(f.proposalPath, 'utf8')));
       expect(accepted.review.proposalDigest).not.toBe(f.contentDigest);
       f.store = new FsStore({ dataRoot: f.dataRoot });
@@ -104,7 +130,7 @@ describe('knowledge proposal authority', () => {
       ['candidateRevision', '1'.repeat(40)],
       ['actor', { kind: 'user', id: testEntityId('usr', 'foreign-reviewer') }],
     ] as const)('refuses changed ordered decision core: %s', async (key, value) => {
-      const f = reviewedFixture();
+      const f = await reviewedFixture();
       const changed = JSON.parse(annotatedBytes);
       changed.decisions[1][key] = value;
       writeFileSync(f.reviewPath, `${JSON.stringify(changed, null, 2)}\n`);
@@ -120,7 +146,7 @@ describe('knowledge proposal authority', () => {
     });
 
     it('refuses reversed retained decision order', async () => {
-      const f = reviewedFixture();
+      const f = await reviewedFixture();
       const retained = JSON.parse(annotatedBytes);
       retained.decisions.reverse();
       writeFileSync(f.reviewPath, `${JSON.stringify(retained, null, 2)}\n`);
