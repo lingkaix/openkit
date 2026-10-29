@@ -237,7 +237,13 @@ function createImportedArtifact(
 
 describe('FsStore persistence', () => {
   it('creates conversation Threads by default and preserves an administration entry path', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const conversation = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -259,7 +265,13 @@ describe('FsStore persistence', () => {
   });
 
   it('keeps Turn and human-input attribution immutable', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -366,7 +378,13 @@ describe('FsStore persistence', () => {
   });
 
   it('seeds only the personal Workspace for a new user', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const workspaces = store.listWorkspaces();
 
@@ -428,7 +446,13 @@ describe('FsStore persistence', () => {
   });
 
   it('reserves portable-import Approval identities for historical rows', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -658,7 +682,13 @@ describe('FsStore persistence', () => {
   });
 
   it('does not invent an Item for a workspace-only Artifact', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Workspace-only artifact');
     let error: unknown;
     try {
@@ -1488,7 +1518,13 @@ describe('FsStore persistence', () => {
   });
 
   it('rejects extra receipt metadata outside conversation.submit', () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
 
     expect(() =>
       store.recordCommandRequest({
@@ -1683,7 +1719,13 @@ describe('FsStore persistence', () => {
   });
 
   it('clamps derived turn duration when completion time is earlier than start time', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
