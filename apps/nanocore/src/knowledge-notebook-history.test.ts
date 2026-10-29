@@ -14,8 +14,8 @@ import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
-import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { createAppWithLocalIdentity } from './test-support/app.js';
+import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -32,7 +32,9 @@ async function fixture(snapshotRoot?: string) {
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = snapshotRoot ? new FsStore({ dataRoot }) : await createDemoStore({ dataRoot });
+    const store = new FsStore({ dataRoot });
+    // Seed only the Workspace whose Notebook history this fixture exercises.
+    if (!snapshotRoot) await seedDemoWorkspace(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -45,7 +47,7 @@ async function fixture(snapshotRoot?: string) {
       coreDb,
       store,
       workspaceDb,
-      app: createApp({ coreDb, dataRoot, store }),
+      app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
       repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
@@ -539,14 +541,14 @@ describe('native Workspace Notebook history and restore', () => {
     const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
     const policyFixture = {
       ...f,
-      app: createApp({
+      app: createAppWithLocalIdentity({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,
         runtimeConfigManager,
       }),
     };
-    const server = createApp({
+    const server = createAppWithLocalIdentity({
       mode: 'server',
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
