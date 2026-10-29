@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,7 +8,7 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -35,6 +35,7 @@ import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountError } from './llm/provider-subscription-accounts.js';
 import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -43,7 +44,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { openTestNativeWorkspace } from './test-support/store.js';
+import { createTestStore, openTestNativeWorkspace } from './test-support/store.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -290,7 +291,14 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('does not expose the historical internal Chat Completions facade', async () => {
-    const app = createApp();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
+    const app = createApp({ store: fixtureStore });
 
     const res = await app.request('/internal/v1/chat/completions', {
       method: 'POST',
@@ -302,7 +310,14 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('returns process health for gateway clients', async () => {
-    const app = createApp();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
+    const app = createApp({ store: fixtureStore });
     const res = await app.request('/health');
 
     expect(res.status).toBe(200);
@@ -313,7 +328,14 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('does not expose the unsupported text completions endpoint', async () => {
-    const app = createApp();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
+    const app = createApp({ store: fixtureStore });
 
     const res = await app.request('/v1/completions', {
       method: 'POST',
@@ -328,7 +350,14 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('lists only product-visible logical models', async () => {
-    const app = createApp(createOpenAIProviderOptions());
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
+    const app = createApp({ ...createOpenAIProviderOptions(), store: fixtureStore });
 
     const res = await app.request('/v1/models');
     const body = (await res.json()) as { data: Array<Record<string, unknown>>; object: string };
@@ -343,6 +372,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('discovers and dispatches an explicit handwritten custom logical model without rewriting the upstream model id', async () => {
     const seen: Array<{ providerId: string; model: string }> = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       gatewayConfig: {
         schemaVersion: 1,
@@ -395,6 +431,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const listed = await app.request('/v1/models');
@@ -438,6 +475,13 @@ describe('OpenAI-compatible agent gateway', () => {
     'delisted',
   ])('hides a fully unavailable %s tier and returns its typed error', async (kind) => {
     const attempts = vi.fn();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       gatewayConfig: {
         schemaVersion: 1,
@@ -470,6 +514,7 @@ describe('OpenAI-compatible agent gateway', () => {
       llmGatewayDispatcher: {
         createChatCompletion: attempts,
       } as unknown as LLMGatewayProviderDispatcher,
+      store: fixtureStore,
     });
     await expect((await app.request('/v1/models')).json()).resolves.toEqual({
       object: 'list',
@@ -495,6 +540,13 @@ describe('OpenAI-compatible agent gateway', () => {
     'absent',
     'delisted',
   ])('retains discovery with an available sibling and a %s primary', async (kind) => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       gatewayConfig: {
         schemaVersion: 1,
@@ -535,6 +587,7 @@ describe('OpenAI-compatible agent gateway', () => {
           vendor: 'openai',
         },
       ]),
+      store: fixtureStore,
     });
 
     const body = (await (await app.request('/v1/models')).json()) as {
@@ -545,6 +598,13 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('projects JSON provider failures with stable generic OpenKit errors', async () => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
@@ -559,6 +619,7 @@ describe('OpenAI-compatible agent gateway', () => {
           ) as OpenAICompatibleProviderError;
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -582,6 +643,13 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('does not publish provider-native codes that resemble internal vault errors', async () => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
@@ -596,6 +664,7 @@ describe('OpenAI-compatible agent gateway', () => {
           ) as OpenAICompatibleProviderError;
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -620,6 +689,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('routes non-streaming chat completions through the gateway default provider', async () => {
     const seenRequests: unknown[] = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
@@ -641,6 +717,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -670,6 +747,13 @@ describe('OpenAI-compatible agent gateway', () => {
     false,
   ])('uses authored failover and keeps private routes hidden: %s', async (autoFailover) => {
     const attempts: Array<{ model: string; providerId: string }> = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       gatewayConfig: {
         schemaVersion: 1,
@@ -731,6 +815,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as LLMGatewayProviderDispatcher,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -762,6 +847,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('rewrites provider-native models in public SSE events', async () => {
     const options = createOpenAIProviderOptions();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...options,
       gatewayConfig: {
@@ -782,6 +874,7 @@ describe('OpenAI-compatible agent gateway', () => {
             'data: {"id":"chunk","object":"chat.completion.chunk","model":"gpt-5.1","choices":[]}\n\ndata: [DONE]\n\n'
           ).body!,
       } as unknown as LLMGatewayProviderDispatcher,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -811,6 +904,13 @@ describe('OpenAI-compatible agent gateway', () => {
     const providerRelease = new Promise<void>((resolve) => {
       releaseProvider = resolve;
     });
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmGatewayDispatcher: {
@@ -835,6 +935,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as LLMGatewayProviderDispatcher,
+      store: fixtureStore,
     });
 
     const responsePromise = app.request('/v1/chat/completions', {
@@ -861,11 +962,19 @@ describe('OpenAI-compatible agent gateway', () => {
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic through pi-ai')]);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -893,11 +1002,19 @@ describe('OpenAI-compatible agent gateway', () => {
         stopReason: 'toolUse',
       }),
     ]);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -949,11 +1066,19 @@ describe('OpenAI-compatible agent gateway', () => {
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic stream through pi-ai')]);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -989,11 +1114,19 @@ describe('OpenAI-compatible agent gateway', () => {
         { stopReason: 'toolUse' }
       ),
     ]);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -1033,11 +1166,19 @@ describe('OpenAI-compatible agent gateway', () => {
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic responses through pi-ai')]);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/responses', {
@@ -1068,11 +1209,19 @@ describe('OpenAI-compatible agent gateway', () => {
       const models = createModels();
       models.setProvider(faux.provider);
       faux.setResponses([fauxAssistantMessage(`${providerId} via pi-ai`)]);
+      const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(storeRoot);
+        rmSync(storeRoot, { recursive: true, force: true });
+      });
+      const fixtureStore = createTestStore({ dataRoot: storeRoot });
       const app = createApp({
         ...createPiAiProviderOptions(providerId),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
         }),
+        store: fixtureStore,
       });
 
       const res = await app.request('/v1/chat/completions', {
@@ -2082,11 +2231,19 @@ describe('OpenAI-compatible agent gateway', () => {
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic response stream through pi-ai')]);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/responses', {
@@ -2748,6 +2905,13 @@ describe('OpenAI-compatible agent gateway', () => {
         controller.close();
       },
     });
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
@@ -2757,6 +2921,7 @@ describe('OpenAI-compatible agent gateway', () => {
           return stream;
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -2962,11 +3127,19 @@ describe('OpenAI-compatible agent gateway', () => {
         }
       },
     });
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletionStream: async () => stream,
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -3129,11 +3302,19 @@ describe('OpenAI-compatible agent gateway', () => {
           controller.error(attachPiAiFailure(new Error(testCase.message)));
         },
       });
+      const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(storeRoot);
+        rmSync(storeRoot, { recursive: true, force: true });
+      });
+      const fixtureStore = createTestStore({ dataRoot: storeRoot });
       const app = createApp({
         ...createOllamaProviderOptions(),
         llmPiAiClient: {
           createChatCompletionStream: async () => stream,
         } as unknown as PiAiGatewayClient,
+        store: fixtureStore,
       });
 
       const res = await app.request('/v1/chat/completions', {
@@ -3171,11 +3352,19 @@ describe('OpenAI-compatible agent gateway', () => {
         controller.error(new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream'));
       },
     });
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
         createChatCompletionStream: async () => stream,
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -3197,6 +3386,13 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('routes non-streaming Responses requests through native OpenAI responses support', async () => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: {
@@ -3214,6 +3410,7 @@ describe('OpenAI-compatible agent gateway', () => {
           ],
         }),
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/responses', {
@@ -3252,7 +3449,18 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
     const piAiClient = new PiAiGatewayClient({ models });
     const call = vi.spyOn(piAiClient, 'createResponses');
-    const app = createApp({ ...createOllamaProviderOptions(), llmPiAiClient: piAiClient });
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
+    const app = createApp({
+      ...createOllamaProviderOptions(),
+      llmPiAiClient: piAiClient,
+      store: fixtureStore,
+    });
     const response = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
@@ -3276,9 +3484,17 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('returns unsupported feature errors when Responses built-in tools target chat-only providers', async () => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: new PiAiGatewayClient(),
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/responses', {
@@ -3450,6 +3666,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('preserves explicit prompt cache keys for native Responses providers', async () => {
     const seenRequests: unknown[] = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: {
@@ -3464,6 +3687,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/responses', {
@@ -3488,6 +3712,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('preserves explicit prompt cache keys for native Chat Completions providers', async () => {
     const seenRequests: unknown[] = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
@@ -3503,6 +3734,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/chat/completions', {
@@ -3527,6 +3759,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('derives prompt cache keys from OpenKit metadata for Chat Completions requests', async () => {
     const seenRequests: Array<{ prompt_cache_key?: unknown }> = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: {
@@ -3542,6 +3781,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     for (let index = 0; index < 2; index += 1) {
@@ -3569,6 +3809,13 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('derives prompt cache keys from OpenKit metadata for Responses requests', async () => {
     const seenRequests: Array<{ prompt_cache_key?: unknown }> = [];
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: {
@@ -3583,6 +3830,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     for (let index = 0; index < 2; index += 1) {
@@ -3608,6 +3856,13 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('reports provider cache read and write quantities without a derived hit rate', async () => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: {
@@ -3631,6 +3886,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
         },
       } as unknown as PiAiGatewayClient,
+      store: fixtureStore,
     });
 
     const res = await app.request('/v1/responses', {
@@ -3872,6 +4128,13 @@ describe('Round 2 public exhaustion cause', () => {
               )
             )
           );
+          const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+          onTestFinished(async () => {
+            await shutdownControlStoreWorkerClient();
+            closeWorkspaceProductReadHandles(storeRoot);
+            rmSync(storeRoot, { recursive: true, force: true });
+          });
+          const fixtureStore = createTestStore({ dataRoot: storeRoot });
           const app = createApp({
             gatewayConfig: {
               schemaVersion: 1,
@@ -3918,6 +4181,7 @@ describe('Round 2 public exhaustion cause', () => {
             llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
               piAiClient: new PiAiGatewayClient({ models }),
             }),
+            store: fixtureStore,
           });
           const pending = app.request(`/v1/${endpoint}`, {
             method: 'POST',
@@ -4078,6 +4342,13 @@ describe('API key member availability', () => {
     const synthetic = fauxProvider({ provider: 'openai', models: [{ id: 'gpt-5.1' }] });
     const models = createModels();
     models.setProvider(synthetic.provider);
+    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...options,
       providerRegistry: new ProviderRegistry(
@@ -4089,6 +4360,7 @@ describe('API key member availability', () => {
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
       }),
+      store: fixtureStore,
     });
     expect(await (await app.request('/v1/models')).json()).toMatchObject({ data: [] });
     const response = await app.request('/v1/responses', {
