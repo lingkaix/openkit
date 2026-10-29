@@ -12,7 +12,7 @@ import {
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { AgentSessionIdSchema, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -32,6 +32,7 @@ import * as productTurnStart from '../runtime/product-turn-start.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -1594,7 +1595,13 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('fails closed when the resolved agent setup is missing', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-simulator-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const executor = new SimulatedTurnExecutor();
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
