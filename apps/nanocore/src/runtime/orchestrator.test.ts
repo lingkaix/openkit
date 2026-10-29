@@ -1,13 +1,14 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -120,7 +121,13 @@ function localProviderRegistry(): ProviderRegistry {
 
 describe('startTurn orchestrator', () => {
   it('reports conflicting exact Skill setup before creating a Turn or starting its executor', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const configured = manifest('agent_codex_host');
     configured.skills = [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }];
@@ -230,7 +237,13 @@ describe('startTurn orchestrator', () => {
     'blocked',
     'unknown',
   ] as const)('rejects %s agent readiness before creating a turn or starting the executor', async (status) => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(
@@ -266,7 +279,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('rejects generic degraded readiness before creating a turn or starting the executor', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(
@@ -347,7 +366,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('does not use a model override to bypass a disabled default Agent', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const providerRegistry = localProviderRegistry();
     const models = {
@@ -378,7 +403,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('rejects an explicit agent whose manifest provider does not support the model override', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const providerRegistry = localProviderRegistry();
     const configuredManifests = [
@@ -475,7 +506,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('fails before creating a turn when selected agent is missing', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(

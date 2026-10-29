@@ -25,6 +25,7 @@ import { prepareAuditEvent } from '../audit-events.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import type { ControlAdmission } from '../storage/control-store-admission.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
@@ -378,7 +379,13 @@ describe('FsStore persistence', () => {
   });
 
   it('creates new user workspaces without a duplicate runtime catalog', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-catalog-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Runnable workspace');
     const resources = store.getWorkspaceResources(workspace.id);
 
