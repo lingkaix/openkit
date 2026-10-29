@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { workObservationBodyBundleId } from '../evidence-bundles.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { appendWorkObservation, readWorkObservations } from '../storage/work-observations.js';
@@ -184,7 +185,13 @@ describe('Turn capture coverage binding', () => {
   });
 
   it('records the off pair at admission by default', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-pair-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Capture off'
@@ -201,7 +208,13 @@ describe('Turn capture coverage binding', () => {
   });
 
   it('records the on pair when the live switch is on at admission', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-pair-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'workspace', value: 'on' });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
