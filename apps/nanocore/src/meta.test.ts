@@ -1,15 +1,18 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MetaResponseSchema } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { createApp as createNanoCoreApp } from './app.js';
 import type { FsStore } from './lib/store.js';
 import type { RuntimeCapabilities, RuntimeEventFamily, TurnExecutor } from './runtime/types.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { createTestStore } from './test-support/store.js';
 
 class StubTurnExecutor implements TurnExecutor {
   public readonly eventFamilies: readonly RuntimeEventFamily[] = [
@@ -42,13 +45,15 @@ class StubTurnExecutor implements TurnExecutor {
 
 describe('nanocore metadata', () => {
   it('returns protocol metadata for the default container worker executor', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-meta-real-worker-')));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-meta-real-worker-'));
+    const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const previousSelfCheckExecutor = process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
 
     try {
-      const app = createNanoCoreApp({ coreDb });
+      const store = createTestStore({ dataRoot });
+      const app = createNanoCoreApp({ coreDb, store });
       const res = await app.request('/api/meta');
 
       expect(res.status).toBe(200);
@@ -74,12 +79,23 @@ describe('nanocore metadata', () => {
       } else {
         process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = previousSelfCheckExecutor;
       }
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
   it('maps stubbed executor capabilities and advertised item metadata', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-meta-stub-worker-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const app = createApp({
+      store,
       turnExecutor: new StubTurnExecutor({
         approvals: true,
         interrupts: false,
