@@ -1,8 +1,8 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -11,6 +11,7 @@ import { recordProductPermissionDecision } from './policy/permission-decisions.j
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -511,10 +512,18 @@ describe('Pending Request operations', () => {
   });
 
   it('rejects runtime approval scope mismatches before calling the executor', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-scope-')));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-scope-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore();
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -584,10 +593,18 @@ describe('Pending Request operations', () => {
   });
 
   it('fails closed for a non-policy runtime approval without calling the executor', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-unsupported-')));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-approval-unsupported-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore();
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
