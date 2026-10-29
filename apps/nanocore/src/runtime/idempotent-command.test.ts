@@ -1,29 +1,58 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { type InflightIdempotentCommand, runIdempotentCommand } from './idempotent-command.js';
 
 describe('workspace-transaction idempotent commands', () => {
   it('separates concurrent commands by their complete explicit actor scope', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-actor-command-scope-'));
+    const pending: Promise<unknown>[] = [];
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let ending = false;
+    onTestFinished(async () => {
+      ending = true;
+      release.resolve();
+      await Promise.allSettled(pending);
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const setup = createDemoStore({ dataRoot });
+    pending.push(setup);
+    const store = await setup;
+    if (ending) return;
     const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
+    const actorA = 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b';
+    const actorB = 'usr_00000000-0000-7a71-a8b1-dcc65a83481f';
+    const errorA = new Error('Actor A refused before an effect.');
+    const errorB = new Error('Actor B refused before an effect.');
+    const scope = {
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    const originalTurns = store.listThreadTurns(scope.workspaceId, scope.threadId);
     let executionCount = 0;
 
     const run = (actorId: string) =>
-      runIdempotentCommand({
+      runIdempotentCommand<{ id: string }>({
         command: 'task.start',
         execute: async () => {
           executionCount += 1;
-          await Promise.resolve();
-          return { id: testEntityId('tu', `turn_${actorId}`) };
+          if (actorId === actorA) {
+            entered.resolve();
+            await release.promise;
+            throw errorA;
+          }
+          throw errorB;
         },
         inflightCommands,
         input: {},
@@ -33,24 +62,38 @@ describe('workspace-transaction idempotent commands', () => {
         requestId: 'shared-request-id',
         responseId: (result) => result.id,
         responseKind: 'turn',
-        scope: {
-          actorId,
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
+        scope: { ...scope, actorId },
         store,
       });
 
-    await expect(
-      Promise.all([
-        run('usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'),
-        run('usr_00000000-0000-7a71-a8b1-dcc65a83481f'),
-      ])
-    ).resolves.toEqual([
-      { id: testEntityId('tu', 'turn_usr_00000000-0000-7e68-8ab1-8dcac1be1b5b') },
-      { id: testEntityId('tu', 'turn_usr_00000000-0000-7a71-a8b1-dcc65a83481f') },
+    const first = run(actorA);
+    pending.push(first);
+    const firstOutcome = Promise.allSettled([first]);
+    await Promise.race([
+      entered.promise,
+      firstOutcome.then(() => {
+        throw new Error('First command settled before its held callback.');
+      }),
     ]);
+    if (ending) return;
+    const second = run(actorB);
+    pending.push(second);
+    const [secondOutcome] = await Promise.allSettled([second]);
+    if (ending) return;
+    expect(secondOutcome?.status).toBe('rejected');
+    expect(secondOutcome?.status === 'rejected' && secondOutcome.reason).toBe(errorB);
     expect(executionCount).toBe(2);
+    release.resolve();
+    const [firstResult] = await firstOutcome;
+    if (ending) return;
+    expect(firstResult?.status).toBe('rejected');
+    expect(firstResult?.status === 'rejected' && firstResult.reason).toBe(errorA);
+    for (const actorId of [actorA, actorB]) {
+      expect(
+        store.getCommandRequest('task.start', 'shared-request-id', { ...scope, actorId })
+      ).toBeNull();
+    }
+    expect(store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(originalTurns);
   });
 
   it('preserves the original User receipt committed before model work without a later rewrite', async () => {
