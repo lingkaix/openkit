@@ -1,25 +1,44 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest, validateCanonicalLoad } from './runtime/pending-requests.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('workspace dashboard app API', () => {
   it('returns aggregate workspace status and default execution context', async () => {
-    const app = createApp({ store: await createDemoStore() });
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-dashboard-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
+    coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    for (const workspace of store.listWorkspaces()) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId: workspace.id,
+      });
+    }
+    const app = createApp({ store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -51,19 +70,35 @@ describe('workspace dashboard app API', () => {
   });
 
   it('counts providers from the runtime registry', async () => {
-    const app = createApp({
-      providerRegistry: new ProviderRegistry([
-        {
-          baseUrl: 'https://api.example.com/v1',
-          displayName: 'Example',
-          id: 'example',
-          kind: 'direct',
-          models: ['example-model'],
-          secretRef: 'env:EXAMPLE_API_KEY',
-        },
-      ]),
-      store: await createDemoStore(),
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-dashboard-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     });
+    const providerRegistry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Example',
+        id: 'example',
+        kind: 'direct',
+        models: ['example-model'],
+        secretRef: 'env:EXAMPLE_API_KEY',
+      },
+    ]);
+    const store = await createDemoStore({ dataRoot });
+    coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    for (const workspace of store.listWorkspaces()) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId: workspace.id,
+      });
+    }
+    const app = createApp({ providerRegistry, store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
