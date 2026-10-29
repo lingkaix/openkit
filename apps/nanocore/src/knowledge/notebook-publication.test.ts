@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -20,9 +21,18 @@ const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' 
 /** Real Git, existing Workspace Audit and existing receipts; current authorization stays a native caller duty. */
 function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-publisher-'));
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  // The empty Store adapter does not own the explicitly supplied Notebook receipt ledger.
+  const storeDataRoot = join(dataRoot, 'store');
+  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(storeDataRoot);
+    if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
-  const store = new FsStore();
+  const store = createTestStore({ dataRoot: storeDataRoot });
   const repositoryPath = join(dataRoot, 'notebook.git');
   const notebook = new KnowledgeNotebook({ repositoryPath });
   const initial = notebook.initialize({
@@ -34,11 +44,6 @@ function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
       authority: { kind: 'direct', instructionReference: 'creation:fixture' },
       sourceReferences: [],
     },
-  });
-  onTestFinished(async () => {
-    workspaceDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
   });
   const revalidate = vi.fn(() => ({
     scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -64,6 +69,7 @@ function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
   return {
     ...dependencies,
     dataRoot,
+    storeDataRoot,
     repositoryPath,
     initial,
     request,
@@ -178,9 +184,12 @@ describe('Notebook publication through existing Audit and command receipts', () 
       summary: 'Update human page',
     });
     expect(f.notebook.readRevision(updated.notebookRevision).files[path]).toBe(laterBytes);
-    expect(await publishWorkspaceNotebook({ ...f, command, store: new FsStore() }, input)).toEqual(
-      created
-    );
+    expect(
+      await publishWorkspaceNotebook(
+        { ...f, command, store: createTestStore({ dataRoot: f.storeDataRoot }) },
+        input
+      )
+    ).toEqual(created);
     expect(f.notebook.publishedRevision()).toBe(updated.notebookRevision);
     expect(f.notebook.readRevision(created.notebookRevision).files[path]).toBe(originalBytes);
     expect(
