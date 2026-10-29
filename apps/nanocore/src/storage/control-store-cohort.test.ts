@@ -305,27 +305,23 @@ describe('eligible native product cohorts', () => {
     const backing = new ArrayBuffer(remaining - cost + 1 - idGrowth);
     const filled = observe(read(new Uint8Array(backing, 0, 1)));
     const overflow = observe(read(new Uint8Array(1)));
-    let shutdownPosted = false;
-    const stopped = observe(f.client.shutdown());
+    let shutdownSettled = false;
+    const stopped = observe(
+      f.client.shutdown().finally(() => {
+        shutdownSettled = true;
+      })
+    );
     try {
-      shutdownPosted = await vi
-        .waitFor(
-          () =>
-            expect(f.post.mock.calls.some(([frame]) => frame.operation === 'shutdown')).toBe(true),
-          { timeout: 3000 }
-        )
-        .then(
-          () => true,
-          () => false
-        );
+      // DX84/92: shutdown must retain accepted work through preparation and FULL COMMIT.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(shutdownSettled).toBe(false);
       expect(f.replies(ids)).toEqual([]);
       expect(lane.reader.entries(lane.turn.id, 'item')).toEqual([]);
       release(2);
-      if (shutdownPosted) {
-        await f.wait(4);
-        expect(f.replies(ids)).toEqual([]);
-        expect(lane.reader.entries(lane.turn.id, 'item')).toEqual([]);
-      }
+      await f.wait(4);
+      expect(shutdownSettled).toBe(false);
+      expect(f.replies(ids)).toEqual([]);
+      expect(lane.reader.entries(lane.turn.id, 'item')).toEqual([]);
     } finally {
       release(2);
       release(5);
@@ -337,6 +333,7 @@ describe('eligible native product cohorts', () => {
       overflow,
       stopped,
     ]);
+    expect(f.post.mock.calls.some(([frame]) => frame.operation === 'shutdown')).toBe(true);
     // A failed shutdown has also settled. Give cleanup a fresh, unopened client lifetime.
     if (f.client.isClosed) getControlStoreWorkerClient();
     const items = await reopened(f);
@@ -356,7 +353,6 @@ describe('eligible native product cohorts', () => {
     );
     expect(Atomics.load(f.state, 8)).toBe(0);
     expect(items).toEqual([one.item, two.item]);
-    expect(shutdownPosted).toBe(true);
   });
 
   it.each([
