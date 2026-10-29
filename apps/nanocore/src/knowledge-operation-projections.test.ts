@@ -666,7 +666,10 @@ describe('Knowledge operation definition cutover', () => {
     }
   });
 
-  it('preserves foreign Source refusal, pinned restricted-content exclusion and bounded preparation and answer for a member and an eligible administrator', async () => {
+  it.each([
+    'a member',
+    'an eligible administrator',
+  ])('preserves foreign Source refusal, pinned restricted-content exclusion and bounded preparation and answer for %s', async (credential) => {
     const f = await fixture();
     try {
       const member = await projections(f);
@@ -717,118 +720,113 @@ describe('Knowledge operation definition cutover', () => {
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      for (const projectors of [member, await projections(f, administrator.secret)]) {
-        let sourceFailure: unknown;
-        for (const project of Object.values(projectors)) {
-          try {
-            await project('knowledge.source.read', {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              sourceId: registered.source.id,
-            });
-            throw new Error('Foreign Source unexpectedly exposed.');
-          } catch (error) {
-            expect(error).toMatchObject({
-              code: 'workspace_access_denied',
-              message: 'Knowledge source is unavailable.',
-            });
-            const view = {
-              code: (error as { code: string }).code,
-              message: (error as { message: string }).message,
-            };
-            sourceFailure ??= view;
-            expect(view).toEqual(sourceFailure);
-          }
-          for (const id of [
-            'knowledge.retrieval',
-            'knowledge.context.prepare',
-            'knowledge.answer',
-          ]) {
-            const beforeQuestion = new Set(
-              f.store
-                .listThreads(DEMO_WORKSPACE_ID)
-                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
-                .map((turn) => turn.id)
-            );
-            const result = await project(id, {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              query: 'audience budget baseline',
-              ...(id === 'knowledge.retrieval'
-                ? {
-                    pinnedReferences: [
-                      {
-                        scopeId: f.pageScopeId,
-                        objectId: pageId,
-                      },
-                    ],
-                  }
-                : {}),
-            });
-            expect(JSON.stringify(result)).not.toContain(title);
-            expect(JSON.stringify(result)).not.toContain(body);
-            if (id === 'knowledge.answer') {
-              expect(result).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
-              expect(
-                (result as schemas.OperationOutput<'knowledge.answer'>).uncertainty
-              ).toBeTruthy();
-              const runs = f.store
-                .listThreads(DEMO_WORKSPACE_ID)
-                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
-                .filter(
-                  (turn) => !beforeQuestion.has(turn.id) && turn.agentId === 'knowledge-manager'
-                );
-              expect(runs).toHaveLength(1);
-              const call = runs[0]!.items.find(
-                (item) => item.type === 'tool-call' && item.tool === 'knowledge.retrieval'
-              );
-              if (call?.type !== 'tool-call' || !call.result)
-                throw new Error('The Knowledge retrieval result was not retained.');
-              const search = JSON.parse(JSON.parse(call.result)[0].text);
-              const selection = search.sources.find(
-                (source: { source: string }) => source.source === 'workspace'
-              );
-              expect(selection.excluded).toContainEqual(
-                expect.objectContaining({
-                  reference: { scopeId: f.pageScopeId, objectId: pageId },
-                  contentDigest: null,
-                  sourceReferences: [],
-                  reason: 'sensitive_content',
-                })
-              );
-              // Native continuation can verify its safe selection without granting full raw-trace inspection.
-              expect(() =>
-                retrieval.assertKnowledgeRetrievalTraceReadable({
-                  dataRoot: f.dataRoot,
-                  workspaceId: DEMO_WORKSPACE_ID,
-                  access: {
-                    store: f.store,
-                    coreDb: f.coreDb,
-                    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-                    requestActor: {
-                      kind: 'local',
-                      userId: 'usr_00000000-0000-7000-8000-000000000001',
-                    },
-                  },
-                  retrievalTraceRef: RetrievalTraceReferenceSchema.parse(
-                    selection.retrievalTraceRef
-                  ),
-                })
-              ).toThrowError('Knowledge trace or source is unavailable.');
-            } else if (id === 'knowledge.retrieval')
-              expect(result).toMatchObject({
-                selected: [],
-                excluded: [
-                  {
-                    reference: {
+      const projectors = [member, await projections(f, administrator.secret)][
+        credential === 'a member' ? 0 : 1
+      ]!;
+      let sourceFailure: unknown;
+      for (const project of Object.values(projectors)) {
+        try {
+          await project('knowledge.source.read', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            sourceId: registered.source.id,
+          });
+          throw new Error('Foreign Source unexpectedly exposed.');
+        } catch (error) {
+          expect(error).toMatchObject({
+            code: 'workspace_access_denied',
+            message: 'Knowledge source is unavailable.',
+          });
+          const view = {
+            code: (error as { code: string }).code,
+            message: (error as { message: string }).message,
+          };
+          sourceFailure ??= view;
+          expect(view).toEqual(sourceFailure);
+        }
+        for (const id of ['knowledge.retrieval', 'knowledge.context.prepare', 'knowledge.answer']) {
+          const beforeQuestion = new Set(
+            f.store
+              .listThreads(DEMO_WORKSPACE_ID)
+              .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+              .map((turn) => turn.id)
+          );
+          const result = await project(id, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            query: 'audience budget baseline',
+            ...(id === 'knowledge.retrieval'
+              ? {
+                  pinnedReferences: [
+                    {
                       scopeId: f.pageScopeId,
                       objectId: pageId,
                     },
-                    contentDigest: null,
-                    reason: 'sensitive_content',
+                  ],
+                }
+              : {}),
+          });
+          expect(JSON.stringify(result)).not.toContain(title);
+          expect(JSON.stringify(result)).not.toContain(body);
+          if (id === 'knowledge.answer') {
+            expect(result).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
+            expect(
+              (result as schemas.OperationOutput<'knowledge.answer'>).uncertainty
+            ).toBeTruthy();
+            const runs = f.store
+              .listThreads(DEMO_WORKSPACE_ID)
+              .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+              .filter(
+                (turn) => !beforeQuestion.has(turn.id) && turn.agentId === 'knowledge-manager'
+              );
+            expect(runs).toHaveLength(1);
+            const call = runs[0]!.items.find(
+              (item) => item.type === 'tool-call' && item.tool === 'knowledge.retrieval'
+            );
+            if (call?.type !== 'tool-call' || !call.result)
+              throw new Error('The Knowledge retrieval result was not retained.');
+            const search = JSON.parse(JSON.parse(call.result)[0].text);
+            const selection = search.sources.find(
+              (source: { source: string }) => source.source === 'workspace'
+            );
+            expect(selection.excluded).toContainEqual(
+              expect.objectContaining({
+                reference: { scopeId: f.pageScopeId, objectId: pageId },
+                contentDigest: null,
+                sourceReferences: [],
+                reason: 'sensitive_content',
+              })
+            );
+            // Native continuation can verify its safe selection without granting full raw-trace inspection.
+            expect(() =>
+              retrieval.assertKnowledgeRetrievalTraceReadable({
+                dataRoot: f.dataRoot,
+                workspaceId: DEMO_WORKSPACE_ID,
+                access: {
+                  store: f.store,
+                  coreDb: f.coreDb,
+                  actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                  requestActor: {
+                    kind: 'local',
+                    userId: 'usr_00000000-0000-7000-8000-000000000001',
                   },
-                ],
-              });
-            else expect(result).toMatchObject({ selected: [] });
-          }
+                },
+                retrievalTraceRef: RetrievalTraceReferenceSchema.parse(selection.retrievalTraceRef),
+              })
+            ).toThrowError('Knowledge trace or source is unavailable.');
+          } else if (id === 'knowledge.retrieval')
+            expect(result).toMatchObject({
+              selected: [],
+              excluded: [
+                {
+                  reference: {
+                    scopeId: f.pageScopeId,
+                    objectId: pageId,
+                  },
+                  contentDigest: null,
+                  reason: 'sensitive_content',
+                },
+              ],
+            });
+          else expect(result).toMatchObject({ selected: [] });
         }
       }
     } finally {
