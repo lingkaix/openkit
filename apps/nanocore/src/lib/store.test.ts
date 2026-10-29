@@ -413,7 +413,13 @@ describe('FsStore persistence', () => {
   });
 
   it('uses an explicit Turn start timestamp without changing the default clock path', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -430,6 +436,11 @@ describe('FsStore persistence', () => {
       LOCAL_ACTOR
     );
     const afterDefault = Date.now();
+    // Complete this Turn before the same private Timeline admits its successor.
+    await store.completeTurn(defaultTurn.id, {
+      status: 'completed',
+      completedAt: new Date(afterDefault).toISOString(),
+    });
     const explicitStartedAt = '2026-07-18T03:00:00.000Z';
     const explicitTurn = await store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -537,7 +548,13 @@ describe('FsStore persistence', () => {
   });
 
   it('requires completed exact projections while preserving one historical v1 proof', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Artifact revision lineage workspace');
     const thread = await store.createThread(workspace.id, 'Artifact revision lineage thread');
     const producingTurn = await store.createTurn(
@@ -569,6 +586,11 @@ describe('FsStore persistence', () => {
       },
       createdAt,
       updatedAt: createdAt,
+    });
+    // Complete the producing Turn before admitting the next Turn in the same Thread.
+    await store.updateTurn(producingTurn.id, {
+      status: 'completed',
+      completedAt: createdAt,
     });
     const communicatingTurn = await store.createTurn(
       workspace.id,
@@ -1235,7 +1257,13 @@ describe('FsStore persistence', () => {
   });
 
   it('emits non-UUID completion and failure envelopes with one scoped protocol request id', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1249,12 +1277,6 @@ describe('FsStore persistence', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Complete projection',
-      LOCAL_ACTOR
-    );
-    const failureTurn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Fail projection',
       LOCAL_ACTOR
     );
     const otherTurn = await store.createTurn(
@@ -1284,15 +1306,29 @@ describe('FsStore persistence', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     );
-    const completedTurn = await store.updateTurn(completionTurn.id, {
-      completedAt: completionTurn.startedAt ?? new Date().toISOString(),
-      status: 'completed',
-    });
-    const failedTurn = await store.updateTurn(failureTurn.id, {
-      completedAt: failureTurn.startedAt ?? new Date().toISOString(),
-      error: { code: 'worker_governance_turn_failed', message: 'Worker execution failed.' },
-      status: 'failed',
-    });
+    const completedTurn = await store.completeTurn(
+      completionTurn.id,
+      {
+        completedAt: completionTurn.startedAt ?? new Date().toISOString(),
+        status: 'completed',
+      },
+      { requestId: commandId }
+    );
+    const failureTurn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Fail projection',
+      LOCAL_ACTOR
+    );
+    const failedTurn = await store.completeTurn(
+      failureTurn.id,
+      {
+        completedAt: failureTurn.startedAt ?? new Date().toISOString(),
+        error: { code: 'worker_governance_turn_failed', message: 'Worker execution failed.' },
+        status: 'failed',
+      },
+      { requestId: commandId }
+    );
 
     const completed = store.emitTurnEvent(
       completionTurn.id,
@@ -1316,10 +1352,14 @@ describe('FsStore persistence', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     );
-    const otherFailedTurn = await store.updateTurn(otherTurn.id, {
-      status: 'failed',
-      completedAt: otherTurn.startedAt!,
-    });
+    const otherFailedTurn = await store.completeTurn(
+      otherTurn.id,
+      {
+        status: 'failed',
+        completedAt: otherTurn.startedAt!,
+      },
+      { requestId: commandId }
+    );
     const otherScope = store.emitTurnEvent(
       otherTurn.id,
       await store.persistTurnEvent(otherTurn.id, {
@@ -1353,7 +1393,13 @@ describe('FsStore persistence', () => {
   });
 
   it('leaves a canonical protocol UUID request id unchanged on turn events', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1366,10 +1412,14 @@ describe('FsStore persistence', () => {
       LOCAL_ACTOR
     );
     const requestId = '0190f4c8-0000-7000-8000-000000000701';
-    const completedTurn = await store.updateTurn(turn.id, {
-      completedAt: turn.startedAt ?? new Date().toISOString(),
-      status: 'completed',
-    });
+    const completedTurn = await store.completeTurn(
+      turn.id,
+      {
+        completedAt: turn.startedAt ?? new Date().toISOString(),
+        status: 'completed',
+      },
+      { requestId }
+    );
 
     const emitted = store.emitTurnEvent(
       turn.id,
@@ -1387,7 +1437,13 @@ describe('FsStore persistence', () => {
   });
 
   it('still rejects blank turn event request ids', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1399,14 +1455,11 @@ describe('FsStore persistence', () => {
       'Reject blank identity',
       LOCAL_ACTOR
     );
-    const completedTurn = await store.updateTurn(turn.id, {
-      completedAt: turn.startedAt ?? new Date().toISOString(),
-      status: 'completed',
-    });
+    // This parser input keeps the live Turn's lineage; no terminal fact is published.
     const event = {
       data: {
         stopReason: 'completed' as const,
-        turn: completedTurn,
+        turn,
         type: 'turn-completed' as const,
       },
       event: 'turn.completed' as const,
