@@ -177,6 +177,55 @@ describe('addressed retained Item required semantics', () => {
 });
 
 describe('retained native metadata reader lifetime', () => {
+  it('bounds readers across matching and nonmatching Workspaces and releases them through owned close and shutdown', async () => {
+    const f = await fixture();
+    const workspaces = [
+      f.workspace,
+      await f.store.createWorkspace('First nonmatching Workspace'),
+      await f.store.createWorkspace('Second nonmatching Workspace'),
+    ];
+    await f.store.createThread(workspaces[1]!.id, 'Nonmatching native scope');
+    const paths = workspaces.map(
+      (workspace) =>
+        nativeProductScope(f.root, { kind: 'workspace', workspaceId: workspace.id }).path
+    );
+    // Exclude setup readers through the existing public eviction owner.
+    for (const workspace of workspaces) f.store.evictWorkspace(workspace.id);
+    expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual([]);
+
+    // Workspace reader lifetime: nonmatching scopes share the same finite one-reader bound.
+    for (let lookup = 0; lookup < 3; lookup++) {
+      expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+      });
+      const retained = observation.readers.filter((sqlite) => sqlite.open);
+      expect(retained.length).toBeLessThanOrEqual(paths.length);
+      expect(new Set(retained.map((sqlite) => sqlite.name))).toEqual(new Set(paths));
+    }
+
+    const retained = observation.readers.filter((sqlite) => sqlite.open);
+    const closingPath = paths[1]!;
+    const target = retained.find((sqlite) => sqlite.name === closingPath)!;
+    // The sibling's acknowledged Thread publication opened this exact native scope.
+    await getControlStoreWorkerClient().close(`workspace:${closingPath}`);
+    expect(target.open).toBe(false);
+    expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual(
+      retained.filter((sqlite) => sqlite !== target)
+    );
+
+    // Read-only discovery can reopen the closed scope without leaking its predecessor.
+    expect(f.store.getTurnLineage(f.turn.id)).toEqual({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+    });
+    const reopened = observation.readers.filter((sqlite) => sqlite.open);
+    expect(reopened.length).toBeLessThanOrEqual(paths.length);
+    expect(new Set(reopened.map((sqlite) => sqlite.name))).toEqual(new Set(paths));
+    await shutdownControlStoreWorkerClient();
+    expect(observation.readers.filter((sqlite) => sqlite.open)).toEqual([]);
+  });
+
   it('reuses the Workspace reader for public opaque lookups and sees later native acknowledgements', async () => {
     const f = await fixture();
     const peer = new FsStore({ dataRoot: f.root });
