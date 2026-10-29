@@ -20,7 +20,10 @@ import {
   recordCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { ControlAdmissionSchema } from './control-store-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  closeWorkspaceProductReadHandles,
+  openControlStoreProductReadHandle,
+} from './control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { bindWorkspaceSqlite, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -164,7 +167,13 @@ describe('kind-named command response pointers', () => {
   )('validates %s as its owned %s kind in the codec and retained reader', async (kind, entityKind) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-kinds-'));
     const store = createTestStore({ dataRoot });
-    const memory = new FsStore();
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(sourceRoot);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    });
+    const sourceStore = createTestStore({ dataRoot: sourceRoot });
     const workspace = await store.createWorkspace('Receipt kind boundary');
     await shutdownControlStoreWorkerClient();
     const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -199,8 +208,8 @@ describe('kind-named command response pointers', () => {
       ]) {
         const response = { kind, id };
         expect(() => normalizeCommandRequestResponse(input.command, response)).toThrow();
-        expect(() => memory.recordCommandRequest({ ...input, response })).toThrow();
-        expect(memory.listCommandRequests()).toEqual([]);
+        expect(() => sourceStore.recordCommandRequest({ ...input, response })).toThrow();
+        expect(sourceStore.listCommandRequests()).toEqual([]);
         expect(() =>
           store.recordCommandRequest({ ...input, requestId: `bad-${kind}`, response })
         ).toThrow();
@@ -236,7 +245,13 @@ describe('kind-named command response pointers', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-unknown-kind-'));
     const store = createTestStore({ dataRoot: root });
     const workspace = await store.createWorkspace('Closed receipt kind');
-    const memory = new FsStore();
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(sourceRoot);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    });
+    const sourceStore = createTestStore({ dataRoot: sourceRoot });
     const input = {
       command: 'task.start' as const,
       requestId: 'closed-kind',
@@ -261,10 +276,10 @@ describe('kind-named command response pointers', () => {
       expect(() => normalizeCommandRequestResponse(input.command, untrusted)).toThrow(
         'kind is unsupported'
       );
-      expect(() => memory.recordCommandRequest({ ...input, response: untrusted })).toThrow(
+      expect(() => sourceStore.recordCommandRequest({ ...input, response: untrusted })).toThrow(
         'kind is unsupported'
       );
-      expect(memory.listCommandRequests()).toEqual([]);
+      expect(sourceStore.listCommandRequests()).toEqual([]);
       const rows = () =>
         db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
       const before = rows();
@@ -291,9 +306,15 @@ describe('kind-named command response pointers', () => {
 
   it('validates a Core response pointer before creating its database or directories', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-before-owner-'));
-    const memory = new FsStore();
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(sourceRoot);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    });
+    const sourceStore = createTestStore({ dataRoot: sourceRoot });
     const userId = testEntityId('usr', 'receipt-disabled-user');
-    const record = memory.recordCommandRequest({
+    const record = sourceStore.recordCommandRequest({
       command: 'user.disable',
       requestId: 'disable-pointer',
       scope: { coreId: 'server', actorId: userId, targetUserId: userId },
