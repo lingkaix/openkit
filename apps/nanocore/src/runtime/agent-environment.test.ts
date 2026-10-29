@@ -20,7 +20,7 @@ import {
   ScriptTarget,
   transpileModule,
 } from 'typescript';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import {
@@ -209,7 +209,12 @@ async function createTurnFixture(
   triggerActor: ActorRef = USER_TRIGGER_ACTOR,
   serverAdminTokenId?: string
 ) {
-  const store = await createDemoStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'agent-environment-turn-store-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',

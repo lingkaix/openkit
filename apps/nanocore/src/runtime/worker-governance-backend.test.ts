@@ -11,7 +11,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import {
   importWorkspaceSkill,
@@ -324,7 +324,12 @@ describe('NanoHost worker governance helpers', () => {
 
 /** Creates one canonical NanoHost AEP from the shared authored-manifest fixture. */
 async function createNanoHostPackage(): Promise<AgentEnvironmentPackage> {
-  const store = await createDemoStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'worker-governance-package-store-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',

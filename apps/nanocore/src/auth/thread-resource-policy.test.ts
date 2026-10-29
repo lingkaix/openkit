@@ -1,12 +1,21 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { allocateEntityId, ThreadSchema } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { createTestStore } from '../test-support/store.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from './thread-visibility.js';
 
 describe('current managed Thread audience', () => {
   it('uses the loaded boundary for discovery, source reads and revocation, including administrators', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'managed-thread-audience-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Managed audience');
     const managed = await store.createThread(workspace.id, 'Restricted');
     const ordinary = await store.createThread(workspace.id, 'Ordinary');
@@ -36,7 +45,12 @@ describe('current managed Thread audience', () => {
 });
 
 it('does not copy a managed source into an unmanaged or different audience', async () => {
-  const store = new FsStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'thread-source-audience-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Source boundary');
   const source = await store.createThread(workspace.id, 'Managed source');
   const destination = await store.createThread(workspace.id, 'Broad destination');
@@ -67,7 +81,12 @@ it('does not copy a managed source into an unmanaged or different audience', asy
 });
 
 it('never interprets a Server Thread as Workspace audience authority', () => {
-  const store = new FsStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-thread-audience-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = createTestStore({ dataRoot });
   const timestamp = '2026-10-19T00:00:00.000Z';
   const thread = ThreadSchema.parse({
     id: allocateEntityId('th'),

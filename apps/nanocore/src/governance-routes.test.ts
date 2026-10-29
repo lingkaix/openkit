@@ -21,18 +21,20 @@ it.each([
 ] as const)('bounds %s retained evidence errors without changing source bytes', async (variant) => {
   const marker = 'ROW_SECRET_X9';
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-error-'));
-  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(db);
   const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
-  const app = createApp({ coreDb, dataRoot, store: await createDemoStore() });
+  let db: ReturnType<typeof openWorkspaceDb> | undefined;
   try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    applyScopedMigrations(db);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const app = createApp({ coreDb, dataRoot, store });
     recordWorkspaceEvidenceBundle(db, {
       id: 'evb_probe',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -90,7 +92,8 @@ it.each([
       db.sqlite.prepare('SELECT raw_evidence_refs_json AS bytes FROM evidence_bundles').get()
     ).toEqual({ bytes });
   } finally {
-    db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    db?.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -103,12 +106,13 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store: await createDemoStore() });
+    const app = createApp({ coreDb, dataRoot, store });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       displayName: 'Worker GitHub token',
@@ -147,6 +151,7 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       items: [plan],
     });
   } finally {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
