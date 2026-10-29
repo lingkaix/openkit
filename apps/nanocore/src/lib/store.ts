@@ -3809,11 +3809,15 @@ export class FsStore {
           assertCanonicalDirectory(dirname(path));
           assertCanonicalRegularFile(path);
         }
-        reader = openControlStoreProductReadHandle(path, owner);
+        reader =
+          owner.kind === 'workspace'
+            ? getWorkspaceProductReadHandle(path, owner)
+            : openControlStoreProductReadHandle(path, owner);
         if (owner.kind === 'workspace' && !reader.get('workspace', owner.workspaceId))
           throw new Error('The native Workspace identity is unavailable.');
       } catch (error) {
-        reader?.close();
+        if (owner.kind === 'workspace') closeWorkspaceProductReadHandles(path);
+        else reader?.close();
         if (owner.kind === 'server') throw error;
         refuseScope(this.dataRoot, {
           scope: 'workspace',
@@ -3855,8 +3859,11 @@ export class FsStore {
             ...('turn_id' in row ? { turnId: row.turn_id as string } : {}),
           };
         }
+      } catch (error) {
+        if (owner.kind === 'workspace') closeWorkspaceProductReadHandles(path);
+        throw error;
       } finally {
-        reader.close();
+        if (owner.kind === 'server') reader.close();
       }
     }
     return result;
