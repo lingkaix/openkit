@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, verifyAndMigrateExistingScopedDatabases } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -193,7 +194,13 @@ async function seedMcpBootItem(input: {
 
 describe('post-terminal write admission', () => {
   it('rejects a plain new Item write against a terminal Turn', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
 
     await expect(
@@ -204,7 +211,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('gates updateTurn, createItem, emitTurnEvent, and updateItem after terminal', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const created = await store.createItem(
       statusItem(turn, 'it_00000000-0000-72b3-a0f0-5a7ff4b63cfb', 'Display'),
@@ -232,7 +245,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('uses deep equality for already-decided publication and field-limited equality for display refresh', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const decided = await store.createItem(
       statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary'),
@@ -289,7 +308,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('admits identical, missing, and conflicting publications for terminalizeGovernedWorkerTurn', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store);
     await store.createAgentSession({
       agentId: 'agent_codex_host',
@@ -515,7 +540,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('admits identical, missing, and conflicting Task-to-Goal explanation Items', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const item = statusItem(
       turn,
@@ -537,7 +568,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('admits turn-output Artifact reference on a terminal Turn only with configuration-apply admission', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const body = '{"configuration":"outcome"}';
     const digest = `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`;
@@ -588,7 +625,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('admits the configuration-apply marker Item pending delayed user input', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const marker = await store.createItem(
       {
@@ -789,7 +832,13 @@ describe('post-terminal write admission', () => {
   });
 
   it('rejects a brand-new turn-output Artifact against a sealed Turn', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-terminal-admission-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const body = 'new after terminal';
     const digest = `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`;
