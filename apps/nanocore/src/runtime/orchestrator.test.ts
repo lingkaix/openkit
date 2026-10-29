@@ -595,17 +595,25 @@ describe('startTurn orchestrator', () => {
   });
 
   it('records resolved setup when a workspace setup ledger is provided', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-store-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const ledgerRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-ledger-'));
+    let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+    onTestFinished(() => {
+      if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+      rmSync(ledgerRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {});
-    const workspaceDb = openWorkspaceDb(
-      mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-ledger-')),
-      'usr_00000000-0000-7000-8000-000000000001',
-      'ws_00000000-0000-7000-8000-000000000001'
-    );
-    applyScopedMigrations(workspaceDb);
+    workspaceDb = openWorkspaceDb(ledgerRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
+      applyScopedMigrations(workspaceDb);
       const handle = await startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',
@@ -829,7 +837,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('passes scheduler lease lineage into the executor start context', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-lease-lineage-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
