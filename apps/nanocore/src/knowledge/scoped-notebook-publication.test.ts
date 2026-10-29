@@ -60,7 +60,7 @@ function fixture() {
     tokenId: verified.tokenId,
     tokenScope: verified.scope,
   };
-  const store = new FsStore();
+  const store = new FsStore({ dataRoot });
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
   const common = { coreDb, store, runtimeConfigManager, inflightCommands: new WeakMap() };
   const user = { ...common, actor, target: { kind: 'user' } as const, userDb };
@@ -295,7 +295,11 @@ describe('internal direct User and Server Notebook publication', () => {
     );
     expect(
       await publishScopedNotebook(
-        { ...input, store: new FsStore(), inflightCommands: new WeakMap() },
+        {
+          ...input,
+          store: new FsStore({ dataRoot: input.coreDb.dataRoot }),
+          inflightCommands: new WeakMap(),
+        },
         request
       )
     ).toEqual(first);
@@ -530,7 +534,10 @@ describe('internal direct User and Server Notebook publication', () => {
     expect(counts(db)).toEqual({ audit: 4, receipts: 0 });
     db.sqlite.exec('DROP TRIGGER refuse_receipt');
     await expect(
-      publishScopedNotebook({ ...input, store: new FsStore() }, request)
+      publishScopedNotebook(
+        { ...input, store: new FsStore({ dataRoot: input.coreDb.dataRoot }) },
+        request
+      )
     ).rejects.toMatchObject({ code: 'recovery_required' });
     expect(notebook(input).publishedRevision()).toBe(published);
     expect(counts(db)).toEqual({ audit: 4, receipts: 0 });

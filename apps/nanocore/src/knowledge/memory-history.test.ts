@@ -52,7 +52,7 @@ function fixture() {
     coreDb,
     userDb,
     actor: { kind: 'session' as const, userId },
-    store: new FsStore(),
+    store: new FsStore({ dataRoot }),
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     inflightCommands: new WeakMap(),
   };

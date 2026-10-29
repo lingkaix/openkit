@@ -66,7 +66,7 @@ function fixture() {
     coreDb,
     userDb,
     actor: { kind: 'session' as const, userId: alice },
-    store: new FsStore(),
+    store: new FsStore({ dataRoot }),
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     inflightCommands: new WeakMap(),
   };
@@ -280,7 +280,11 @@ describe('explicit native self Memory', () => {
     expect(readMemoryPage(f.input, request.pageId)?.content).toBe(edit.content);
     expect(
       await saveMemoryPage(
-        { ...f.input, store: new FsStore(), inflightCommands: new WeakMap() },
+        {
+          ...f.input,
+          store: new FsStore({ dataRoot: f.input.coreDb.dataRoot }),
+          inflightCommands: new WeakMap(),
+        },
         request
       )
     ).toEqual(saved);
@@ -400,7 +404,11 @@ describe('explicit native self Memory', () => {
     ).toThrow();
     const retained = recordMemorySuppression(f.input, suppression);
     expect(recordMemorySuppression(f.input, suppression)).toEqual(retained);
-    const reopened = { ...f.input, store: new FsStore(), inflightCommands: new WeakMap() };
+    const reopened = {
+      ...f.input,
+      store: new FsStore({ dataRoot: f.input.coreDb.dataRoot }),
+      inflightCommands: new WeakMap(),
+    };
     expect(listMemoryPages(reopened).pages).toEqual([]);
     expect(readMemoryPage(reopened, request.pageId)).toBeNull();
     await expect(saveMemoryPage(reopened, request)).rejects.toThrow('Memory page unavailable.');
