@@ -18,7 +18,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBetterAuth } from '../auth/better-auth.js';
@@ -26,6 +26,7 @@ import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createLightApp, createRecord } from '../generative-kernel/commands.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
@@ -95,7 +96,11 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './workspace-backup-bundle.js';
 import { abandonCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
-import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
+import {
+  nativeProductScope,
+  readNativeProductEntries,
+  readNativeTurnHistory,
+} from './workspace-file-records.js';
 import { endRecoveryAdmission, readRecoveryAdmission } from './workspace-recovery-admissions.js';
 
 const namespaceSyncFault = vi.hoisted(() => ({
@@ -3150,6 +3155,122 @@ describe('C-a independent sealed generations', () => {
   it('preserves exact mutable and Light App cuts, reuses immutable objects and survives source deletion', async () => {
     const f = await fixture();
     const sourceDeploymentId = readDataRootLayoutMarker(f.dataRoot).deploymentId;
+    const memberEmail = 'capture-member@example.invalid';
+    const auth = createBetterAuth(f.coreDb, { env: {} });
+    const { user: member } = await auth.api.signUpEmail({
+      body: { email: memberEmail, name: 'Captured member', password: randomUUID() },
+    });
+    const { user: unrelated } = await auth.api.signUpEmail({
+      body: {
+        email: 'capture-unrelated@example.invalid',
+        name: 'Unrelated account',
+        password: randomUUID(),
+      },
+    });
+    const invitation = f.coreDb.sqlite.transaction(() =>
+      createWorkspaceInvitation({
+        authorization: workspaceMembershipDecisionFixture(f.coreDb, f.ownerId, workspaceId),
+        coreDb: f.coreDb,
+        workspaceId,
+        inviterUserId: f.ownerId,
+        inviteeEmail: memberEmail,
+      })
+    )();
+    expect(invitation.kind).toBe('created');
+    if (invitation.kind !== 'created') throw new Error('Owner invitation was not created.');
+    const admitted = f.coreDb.sqlite.transaction(() =>
+      acceptWorkspaceInvitation({
+        coreDb: f.coreDb,
+        workspaceId,
+        invitationId: invitation.invitation.invitationId,
+        inviteeUserId: member.id,
+        expectedRevision: invitation.invitation.revision,
+      })
+    )();
+    expect(admitted.kind).toBe('accepted');
+    const expectedAccounts = {
+      ownerId: f.ownerId,
+      memberIds: [f.ownerId, member.id].sort(),
+      privateAudienceRefs: [member.id],
+    };
+    const nativeThread = await f.store.createThread(
+      workspaceId,
+      'Private captured file bodies',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: member.id,
+      }
+    );
+    const nativeTurn = await f.store.createTurn(
+      workspaceId,
+      nativeThread.id,
+      'Keep native file bodies.',
+      { kind: 'user', id: member.id }
+    );
+    const nativeItem = await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: nativeTurn.owner,
+      threadId: nativeTurn.threadId,
+      turnId: nativeTurn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Exact multibyte native é😀\n"\\'.repeat(5_000),
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    });
+    const nativeEvent = await f.store.persistTurnEvent(nativeTurn.id, {
+      event: 'item.completed',
+      workspaceId,
+      threadId: nativeTurn.threadId,
+      turnId: nativeTurn.id,
+      requestId: null,
+      data: { type: 'item-completed', itemId: nativeItem.id, item: nativeItem },
+    });
+    const completedNative = await f.store.completeTurn(nativeTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const sourceScope = nativeProductScope(f.dataRoot, nativeTurn.owner);
+    const sourceReader = openControlStoreProductReadHandle(sourceScope.path, nativeTurn.owner);
+    let expectedNative: {
+      kind: 'item' | 'event';
+      value: typeof nativeItem | typeof nativeEvent;
+      row: ReturnType<typeof sourceReader.entries>[number];
+      body: Buffer;
+      sha256: string;
+    }[];
+    try {
+      expectedNative = [
+        { kind: 'item' as const, value: nativeItem },
+        { kind: 'event' as const, value: nativeEvent },
+      ].map(({ kind, value }) => {
+        const row = sourceReader
+          .entries(nativeTurn.id, kind)
+          .find((row) =>
+            kind === 'item' ? row.id === nativeItem.id : row.sequence === nativeEvent.sequence
+          )!;
+        const body = Buffer.from(JSON.stringify(writeRetainedV1(value)));
+        expect(row).toBeDefined();
+        expect(body.length).toBeGreaterThan(65_536);
+        const reference = row.content.reference;
+        expect('representation' in reference ? reference.representation : 'file').toBe('file');
+        if (!('locator' in reference)) throw new Error('Expected file-backed native body.');
+        expect(readFileSync(join(sourceScope.contentMount.root, reference.locator.path))).toEqual(
+          body
+        );
+        return { kind, value, row, body, sha256: digest(body) };
+      });
+    } finally {
+      sourceReader.close();
+    }
+    const expectedKnowledgeIds = [
+      readDefaultKnowledgeBaseId({
+        dataRoot: f.dataRoot,
+        scope: { kind: 'workspace', workspaceId },
+      }),
+    ];
     const authored = Buffer.from('Exact binary Source\0\xff');
     await captureWorkspaceSourceFixture({
       ...f,
@@ -3212,6 +3333,18 @@ describe('C-a independent sealed generations', () => {
         hash.startsWith('sha256:') &&
         /^\/knowledge\/notebook\.git\/(?:HEAD$|refs\/|packed-refs$)/.test(path)
     );
+    const firstWorkspaceReader = openControlStoreProductReadHandle(
+      sourceScope.path,
+      nativeTurn.owner
+    );
+    let firstWorkspaceRevision: NonNullable<
+      ReturnType<typeof firstWorkspaceReader.get>
+    >['revision'];
+    try {
+      firstWorkspaceRevision = firstWorkspaceReader.get('workspace', workspaceId)!.revision;
+    } finally {
+      firstWorkspaceReader.close();
+    }
     const first = await createWorkspaceBackup(f.input());
     expect(first.disposition).toBe('sealed');
     expect(first.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
@@ -3265,6 +3398,18 @@ describe('C-a independent sealed generations', () => {
         /^\/knowledge\/notebook\.git\/(?:HEAD$|refs\/|packed-refs$)/.test(path)
     );
     expect(secondGitHeads).not.toEqual(firstGitHeads);
+    const secondWorkspaceReader = openControlStoreProductReadHandle(
+      sourceScope.path,
+      nativeTurn.owner
+    );
+    let secondWorkspaceRevision: NonNullable<
+      ReturnType<typeof secondWorkspaceReader.get>
+    >['revision'];
+    try {
+      secondWorkspaceRevision = secondWorkspaceReader.get('workspace', workspaceId)!.revision;
+    } finally {
+      secondWorkspaceReader.close();
+    }
     const second = await createWorkspaceBackup(f.input());
     expect(second.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
     expect(second.report.sourceDeploymentId).toBe(sourceDeploymentId);
@@ -3332,10 +3477,56 @@ describe('C-a independent sealed generations', () => {
     for (const generation of [first, second])
       await f.read(generation.manifest.backupId, async (bundle) => {
         expect(bundle.manifest.sourceDeploymentId).toBe(sourceDeploymentId);
+        expect(bundle.manifest.accounts).toEqual(expectedAccounts);
+        expect(bundle.manifest.accounts.memberIds).not.toContain(unrelated.id);
+        expect(bundle.manifest.accounts.privateAudienceRefs).not.toContain(unrelated.id);
+        expect(bundle.manifest.knowledgeBaseIds).toEqual(expectedKnowledgeIds);
+        expect(bundle.manifest.capturedRevision).toBe(
+          generation === first ? firstWorkspaceRevision : secondWorkspaceRevision
+        );
+        expect(generation.report.knowledgeBaseIds).toEqual(expectedKnowledgeIds);
+        expect(generation.report.capturedRevision).toBe(bundle.manifest.capturedRevision);
+        const replayRoot = join(f.root, `verified-file-replay-${generation.manifest.backupId}`);
         for (const entry of bundle.manifest.inventory) {
           const actual = await bytes(bundle, entry.path);
           expect(actual.length).toBe(entry.bytes);
           expect(digest(actual)).toBe(entry.sha256);
+          const destination = join(replayRoot, 'workspaces', workspaceId, entry.path);
+          mkdirSync(dirname(destination), { recursive: true });
+          writeFileSync(destination, actual, { mode: entry.mode });
+        }
+        const replayScope = nativeProductScope(replayRoot, nativeTurn.owner);
+        expect(readNativeTurnHistory(replayScope, nativeTurn.id)?.turn).toEqual(completedNative);
+        const replayReader = openControlStoreProductReadHandle(replayScope.path, nativeTurn.owner);
+        try {
+          for (const expected of expectedNative) {
+            expect(
+              readNativeProductEntries(replayScope, nativeTurn.id, expected.kind).find(
+                (row) => row.sequence === expected.row.sequence
+              )
+            ).toEqual({
+              sequence: expected.row.sequence,
+              id: expected.row.id,
+              revision: expected.row.revision,
+              value: JSON.parse(expected.body.toString('utf8')),
+            });
+            const retained = replayReader
+              .entries(nativeTurn.id, expected.kind)
+              .find((row) => row.sequence === expected.row.sequence)!;
+            expect(retained.content).toEqual(expected.row.content);
+            const reference = retained.content.reference;
+            expect('representation' in reference ? reference.representation : 'file').toBe('file');
+            if (!('locator' in reference)) throw new Error('Lost captured native file reference.');
+            const original = readFileSync(
+              join(replayScope.contentMount.root, reference.locator.path)
+            );
+            expect(original).toEqual(expected.body);
+            expect(original.length).toBe(retained.content.byteLength);
+            expect(digest(original)).toBe(expected.sha256);
+            expect(reference.contentDigest).toBe(expected.sha256);
+          }
+        } finally {
+          replayReader.close();
         }
       });
   }, 120_000);
@@ -3602,6 +3793,58 @@ describe('C-a independent sealed generations', () => {
     );
   }, 120_000);
 
+  it.each([
+    'authority',
+    'capacity',
+  ] as const)('refuses initial %s before freezing or accepting a capture', async (fault) => {
+    const f = await fixture();
+    const sibling = await f.store.createWorkspace('Preflight refusal sibling');
+    const input = f.input();
+    const before = tree(f.workspaceRoot);
+    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    const freeze = vi.spyOn(f.mutationAdmission, 'tryFreeze');
+    const pending = createWorkspaceBackup({
+      ...input,
+      ...(fault === 'capacity'
+        ? {
+            admission: new FileStorageAdmission(
+              f.root,
+              () => 0n,
+              () => 0n
+            ),
+          }
+        : {}),
+      source: {
+        ...input.source,
+        ...(fault === 'authority'
+          ? {
+              currentAuthority: () => {
+                throw new Error('Initial current authority denied.');
+              },
+            }
+          : {}),
+      },
+    });
+    if (fault === 'authority')
+      await expect(pending).rejects.toThrow('Initial current authority denied.');
+    else await expect(pending).rejects.toMatchObject({ code: 'capacity-exceeded' });
+    expect(freeze).not.toHaveBeenCalled();
+    expect(tree(f.workspaceRoot)).toEqual(before);
+    expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    try {
+      expect(inspectCapture(db, workspaceId, input.backupId)).toBeNull();
+    } finally {
+      db.sqlite.close();
+    }
+    expect((await f.store.createThread(sibling.id, 'Sibling remains admitted')).owner).toEqual({
+      kind: 'workspace',
+      workspaceId: sibling.id,
+    });
+    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+  });
+
   it('rechecks current authority after awaited database preparation before sealing', async () => {
     const f = await fixture();
     const input = f.input();
@@ -3622,6 +3865,111 @@ describe('C-a independent sealed generations', () => {
     } finally {
       intercept.mockRestore();
     }
+  });
+
+  it('does not seal after an incomplete mutable cut write fails', async () => {
+    const f = await fixture();
+    const sourcePath = join(f.workspaceRoot, 'files', 'positive-partial-cut.bin');
+    mkdirSync(dirname(sourcePath), { recursive: true });
+    const authored = Buffer.from('An exact mutable cut short-write specimen. '.repeat(100));
+    writeFileSync(sourcePath, authored, { mode: 0o640 });
+    const predecessor = await createWorkspaceBackup(f.input());
+    const input = f.input();
+    const before = tree(f.workspaceRoot);
+    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    const partials: { written: number; prefixHex: string }[] = [];
+    captureWorkerProbe.observe = (message) => {
+      if (message.kind === 'positive-partial-cut')
+        partials.push(message as typeof message & { written: number; prefixHex: string });
+    };
+    captureWorkerProbe.script = `
+      const openCut = fs.promises.open;
+      let selectedCut = false;
+      fs.promises.open = async function(...args) {
+        const file = await openCut.apply(this, args);
+        const path = fs.realpathSync('/proc/self/fd/' + file.fd);
+        if (!selectedCut && path.endsWith('/files/positive-partial-cut.bin') && path !== ${JSON.stringify(sourcePath)}) {
+          selectedCut = true;
+          const write = file.write.bind(file);
+          let writes = 0;
+          let written = 0;
+          file.write = async function(buffer, offset, length, ...rest) {
+            if (writes++ === 0) {
+              const result = await write(buffer, offset, Math.min(length, 7), ...rest);
+              written = result.bytesWritten;
+              return result;
+            }
+            observe('positive-partial-cut', { written, prefixHex: fs.readFileSync(path).toString('hex') });
+            throw new Error('Injected mutable cut failure after a positive short write.');
+          };
+        }
+        return file;
+      };
+    `;
+    const available = 1_000_000_000n;
+    const admission = new FileStorageAdmission(
+      f.root,
+      () => 0n,
+      () => available
+    );
+    try {
+      await expect(createWorkspaceBackup({ ...input, admission })).rejects.toThrow();
+    } finally {
+      captureWorkerProbe.script = undefined;
+      captureWorkerProbe.observe = undefined;
+    }
+    expect(partials).toHaveLength(1);
+    expect(partials[0]!.written).toBeGreaterThan(0);
+    expect(partials[0]!.written).toBeLessThan(authored.length);
+    expect(Buffer.from(partials[0]!.prefixHex, 'hex')).toEqual(
+      authored.subarray(0, partials[0]!.written)
+    );
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    expect(readFileSync(sourcePath)).toEqual(authored);
+    expect(lstatSync(sourcePath).mode & 0o777).toBe(0o640);
+    const after = tree(f.workspaceRoot);
+    for (const path of [
+      '/db/workspace.sqlite',
+      '/db/workspace.sqlite-wal',
+      '/db/workspace.sqlite-shm',
+    ]) {
+      delete before[path];
+      delete after[path];
+    }
+    expect(after).toEqual(before);
+    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+      const capture = row as { capture_id: string; workspace_id: string };
+      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+    });
+    expect(afterRows).toEqual(beforeRows);
+    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    try {
+      expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({
+        captureId: input.backupId,
+        state: 'active',
+      });
+    } finally {
+      db.sqlite.close();
+    }
+    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
+    );
+    expect(hold).not.toBeNull();
+    (await hold!)();
+    const readmitted = admission.reserve({
+      stagingBytes: available,
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    });
+    readmitted.release();
+    await f.read(predecessor.manifest.backupId, async (bundle) => {
+      expect(bundle.manifestDigest).toBe(predecessor.report.manifestDigest);
+      for (const entry of bundle.manifest.inventory)
+        expect(digest(await bytes(bundle, entry.path))).toBe(entry.sha256);
+    });
   });
 
   it('keeps manual unfinished capture inspectable after native-copy failure and cold reopen', async () => {
