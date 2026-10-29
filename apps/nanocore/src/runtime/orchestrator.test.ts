@@ -161,7 +161,13 @@ describe('startTurn orchestrator', () => {
     'agent_pi',
     'agent_fourth_runtime',
   ])('starts opaque manifest agent %s without a duplicate Store catalog entry', async (agentId) => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest(agentId);
     const handle = await startTurn({
@@ -183,7 +189,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('selects an agent before creating and starting a turn', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
@@ -321,7 +333,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('applies a per-turn model override only to the explicitly selected Agent', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const providerRegistry = localProviderRegistry();
     const codexManifest = {
@@ -534,7 +552,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('resolves setup for a selected authored agent config without changing turn execution', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {});
     const handle = await startTurn({
@@ -610,7 +634,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('passes authored backend requirements into the executor start context', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {
       requiredCapabilities: ['dynamic-network-policy'],
@@ -642,7 +672,13 @@ describe('startTurn orchestrator', () => {
   });
 
   it('passes authored workspace source refs into the executor start context', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const turnExecutor = new RecordingTurnExecutor();
     const catalog = parseWorkspaceDataSourceCatalog({
       schemaVersion: 1,
