@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,7 +7,7 @@ import {
   AgentEnvironmentPackageSchema,
   type MaterializedWorkspaceRoot,
 } from '@openkit/config-schema';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -61,6 +61,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
@@ -75,6 +76,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 // The real client retry owner uses timers/promises; route tests control only its clock.
@@ -658,7 +660,14 @@ describe('worker control routes', () => {
   });
 
   it('keeps worker route planes ahead of product API middleware', () => {
-    const routes = createApp()
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-route-inventory-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const routes = createApp({ store })
       .routes.filter(({ path }) => path.startsWith('/api/worker-') || path === '/api/*')
       .map(({ method, path }) => `${method} ${path}`);
 

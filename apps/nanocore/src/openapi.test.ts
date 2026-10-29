@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CapabilityUsageResponseSchema,
@@ -23,7 +24,7 @@ import {
 } from '@openkit/protocol';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { z } from 'zod';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import {
@@ -34,8 +35,11 @@ import {
   registerAppApiRoute,
 } from './openapi.js';
 import { validateAppOpenApiDocument } from './openapi-validation.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { createTestStore } from './test-support/store.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())
@@ -1663,7 +1667,14 @@ describe('app api openapi projection', () => {
   });
 
   it('keeps live public app api routes and openapi operations aligned', () => {
-    const app = createApp();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const app = createApp({ store });
     const unsupportedMethodRoutes = app.routes
       .filter(
         ({ method, path }) =>
@@ -1735,7 +1746,14 @@ describe('app api openapi projection', () => {
   });
 
   it('keeps the direct Core and Gateway access inventory aligned with live routes', () => {
-    const liveOperationKeys = createApp()
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const liveOperationKeys = createApp({ store })
       .routes.filter(
         ({ method, path }) =>
           OPENAPI_ROUTE_METHOD_SET.has(method) &&
@@ -2048,7 +2066,14 @@ describe('app api openapi projection', () => {
   });
 
   it('binds every registered handler to its documented operation route', () => {
-    const app = createApp();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const app = createApp({ store });
     const document = createAppOpenApiDocument();
     const documentedRouteByOperationId = new Map<string, string>();
 
@@ -2131,7 +2156,14 @@ describe('app api openapi projection', () => {
   });
 
   it('preserves the characterized handler registration order', () => {
-    expect(getRegisteredAppApiOperationIds(createApp())).toEqual([
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    expect(getRegisteredAppApiOperationIds(createApp({ store }))).toEqual([
       'workspace.archive-download',
       'workspace.archive-import-dry-run',
       'workspace.archive-import',
