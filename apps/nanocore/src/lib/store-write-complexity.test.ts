@@ -5,11 +5,19 @@ import { performance } from 'node:perf_hooks';
 import { allocateEntityId, ItemSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { nativeProductScope, readNativeProductEntries } from '../storage/workspace-file-records.js';
-import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
+import {
+  observeRetainedItemBodies,
+  readRetainedBodyBytes,
+} from '../test-support/retained-body-observation.js';
 import { createTestStore } from '../test-support/store.js';
-import { FsStore, StoreRecordNotFoundError } from './store.js';
+import {
+  DISPLAY_PROJECTION_REFRESH_ADMISSION,
+  FsStore,
+  StoreRecordNotFoundError,
+} from './store.js';
 
 const observation = vi.hoisted(() => ({
   active: undefined as { root: string; metadata: number } | undefined,
@@ -209,6 +217,83 @@ describe('Store native write complexity', () => {
     expect(long.inlineBodies).toBeLessThanOrEqual(short.inlineBodies);
     expect(long.fileBodies).toBeLessThanOrEqual(short.fileBodies);
     expect(long.metadata).toBeLessThanOrEqual(short.metadata);
+  });
+
+  it('keeps a fresh terminal display append flat while preserving exact retained history', async () => {
+    const f = await fixture();
+    const samples = [];
+    for (const count of [1, 32]) {
+      const h = await history(f, count, count === 1 ? 1 : 2);
+      const { items: _items, ...terminal } = await f.store.completeTurn(h.turn.id, {
+        status: 'completed',
+        completedAt: h.turn.startedAt!,
+      });
+      expect(terminal.status).toBe('completed');
+      // Qualify actual old inline and file bodies before measuring the new publication.
+      expectHistoryBodies(new FsStore({ dataRoot: f.root }), h);
+      const scope = nativeProductScope(f.root, h.turn.owner);
+      const readBodies = () => {
+        const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+        try {
+          return reader.entries(h.turn.id, 'item').map((row) => ({
+            sequence: row.sequence,
+            id: row.id,
+            revision: row.revision,
+            bytes: readRetainedBodyBytes(scope.contentMount.root, row.content),
+          }));
+        } finally {
+          reader.close();
+        }
+      };
+      const prior = readBodies();
+      const item = ItemSchema.parse({
+        id: allocateEntityId('it'),
+        owner: h.turn.owner,
+        threadId: h.turn.threadId,
+        turnId: h.turn.id,
+        type: 'status',
+        status: 'completed',
+        actor,
+        level: 'info',
+        title: 'Result',
+        summary: 'Fresh display after completion.',
+        createdAt: h.turn.startedAt!,
+        completedAt: h.turn.startedAt!,
+      });
+      const active = { root: f.root, metadata: 0 };
+      const observed = { itemIds: new Set(h.expected.map((value) => value.id)), bodies: 0 };
+      const observer = observeRetainedItemBodies(observed);
+      observation.active = active;
+      let returned: Item;
+      try {
+        returned = await f.store.createItem(item, DISPLAY_PROJECTION_REFRESH_ADMISSION);
+      } finally {
+        observation.active = undefined;
+        observer.restore();
+      }
+      expect(returned).toEqual(item);
+      h.expected.push(item);
+      samples.push({
+        metadata: active.metadata,
+        priorBodies: observed.bodies,
+        ...observer.counts(),
+      });
+      const acknowledged = readBodies();
+      expect(acknowledged.slice(0, -1)).toEqual(prior);
+      expect(acknowledged.map((row) => [row.sequence, row.id, row.revision])).toEqual(
+        h.expected.map((value, index) => [index + 1, value.id, 1])
+      );
+      // Storage's Item log and FULL-ACK rules retain these exact bytes after owner close.
+      await shutdownControlStoreWorkerClient();
+      const cold = new FsStore({ dataRoot: f.root });
+      expectHistoryBodies(cold, h);
+      expect(cold.getTurnMetadata(f.workspace.id, h.turn.threadId, h.turn.id)).toEqual(terminal);
+      expect(readBodies()).toEqual(acknowledged);
+    }
+    expect(samples[1]!.priorBodies).toBeLessThanOrEqual(samples[0]!.priorBodies);
+    expect(samples[1]!.inlineBodies).toBeLessThanOrEqual(samples[0]!.inlineBodies);
+    expect(samples[1]!.fileBodies).toBeLessThanOrEqual(samples[0]!.fileBodies);
+    expect(samples[1]!.metadata).toBeLessThanOrEqual(samples[0]!.metadata);
   });
 });
 

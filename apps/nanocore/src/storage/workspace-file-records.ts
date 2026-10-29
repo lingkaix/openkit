@@ -1070,8 +1070,8 @@ export function readNativeTurnWriteHead(
   }
   if (!snapshot) return undefined;
   const metadata = StoredTurnV1Schema.parse(snapshot.record);
-  // Exact sealed replay compares the complete retained outcome, rather than an append head.
-  if (isSealedTurnTerminal(metadata.status)) {
+  // Sealed replay retains full history; a new addressed Item needs only fresh append heads.
+  if (isSealedTurnTerminal(metadata.status) && (!itemId || entry !== undefined)) {
     const history = readNativeTurnHistory(scope, turnId);
     return history
       ? {
