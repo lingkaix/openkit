@@ -28,6 +28,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
 import type { TurnExecutor } from './runtime/types.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import {
@@ -957,7 +958,13 @@ describe('quick chat app API', () => {
   });
 
   it('scopes existing Worker targets to this conversation and preserves truthful availability', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-worker-targets-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const workerSetup = createTestAgentSetup({
       logicalModelId: 'quick-chat',
       privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
@@ -1092,7 +1099,13 @@ describe('quick chat app API', () => {
   });
 
   it('rejects an administration Thread at the ordinary conversation entry', async () => {
-    const store = await createDemoStore();
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-administration-entry-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: storeRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private administration',
@@ -1125,6 +1138,12 @@ describe('quick chat app API', () => {
   });
 
   it('falls back only to the configured default Worker when Assistant is unavailable', async () => {
+    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-default-worker-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(storeRoot);
+      rmSync(storeRoot, { recursive: true, force: true });
+    });
     const workerSetup = createTestAgentSetup({
       logicalModelId: 'quick-chat',
       privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
@@ -1138,7 +1157,7 @@ describe('quick chat app API', () => {
         profiles: [],
       },
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
-      store: await createDemoStore(),
+      store: await createDemoStore({ dataRoot: storeRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
     });
 
