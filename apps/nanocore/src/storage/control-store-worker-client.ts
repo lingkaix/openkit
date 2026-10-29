@@ -1196,10 +1196,18 @@ class ControlStoreWorkerClient {
         );
       } else if (!deferPost) this.post(entry);
     });
-    // Shutdown drains every admitted request, including posted ACKs and unposted open waits.
-    this.operations.set(result, undefined);
-    const release = () => this.operations.delete(result);
-    void result.then(release, release);
+    // Drain ordinary request settlement without promoting its caller-owned error to shutdown.
+    // Opening-dependent requests retain their original shutdown failure reporting.
+    const operation =
+      ready === undefined
+        ? result.then(
+            () => undefined,
+            () => undefined
+          )
+        : result;
+    this.operations.set(operation, undefined);
+    const release = () => this.operations.delete(operation);
+    void operation.then(release, release);
     return result;
   }
 

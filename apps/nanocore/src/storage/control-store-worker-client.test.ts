@@ -1304,6 +1304,33 @@ describe('control writer parent admission', () => {
     expect(count(f.path)).toBe(3);
   });
 
+  it('joins an ordinary native refusal on shutdown without promoting its caller error', async () => {
+    const f = await fixture();
+    const request = f.client.write('user', [
+      { mode: 'run', sql: 'INSERT INTO missing_shutdown_table VALUES (1)', parameters: [] },
+    ]);
+    let refusal: unknown;
+    // Observe the original rejection; keep the caller's promise and native error unchanged.
+    void request.catch((error: unknown) => {
+      refusal = error;
+    });
+    // The open ACK is complete; Main cannot handle this request's reply before this stack ends.
+    const shutdown = f.client.shutdown();
+    try {
+      await expect(shutdown).resolves.toBeUndefined();
+      expect(refusal).toMatchObject({
+        name: 'ControlStoreWorkerError',
+        code: 'sql-failed',
+        commit: 'not-committed',
+      });
+      await expect(request).rejects.toBe(refusal);
+      expect(f.client.isClosed).toBe(true);
+    } finally {
+      // This shutdown has settled; do not await its result again in afterEach.
+      if (f.client.isClosed) client = undefined;
+    }
+  });
+
   it('holds backup copying until native acknowledgement and captures the complete Item closure', async () => {
     const root = mkdtempSync(join(tmpdir(), 'control-backup-'));
     roots.push(root, `${root}.backups`);
