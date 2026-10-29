@@ -1,137 +1,21 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { operationToolName } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
-import {
-  createInMemoryRuntimeConfigSnapshot,
-  createRuntimeConfigManager,
-} from '../config/runtime-config.js';
 import type { AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import * as knowledgeManager from '../internal-agents/knowledge-manager-agent.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
-import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
-import { createTestGatewayConfig } from '../test-support/agent-environment.js';
-import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from '../test-support/demo-store.js';
-import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
+import { openWorkspaceDb } from '../storage/db.js';
+import { DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { call, calls, fixture, latestToolOutput } from '../test-support/knowledge-result.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { createTestStore } from '../test-support/store.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
-
-/** Real operation admission, notebooks and runtime; only Provider transport is replaced. */
-async function fixture(enableMaintenance = false) {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'km-result-api-'));
-  const store = createTestStore({ dataRoot });
-  await seedDemoWorkspace(store);
-  const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: userId });
-  const maintenanceGateway = createTestGatewayConfig();
-  // Match the real-KM transport fixture's compaction boundary when supplying native settings.
-  maintenanceGateway.logicalModels[0]!.contextManagement = [
-    { type: 'compaction', compactThreshold: 32_000 },
-  ];
-  const result = createKnowledgeAnswerApp(
-    {
-      dataRoot,
-      store,
-      coreDb,
-      ...(enableMaintenance
-        ? {
-            runtimeConfigManager: createRuntimeConfigManager({
-              dataRoot,
-              initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-                dataRoot,
-                gatewayConfig: maintenanceGateway,
-                providerRegistry: new ProviderRegistry([
-                  {
-                    id: 'agent-openrouter',
-                    displayName: 'Test inference provider',
-                    kind: 'custom',
-                    baseUrl: 'https://provider.invalid/v1',
-                    models: ['openai/gpt-5.2'],
-                    modelMetadata: {
-                      'openai/gpt-5.2': {
-                        tool_call: true,
-                        limit: { context: 64_000, output: 2_000 },
-                      },
-                    },
-                  },
-                ]),
-                workspaceConfigs: [
-                  {
-                    workspaceId: DEMO_WORKSPACE_ID,
-                    path: join(
-                      dataRoot,
-                      'workspaces',
-                      DEMO_WORKSPACE_ID,
-                      'config',
-                      'workspace.jsonc'
-                    ),
-                    config: WorkspaceConfigSchema.parse({
-                      schemaVersion: 1,
-                      workspace: {
-                        name: 'Link repair fixture',
-                        knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
-                      },
-                    }),
-                  },
-                ],
-              }),
-            }),
-          }
-        : {}),
-    },
-    []
-  );
-  onTestFinished(async () => {
-    coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
-  return { ...result, store, coreDb, dataRoot, userId };
-}
-
-/** Submits a real model-visible Tool call through the Gateway projection. */
-function call(name: string, value: unknown) {
-  return {
-    id: randomUUID(),
-    object: 'response',
-    output: [
-      {
-        type: 'function_call',
-        call_id: randomUUID(),
-        name: operationToolName(name),
-        arguments: JSON.stringify(value),
-      },
-    ],
-  };
-}
-
-/** Reads only delivered feedback; the dispatcher's private context contains a live database. */
-function latestToolOutput(f: ReturnType<typeof fixture>): string {
-  const [, request] = f.createResponses.mock.calls.at(-1) as unknown as Parameters<
-    LLMGatewayProviderDispatcher['createResponses']
-  >;
-  const input = request.input as Array<{ type?: string; output?: string }>;
-  const latest = input.findLast((entry) => entry.type === 'function_call_output');
-  expect(latest?.output).toEqual(expect.any(String));
-  return latest!.output!;
-}
 
 /** Deliberately invalid final text, matching the real Provider probe. */
 function markdown() {
@@ -408,71 +292,6 @@ it('organizes the initial root index around an existing human fact through the r
   ]);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
 }, 120_000);
-
-// The real KM loop must retain safe owner feedback even when the optional process sink fails.
-it.each([
-  false,
-  true,
-])('exposes a safe notebook Tool failure when the log sink throws=%s', async (sinkThrows) => {
-  const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
-  const contentMarker = 'UNPUBLISHED-CONTENT-MARKER';
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
-    if (sinkThrows) throw new Error('Optional diagnostic sink unavailable.');
-  });
-  onTestFinished(() => warn.mockRestore());
-  let step = 0;
-  let feedback = '';
-  f.createResponses.mockImplementation(async () => {
-    if (++step === 1)
-      return call('knowledge.notebook.update', { summary: contentMarker + 'x'.repeat(4096) });
-    feedback = latestToolOutput(f);
-    // Feedback has reached the next actual model request; no final-answer round trip is needed.
-    throw new Error('The deterministic feedback probe is complete.');
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      { workspaceId: DEMO_WORKSPACE_ID },
-      {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          instruction: 'Inspect the admitted notebook.',
-        }),
-      }
-    )
-  );
-  expect(response.status).toBe(200);
-  expect(feedback).toContain('invalid_request');
-  expect(feedback).not.toContain('The Tool failed without a safe result.');
-  expect(feedback).not.toContain(contentMarker);
-  expect(feedback).not.toContain(f.dataRoot);
-  const diagnostics = warn.mock.calls.flatMap((args) =>
-    args.filter((arg) => typeof arg === 'string').map((arg) => JSON.parse(arg))
-  );
-  expect(diagnostics).toContainEqual(
-    expect.objectContaining({
-      code: 'knowledge_notebook_tool_failed',
-      operation: 'knowledge.notebook.update',
-      exceptionClass: 'NotebookError',
-      errorCode: 'invalid_request',
-    })
-  );
-  expect(JSON.stringify(diagnostics)).not.toContain(contentMarker);
-  expect(JSON.stringify(diagnostics)).not.toContain(f.dataRoot);
-  expect(JSON.stringify(diagnostics)).not.toContain('stack');
-  expect(notebook.publishedRevision()).toBe(before);
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
-});
-
-/** Native calls in one Provider response retain their ordinary sequential execution. */
-function calls(entries: Array<[string, unknown]>) {
-  const first = call(entries[0]![0], entries[0]![1]);
-  return { ...first, output: entries.flatMap(([name, value]) => call(name, value).output) };
-}
 
 /** Observes raw isError before transcript projection, while running every native Tool and KM loop. */
 function observeNotebookTools() {
@@ -767,124 +586,6 @@ it('makes the actual script path refusal actionable with exact native feedback',
       'Writable Page files use bundle-relative lowercase .md paths under the Notebook root. Original Sources and omitted base members are read-only. There are no script, scratch or non-Markdown files. mkdir, remove, copy and move use the same path rule. Correct the path, then submit the accepted pages with knowledge.notebook.update once the synthesis is ready.',
   });
 }, 120_000);
-
-it('keeps exception text and paths out of model and process failure diagnostics', async () => {
-  const f = await fixture();
-  const marker = 'PRIVATE-EXCEPTION-CONTENT';
-  const prepare = vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementation(() => {
-    throw new TypeError(`${marker} ${f.dataRoot}`);
-  });
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  onTestFinished(() => {
-    prepare.mockRestore();
-    warn.mockRestore();
-  });
-  let feedback = '';
-  f.createResponses.mockImplementation(async () => {
-    if (f.createResponses.mock.calls.length === 1)
-      return calls([
-        [
-          'knowledge.notebook-workspace.update',
-          { script: "printf '\\nSynthetic overview.\\n' >> index.md" },
-        ],
-        ['knowledge.notebook.update', { summary: 'Submit the synthetic overview.' }],
-      ]);
-    feedback = latestToolOutput(f);
-    throw new Error('The deterministic exception probe is complete.');
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      {
-        workspaceId: DEMO_WORKSPACE_ID,
-      },
-      {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          instruction: 'Curate the synthetic overview.',
-        }),
-      }
-    )
-  );
-  expect(response.status).toBe(200);
-  expect(prepare).toHaveBeenCalled();
-  expect(feedback).toContain('notebook_tool_failed');
-  const diagnostics = warn.mock.calls.flatMap((args) =>
-    args.filter((arg) => typeof arg === 'string').map((arg) => JSON.parse(arg))
-  );
-  expect(diagnostics).toContainEqual(
-    expect.objectContaining({
-      code: 'knowledge_notebook_tool_failed',
-      operation: 'knowledge.notebook.update',
-      exceptionClass: 'TypeError',
-      errorCode: 'notebook_tool_failed',
-    })
-  );
-  for (const text of [feedback, JSON.stringify(diagnostics)]) {
-    expect(text).not.toContain(marker);
-    expect(text).not.toContain(f.dataRoot);
-    expect(text).not.toContain('stack');
-  }
-});
-
-it('makes the actual Claim confidence refusal actionable without publishing', async () => {
-  const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
-  const content = updateOkfFrontmatter({
-    path: 'claim.md',
-    content: serializeKnowledgePageFixture(
-      {
-        title: 'Synthetic claim',
-        content: 'UNPUBLISHED-CLAIM-CONTENT',
-        createdAt: '2026-10-20T00:00:00.000Z',
-        updatedAt: '2026-10-20T00:00:00.000Z',
-      },
-      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
-    ),
-    updates: { type: 'Claim' },
-  });
-  const script = `cat > claim.md <<'PAGE'\n${content}PAGE\n`;
-  let feedback = '';
-  f.createResponses.mockImplementation(async () => {
-    if (f.createResponses.mock.calls.length === 1)
-      return calls([
-        ['knowledge.notebook-workspace.update', { script }],
-        ['knowledge.notebook.update', { summary: 'Submit the synthetic candidate.' }],
-      ]);
-    feedback = latestToolOutput(f);
-    throw new Error('The deterministic refusal probe is complete.');
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      {
-        workspaceId: DEMO_WORKSPACE_ID,
-      },
-      {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          instruction: 'Curate the synthetic candidate.',
-        }),
-      }
-    )
-  );
-  expect(response.status).toBe(200);
-  expect(feedback).toContain('scope_schema.invalid_confidence');
-  expect(feedback).toContain('finite number from zero through one');
-  // Diagnostic floor RED 2: preserve both native schema codes without adding the fallback.
-  expect(JSON.parse(feedback).diagnostics).toEqual([
-    'notebook.invalid_page',
-    'scope_schema.invalid_confidence',
-  ]);
-  expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
-  expect(feedback).not.toContain('UNPUBLISHED-CLAIM-CONTENT');
-  expect(notebook.publishedRevision()).toBe(before);
-  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
-});
 
 it('corrects Claim confidence before result submission through the real KM Tools', async () => {
   const f = await fixture();
