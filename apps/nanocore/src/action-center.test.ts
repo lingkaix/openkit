@@ -20,6 +20,7 @@ import {
   updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -410,7 +411,13 @@ describe('action center app API', () => {
 
   it('rejects a missing workspace without creating its canonical directory', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceRoot = join(
       coreDb.dataRoot,
       'workspaces',
@@ -429,6 +436,7 @@ describe('action center app API', () => {
       expect(response.status).toBe(403);
       expect(existsSync(workspaceRoot)).toBe(false);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1347,7 +1355,13 @@ describe('action center app API', () => {
 
   it('projects scheduler admissions into the unified action center', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const queuedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Queued scheduler turn'
@@ -1451,13 +1465,20 @@ describe('action center app API', () => {
         ]),
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
   it('projects Workspace admissions across authenticated trigger actors', async () => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const shared = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Shared other-user admission'
@@ -1492,6 +1513,7 @@ describe('action center app API', () => {
         'scheduler-admission:queue_other_user_action_center'
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
