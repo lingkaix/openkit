@@ -4,12 +4,14 @@ import { join } from 'node:path';
 import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
 import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 
 import { createDemoStore } from '../test-support/demo-store.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   captureCoverageBindingFromOpenKitConfig,
   createRuntimeConfigManager,
@@ -198,6 +200,191 @@ function writeWorkspaceMcpServers(dataRoot: string, workspaceId: string, body: s
 }
 
 describe('runtime config loading and reload planning', () => {
+  // Backup §Same-Deployment Restore: target admission must preserve unrelated live authority.
+  it('reloads only recovered Workspace configuration while its freeze and quarantine remain closed', async () => {
+    const dataRoot = createDataRoot();
+    const target = 'ws_00000000-0000-7000-8000-000000000001';
+    const sibling = 'ws_00000000-0000-7000-8000-000000000002';
+    const store = await createDemoStore({ dataRoot });
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeGatewayConfig(dataRoot);
+    writeInternalRoleProfiles(dataRoot);
+    writeAgentConfig(dataRoot, 'Loaded Agent');
+    writeUserConfig(dataRoot);
+    for (const workspaceId of [target, sibling]) {
+      writeWorkspaceConfig(
+        dataRoot,
+        workspaceId,
+        '{"schemaVersion":1,"workspace":{"name":"Before"}}'
+      );
+      writeWorkspaceDataSources(dataRoot, workspaceId, '{"schemaVersion":1,"sources":[]}');
+      writeWorkspaceMcpServers(dataRoot, workspaceId, '{"schemaVersion":1,"servers":[]}');
+    }
+    const manager = createRuntimeConfigManager({ dataRoot, captureCoverage: store });
+    writeProviderConfig(dataRoot, 'openai/gpt-5.2');
+    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect(manager.status().pendingRestart.length).toBeGreaterThan(0);
+    const before = manager.current();
+    const status = manager.status();
+    const capture = store.getLiveCaptureCoverage();
+    writeWorkspaceConfig(dataRoot, target, '{"schemaVersion":1,"workspace":{"name":"Restored"}}');
+    writeWorkspaceDataSources(
+      dataRoot,
+      target,
+      JSON.stringify({
+        schemaVersion: 1,
+        sources: [
+          {
+            id: 'restored-repo',
+            kind: 'git',
+            displayName: 'Restored repository',
+            locator: { url: 'https://example.com/restored.git' },
+            access: 'read-only',
+            sensitivity: 'internal',
+            allowedSlotKinds: ['worktree'],
+            status: 'active',
+          },
+        ],
+      })
+    );
+    writeWorkspaceMcpServers(
+      dataRoot,
+      target,
+      JSON.stringify({
+        schemaVersion: 1,
+        servers: [
+          {
+            id: 'echo',
+            enabled: false,
+            allowedTools: ['echo'],
+            credentialBindings: [],
+            schemaPolicy: 'tracking',
+            timeoutMs: 30_000,
+            transport: { kind: 'stdio', command: 'node', args: ['fixtures/echo.mjs'] },
+          },
+        ],
+      })
+    );
+    writeServerConfig(dataRoot, '{ invalid unrelated Server');
+    writeWorkspaceConfig(dataRoot, sibling, '{ invalid unrelated Workspace');
+    writeFileSync(join(dataRoot, 'config', 'agents', 'runtime.agent.jsonc'), '{ invalid Agent');
+    const gate = new WorkspaceMutationAdmission();
+    const frozen = gate.tryFreeze(target, () => []);
+    if (frozen.status !== 'frozen') throw new Error('Expected the target freeze.');
+    refuseScope(dataRoot, { scope: 'workspace', id: target, check: 'recovery' });
+    const after = manager.reloadRecoveredWorkspace(target, gate, frozen);
+    expect(manager.current()).toBe(after);
+    expect(after.version).toBe(before.version + 1);
+    expect(after.contentHash).not.toBe(before.contentHash);
+    expect(
+      after.workspaceConfigs.find((entry) => entry.workspaceId === target)?.config.workspace.name
+    ).toBe('Restored');
+    expect(
+      after.workspaceDataSourceCatalogs.find((entry) => entry.workspaceId === target)?.catalog
+        .sources[0]?.id
+    ).toBe('restored-repo');
+    expect(
+      after.workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === target)?.catalog
+        .servers[0]?.enabled
+    ).toBe(false);
+    for (const key of [
+      'openKitConfig',
+      'providerRegistry',
+      'modelCatalog',
+      'providerDiagnostics',
+      'gatewayConfig',
+      'internalRoleProfiles',
+      'agentManifests',
+      'userConfigs',
+      'sources',
+    ] as const) {
+      expect(after[key]).toBe(before[key]);
+    }
+    for (const key of [
+      'workspaceConfigs',
+      'workspaceDataSourceCatalogs',
+      'workspaceMcpServerCatalogs',
+    ] as const) {
+      expect(after[key].find((entry) => entry.workspaceId === sibling)).toBe(
+        before[key].find((entry) => entry.workspaceId === sibling)
+      );
+    }
+    expect(manager.status().pendingRestart).toEqual(status.pendingRestart);
+    expect(manager.status().lastReload).toEqual(status.lastReload);
+    expect(manager.status().lastFailedReload).toEqual(status.lastFailedReload);
+    expect(store.getLiveCaptureCoverage()).toEqual(capture);
+    expect(gate.ownsFreeze(target, frozen)).toBe(true);
+    expect(gate.enterLatePublisher(target, 'worker-turn-closeout')).toBeNull();
+    expect(isScopeAdmitted(dataRoot, 'workspace', target)).toBe(false);
+    frozen.release();
+  });
+
+  it('retains the exact loaded snapshot when recovered Workspace input is invalid or required input is missing', () => {
+    const dataRoot = createDataRoot();
+    const target = 'ws_00000000-0000-7000-8000-000000000001';
+    writeWorkspaceConfig(dataRoot, target, '{"schemaVersion":1,"workspace":{"name":"Before"}}');
+    writeWorkspaceDataSources(dataRoot, target, '{"schemaVersion":1,"sources":[]}');
+    writeWorkspaceMcpServers(dataRoot, target, '{"schemaVersion":1,"servers":[]}');
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const before = manager.current();
+    const gate = new WorkspaceMutationAdmission();
+    const frozen = gate.tryFreeze(target, () => []);
+    if (frozen.status !== 'frozen') throw new Error('Expected the target freeze.');
+    for (const relativePath of [
+      'config/workspace.jsonc',
+      'config/data-sources.jsonc',
+      'catalog/catalog.json',
+    ]) {
+      const path = join(dataRoot, 'workspaces', target, relativePath);
+      const bytes = readFileSync(path);
+      writeFileSync(path, '{ invalid recovered input');
+      expect(() => manager.reloadRecoveredWorkspace(target, gate, frozen)).toThrow();
+      expect(manager.current()).toBe(before);
+      writeFileSync(path, bytes);
+    }
+    rmSync(join(dataRoot, 'workspaces', target, 'config', 'workspace.jsonc'));
+    expect(() => manager.reloadRecoveredWorkspace(target, gate, frozen)).toThrow();
+    expect(manager.current()).toBe(before);
+    frozen.release();
+  });
+
+  it('removes absent optional target entries only and rejects foreign or stale recovery freezes', () => {
+    const dataRoot = createDataRoot();
+    const target = 'ws_00000000-0000-7000-8000-000000000001';
+    const sibling = 'ws_00000000-0000-7000-8000-000000000002';
+    for (const workspaceId of [target, sibling]) {
+      writeWorkspaceConfig(
+        dataRoot,
+        workspaceId,
+        '{"schemaVersion":1,"workspace":{"name":"Loaded"}}'
+      );
+      writeWorkspaceDataSources(dataRoot, workspaceId, '{"schemaVersion":1,"sources":[]}');
+      writeWorkspaceMcpServers(dataRoot, workspaceId, '{"schemaVersion":1,"servers":[]}');
+    }
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const before = manager.current();
+    const gate = new WorkspaceMutationAdmission();
+    const foreignGate = new WorkspaceMutationAdmission();
+    const frozen = gate.tryFreeze(target, () => []);
+    const foreign = foreignGate.tryFreeze(target, () => []);
+    if (frozen.status !== 'frozen' || foreign.status !== 'frozen')
+      throw new Error('Expected exact freezes.');
+    expect(() => manager.reloadRecoveredWorkspace(target, gate, foreign)).toThrow();
+    expect(() => manager.reloadRecoveredWorkspace(sibling, gate, frozen)).toThrow();
+    expect(manager.current()).toBe(before);
+    rmSync(join(dataRoot, 'workspaces', target, 'config', 'data-sources.jsonc'));
+    rmSync(join(dataRoot, 'workspaces', target, 'catalog', 'catalog.json'));
+    const after = manager.reloadRecoveredWorkspace(target, gate, frozen);
+    for (const key of ['workspaceDataSourceCatalogs', 'workspaceMcpServerCatalogs'] as const) {
+      expect(after[key].map((entry) => entry.workspaceId)).toEqual([sibling]);
+      expect(after[key][0]).toBe(before[key].find((entry) => entry.workspaceId === sibling));
+    }
+    frozen.release();
+    expect(() => manager.reloadRecoveredWorkspace(target, gate, frozen)).toThrow();
+    expect(manager.current()).toBe(after);
+    foreign.release();
+  });
+
   it('reloads fresh shipped templates without credentials with exactly the authored tiers and routes', () => {
     const dataRoot = createDataRoot();
     ensureConfigTemplateSurface(dataRoot);

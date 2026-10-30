@@ -4,6 +4,8 @@ This directory owns NanoCore-specific configuration discovery, loading, preceden
 
 ## Boundaries
 
+- Recovery can reload only the frozen target's Workspace configuration, data-source catalog and effective MCP catalog through the existing manager. It validates all target inputs before replacing that target's entries; unrelated loaded objects, diagnostics, restart decisions and capture coverage stay intact. Missing required or invalid target input keeps the exact prior snapshot. This internal seam neither opens quarantine nor activates a restore operation.
+
 - Keep environment, mode, bind-host, data-root, server, workspace, agent, and provider configuration loading here.
 - Load Server resources and fallbacks, shared Workspace composition, and User preferences as distinct owners; resolve explicit selection, User, Workspace, then Server without treating Server supply as a Workspace ceiling.
 - Keep `gateway.jsonc`, `internal-role-profiles.jsonc`, `providers/*.provider.jsonc`, `agents/*.agent.jsonc`, `workspaces/*/config/workspace.jsonc`, `workspaces/*/config/data-sources.jsonc`, `workspaces/*/catalog/catalog.json`, and `users/*/config/user.jsonc` distinct in snapshots and diagnostics.

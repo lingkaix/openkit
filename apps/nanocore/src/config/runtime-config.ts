@@ -23,7 +23,12 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { canonicalJsonText, compareCodeUnits, readRetainedV1 } from '@openkit/protocol';
+import {
+  canonicalJsonText,
+  compareCodeUnits,
+  readRetainedV1,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -41,6 +46,10 @@ import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
 import { loadModelCatalog } from './model-catalog.js';
@@ -272,6 +281,12 @@ interface RuntimeConfigSnapshotInput {
 export interface RuntimeConfigManager {
   /** Returns the active runtime config snapshot. */
   current(): RuntimeConfigSnapshot;
+  /** Validates and replaces only a restored target while its exact recovery freeze remains closed. */
+  reloadRecoveredWorkspace(
+    workspaceId: string,
+    admission: WorkspaceMutationAdmission,
+    freeze: WorkspaceFrozenAdmission
+  ): RuntimeConfigSnapshot;
   /** Reloads runtime config from the configured data root. */
   reload(input: RuntimeConfigReloadRequest): RuntimeConfigReloadResponse;
   /** Returns redacted runtime config status. */
@@ -510,6 +525,52 @@ export function createRuntimeConfigManager(
 
   return {
     current: () => current,
+    reloadRecoveredWorkspace: (workspaceId, admission, freeze) => {
+      WorkspaceIdSchema.parse(workspaceId);
+      if (!admission.ownsFreeze(workspaceId, freeze))
+        throw new Error('Workspace recovery freeze is not current.');
+      const dataRoot = requireDataRoot(options.dataRoot);
+      const diagnostics: RuntimeConfigDiagnostic[] = [];
+      const configs = loadWorkspaceConfigs(dataRoot, diagnostics, workspaceId);
+      if (configs.length !== 1) throw new Error('Restored Workspace configuration is unavailable.');
+      const dataSources = loadWorkspaceDataSourceCatalogs(dataRoot, diagnostics, workspaceId);
+      const mcpServers = loadWorkspaceMcpServerCatalogs(dataRoot, workspaceId);
+      const sources = new Set([
+        `DATA_ROOT/workspaces/${workspaceId}/config/workspace.jsonc`,
+        `DATA_ROOT/workspaces/${workspaceId}/config/data-sources.jsonc`,
+        `DATA_ROOT/workspaces/${workspaceId}/catalog/catalog.json`,
+      ]);
+      const next = createRuntimeConfigSnapshot({
+        ...current,
+        dataRoot,
+        version: current.version + 1,
+        loadedAt: new Date().toISOString(),
+        workspaceConfigs: replaceWorkspaceConfigEntries(
+          current.workspaceConfigs,
+          configs,
+          workspaceId
+        ),
+        workspaceDataSourceCatalogs: replaceWorkspaceConfigEntries(
+          current.workspaceDataSourceCatalogs,
+          dataSources,
+          workspaceId
+        ),
+        workspaceMcpServerCatalogs: replaceWorkspaceConfigEntries(
+          current.workspaceMcpServerCatalogs,
+          mcpServers,
+          workspaceId
+        ),
+        diagnostics: [
+          ...current.diagnostics.filter((entry) => !sources.has(entry.source)),
+          ...diagnostics,
+        ],
+      });
+      // No I/O or callback follows validation before publishing the target-only snapshot.
+      if (!admission.ownsFreeze(workspaceId, freeze))
+        throw new Error('Workspace recovery freeze is not current.');
+      current = next;
+      return current;
+    },
     reload: (input) => {
       const startedAt = new Date().toISOString();
       const nextVersion = current.version + 1;
@@ -1346,6 +1407,30 @@ function loadUserConfigs(
   return configs;
 }
 
+/** Selects one admitted recovery target or the normal sorted Workspace directory census. */
+function workspaceConfigDirectories(root: string, workspaceId?: string): string[] {
+  if (workspaceId !== undefined) return [workspaceId];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort(compareCodeUnits);
+}
+
+/** Replaces the target entry without changing sibling values or their order. */
+function replaceWorkspaceConfigEntries<T extends { workspaceId: string }>(
+  previous: readonly T[],
+  replacement: readonly T[],
+  workspaceId: string
+): T[] {
+  let replaced = false;
+  const result = previous.flatMap((entry) => {
+    if (entry.workspaceId !== workspaceId) return [entry];
+    replaced = true;
+    return [...replacement];
+  });
+  return replaced ? result : [...result, ...replacement];
+}
+
 /**
  * Loads every workspace config under DATA_ROOT/workspaces.
  *
@@ -1354,7 +1439,8 @@ function loadUserConfigs(
  */
 function loadWorkspaceConfigs(
   dataRoot: string,
-  diagnostics: RuntimeConfigDiagnostic[]
+  diagnostics: RuntimeConfigDiagnostic[],
+  workspaceId?: string
 ): LoadedWorkspaceConfig[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
 
@@ -1364,14 +1450,8 @@ function loadWorkspaceConfigs(
 
   const configs: LoadedWorkspaceConfig[] = [];
 
-  for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-    (left, right) => compareCodeUnits(left.name, right.name)
-  )) {
-    if (!workspaceEntry.isDirectory()) {
-      continue;
-    }
-
-    const configPath = join(workspacesRoot, workspaceEntry.name, 'config', 'workspace.jsonc');
+  for (const id of workspaceConfigDirectories(workspacesRoot, workspaceId)) {
+    const configPath = join(workspacesRoot, id, 'config', 'workspace.jsonc');
 
     if (!existsSync(configPath)) {
       continue;
@@ -1400,7 +1480,7 @@ function loadWorkspaceConfigs(
     );
 
     configs.push({
-      workspaceId: workspaceEntry.name,
+      workspaceId: id,
       path: configPath,
       config: result.data,
     });
@@ -1417,7 +1497,8 @@ function loadWorkspaceConfigs(
  */
 function loadWorkspaceDataSourceCatalogs(
   dataRoot: string,
-  diagnostics: RuntimeConfigDiagnostic[]
+  diagnostics: RuntimeConfigDiagnostic[],
+  workspaceId?: string
 ): LoadedWorkspaceDataSourceCatalog[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
 
@@ -1427,14 +1508,8 @@ function loadWorkspaceDataSourceCatalogs(
 
   const catalogs: LoadedWorkspaceDataSourceCatalog[] = [];
 
-  for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-    (left, right) => compareCodeUnits(left.name, right.name)
-  )) {
-    if (!workspaceEntry.isDirectory()) {
-      continue;
-    }
-
-    const catalogPath = join(workspacesRoot, workspaceEntry.name, 'config', 'data-sources.jsonc');
+  for (const id of workspaceConfigDirectories(workspacesRoot, workspaceId)) {
+    const catalogPath = join(workspacesRoot, id, 'config', 'data-sources.jsonc');
 
     if (!existsSync(catalogPath)) {
       continue;
@@ -1445,7 +1520,7 @@ function loadWorkspaceDataSourceCatalogs(
     addUnknownConfigDiagnostics(diagnostics, 'data-source', parsed, catalog, dataRoot, catalogPath);
 
     catalogs.push({
-      workspaceId: workspaceEntry.name,
+      workspaceId: id,
       path: catalogPath,
       catalog,
     });
@@ -1455,22 +1530,20 @@ function loadWorkspaceDataSourceCatalogs(
 }
 
 /** Loads every Workspace MCP server catalog under DATA_ROOT/workspaces. */
-function loadWorkspaceMcpServerCatalogs(dataRoot: string): LoadedWorkspaceMcpServerCatalog[] {
+function loadWorkspaceMcpServerCatalogs(
+  dataRoot: string,
+  workspaceId?: string
+): LoadedWorkspaceMcpServerCatalog[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
   if (!existsSync(workspacesRoot)) return [];
   const catalogs: LoadedWorkspaceMcpServerCatalog[] = [];
-  for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
-    (left, right) => compareCodeUnits(left.name, right.name)
-  )) {
-    if (!workspaceEntry.isDirectory()) continue;
-    const catalogPath = join(workspacesRoot, workspaceEntry.name, 'catalog', 'catalog.json');
+  for (const id of workspaceConfigDirectories(workspacesRoot, workspaceId)) {
+    const catalogPath = join(workspacesRoot, id, 'catalog', 'catalog.json');
     if (!existsSync(catalogPath)) continue;
     catalogs.push({
-      workspaceId: workspaceEntry.name,
+      workspaceId: id,
       path: catalogPath,
-      catalog: projectEffectiveWorkspaceMcpCatalog(
-        loadWorkspaceResourceCatalog(dataRoot, workspaceEntry.name)
-      ),
+      catalog: projectEffectiveWorkspaceMcpCatalog(loadWorkspaceResourceCatalog(dataRoot, id)),
     });
   }
   return catalogs;
