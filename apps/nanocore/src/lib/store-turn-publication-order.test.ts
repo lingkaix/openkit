@@ -312,7 +312,7 @@ describe('Store same-Turn publication order through the real native worker', () 
   it('refuses the dependent Item after a lost predecessor ACK and retains the committed predecessor', async () => {
     const f = await fixture();
     const items = [message(f.turn, 'Unknown predecessor'), message(f.turn, 'Dependent successor')];
-    const gate = holdReply('products');
+    const gate = holdReply('item');
     const first = observe(f.store.createItem(items[0]!));
     let second: typeof first | undefined;
     try {
@@ -334,7 +334,7 @@ describe('Store same-Turn publication order through the real native worker', () 
   it('orders concurrent registered children and retains the input admitted before their wait', async () => {
     const f = await fixture();
     const client = getControlStoreWorkerClient();
-    const gate = holdReply('products');
+    const gate = holdReply('item');
     const original = message(f.turn, 'Original queued bytes');
     const owned = structuredClone(original);
     const first = observe(f.store.createItem(message(f.turn, 'Predecessor')));

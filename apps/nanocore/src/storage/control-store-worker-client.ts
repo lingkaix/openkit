@@ -49,6 +49,7 @@ import {
 } from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import {
+  type ControlItemAppend,
   type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalResult,
@@ -555,6 +556,22 @@ class ControlStoreWorkerClient {
   /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
   async products(database: string, transition: ControlProductTransition): Promise<void> {
     await this.request({ operation: 'products', database, transition });
+  }
+
+  /** Publishes an addressed Item only after its native head checks, exact bytes and covering FULL commit. */
+  async appendItem(database: string, input: ControlItemAppend): Promise<ControlItemAppend['item']> {
+    try {
+      const reply = await this.request({ operation: 'item', database, input });
+      return (reply as Extract<Success, { operation: 'item' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'item'
+      )
+        throw new Error(error.domain.message);
+      throw error;
+    }
   }
 
   /**
@@ -1064,7 +1081,9 @@ class ControlStoreWorkerClient {
       context.reservation === database &&
       context.closeout?.borrowing &&
       context.closeout.database === database &&
-      (command.operation === 'products' || command.operation === 'publication');
+      (command.operation === 'products' ||
+        command.operation === 'publication' ||
+        command.operation === 'item');
     const opening = database === undefined ? undefined : this.openings.get(database);
     const host = target ?? opening?.host;
     // An ACK may be validated before older scope reactions run. They keep their prefix.

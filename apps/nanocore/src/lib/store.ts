@@ -161,6 +161,7 @@ import {
   type ControlProductMutation,
   type ControlProductOwner,
   type ControlTerminalTransition,
+  checkControlItemAppend,
   closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
   getWorkspaceProductReadHandle,
@@ -5520,70 +5521,29 @@ export class FsStore {
     const item = ItemSchema.parse(input);
     if (item.owner.kind !== 'workspace')
       throw new Error('Workspace Item requires Workspace ownership.');
-    const native = this.dataRoot
-      ? item.type === 'user-input-response'
-        ? readNativeTurnHistory(this.nativeScope(item.owner), item.turnId)
-        : readNativeTurnWriteHead(this.nativeScope(item.owner), item.turnId, item.id)
-      : undefined;
-    const turn = native?.turn ?? this.getTurn(item.owner.workspaceId, item.threadId, item.turnId);
     if (this.serverItems.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
+    if (this.dataRoot) {
+      const scope = this.nativeScope(item.owner);
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      return client.appendItem(database, {
+        item,
+        ...(admission && { category: admission.category }),
+      });
+    }
+    const turn = this.getTurn(item.owner.workspaceId, item.threadId, item.turnId);
     const existing = turn.items.find((value) => value.id === item.id);
-    if (
-      workspaceIdForOwner(turn.owner) !== workspaceIdForOwner(item.owner) ||
-      turn.threadId !== item.threadId
-    ) {
-      throw new Error(`Item has invalid turn lineage: ${item.id}`);
-    }
-    if (
-      item.type === 'user-input-request' &&
-      item.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
-    ) {
-      throw new Error(`User-input request has invalid responsible user: ${item.id}`);
-    }
-    if (item.type === 'user-input-response') {
-      const request = turn.items.find(
-        (candidate) =>
-          candidate.type === 'user-input-request' &&
-          candidate.userInputRequestId === item.userInputRequestId
-      );
-      if (request?.type === 'user-input-request' && request.responsibleUserId !== item.actor.id) {
-        throw new Error(`User-input response has invalid responsible user: ${item.id}`);
-      }
-    }
-    if (isSealedTurnTerminal(turn.status)) {
-      if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) {
-        return existing;
-      }
-      const pendingConfigurationApply =
-        admission?.category === 'configuration-apply-pending-delayed-user-input' && !existing;
-      const missingAlreadyDecided =
-        admission?.category === 'already-decided-publication' && !existing;
-      const missingDisplayProjection =
-        admission?.category === 'display-projection-refresh' && !existing && item.type === 'status';
-      if (pendingConfigurationApply) {
-        // Pending docs/specs/20260930-pending_requests.md: configuration apply is a new authorized command, not post-terminal repair.
-      } else if (missingAlreadyDecided || missingDisplayProjection) {
-        // Complete a missing publication of an already-decided outcome, or create a missing display projection.
-      } else if (existing) {
-        throw terminalTurnPublicationConflict(turn.id);
-      } else {
-        throw terminalTurnWriteRejected(turn.id);
-      }
-    }
-    if (
-      existing &&
-      (workspaceIdForOwner(existing.owner) !== workspaceIdForOwner(item.owner) ||
-        existing.threadId !== item.threadId ||
-        existing.turnId !== item.turnId ||
-        existing.type !== item.type ||
-        existing.createdAt !== item.createdAt)
-    ) {
-      throw new Error(`Item immutable identity cannot change: ${item.id}`);
-    }
-    if (existing) {
-      assertImmutableItemAttribution(existing, item);
-    }
-    if (this.dataRoot) return this.persistNativeItem(item, native!, admission);
+    if (checkControlItemAppend(item, turn, existing, turn.items, admission?.category))
+      return existing!;
     const updatedTurn = {
       ...turn,
       items: existing

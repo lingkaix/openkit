@@ -7,9 +7,11 @@ import { isMainThread } from 'node:worker_threads';
 import {
   AuditEventSchema,
   ContentReferenceSchema,
+  ItemSchema,
   KnowledgeBaseIdSchema,
   RequestIdSchema,
   readRetainedV1,
+  responsibleUserIdForActor,
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { StorageContent } from '@openkit/storage';
@@ -36,7 +38,7 @@ import {
   StoredThreadSnapshotV1Schema,
   StoredTurnSnapshotV1Schema,
 } from './retained-work-events-v1.js';
-import { StoredItemV1Schema } from './retained-work-items-v1.js';
+import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
 import {
   StoredAgentSessionV1Schema,
   StoredTurnV1Schema,
@@ -45,6 +47,7 @@ import {
 } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-thread-records.js';
 import {
+  assertImmutableItemAttribution,
   assertTurnEventPayloadLineage,
   preserveDescriptiveRecord,
 } from './workspace-file-records.js';
@@ -1132,6 +1135,210 @@ export const ControlPublicationInputSchema = z
   .strict();
 /** Entry-only publication; no metadata or outcome mutation is admitted. */
 export type ControlPublicationInput = z.infer<typeof ControlPublicationInputSchema>;
+
+/** Complete addressed Item intent; heads and durable bytes are resolved by the native owner. */
+export const ControlItemAppendSchema = z
+  .object({
+    item: ItemSchema,
+    category: ControlPublicationInputSchema.shape.category.optional(),
+  })
+  .strict();
+export type ControlItemAppend = z.infer<typeof ControlItemAppendSchema>;
+
+/** Carries an existing Store validation refusal, never a native SQL or filesystem diagnostic. */
+export class ControlItemAppendError extends Error {}
+
+/** Shares original Item identity, human attribution and post-terminal rules between native and in-memory Stores. */
+export function checkControlItemAppend(
+  item: z.infer<typeof ItemSchema>,
+  turn: Pick<
+    z.infer<typeof StoredTurnV1Schema>,
+    'id' | 'status' | 'threadId' | 'triggerActor' | 'owner'
+  >,
+  previous: z.infer<typeof ItemSchema> | undefined,
+  stored: readonly z.infer<typeof ItemSchema>[],
+  category?: ControlItemAppend['category']
+): boolean {
+  if (
+    !isDeepStrictEqual(item.owner, turn.owner) ||
+    item.threadId !== turn.threadId ||
+    item.turnId !== turn.id
+  )
+    throw new ControlItemAppendError(`Item has invalid turn lineage: ${item.id}`);
+  const sealed = !['pending', 'running'].includes(turn.status);
+  if (
+    item.type === 'user-input-request' &&
+    item.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
+  )
+    throw new ControlItemAppendError(`User-input request has invalid responsible user: ${item.id}`);
+  if (item.type === 'user-input-response') {
+    const request = stored.find(
+      (value) =>
+        value.type === 'user-input-request' && value.userInputRequestId === item.userInputRequestId
+    );
+    if (request?.type === 'user-input-request' && request.responsibleUserId !== item.actor.id)
+      throw new ControlItemAppendError(
+        `User-input response has invalid responsible user: ${item.id}`
+      );
+  }
+  if (sealed && previous && isDeepStrictEqual(previous, item)) return true;
+  if (
+    sealed &&
+    (previous ||
+      !(
+        category === 'already-decided-publication' ||
+        category === 'configuration-apply-pending-delayed-user-input' ||
+        (category === 'display-projection-refresh' && item.type === 'status')
+      ))
+  )
+    throw new ControlItemAppendError(
+      previous
+        ? `Turn ${item.turnId} is terminal and the publication conflicts with the already-decided record.`
+        : `Turn ${item.turnId} is terminal and does not admit this write.`
+    );
+  if (previous) {
+    if (
+      !isDeepStrictEqual(previous.owner, item.owner) ||
+      previous.threadId !== item.threadId ||
+      previous.turnId !== item.turnId ||
+      previous.type !== item.type ||
+      previous.createdAt !== item.createdAt
+    )
+      throw new ControlItemAppendError(`Item immutable identity cannot change: ${item.id}`);
+    try {
+      assertImmutableItemAttribution(previous, item);
+    } catch {
+      throw new ControlItemAppendError(`Item attribution cannot change: ${item.id}.`);
+    }
+  }
+  return false;
+}
+
+/** Resolves current native heads and original Item bytes before preparation, without a Main read round trip. */
+export async function prepareControlItemAppend(
+  db: WorkspaceDb,
+  input: ControlItemAppend,
+  mount: ControlProductContentMount | undefined
+) {
+  if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  const item = ItemSchema.parse(input.item);
+  const owner: ControlProductOwner = { kind: 'workspace', workspaceId: db.workspaceId };
+  assertControlProductOwner(owner, item.owner);
+  const head = readProduct(db.sqlite, owner, 'turn', item.turnId);
+  if (!head) throw new ControlProductPreconditionError();
+  const turn = StoredTurnV1Schema.parse(head.record);
+  const sealed = !['pending', 'running'].includes(String(head.record.status));
+  const prior = db.sqlite
+    .prepare(
+      "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+    )
+    .get(item.id) as
+    | {
+        turn_id: string;
+        id: string;
+        sequence: number;
+        revision: number;
+        schema_version: number;
+        content_json: string;
+      }
+    | undefined;
+  if (prior && prior.turn_id !== item.turnId)
+    throw new ControlItemAppendError(`Item already exists: ${item.id}`);
+  const rows =
+    item.type === 'user-input-response' || (sealed && prior)
+      ? (db.sqlite
+          .prepare(
+            "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND turn_id=? ORDER BY sequence"
+          )
+          .all(item.turnId) as NonNullable<typeof prior>[])
+      : prior
+        ? [prior]
+        : [];
+  const items = new Map<string, z.infer<typeof ItemSchema>>();
+  const revisions = new Map<string, number>();
+  const fullHistory = item.type === 'user-input-response' || (sealed && prior !== undefined);
+  let previousSequence = 0;
+  for (const row of rows) {
+    if (row.schema_version !== 1 || (fullHistory && row.sequence !== previousSequence + 1))
+      throw new ControlProductPreconditionError();
+    previousSequence = row.sequence;
+    const [entry] = await prepareRetainedControlEntries(db, mount, [
+      {
+        kind: 'item',
+        turnId: row.turn_id,
+        sequence: row.sequence,
+        expectedRevision: row.revision - 1,
+        content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+      },
+    ]);
+    if (!entry) throw new ControlProductPreconditionError();
+    const { schemaVersion: _version, ...raw } = preparedOriginals.get(entry) as Record<
+      string,
+      unknown
+    >;
+    if (
+      raw.requiredFeatures !== undefined &&
+      (!Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
+    )
+      throw new ControlProductPreconditionError();
+    const parsed = StoredItemPayloadV1Schema.parse(raw);
+    if (
+      parsed.turnId !== item.turnId ||
+      parsed.threadId !== item.threadId ||
+      parsed.id !== row.id ||
+      entry.id !== row.id ||
+      (fullHistory && row.revision !== (revisions.get(row.id) ?? 0) + 1) ||
+      !isDeepStrictEqual(parsed.owner, owner)
+    )
+      throw new ControlProductPreconditionError();
+    const preceding = items.get(row.id);
+    if (preceding && (preceding.type !== parsed.type || preceding.createdAt !== parsed.createdAt))
+      throw new ControlProductPreconditionError();
+    if (preceding) assertImmutableItemAttribution(preceding, parsed);
+    if (
+      fullHistory &&
+      parsed.type === 'user-input-request' &&
+      parsed.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
+    )
+      throw new ControlProductPreconditionError();
+    if (fullHistory && parsed.type === 'user-input-response') {
+      const request = [...items.values()].find(
+        (value) =>
+          value.type === 'user-input-request' &&
+          value.userInputRequestId === parsed.userInputRequestId
+      );
+      if (request?.type === 'user-input-request' && request.responsibleUserId !== parsed.actor.id)
+        throw new ControlProductPreconditionError();
+    }
+    items.set(row.id, preserveDescriptiveRecord(raw, parsed, parsed) as z.infer<typeof ItemSchema>);
+    revisions.set(row.id, row.revision);
+  }
+  const stored = [...items.values()];
+  const previous = stored.find((value) => value.id === item.id);
+  if (checkControlItemAppend(item, turn, previous, stored, input.category))
+    return { item: previous!, head, sequence: 0, revision: prior!.revision, replay: true };
+  const sequence =
+    (
+      db.sqlite
+        .prepare(
+          "SELECT max(sequence) AS sequence FROM control_product_entries WHERE kind='item' AND turn_id=?"
+        )
+        .get(item.turnId) as { sequence: number | null }
+    ).sequence ?? 0;
+  return {
+    item: previous
+      ? (preserveDescriptiveRecord(
+          previous,
+          StoredItemPayloadV1Schema.parse(previous),
+          item
+        ) as z.infer<typeof ItemSchema>)
+      : item,
+    head,
+    sequence: sequence + 1,
+    revision: prior?.revision ?? 0,
+    replay: false,
+  };
+}
 /** Native-local proof; immutable preparation cannot be supplied over the wire. */
 export interface PreparedControlPublication {
   readonly turnId: string;

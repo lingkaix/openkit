@@ -13,6 +13,7 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
+import { writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import {
   ArtifactReviewError,
@@ -79,16 +80,19 @@ import {
   applyControlProducts,
   applyControlPublication,
   applyControlTerminal,
+  ControlItemAppendError,
   type ControlProductContentMount,
   type ControlProductOwner,
   ControlProductPreconditionError,
   type ControlProductTransition,
+  type ControlPublicationInput,
   type ControlTerminalTransition,
   decode as decodeControlProduct,
   type PreparedControlEntry,
   type PreparedControlPublication,
   type PreparedControlTerminal,
   prepareControlEntries,
+  prepareControlItemAppend,
   prepareControlPublication,
   prepareControlTerminal,
   readProduct,
@@ -112,6 +116,7 @@ import {
 } from './control-store-worker-protocol.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
 import { coreDbPath, workspaceDbPath } from './fs-layout.js';
+import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyNativeScopeMigrations } from './migrate.js';
 import { applyControlWorkObservation } from './work-observations.js';
 
@@ -128,6 +133,7 @@ type WriteCommand = Extract<
       | 'write'
       | 'transition'
       | 'products'
+      | 'item'
       | 'publication'
       | 'project-cleanup'
       | 'observation'
@@ -156,6 +162,8 @@ type WriteRequest = WriteCommand & {
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
   readonly preparedPublication?: PreparedControlPublication | undefined;
+  readonly preparedItem?: Awaited<ReturnType<typeof prepareControlItemAppend>> | undefined;
+  readonly itemPublication?: ControlPublicationInput | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
@@ -234,6 +242,8 @@ function failure(
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   let domain: ControlWorkerDomainRefusal | undefined;
+  if (operation === 'item' && error instanceof ControlItemAppendError)
+    return { operation, code: 'conflict', message: error.message, status: 409 };
   if (
     (operation === 'pending' ||
       (['products', 'transition'].includes(operation) &&
@@ -486,6 +496,14 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     lanes.add(workId);
   };
   switch (request.operation) {
+    case 'item': {
+      lanes.add(request.input.item.turnId);
+      if (!owner.productOwner) throw new ControlProductPreconditionError();
+      const turn = readProduct(owner.sqlite, owner.productOwner, 'turn', request.input.item.turnId);
+      if (typeof turn?.record.agentSessionId === 'string')
+        lanes.add(`session:${turn.record.agentSessionId}`);
+      break;
+    }
     case 'transition':
     case 'products':
       add(request.transition);
@@ -1126,6 +1144,35 @@ function flush(owner: OwnedDatabase): void {
               operation: 'transition',
               result,
             };
+          } else if (request.operation === 'item') {
+            if (!owner.productOwner || !request.preparedItem || !owner.scopeDb)
+              throw new ControlProductPreconditionError();
+            const plan = request.preparedItem;
+            if (
+              readProduct(sqlite, owner.productOwner, 'turn', plan.item.turnId)?.revision !==
+              plan.head.revision
+            )
+              throw new ControlProductPreconditionError();
+            if (request.preparedPublication)
+              applyControlPublication(
+                owner.scopeDb,
+                request.itemPublication!,
+                request.preparedPublication
+              );
+            else if (!plan.replay)
+              applyControlProducts(
+                sqlite,
+                owner.productOwner,
+                [{ kind: 'turn', expectedRevision: plan.head.revision, record: plan.head.record }],
+                request.preparedEntries ?? []
+              );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'item',
+              result: plan.item,
+            };
           } else if (request.operation === 'products') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
             applyControlProducts(
@@ -1697,6 +1744,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'write' ||
       value.operation === 'transition' ||
       value.operation === 'products' ||
+      value.operation === 'item' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
@@ -1752,6 +1800,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
         };
         const prepare = async () => {
           let preparedPublication: PreparedControlPublication | undefined;
+          let preparedItem: WriteRequest['preparedItem'];
+          let itemPublication: ControlPublicationInput | undefined;
           let preparedEntries: WriteRequest['preparedEntries'];
           let preparedPending: PreparedControlPendingCommand | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
@@ -1771,8 +1821,55 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               Object.assign(queued, { preparedEntries });
             }
             // Canonical-dependent preparation observes its admitted predecessor's committed state.
-            if (['terminal', 'publication', 'pending', 'goal'].includes(value.operation))
+            if (['terminal', 'publication', 'pending', 'goal', 'item'].includes(value.operation))
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'item') {
+              if (owner.scopeDb?.scope !== 'workspace' || !owner.contentMount)
+                throw new ControlProductPreconditionError();
+              preparedItem = await prepareControlItemAppend(
+                owner.scopeDb,
+                value.input,
+                owner.contentMount
+              );
+              if (!preparedItem.replay) {
+                const content = await prepareRetainedProductJson(
+                  owner.contentMount,
+                  { kind: 'workspace', workspaceId: owner.scopeDb.workspaceId },
+                  join(dirname(dirname(owner.path)), 'runtime', 'staging'),
+                  writeRetainedV1(preparedItem.item)
+                );
+                const entries = [
+                  {
+                    kind: 'item' as const,
+                    turnId: preparedItem.item.turnId,
+                    sequence: preparedItem.sequence,
+                    expectedRevision: preparedItem.revision,
+                    ...content,
+                  },
+                ];
+                if (['pending', 'running'].includes(String(preparedItem.head.record.status)))
+                  preparedEntries = await prepareControlEntries(
+                    owner.productOwner!,
+                    owner.contentMount,
+                    entries,
+                    newDirectories
+                  );
+                else {
+                  itemPublication = {
+                    category: value.input.category!,
+                    turnId: preparedItem.item.turnId,
+                    expectedRevision: preparedItem.head.revision,
+                    entries,
+                  };
+                  preparedPublication = await prepareControlPublication(
+                    owner.scopeDb,
+                    itemPublication,
+                    owner.contentMount,
+                    newDirectories
+                  );
+                }
+              }
+            }
             if (
               value.operation === 'terminal' ||
               (value.operation === 'pending' && value.input.terminal)
@@ -1869,6 +1966,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedReview,
               preparedPending,
               preparedPublication,
+              preparedItem,
+              itemPublication,
               preparedTerminal,
               preparedMaterial,
               preparedCapability,
