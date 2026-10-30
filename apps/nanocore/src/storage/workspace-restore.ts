@@ -135,11 +135,16 @@ function requestIdentity(input: TargetArgs) {
       ];
 }
 /** Rechecks current mapping before any unpublished target effect; no source account implies a grant. */
-function mapping(core: CoreDb, input: TargetArgs, owned: RecoveryAdmission) {
+function mapping(
+  core: CoreDb,
+  input: TargetArgs,
+  manifest: WorkspaceBackupManifest,
+  manifestDigest: string
+) {
   if (input.command === 'restore') return undefined;
   const report = validateWorkspaceMoveMapping({
-    manifest: owned.proof.manifest,
-    manifestDigest: owned.proof.capture.manifestDigest,
+    manifest,
+    manifestDigest,
     importingAdministratorId: input.targetOwnerId,
     targetOwnerId: input.targetOwnerId,
     memberMappings: input.memberMappings,
@@ -166,7 +171,7 @@ async function finishTarget(
   if (owned.state === 'finished') return owned.proof.result;
   if (expectedRelease && !isDeepStrictEqual(expectedRelease, owned.proof.manifest.release))
     refuseRecovery('release-mismatch');
-  const map = mapping(core, input, owned);
+  const map = mapping(core, input, owned.proof.manifest, owned.proof.capture.manifestDigest);
   const workspaceId = owned.workspace_id;
   const final = join(core.dataRoot, 'workspaces', workspaceId);
   const predecessor = workspaceRecoveryPredecessorRoot(owned);
@@ -451,6 +456,17 @@ async function admitTarget(
       .get(workspaceId)
   )
     refuseRecovery('identity-collision');
+  // Fresh invalid maps are input refusals, not corrupt retained ownership.
+  if (input.command === 'move-in') {
+    mapping(
+      core,
+      input,
+      manifest,
+      `sha256:${createHash('sha256')
+        .update(readFileSync(join(input.bundleRoot, WORKSPACE_BACKUP_MANIFEST_FILE)))
+        .digest('hex')}`
+    );
+  }
   // Unpublished databases stay outside boot discovery under the same admitted recovery owner.
   const container = `${resolve(input.dataRoot)}.workspace-recovery-${input.requestId}`;
   const candidate = join(container, 'workspaces', workspaceId);
@@ -477,7 +493,7 @@ async function admitTarget(
     result,
   });
   const owned = readRecoveryAdmission(core, input.requestId)!;
-  const map = mapping(core, input, owned);
+  const map = mapping(core, input, owned.proof.manifest, owned.proof.capture.manifestDigest);
   const digest = await bindTargetCandidate(core, owned, map, owner);
   assertTargetRecoveryOwner(owner, input.dataRoot, workspaceId);
   const proof = { ...owned.proof, candidateDigest: digest };
