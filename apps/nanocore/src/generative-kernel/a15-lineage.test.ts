@@ -154,6 +154,61 @@ it('retains the executing Worker Turn on native create, record writes, batch and
   expect(f.audit(created.appId)).toEqual(events);
 });
 
+it('conflicts when a different admitted actor reuses a record-create request without changing data or Audit', async () => {
+  const f = await fixture();
+  const firstActor: AdmittedOperationContext = {
+    kind: 'public',
+    actor: { kind: 'local', userId: actor.id },
+    actorRef: actor,
+    scope: { kind: 'workspace', workspaceId },
+  };
+  const secondUserId = 'usr_00000000-0000-7000-8000-000000000002';
+  const secondActor: AdmittedOperationContext = {
+    kind: 'public',
+    actor: { kind: 'session', userId: secondUserId },
+    actorRef: { kind: 'user', id: secondUserId },
+    scope: { kind: 'workspace', workspaceId },
+  };
+  const created = await f.operations['kernel.apps.create'](
+    { ...schema, workspaceId, requestId: randomUUID() },
+    firstActor
+  );
+  const selectors = { workspaceId, appId: created.appId, schemaRevision: 1, collection: 'entries' };
+  const input = { ...selectors, requestId: randomUUID(), data: { note: 'original' } };
+  const record = await f.operations['kernel.records.create'](input, firstActor);
+  expect(await f.operations['kernel.records.create'](input, firstActor)).toEqual(record);
+  const current = await f.operations['kernel.records.update'](
+    {
+      ...selectors,
+      requestId: randomUUID(),
+      recordId: record.id,
+      expectedRecordRevision: 1,
+      data: { note: 'current' },
+    },
+    firstActor
+  );
+  const before = f.audit(created.appId);
+  expect(before.filter((event) => event.action === 'kernel.records.create')).toHaveLength(1);
+  expect(before.find((event) => event.action === 'kernel.records.create')).toMatchObject({
+    actor,
+    requestId: input.requestId,
+    threadId: null,
+    turnId: null,
+  });
+  // Kernel receipt owner233 binds actor in the fingerprint, not the app/request key.
+  await expect
+    .soft(f.operations['kernel.records.create'](input, secondActor))
+    .rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+  expect(await f.operations['kernel.records.create'](input, firstActor)).toEqual(current);
+  expect(
+    await f.operations['kernel.records.get']({ ...selectors, recordId: record.id }, firstActor)
+  ).toEqual(current);
+  const listed = await f.operations['kernel.records.list'](selectors, firstActor);
+  expect(listed.items).toEqual([current]);
+  expect(current).toMatchObject({ id: record.id, revision: 2, data: { note: 'current' } });
+  expect(f.audit(created.appId)).toEqual(before);
+});
+
 it('retains trusted internal Turn context, leaves direct human execution unknown and refuses mismatched Turn scope before writes', async () => {
   const f = await fixture();
   const human: AdmittedOperationContext = {

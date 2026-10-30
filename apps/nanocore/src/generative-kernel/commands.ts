@@ -645,7 +645,6 @@ function hasCommandReplay(
     {
       workspaceId: context.workspaceId,
       appId: appDb.appId,
-      actorId: actorScopeId(context.actor),
     },
     appDb
   );
@@ -1001,7 +1000,6 @@ function runKernelCommand<T>(
       scope: {
         workspaceId: context.workspaceId,
         appId: appDb.appId,
-        actorId: actorScopeId(context.actor),
       },
       input: { actor: context.actor, ...asObject(spec.input) },
       responseKind: spec.responseKind,
@@ -2143,16 +2141,6 @@ function mapSqliteError(error: unknown): unknown {
     return new KernelCommandError('validation_failed', 'Record failed a native constraint.');
   }
   return error;
-}
-
-/**
- * Extracts a non-secret actor id for receipt scope.
- *
- * @param actor Actor.
- * @returns Actor id.
- */
-function actorScopeId(actor: ActorRef): string {
-  return actor.id;
 }
 
 /**
