@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
@@ -21,6 +23,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import { getWorkspaceInvitation, getWorkspaceMember } from './workspace-sharing.js';
 import { readAuthorizedWorkspaces } from './workspace-sharing-operations.js';
 
 const openDatabases: CoreDb[] = [];
@@ -176,6 +179,143 @@ afterEach(async () => {
 });
 
 describe('Workspace sharing routes', () => {
+  it.each([
+    'removed',
+    'disabled',
+    'policy-denied',
+    'authorized-invitee',
+    'authorized-administrator',
+  ] as const)('rechecks the inviter on acceptance with %s authority', async (scenario) => {
+    const fixture = await createFixture();
+    const inviterId = 'usr_00000000-0000-7609-aed5-db4b5c95e76c';
+    const inviteeId = 'usr_00000000-0000-7a9e-8345-2bce44a3dce0';
+    const ownerId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+    const administratorId = 'usr_00000000-0000-768a-8658-44c33d82c1f5';
+    const invitee = fixture.coreDb.sqlite
+      .prepare('SELECT email FROM users WHERE id = ?')
+      .get(inviteeId) as { email: string };
+    const request = (
+      operation: Parameters<typeof operationRequest>[0],
+      selectors: Record<string, unknown>,
+      body: Record<string, unknown> = {}
+    ) =>
+      fixture.app.request(
+        ...operationRequest(operation, selectors, {
+          body: JSON.stringify(body),
+          headers: { 'x-openkit-request-id': randomUUID() },
+        })
+      );
+    fixture.actorState.current = { kind: 'session', userId: inviterId };
+    const created = await request('workspace.invitation-create', {
+      workspaceId: fixture.workspaceId,
+      inviteeEmail: invitee.email,
+    });
+    expect(created.status).toBe(201);
+    const invitation = (await created.json()).invitation as {
+      invitationId: string;
+      revision: number;
+    };
+    expect(getWorkspaceMember(fixture.coreDb, fixture.workspaceId, inviteeId)).toBeNull();
+    fixture.actorState.current = { kind: 'session', userId: ownerId };
+    if (scenario === 'removed') {
+      const removed = await request(
+        'workspace.member-remove',
+        {
+          targetUserId: inviterId,
+          workspaceId: fixture.workspaceId,
+        },
+        { expectedRevision: 1 }
+      );
+      expect(removed.status).toBe(200);
+    }
+    let administrator: Actor | undefined;
+    if (scenario === 'disabled' || scenario === 'authorized-administrator') {
+      const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: administratorId,
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      administrator = {
+        kind: 'token',
+        tokenId: issued.tokenId,
+        tokenScope: 'server-admin',
+        userId: administratorId,
+      };
+      if (scenario === 'disabled') {
+        fixture.actorState.current = administrator;
+        const disabled = await request('user.disable', { targetUserId: inviterId });
+        expect(disabled.status).toBe(200);
+      }
+    }
+    let restorePolicy = () => {};
+    if (scenario === 'policy-denied') {
+      const actualEvaluate = policyKernel.evaluateAccess;
+      const fault = vi.spyOn(policyKernel, 'evaluateAccess').mockImplementation((policy, input) => {
+        if (input.operation !== 'membership.manage' || input.user !== `user:${inviterId}`)
+          return actualEvaluate(policy, input);
+        // Remove the inviter's current grants, while retaining the real evaluator
+        // and the invitee's independent invitation.respond authorization.
+        const rights = new Set(
+          policy.operations.find((entry) => entry.id === input.operation)!.accessRights
+        );
+        return actualEvaluate(
+          {
+            ...policy,
+            associations: policy.associations.map((association) => ({
+              ...association,
+              accessRights: association.accessRights.filter((right) => !rights.has(right)),
+            })),
+          },
+          input
+        );
+      });
+      restorePolicy = () => fault.mockRestore();
+    }
+    try {
+      fixture.actorState.current =
+        scenario === 'authorized-administrator'
+          ? administrator!
+          : { kind: 'session', userId: inviteeId };
+      const accepted = await request(
+        'workspace.my-invitation-accept',
+        {
+          invitationId: invitation.invitationId,
+        },
+        { expectedRevision: invitation.revision }
+      );
+      const authorized = scenario.startsWith('authorized-');
+      const persisted = getWorkspaceInvitation(fixture.coreDb, invitation.invitationId)!;
+      const member = getWorkspaceMember(fixture.coreDb, fixture.workspaceId, inviteeId);
+      const audits = fixture.coreDb.sqlite
+        .prepare(
+          "SELECT actor_json AS actorJson FROM audit_events WHERE action = 'workspace.invitation.accept'"
+        )
+        .all();
+      // The Multi-User Workspace owner requires current inviter authority before
+      // this conditional membership effect; a pending invitation is not authority.
+      expect.soft(accepted.status).toBe(authorized ? 200 : 403);
+      expect.soft(persisted.effectiveStatus).toBe(authorized ? 'accepted' : 'pending');
+      if (authorized) {
+        expect(member).toMatchObject({ userId: inviteeId, status: 'active' });
+        expect(audits).toEqual([
+          {
+            actorJson: JSON.stringify({
+              kind: 'user',
+              id: scenario === 'authorized-administrator' ? administratorId : inviteeId,
+            }),
+          },
+        ]);
+      } else {
+        expect.soft(member).toBeNull();
+        expect.soft(audits).toEqual([]);
+        await expect(accepted.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      }
+    } finally {
+      restorePolicy();
+    }
+  });
+
   it('registers the exact closed operation surface and access owners', async () => {
     const fixture = await createFixture();
 

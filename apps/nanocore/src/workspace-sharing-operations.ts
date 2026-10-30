@@ -31,6 +31,7 @@ import { z } from 'zod';
 import { recordServerAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import {
+  currentWorkspaceAuthority,
   DeploymentAdminRequiredError,
   evaluateProductAuthorization,
   isCurrentDeploymentAdministrator,
@@ -230,8 +231,23 @@ export function createWorkspaceSharingOperationImplementations(
           action: 'workspace.invitation.accept',
           actorId,
           coreDb,
-          execute: () =>
-            acceptWorkspaceInvitation({
+          execute: () => {
+            const current = getWorkspaceInvitation(coreDb, invitationId);
+            // Pending invitations grant membership only while their inviter remains authorized.
+            if (
+              !current ||
+              !currentWorkspaceAuthority(
+                coreDb,
+                current.workspaceId,
+                { kind: 'user', id: current.inviterUserId },
+                'membership.manage',
+                true,
+                undefined,
+                { retainedPolicyAuthor: true, dependencyFailure: 'throw' }
+              )
+            )
+              throw accessDenied();
+            return acceptWorkspaceInvitation({
               coreDb,
               expectedRevision: request.expectedRevision,
               invitationId,
@@ -245,7 +261,8 @@ export function createWorkspaceSharingOperationImplementations(
                 invitationId,
                 publicOperationActor(context)
               ),
-            }),
+            });
+          },
           inflightCommands,
           invitationId,
           actor: publicOperationActor(context),

@@ -104,7 +104,7 @@ export interface WorkspaceAuthorityEvaluation {
 
 /** Opt-in failure handling and actual evaluation capture for governed Workspace effects. */
 export interface WorkspaceAuthorityOptions {
-  /** Evaluates a retained human Policy author directly, without manufacturing request credentials. */
+  /** Evaluates a retained human Policy or invitation author without manufacturing request credentials. */
   readonly retainedPolicyAuthor?: boolean;
   /** Actual caller-owned mutation posture; effect paths default to mutating and reads opt out explicitly. */
   readonly mutating?: boolean;
