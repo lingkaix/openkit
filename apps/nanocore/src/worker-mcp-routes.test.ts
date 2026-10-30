@@ -2784,7 +2784,11 @@ describe('worker MCP routes', () => {
     };
     let app = register();
     let requestId = 0;
-    const request = async (method: string, params: Record<string, unknown> = {}) => {
+    const request = async (
+      method: string,
+      params: Record<string, unknown> = {},
+      protocolRequestId = ++requestId
+    ) => {
       const response = await app.request('/api/worker-capabilities/mcp/echo', {
         method: 'POST',
         headers: {
@@ -2792,7 +2796,7 @@ describe('worker MCP routes', () => {
           authorization: `Bearer ${capabilityToken}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: protocolRequestId, method, params }),
       });
       expect(response.status).toBe(200);
       return response.json();
@@ -2816,7 +2820,9 @@ describe('worker MCP routes', () => {
         threadId,
         turnId: firstTurnId,
       });
-      expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
+      const originalDiscovery = await request('tools/list');
+      const originalDiscoveryRequestId = requestId;
+      expect(originalDiscovery).toMatchObject({ result: { tools: original } });
       const pending = await request('tools/call', {
         name: 'review-echo',
         arguments: { message: 'captured approval' },
@@ -2870,6 +2876,34 @@ describe('worker MCP routes', () => {
       expect(workerMcpGateway.callTool).toHaveBeenCalledTimes(1);
       // Route reconstruction loses process-local state but must keep the Turn selection.
       app = register();
+      const replayDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const callsBeforeReplay = listWorkspaceCapabilityCalls(replayDb, workspaceId);
+        const originalCall = callsBeforeReplay.find(
+          (call) => call.operation === 'mcp.list-tools' && call.turnId === firstTurnId
+        );
+        expect(originalCall).toMatchObject({
+          status: 'succeeded',
+          schemaSnapshotId: expect.any(String),
+        });
+        const snapshotsBeforeReplay = listExportableMcpToolSchemaSnapshots(replayDb, workspaceId);
+        const usageBeforeReplay = listWorkspaceUsageRecords(replayDb, workspaceId);
+        const discoveriesBeforeReplay = workerMcpGateway.listTools.mock.calls.length;
+        const effectsBeforeReplay = workerMcpGateway.callTool.mock.calls.length;
+        // Foundation147 preserves the admitted schema stamp and terminal result on exact replay.
+        expect
+          .soft(await request('tools/list', {}, originalDiscoveryRequestId))
+          .toEqual(originalDiscovery);
+        expect(listWorkspaceCapabilityCalls(replayDb, workspaceId)).toEqual(callsBeforeReplay);
+        expect(listExportableMcpToolSchemaSnapshots(replayDb, workspaceId)).toEqual(
+          snapshotsBeforeReplay
+        );
+        expect(listWorkspaceUsageRecords(replayDb, workspaceId)).toEqual(usageBeforeReplay);
+        expect(workerMcpGateway.listTools).toHaveBeenCalledTimes(discoveriesBeforeReplay);
+        expect(workerMcpGateway.callTool).toHaveBeenCalledTimes(effectsBeforeReplay);
+      } finally {
+        replayDb.sqlite.close();
+      }
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
       first.completion.resolve();
       await first.execution;
