@@ -662,6 +662,13 @@ describe('Turn-owned conversation originals', () => {
         JSON.stringify(state.store.listThreadItems(state.workspaceId, receiving.id))
       ).not.toContain(privateMarker);
     }
+    if (targetRef === 'new-task-worker') {
+      const reference = state.store
+        .listThreadItems(state.workspaceId, source.id)
+        .find((item) => item.type === 'status' && item.causationId === accepted.turn.id);
+      expect(reference).toBeDefined();
+      expect(state.store.getTurnById(reference!.turnId).fileInputs ?? []).toEqual([]);
+    }
     if (targetRef === 'new-task-worker') expect(accepted.turn.fileInputs).toEqual(input.fileInputs);
     expect(provider.createResponses).not.toHaveBeenCalled();
     const replay = await app.request(

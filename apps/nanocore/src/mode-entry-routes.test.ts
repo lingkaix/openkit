@@ -1037,8 +1037,8 @@ describe('conversation.submit worker acceptance wait', () => {
       content: { format: 'text', body: 'This newer version must not replace selected v1.' },
     });
 
-    const replayAcceptedRequest = () =>
-      app.request(
+    const replayAcceptedRequest = (targetApp = app) =>
+      targetApp.request(
         ...operationRequest(
           'conversation.submit',
           {
@@ -1149,6 +1149,17 @@ describe('conversation.submit worker acceptance wait', () => {
         }),
       });
       expect(['pending', 'running']).toContain(accepted.turn.status);
+      const originReferences = () =>
+        store
+          .listThreadItems(workerScope.workspaceId, 'th_00000000-0000-7000-8000-000000000001')
+          .filter((item) => item.type === 'status' && item.causationId === accepted.turn.id);
+      expect(originReferences()).toHaveLength(1);
+      expect(originReferences()[0]).toMatchObject({
+        type: 'status',
+        status: 'completed',
+        summary: expect.stringContaining(receiving.id),
+      });
+      const originReference = structuredClone(originReferences()[0]);
       const receipt = structuredClone(
         store.getCommandRequest('conversation.submit', requestId, {
           actorId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1251,6 +1262,26 @@ describe('conversation.submit worker acceptance wait', () => {
       const completed = await app.request(...operationRequest('turn.read', workerScope));
       expect(completed.status).toBe(200);
       expect(await completed.json()).toMatchObject({ id: workerScope.turnId, status: 'completed' });
+      const reloaded = await createDemoStore({ dataRoot });
+      const restarted = createAppWithWorkspaceAuthority({
+        agentManifests: [workerSetup.manifest],
+        coreDb,
+        dataRoot,
+        fileAdmission: native.fileAdmission,
+        workerControlGateway: native.workerControlGateway,
+        openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
+        store: reloaded,
+        turnExecutor: executor,
+      });
+      const replayAfterRestart = await replayAcceptedRequest(restarted);
+      expect(replayAfterRestart.status, await replayAfterRestart.clone().text()).toBe(202);
+      expect(
+        reloaded
+          .listThreadItems(workerScope.workspaceId, 'th_00000000-0000-7000-8000-000000000001')
+          .filter((item) => item.type === 'status' && item.causationId === accepted.turn.id)
+      ).toEqual([originReference]);
+      expect(reloaded.listThreadTurns(workerScope.workspaceId, receiving.id)).toHaveLength(1);
+      expect(executor.launches).toBe(1);
     } finally {
       executor.completion.resolve();
       await pending.catch(() => undefined);

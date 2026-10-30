@@ -425,6 +425,31 @@ function replayConversationCommand(
       throw new Error('Conversation receiving lineage is contradictory.');
     }
     if (metadata.resultKind === 'worker-turn') {
+      if (currentTurn.threadId !== threadId) {
+        const origin = store.getTurn(
+          workspaceId,
+          threadId,
+          providerChatTurnId(triggerActor, workspaceId, threadId, record.requestId)
+        );
+        const reference = origin.items.find(
+          (item) => item.id === deriveEntityId('it', ['chat-worker-handoff', origin.id])
+        );
+        if (
+          origin.status !== 'completed' ||
+          canonicalIdentifierName(origin.triggerActor) !== canonicalIdentifierName(triggerActor) ||
+          reference?.type !== 'status' ||
+          reference.status !== 'completed' ||
+          reference.threadId !== threadId ||
+          reference.turnId !== origin.id ||
+          workspaceIdForOwner(reference.owner) !== workspaceId ||
+          reference.causationId !== currentTurn.id ||
+          reference.title !== 'Task Mode handoff' ||
+          reference.summary !== `Work directed to Thread ${currentTurn.threadId}.` ||
+          reference.createdAt !== origin.startedAt ||
+          reference.completedAt !== origin.completedAt
+        )
+          throw new Error('Conversation Worker origin reference is contradictory.');
+      }
       if (
         coreDb &&
         listSchedulerExecutionAttemptsForTurn(coreDb, {
@@ -3114,9 +3139,14 @@ export function createConversationService({
        *
        * @param completedAt Completion timestamp shared by first-slice Chat Mode items.
        * @param turnId Request-derived identity for provider work whose receipt may fail to persist.
+       * @param inputFileOptions Verified originals, omitted for an origin-only handoff reference.
        * @returns Created turn.
        */
-      const createChatTurn = async (completedAt: string, turnId?: string) => {
+      const createChatTurn = async (
+        completedAt: string,
+        turnId?: string,
+        inputFileOptions = fileOptions
+      ) => {
         const turn = await store.createTurn(
           workspaceId,
           threadId,
@@ -3124,7 +3154,7 @@ export function createConversationService({
           triggerActor,
           null,
           {
-            ...fileOptions,
+            ...inputFileOptions,
             turnId: turnId ?? providerTurnId,
             ...(chatInput.reasoningEffort !== undefined
               ? { reasoningEffort: chatInput.reasoningEffort }
@@ -3435,6 +3465,33 @@ export function createConversationService({
             'recovery_required',
             'The Worker Turn exists without its conversation receipt.',
             409
+          );
+        }
+        if (receivingThreadId !== threadId) {
+          const at = new Date().toISOString();
+          const origin = await createChatTurn(at, providerTurnId, {});
+          // Publish the exact Thread reference before downstream admission can retain its receipt.
+          await store.completeTurn(
+            origin.id,
+            { status: 'completed', completedAt: at },
+            {
+              items: [
+                {
+                  id: deriveEntityId('it', ['chat-worker-handoff', origin.id]),
+                  owner: { kind: 'workspace', workspaceId },
+                  threadId,
+                  turnId: origin.id,
+                  type: 'status',
+                  status: 'completed',
+                  level: 'info',
+                  title: 'Task Mode handoff',
+                  summary: `Work directed to Thread ${receivingThreadId}.`,
+                  causationId: reservedTurnId,
+                  createdAt: origin.startedAt ?? at,
+                  completedAt: at,
+                },
+              ],
+            }
           );
         }
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
