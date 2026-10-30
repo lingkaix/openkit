@@ -2084,8 +2084,18 @@ describe('terminal failed-start product recovery', () => {
       expect(backend.cancel).not.toHaveBeenCalled();
       expect(backend.release).not.toHaveBeenCalled();
       expect(backend.prepareLaunch).toHaveBeenCalledTimes(1);
+      const launchWorkspaceDb = vi.mocked(backend.prepareLaunch).mock.calls[0]![1];
+      expect(launchWorkspaceDb).toMatchObject({
+        scope: 'workspace',
+        dataRoot: f.dataRoot,
+        workspaceId: launchedPackage.scope.workspaceId,
+      });
+      expect(launchWorkspaceDb.sqlite.name).toBe(
+        join(f.dataRoot, 'workspaces', launchedPackage.scope.workspaceId, 'db/workspace.sqlite')
+      );
       expect(backend.prepareLaunch).toHaveBeenCalledWith(
-        await vi.mocked(backend.materialize).mock.results[0]!.value
+        await vi.mocked(backend.materialize).mock.results[0]!.value,
+        launchWorkspaceDb
       );
       await recoverPendingRequestsAtBoot(f.store, f.pending);
       const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
