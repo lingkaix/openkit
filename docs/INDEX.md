@@ -259,6 +259,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261025-independent_doc_audit_process.md` — Independent Documentation Audit: Process Group
 - `docs/audits/20261025-independent_doc_audit_supplement.md` — Independent Documentation Audit: Supplement From A Second Session
 - `docs/audits/20261030-independent_doc_audit_review_part1.md` — Independent Documentation Audit: Team Review Of Part 1
+- `docs/audits/20261030-independent_doc_audit_review_part3.md` — Independent Documentation Audit: Team Review Of Part 3
 - `docs/audits/20261030-independent_doc_audit_review_part4.md` — Independent Documentation Audit: Team Review Of Part 4
 
 ## Platform References

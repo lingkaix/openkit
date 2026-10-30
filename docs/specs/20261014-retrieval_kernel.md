@@ -26,7 +26,7 @@ The kernel does not decide whether a retrieved claim is true. It does not publis
 
 - [Storage](../core/storage.md)
 - [Knowledge](../core/knowledge.md)
-- [Permissions](../core/policy.md)
+- [Policy](../core/policy.md)
 
 ## Storage Content And Derivation
 
@@ -128,7 +128,7 @@ Before a product query, NanoCore and the source adapters construct readable scop
 
 The adapter reconciles each admitted inventory with its scope generation before asserting freshness. Scope construction must separate distinct read eligibility from creation. If current authorization no longer covers a complete generation, rebuild that scope from current admitted records before opening it. If that cannot complete, fail the affected operation explicitly; do not silently drop a shared scope as the normal query path. A final hit check cannot substitute for this pre-ranking boundary.
 
-For Assistant use, NanoCore resolves both the source read scope and the destination audience under [Permissions](../core/policy.md#assistant-disclosure-authorization). It excludes sources that cannot reach that audience before the query supplies model context. Every concrete read and later publication retain their current permission checks.
+For Assistant use, NanoCore resolves both the source read scope and the destination audience under [Policy](../core/policy.md#assistant-disclosure-authorization). It excludes sources that cannot reach that audience before the query supplies model context. Every concrete read and later publication retain their current permission checks.
 
 For every query mode, the kernel resolves the caller's scope set before opening any generation or canonical scan text. BM25 document counts, document frequencies, field lengths, coverage counts, and scans operate only inside those named generations. It merges only their eligible hits. Unauthorized generations cannot become speculative candidates or contribute statistics. A scope Boolean clause over a mixed index and a post-filter over ranked hits are both insufficient.
 
@@ -152,7 +152,7 @@ The querying act owns one immutable file per trace under its Thread/Turn at the 
 
 The proposed tokenizer amendment applies to indexing, query analysis, and Knowledge Manager answer sufficiency together. The current answer rule requires two distinct query terms in the page, or a one-term query in the title. This revision keeps that sufficiency rule; finding a short term in a body is not by itself a sufficient answer. The same selected tokenizer must analyze query, title, and body.
 
-These mappings govern the required owner amendments listed below. Knowledge Governance, Core Permissions, the Policy Model, and their active-page, forgetting, conflict, confidentiality, and deterministic-selection rules remain binding.
+These mappings govern the required owner amendments listed below. Knowledge Governance, Core Policy, the Policy Model, and their active-page, forgetting, conflict, confidentiality, and deterministic-selection rules remain binding.
 
 ### Generic Digest-Window Scan
 
@@ -260,9 +260,9 @@ Runtime packages must not download dictionaries on first query. Package their id
 
 ## Current Implementation Projection
 
-Partially implemented. The Rust executable provides CLI, MCP and trusted local service faces. NanoCore supervises the service, admits current product sources and replaces Knowledge lexical JSON postings with kernel retrieval while retaining non-lexical projections. Canonical Git notebooks, commit-bearing evidence and User/Server scope surfaces remain pre-existing unimplemented requirements. The current file-backed Workspace path verifies exact observed page bytes without claiming retained commit pinning. The 2026-10-15 context/source/reference/query-act direction supersedes the union pin/trace questions; the coordinator and Consultant accepted its request and trace details under the engineer's delegation, and Phase B implements them. The governed path uses qualified pins, separate scored responses and immutable query-owned trace files; threadless direct User calls publish none. The current byte-backed projection records no retained notebook commit. The upload maximum remains dependent on the Artifacts owner. [Chat Mode](20260704-chat_mode_assistant.md#assistant-history-tool) now defines the accepted history Tool binding; its implementation remains separate evidence.
+Partially implemented. The Rust executable provides CLI, MCP and trusted local service faces. NanoCore supervises the service, admits current product sources and replaces Knowledge lexical JSON postings with kernel retrieval while retaining non-lexical projections. Retrieval reads canonical Git notebooks at one pinned commit, carries that commit as `notebookRevision` in its evidence, and collects Workspace, Server, and User Memory inventories (`apps/nanocore/src/retrieval-knowledge-adapter.ts`). The 2026-10-15 context/source/reference/query-act direction supersedes the union pin/trace questions; the coordinator and Consultant accepted its request and trace details under the engineer's delegation, and Phase B implements them. The governed path uses qualified pins, separate scored responses and immutable query-owned trace files; threadless direct User calls publish none. The upload maximum remains dependent on the Artifacts owner. [Chat Mode](20260704-chat_mode_assistant.md#assistant-history-tool) now defines the accepted history Tool binding; its implementation remains separate evidence.
 
-The dependency baseline is Tantivy 0.26.2, tantivy-jieba, and Lindera 5.0.1 with the runtime-packaged IPADIC Japanese dictionary. OpenKit adapts the Lindera Segmenter directly to Tantivy tokens; the unused lindera-tantivy and lindera-analysis dependencies are removed under #249 with characterization checks for token fields and scoped retrieval. Select one segmentation tokenizer per Document: Chinese Jieba, Japanese Lindera, or Unicode word tokenization for other text. A reliable source language hint selects it. Without a hint, kana selects Japanese, Han without kana selects Chinese, and other text selects Unicode tokenization. Query, sidecar, title, and body use the corresponding settings and shared Latin normalization. Do not run both dictionary tokenizers because a hint is absent.
+The dependency baseline is Tantivy 0.26.2, tantivy-jieba, and Lindera 5.0.1 with the IPADIC Japanese dictionary embedded in the executable. OpenKit adapts the Lindera Segmenter directly to Tantivy tokens; the unused lindera-tantivy and lindera-analysis dependencies are removed under #249 with characterization checks for token fields and scoped retrieval. Select one segmentation tokenizer per Document: Chinese Jieba, Japanese Lindera, or Unicode word tokenization for other text. A reliable source language hint selects it. Without a hint, kana selects Japanese, Han without kana selects Chinese, and other text selects Unicode tokenization. Query, sidecar, title, and body use the corresponding settings and shared Latin normalization. Do not run both dictionary tokenizers because a hint is absent.
 
 For `htmlescape 0.3.1`, OpenKit elects Apache-2.0 and packages the unedited canonical license text with separate OpenKit election/provenance metadata. That metadata is not an upstream notice. The corrected Linux dependency graphs exclude `kanaria`. These source corrections do not close [#249](https://github.com/lingkaix/openkit/issues/249): both target packages still require inspection for exact license/provenance bytes and the corrected dependency graph.
 
@@ -306,7 +306,7 @@ Each line identifies an existing owner and the accepted rule to retain or replac
 - [Work Resource Interaction](20260713-work_resource_interaction_model.md): supply canonical file identity for sidecars of unreadable Artifacts/uploads, keep readable Artifact/Material text direct, and define any missing upload identity through the Artifact/upload topic; retain exact versions, immutable origin, current audience, admission limits, and storage ownership. Arbitrary-file admission follows Work Resource Interaction. Authored description storage remains with its source owner, not new Kernel state.
 - [Deployment Host Requirements](20260909-deployment_host_requirements.md): include the target-matched supervised retrieval executable, dictionaries, and measured UTF-8 service resource requirements for amd64 and arm64; remove no existing qualification boundary and add no format extractor or conversion of resource advice into a hard minimum.
 
-Knowledge Governance, Core Permissions, Thread Visibility, the Policy Model, and Policy Enforcement Mapping remain binding. The large-file amendments preserve their confidentiality, source, active-page, conflict, forgetting, effect, and evidence boundaries. Session Materialization owns the read-only Turn view; Kernel indexing alone implies no mount or storage grant.
+Knowledge Governance, Core Policy, Thread Visibility, the Policy Model, and Policy Enforcement Mapping remain binding. The large-file amendments preserve their confidentiality, source, active-page, conflict, forgetting, effect, and evidence boundaries. Session Materialization owns the read-only Turn view; Kernel indexing alone implies no mount or storage grant.
 
 ## Open Decisions
 
