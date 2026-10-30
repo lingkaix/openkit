@@ -33,6 +33,7 @@ import {
 import { createChannelServices } from '../channel-services.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import {
   compactWorkspaceEvidenceBundles,
   recordWorkspaceEvidenceBundle,
@@ -76,11 +77,16 @@ import {
   type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
-import { admitWorkspaceBackup, admitWorkspaceBackupAtCore } from './workspace-restore.js';
+import {
+  activateWorkspaceRecoveryAtCore,
+  admitWorkspaceBackup,
+  admitWorkspaceBackupAtCore,
+} from './workspace-restore.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) };
 const roots: string[] = [];
+const readmissionCleanups: (() => void)[] = [];
 // Coordinator's release-policy addendum extends the callable stub without changing the binary grammar.
 const runCli: (
   argv: readonly string[],
@@ -90,6 +96,7 @@ const runCli: (
 
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  for (const cleanup of readmissionCleanups.splice(0).reverse()) cleanup();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -415,7 +422,261 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
   expect(String(error)).not.toContain(f.root);
 }
 
+/** Reaches boot quarantine through a real interrupted restore, with stale live read models. */
+async function readmissionFixture(priorRecovery = false) {
+  const f = await fixture();
+  let foreignRuntimeConfigManager: ReturnType<typeof createRuntimeConfigManager> | undefined;
+  if (priorRecovery) {
+    const foreignDataRoot = join(f.root, 'foreign-data-root');
+    await createDemoStore({ dataRoot: foreignDataRoot });
+    foreignRuntimeConfigManager = createRuntimeConfigManager({ dataRoot: foreignDataRoot });
+  }
+  const sibling = await f.store.createWorkspace('Readmission healthy sibling');
+  const registry = openCoreDb(f.dataRoot);
+  try {
+    recordWorkspaceOwnerMembership({
+      coreDb: registry,
+      workspaceId: sibling.id,
+      ownerUserId: f.ownerId,
+    });
+  } finally {
+    registry.sqlite.close();
+  }
+  const staleThread = await f.store.createThread(workspaceId, 'Newer than the restored snapshot');
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const configPath = join(f.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc');
+  const config = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      ...config,
+      workspace: {
+        ...(config.workspace as Record<string, unknown>),
+        name: 'Current recovered configuration',
+      },
+    })
+  );
+  await shutdownControlStoreWorkerClient();
+  const input = {
+    command: 'restore' as const,
+    dataRoot: f.dataRoot,
+    bundleRoot: f.bundleRoot,
+    workspaceId,
+    requestId: f.requestId,
+    acknowledgeLostSafety: false,
+    expectedRelease: f.manifest.release,
+  };
+  const priorRequestId = priorRecovery ? randomUUID() : undefined;
+  if (priorRequestId) {
+    await expect(
+      admitWorkspaceBackup({ ...input, requestId: priorRequestId })
+    ).resolves.toMatchObject({
+      disposition: 'restored',
+      workspaceId,
+    });
+  }
+  let interrupted = false;
+  await expect(
+    admitWorkspaceBackup(input, {
+      atBoundary: (point) => {
+        if (point !== 'before-target-rename') return;
+        interrupted = true;
+        throw new Error('Interrupt before canonical placement for boot readmission.');
+      },
+    })
+  ).rejects.toMatchObject({ code: 'recovery-required' });
+  expect(interrupted).toBe(true);
+  const core = openCoreDb(f.dataRoot);
+  readmissionCleanups.push(() => core.sqlite.close());
+  const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
+  readmissionCleanups.push(() => lock.release());
+  const gate = new WorkspaceMutationAdmission();
+  restoreWorkspaceRecoveryAdmission(core, gate);
+  f.store.setWorkspaceMutationAdmission(gate);
+  const prepared = readRecoveryAdmission(core, f.requestId)!;
+  expect(prepared.state).toBe('prepared');
+  const freeze = resumeWorkspaceRecoveryOwner(core, prepared, gate, () => []);
+  if (freeze.status !== 'frozen') throw new Error('Expected the boot-restored recovery freeze.');
+  readmissionCleanups.push(() => freeze.release());
+  const owner = {
+    core,
+    fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
+    native: { gate, freeze },
+  };
+  const activation = {
+    requestId: f.requestId,
+    store: f.store,
+    runtimeConfigManager,
+    currentAuthority: () => {},
+  };
+  return {
+    ...f,
+    sibling,
+    staleThread,
+    runtimeConfigManager,
+    configPath,
+    input,
+    gate,
+    freeze,
+    owner,
+    activation,
+    priorRequestId,
+    foreignRuntimeConfigManager,
+  };
+}
+
 describe('D0-2 same-deployment restore', () => {
+  it('readmission: opens only the validated finished target and preserves independent scope failures', async () => {
+    const f = await readmissionFixture();
+    const result = await admitWorkspaceBackupAtCore(f.owner, f.input);
+    expect(result).toMatchObject({ disposition: 'restored', workspaceId });
+    const finished = readRecoveryAdmission(f.owner.core, f.requestId);
+    expect(finished?.state).toBe('finished');
+    expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+    await expect(f.store.createThread(workspaceId, 'Still closed')).rejects.toBeInstanceOf(Error);
+    const siblingBefore = f.store.getWorkspace(f.sibling.id);
+    const configBefore = f.runtimeConfigManager.current();
+    expect(
+      configBefore.workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config
+        .workspace.name
+    ).not.toBe('Current recovered configuration');
+    const refusedSibling = allocateEntityId('ws');
+    refuseScope(f.dataRoot, { scope: 'workspace', id: refusedSibling, check: 'database' });
+    refuseScope(f.dataRoot, { scope: 'workspace', id: workspaceId, check: 'index' });
+    const independent = scopeAdmissionFailures(f.dataRoot).filter(
+      (failure) =>
+        failure.scope !== 'workspace' || failure.id !== workspaceId || failure.check !== 'recovery'
+    );
+    let checkedAuthority = false;
+    const activated = activateWorkspaceRecoveryAtCore(f.owner, {
+      ...f.activation,
+      currentAuthority: () => {
+        checkedAuthority = true;
+        expect(f.gate.enter(workspaceId)).toBeNull();
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      },
+    });
+    expect(activated).toEqual(result);
+    expect(checkedAuthority).toBe(true);
+    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(finished);
+    expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
+    // Same-Deployment Restore step 5 requires the restored authority, never the predecessor cache.
+    expect(f.store.getWorkspace(workspaceId).id).toBe(workspaceId);
+    expect(() => f.store.getThread(workspaceId, f.staleThread.id)).toThrow();
+    expect(
+      f.runtimeConfigManager
+        .current()
+        .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config.workspace.name
+    ).toBe('Current recovered configuration');
+    expect(
+      f.runtimeConfigManager
+        .current()
+        .workspaceConfigs.find((entry) => entry.workspaceId === f.sibling.id)
+    ).toEqual(configBefore.workspaceConfigs.find((entry) => entry.workspaceId === f.sibling.id));
+    expect(f.store.getWorkspace(f.sibling.id)).toEqual(siblingBefore);
+    f.freeze.release();
+    const ordinary = f.gate.enter(workspaceId);
+    expect(ordinary).toBeTypeOf('function');
+    ordinary!();
+    await expect(
+      f.store.createThread(workspaceId, 'Recovered target accepts fresh work')
+    ).resolves.toMatchObject({ name: 'Recovered target accepts fresh work' });
+    await expect(
+      f.store.createThread(f.sibling.id, 'Sibling remains usable')
+    ).resolves.toMatchObject({ name: 'Sibling remains usable' });
+  }, 120_000);
+
+  it('readmission: terminal placement cannot override stale ownership, lost authority or invalid target', async () => {
+    const f = await readmissionFixture(true);
+    const assertClosed = () => {
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(f.gate.enter(workspaceId)).toBeNull();
+      expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+    };
+    expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow(
+      WorkspaceRecoveryError
+    );
+    assertClosed();
+    // A previous result cannot settle the later recovery which owns the resumed boot closure.
+    expect(readRecoveryAdmission(f.owner.core, f.priorRequestId!)?.state).toBe('finished');
+    expect(() =>
+      activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: f.priorRequestId! })
+    ).toThrow(WorkspaceRecoveryError);
+    assertClosed();
+    const result = await admitWorkspaceBackupAtCore(f.owner, f.input);
+    const finished = readRecoveryAdmission(f.owner.core, f.requestId);
+    expect(result.disposition).toBe('restored');
+    expect(() =>
+      activateWorkspaceRecoveryAtCore(f.owner, {
+        ...f.activation,
+        runtimeConfigManager: f.foreignRuntimeConfigManager!,
+      })
+    ).toThrow(WorkspaceRecoveryError);
+    assertClosed();
+    expect(() =>
+      activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: randomUUID() })
+    ).toThrow(WorkspaceRecoveryError);
+    const foreignGate = new WorkspaceMutationAdmission();
+    const foreign = foreignGate.tryFreeze(workspaceId, () => []);
+    if (foreign.status !== 'frozen') throw new Error('Expected the independent foreign freeze.');
+    try {
+      expect(() =>
+        activateWorkspaceRecoveryAtCore(
+          { ...f.owner, native: { gate: f.gate, freeze: foreign } },
+          f.activation
+        )
+      ).toThrow(WorkspaceRecoveryError);
+    } finally {
+      foreign.release();
+    }
+    expect(() =>
+      activateWorkspaceRecoveryAtCore(f.owner, {
+        ...f.activation,
+        currentAuthority: () => {
+          throw new Error('Current administrator authority was revoked.');
+        },
+      })
+    ).toThrow();
+    assertClosed();
+    // Same-Deployment Restore step 5 requires an authoritative open, not just valid config.
+    const native = new Database(workspaceDbPath(f.dataRoot, workspaceId), { fileMustExist: true });
+    const retainedThread = native
+      .prepare('SELECT record_json FROM control_threads WHERE id=?')
+      .pluck()
+      .get(DEMO_THREAD_ID) as string;
+    expect(JSON.parse(retainedThread)).toMatchObject({ id: DEMO_THREAD_ID });
+    try {
+      native
+        .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+        .run('{}', DEMO_THREAD_ID);
+      expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
+      assertClosed();
+    } finally {
+      native
+        .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+        .run(retainedThread, DEMO_THREAD_ID);
+      native.close();
+    }
+    const config = readFileSync(f.configPath);
+    writeFileSync(f.configPath, '{ invalid restored config');
+    expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
+    expect(readFileSync(f.configPath, 'utf8')).toBe('{ invalid restored config');
+    assertClosed();
+    writeFileSync(f.configPath, config);
+    refuseScope(f.dataRoot, { scope: 'workspace', id: workspaceId, check: 'retired' });
+    expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
+    expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual({
+      scope: 'workspace',
+      id: workspaceId,
+      check: 'retired',
+    });
+    f.freeze.release();
+    expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
+    assertClosed();
+    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(finished);
+  }, 120_000);
+
   it('prepares an admitted frozen target under the existing root lock without publishing it', async () => {
     const f = await fixture();
     const gate = new WorkspaceMutationAdmission();

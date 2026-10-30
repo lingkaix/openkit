@@ -74,14 +74,7 @@ export function resumeWorkspaceRecoveryOwner(
       failure.id === owned.workspace_id &&
       failure.check !== 'index'
   );
-  const unresolved = recoveryAdmissions(core, owned.workspace_id).filter(
-    (row) =>
-      row.workspace_id === owned.workspace_id &&
-      (row.state === 'prepared' ||
-        (row.admission_id.startsWith('wsbak_') && row.state === 'finished') ||
-        (row.state === 'abandoned' &&
-          ['moved-out', 'quarantined'].includes(row.proof.result.disposition)))
-  );
+  const unresolved = unresolvedRecoveryAdmissions(core, owned.workspace_id);
   if (
     !current ||
     !isDeepStrictEqual(current, owned) ||
@@ -108,6 +101,41 @@ export function resumeWorkspaceRecoveryOwner(
       candidateRef: current.candidate_ref,
     },
     readBlockers
+  );
+}
+
+/** Reads only a finished target whose original exclusion has no competing unfinished owner. */
+export function readWorkspaceRecoveryReadmission(
+  core: CoreDb,
+  id: string,
+  admission: WorkspaceMutationAdmission,
+  freeze: WorkspaceFrozenAdmission
+): RecoveryAdmission {
+  const owned = readRecoveryAdmission(core, id);
+  if (
+    !owned ||
+    owned.state !== 'finished' ||
+    !RequestIdSchema.safeParse(id).success ||
+    !['restore', 'move-in'].includes(owned.proof.input.command) ||
+    unresolvedRecoveryAdmissions(core, owned.workspace_id).length !== 0 ||
+    !admission.ownsRecoveryOrigin(owned.workspace_id, freeze, {
+      admissionId: owned.admission_id,
+      revision: owned.revision - 1,
+      candidateRef: owned.candidate_ref,
+    })
+  )
+    refuseRecovery('recovery-required');
+  return owned;
+}
+
+/** The same unresolved-owner predicate binds boot rejoin and terminal serving readmission. */
+function unresolvedRecoveryAdmissions(core: CoreDb, workspaceId: string): RecoveryAdmission[] {
+  return recoveryAdmissions(core, workspaceId).filter(
+    (row) =>
+      row.state === 'prepared' ||
+      (row.admission_id.startsWith('wsbak_') && row.state === 'finished') ||
+      (row.state === 'abandoned' &&
+        ['moved-out', 'quarantined'].includes(row.proof.result.disposition))
   );
 }
 

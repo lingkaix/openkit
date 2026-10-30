@@ -139,6 +139,22 @@ export class WorkspaceMutationAdmission {
     return !!state && !state.closed && state.captureClosed?.owner === owner;
   }
 
+  /** A resumed owner must match its retained origin; a fresh freeze has no predecessor origin. */
+  public ownsRecoveryOrigin(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    origin: WorkspaceRecoveryFreezeOrigin
+  ): boolean {
+    if (!this.ownsFreeze(workspaceId, owner)) return false;
+    const retained = this.gates.get(workspaceId)!.captureClosed!.origin;
+    return (
+      !retained ||
+      (retained.admissionId === origin.admissionId &&
+        retained.revision === origin.revision &&
+        retained.candidateRef === origin.candidateRef)
+    );
+  }
+
   /** The recovery admission owner installs its exact two native bindings; replacing them retires old calls. */
   public bindRecovery(
     workspaceId: string,

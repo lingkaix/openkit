@@ -2907,6 +2907,19 @@ export class FsStore {
     for (const approval of approvals) this.approvals.set(approval.id, approval);
   }
 
+  /** Settles this target's reopen-only marker after the recovery owner validates placement and all projections. */
+  public settleRecoveredWorkspacePublication(
+    workspaceId: string,
+    freeze: WorkspaceFrozenAdmission
+  ): void {
+    if (
+      !this.workspaceMutationAdmission?.ownsFreeze(workspaceId, freeze) ||
+      !this.workspaces.has(workspaceId)
+    )
+      throw new Error('Workspace recovery freeze is not current.');
+    this.unacknowledgedWorkspaces.delete(workspaceId);
+  }
+
   /** Removes one Workspace from process-local read models without touching its filesystem root. */
   public evictWorkspace(workspaceId: string): void {
     this.assertWorkspacePublicationAcknowledged(workspaceId);

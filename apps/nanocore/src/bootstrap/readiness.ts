@@ -4,7 +4,10 @@ import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { WorkspaceIdSchema } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 
 /** A refused authority or unavailable projection; never persisted or used as replacement truth. */
 export interface ScopeAdmissionFailure {
@@ -13,7 +16,7 @@ export interface ScopeAdmissionFailure {
   readonly check: 'layout' | 'database' | 'records' | 'recovery' | 'index' | 'retired';
 }
 
-// Boot and ordinary callers share the same refusal until process restart revalidates authority.
+// Boot and ordinary callers share refusal until restart or exact-target recovery revalidates authority.
 const scopeFailures = new Map<string, Map<string, ScopeAdmissionFailure>>();
 
 /** Records the first failed check; trusted durable retirement supersedes that diagnostic without changing bytes. */
@@ -50,6 +53,26 @@ export function restoreWorkspaceRetirementAdmission(input: {
 /** Returns bounded, owner-authored diagnoses for the existing authorized readiness projection. */
 export function scopeAdmissionFailures(dataRoot: string): readonly ScopeAdmissionFailure[] {
   return [...(scopeFailures.get(resolve(dataRoot))?.values() ?? [])];
+}
+
+/** Removes only the exact recovery diagnosis after its owner validates the target under this freeze. */
+export function settleWorkspaceRecoveryScope(input: {
+  readonly dataRoot: string;
+  readonly failure: ScopeAdmissionFailure;
+  readonly admission: WorkspaceMutationAdmission;
+  readonly freeze: WorkspaceFrozenAdmission;
+}): void {
+  const { failure } = input;
+  const failures = scopeFailures.get(resolve(input.dataRoot));
+  const key = `workspace:${failure.id}:authority`;
+  if (
+    failure.scope !== 'workspace' ||
+    failure.check !== 'recovery' ||
+    failures?.get(key) !== failure ||
+    !input.admission.ownsFreeze(failure.id, input.freeze)
+  )
+    throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);
+  failures.delete(key);
 }
 
 /** Tests admission without opening or reconstructing a refused scope. */

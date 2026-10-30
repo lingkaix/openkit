@@ -279,6 +279,8 @@ interface RuntimeConfigSnapshotInput {
  * Last-known-good runtime config manager.
  */
 export interface RuntimeConfigManager {
+  /** Returns the captured storage root for exact-target lifecycle dependency binding. */
+  getDataRoot(): string | null;
   /** Returns the active runtime config snapshot. */
   current(): RuntimeConfigSnapshot;
   /** Validates and replaces only a restored target while its exact recovery freeze remains closed. */
@@ -525,6 +527,7 @@ export function createRuntimeConfigManager(
 
   return {
     current: () => current,
+    getDataRoot: () => options.dataRoot,
     reloadRecoveredWorkspace: (workspaceId, admission, freeze) => {
       WorkspaceIdSchema.parse(workspaceId);
       if (!admission.ownsFreeze(workspaceId, freeze))

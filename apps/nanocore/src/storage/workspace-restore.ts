@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { scopeAdmissionFailures, settleWorkspaceRecoveryScope } from '../bootstrap/readiness.js';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
+import type { FsStore } from '../lib/store.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -43,6 +46,7 @@ import {
   prepareRecoveryAdmission,
   type RecoveryAdmission,
   readRecoveryAdmission,
+  readWorkspaceRecoveryReadmission,
   recoveryReport,
   refuseRecovery,
   withRecoveryRoot,
@@ -242,6 +246,74 @@ export async function admitWorkspaceBackupAtCore(
 ): Promise<WorkspaceRecoveryCliReport> {
   if (!owner.native) refuseRecovery('recovery-required');
   return admitTarget(owner, input, deps);
+}
+
+/**
+ * Revalidates one placed target before its exact recovery refusal and freeze can end.
+ * The original finished result proves placement; it never substitutes for serving validation.
+ */
+export function activateWorkspaceRecoveryAtCore(
+  owner: WorkspaceRecoveryTargetOwner,
+  input: {
+    readonly requestId: string;
+    readonly store: FsStore;
+    readonly runtimeConfigManager: RuntimeConfigManager;
+    readonly currentAuthority: () => void;
+  }
+): WorkspaceRecoveryCliReport {
+  const { core, native } = owner;
+  if (!native) refuseRecovery('recovery-required');
+  input.currentAuthority();
+  const owned = readWorkspaceRecoveryReadmission(core, input.requestId, native.gate, native.freeze);
+  if (
+    !['restore', 'move-in'].includes(owned.proof.input.command) ||
+    owned.proof.result.disposition !==
+      (owned.proof.input.command === 'restore' ? 'restored' : 'imported') ||
+    owned.proof.result.workspaceId !== owned.workspace_id ||
+    owned.candidate_ref !==
+      join(
+        `${resolve(core.dataRoot)}.workspace-recovery-${owned.admission_id}`,
+        'workspaces',
+        owned.workspace_id
+      ) ||
+    !owned.proof.candidateDigest ||
+    input.store.getDataRoot() === null ||
+    resolve(input.store.getDataRoot()!) !== resolve(core.dataRoot) ||
+    input.runtimeConfigManager.getDataRoot() === null ||
+    resolve(input.runtimeConfigManager.getDataRoot()!) !== resolve(core.dataRoot) ||
+    candidateDigest(join(core.dataRoot, 'workspaces', owned.workspace_id)) !==
+      owned.proof.candidateDigest
+  )
+    refuseRecovery('recovery-required');
+  const workspaceId = owned.workspace_id;
+  assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
+  const failure = scopeAdmissionFailures(core.dataRoot).find(
+    (entry) => entry.scope === 'workspace' && entry.id === workspaceId && entry.check !== 'index'
+  );
+  if (failure?.check !== 'recovery') refuseRecovery('recovery-required');
+  // Both loaders retain their owning checks and leave public authority refused on any failure.
+  input.store.reloadRecoveredWorkspace(workspaceId, native.freeze);
+  input.runtimeConfigManager.reloadRecoveredWorkspace(workspaceId, native.gate, native.freeze);
+  input.currentAuthority();
+  assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
+  if (
+    !isDeepStrictEqual(
+      readWorkspaceRecoveryReadmission(core, input.requestId, native.gate, native.freeze),
+      owned
+    ) ||
+    !scopeAdmissionFailures(core.dataRoot).includes(failure)
+  )
+    refuseRecovery('recovery-required');
+  // Synchronous settlement has no I/O, callback or await between validation and serving admission.
+  input.store.settleRecoveredWorkspacePublication(workspaceId, native.freeze);
+  settleWorkspaceRecoveryScope({
+    dataRoot: core.dataRoot,
+    failure,
+    admission: native.gate,
+    freeze: native.freeze,
+  });
+  native.gate.reopen(workspaceId, 'capture');
+  return owned.proof.result;
 }
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
