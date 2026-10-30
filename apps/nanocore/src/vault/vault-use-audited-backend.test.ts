@@ -7,6 +7,8 @@ import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../s
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createLockedVaultBackend } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
+import { createVaultGrant, revokeVaultGrant } from './vault-grants.js';
+import { createVaultReference } from './vault-references.js';
 import { createVaultUseAuditedBackend } from './vault-use-audited-backend.js';
 import { listVaultUseRecords } from './vault-use-records.js';
 
@@ -158,7 +160,11 @@ describe('vault use audited backend', () => {
     }
   });
 
-  it('rejects audited resolution when the reference owner scope differs from the caller scope', () => {
+  it.each([
+    'absent',
+    'unissued',
+    'revoked',
+  ] as const)('rejects mismatched resolution scope with an %s grant', (grantState) => {
     const { coreDb, workspaceDb } = createDbs();
     const backend = createEncryptedFileVaultBackend({
       masterKey: Buffer.alloc(32, 9),
@@ -173,10 +179,31 @@ describe('vault use audited backend', () => {
         referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
       });
 
+      const grantId =
+        grantState === 'absent' ? undefined : 'grant_00000000-0000-7919-a9bd-25953b88f539';
+      if (grantState === 'revoked') {
+        createVaultReference(coreDb, {
+          backendKind: backend.kind,
+          displayName: 'Scope refusal fixture',
+          ownerScope: 'server',
+          referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+          secretKind: 'mcp-credential',
+        });
+        createVaultGrant(coreDb, {
+          allowedInjectionPaths: ['gateway-only'],
+          grantId: grantId!,
+          lifetime: 'server',
+          ownerScope: 'server',
+          vaultReferenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+        });
+        expect(revokeVaultGrant(coreDb, { grantId: grantId! }).status).toBe('revoked');
+      }
+
       const audited = createVaultUseAuditedBackend({
         backend,
         createUseId: () => 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
         db: workspaceDb,
+        ...(grantId ? { grantId } : {}),
         now: () => '2026-07-05T02:04:00.000Z',
         ownerScope: 'workspace',
         resolvingPath: 'provider',
@@ -189,6 +216,7 @@ describe('vault use audited backend', () => {
       expect(listVaultUseRecords(workspaceDb)).toEqual([
         expect.objectContaining({
           failureCode: 'backend-unavailable',
+          grantId: grantId ?? null,
           materialVersion: null,
           outcome: 'failed',
           ownerScope: 'workspace',

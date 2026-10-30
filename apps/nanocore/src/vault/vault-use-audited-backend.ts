@@ -171,7 +171,7 @@ class VaultUseAuditedBackend implements VaultBackend {
       entry.ownerScope === this.input.ownerScope &&
       (entry.ownerScope !== 'workspace' || entry.workspaceId === this.input.workspaceId);
 
-    if (!matches && !this.input.grantId) {
+    if (!matches) {
       throw new VaultBackendError(
         'backend-unavailable',
         'Vault reference scope does not match resolution scope.'

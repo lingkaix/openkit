@@ -69,3 +69,5 @@ Request-owned Turn, Item, VaultGrant and PermissionDecision creation uses the sh
 Vault Grant JSON injection-path lists use the shared retained SQL v1 marker. Native reads check it before decoding the fixed string-list payload; creation and imported-history publication bind v1 explicitly. Unknown versions refuse reads, same-id replay and grant revocation before changing grant or dependent records. The existing issuance, scope and lifetime owners retain authority.
 
 Encrypted header and entry envelopes use the shared retained-v1 `schemaVersion` codec. Header verification binds that marker with the existing purpose, key kind and creation time. Missing, unsupported or predecessor-only markers refuse before family decoding with a redacted backend failure; no legacy reader or credential conversion is included.
+
+The audited resolver requires its scope and Workspace identity to match the reference even when a grant id is present. Existing Gateway and Worker consumers own canonical grant admission; the wrapper never treats the id string as cross-scope authority.
