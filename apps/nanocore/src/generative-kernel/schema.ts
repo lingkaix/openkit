@@ -160,6 +160,11 @@ function resolveEntityId(
     );
   }
   if (requestedId) {
+    if (!existing?.collections.some((collection) => collection.id === requestedId)) {
+      throw new KernelCommandError('validation_failed', 'New collection IDs must be omitted.', {
+        path: `collections.${name}.id`,
+      });
+    }
     return requestedId;
   }
   return previous?.id ?? allocateEntityId('col');
@@ -194,6 +199,11 @@ function resolveFieldId(
     return allocateEntityId('fld');
   }
   if (requestedId) {
+    if (!previousCollection?.fields.some((field) => field.id === requestedId)) {
+      throw new KernelCommandError('validation_failed', 'New field IDs must be omitted.', {
+        path: `collections.${collectionId}.fields.${name}.id`,
+      });
+    }
     return requestedId;
   }
   const previous = previousCollection?.fields.find((field) => field.name === name);

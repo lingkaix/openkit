@@ -209,10 +209,13 @@ export async function createLightApp(
   if (sourceSelection) LightAppDefinitionSourceSchema.parse(sourceSelection);
   const appId = allocateAppId(context.workspaceId, context.requestId);
   const appRoot = lightAppRoot(context.dataRoot, context.workspaceId, appId);
-  const admitted = admitLightAppSchema(schema, appId, 1);
   if (existsSync(appRoot)) {
     return replayOrRecoverCreate(context, appId, schema, sourceSelection, requestedDefinition);
   }
+  // Selected catalog definitions already have Core-assigned identities.
+  const admitted = sourceSelection
+    ? LightAppAdmittedSchemaSchema.parse({ ...schema, appId, schemaRevision: 1 })
+    : admitLightAppSchema(schema, appId, 1);
   ensureLightAppsInventory(context.dataRoot, context.workspaceId);
   if (countAppDirectories(context.dataRoot, context.workspaceId) >= APP_DIRECTORY_LIMIT) {
     throw new KernelCommandError('limit_exceeded', 'Workspace Light App limit exceeded.', {
@@ -324,12 +327,10 @@ export async function updateLightAppSchema(
         ) {
           throw new KernelCommandError('conflict', 'App or schema revision is stale.');
         }
-        const admitted = admitLightAppSchema(
-          schema,
-          appId,
-          nextSchemaRevision(appDb, current.schemaRevision),
-          parseSchema(current)
-        );
+        const schemaRevision = nextSchemaRevision(appDb, current.schemaRevision);
+        const admitted = sourceSelection
+          ? LightAppAdmittedSchemaSchema.parse({ ...schema, appId, schemaRevision })
+          : admitLightAppSchema(schema, appId, schemaRevision, parseSchema(current));
         const schemaJson = `${JSON.stringify(admitted)}\n`;
         const schemaDigest = persistDefinition(
           lightAppRoot(context.dataRoot, context.workspaceId, appId),
