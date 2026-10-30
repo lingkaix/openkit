@@ -903,25 +903,22 @@ export function createMcpConfig(input: {
     ? current.mcp.versions
     : [...current.mcp.versions, version];
   const allowedTools = [...(input.allowedTools ?? [])];
-  const packageDataKey = existingBinding?.packageDataKey ?? mcpDataKey(input.owner, id);
-  prepareMcpData(input.dataRoot, input.owner, packageDataKey);
-  const bindings =
-    existingBinding || allowedTools.length === 0
-      ? current.mcp.bindings
-      : [
-          ...current.mcp.bindings,
-          {
-            allowedTools,
-            credentialBindings: [],
-            enabled: false,
-            entryId: id,
-            packageDataKey,
-            pinnedSchemaSnapshotId: null,
-            revision: 1,
-            schemaPolicy: 'tracking' as const,
-            timeoutMs: 60_000,
-          },
-        ];
+  const bindings = [...current.mcp.bindings];
+  if (!existingBinding && allowedTools.length > 0) {
+    const packageDataKey = mcpDataKey(current, input.owner, id);
+    prepareMcpData(input.dataRoot, input.owner, packageDataKey);
+    bindings.push({
+      allowedTools,
+      credentialBindings: [],
+      enabled: false,
+      entryId: id,
+      packageDataKey,
+      pinnedSchemaSnapshotId: null,
+      revision: 1,
+      schemaPolicy: 'tracking',
+      timeoutMs: 60_000,
+    });
+  }
   const nextCatalog = parseResourceCatalogDocument({
     ...current,
     mcp: { ...current.mcp, bindings, entries, versions },
@@ -956,7 +953,8 @@ export function updateMcpBinding(input: {
   if (existing && existing.revision !== input.binding.revision) {
     throw new CatalogConflictError('MCP binding revision conflict.');
   }
-  const packageDataKey = existing?.packageDataKey ?? mcpDataKey(input.owner, input.entryId);
+  const packageDataKey =
+    existing?.packageDataKey ?? mcpDataKey(current, input.owner, input.entryId);
   prepareMcpData(input.dataRoot, input.owner, packageDataKey);
   const nextBinding: McpBindingRecord = {
     ...existing,
@@ -1326,9 +1324,39 @@ function catalogHasPublishedResidue(dataRoot: string, owner: ResourceCatalogOwne
   );
 }
 
-/** Server-owned bindings use a distinct key inside each consuming Workspace. */
-function mcpDataKey(owner: ResourceCatalogOwner, id: string): string {
-  return `${owner.kind === 'server' ? 'server_mcp' : 'mcp'}_${id}`;
+/** Shares one installation key, preserving retained binding identity across later versions. */
+function mcpDataKey(
+  catalog: ResourceCatalogDocument,
+  owner: ResourceCatalogOwner,
+  id: string
+): string {
+  if (owner.kind === 'server') return `server_mcp_${id}`;
+  const installations = catalog.plugins.installations.filter((installation) => {
+    const source = catalog.plugins.versions.find(
+      (version) =>
+        version.entryId === installation.pluginId && version.digest === installation.versionDigest
+    );
+    return source?.members.some((member) => member.kind === 'mcp' && member.catalogId === id);
+  });
+  if (installations.length > 1)
+    throw new CatalogConflictError('MCP entry has ambiguous installation ownership.');
+  const installation = installations[0];
+  if (!installation) return `mcp_${owner.workspaceId}_${id}`;
+  const memberIds = new Set(
+    catalog.plugins.versions
+      .filter((version) => version.entryId === installation.pluginId)
+      .flatMap((version) =>
+        version.members.filter((member) => member.kind === 'mcp').map((member) => member.catalogId)
+      )
+  );
+  const keys = new Set(
+    catalog.mcp.bindings
+      .filter((binding) => memberIds.has(binding.entryId))
+      .map((binding) => binding.packageDataKey)
+  );
+  if (keys.size > 1)
+    throw new CatalogConflictError('MCP installation has inconsistent retained data keys.');
+  return keys.values().next().value ?? `plugin_${owner.workspaceId}_${installation.pluginId}`;
 }
 
 /** Mutable MCP data is never created under the Server catalog. */

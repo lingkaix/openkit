@@ -105,6 +105,275 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
+  it('retains an original installation data key when a new version replaces every MCP member', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-legacy-data-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'legacy-installation-data');
+    const owner = { kind: 'workspace' as const, workspaceId };
+    const importPackage = () =>
+      importWorkspacePlugin({
+        createdAt: '2026-10-30T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision,
+        install: true,
+        producer: { id: testEntityId('usr', 'legacy-installation-data'), kind: 'user' },
+        treeRoot,
+        workspaceId,
+      });
+    const bindMember = (imported: ReturnType<typeof importPackage>, entryId: string) => {
+      const selected = selectMcpVersion({
+        dataRoot,
+        digest: imported.version.members.find((member) => member.catalogId === entryId)!
+          .versionDigest,
+        entryId,
+        expectedRevision: imported.catalog.revision,
+        owner,
+      });
+      return updateMcpBinding({
+        binding: {
+          allowedTools: ['echo'],
+          credentialBindings: [],
+          enabled: false,
+          pinnedSchemaSnapshotId: null,
+          revision: 0,
+          schemaPolicy: 'tracking',
+          timeoutMs: 60_000,
+        },
+        dataRoot,
+        entryId,
+        expectedRevision: selected.revision,
+        owner,
+      });
+    };
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      const original = bindMember(importPackage(), 'echo');
+      // The prior writer allocated this entry-based key. Publish that valid retained
+      // binding shape over genuine admitted records; the fixture grants no authority.
+      const retainedKey = 'mcp_echo';
+      const retainedDirectory = join(
+        dataRoot,
+        'workspaces',
+        workspaceId,
+        'catalog',
+        'mcp-data',
+        retainedKey
+      );
+      mkdirSync(retainedDirectory, { recursive: true });
+      writeFileSync(join(retainedDirectory, 'retained.txt'), 'original installation data');
+      const retained = publishWorkspaceResourceCatalog({
+        catalog: {
+          ...original,
+          mcp: {
+            ...original.mcp,
+            bindings: original.mcp.bindings.map((binding) => ({
+              ...binding,
+              packageDataKey: retainedKey,
+            })),
+          },
+        },
+        dataRoot,
+        expectedRevision: original.revision,
+        workspaceId,
+      });
+      expect(retained.mcp.bindings[0]!.packageDataKey).toBe(retainedKey);
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: {
+            replacement: { type: 'streamable-http', url: 'https://mcp.example.test/replacement' },
+          },
+        })
+      );
+      const replaced = bindMember(importPackage(), 'replacement');
+      // MCP Catalog requires the original installation key to survive version updates.
+      expect
+        .soft(
+          replaced.mcp.bindings.find((binding) => binding.entryId === 'replacement')!.packageDataKey
+        )
+        .toBe(retainedKey);
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+      expect(
+        reopened.mcp.bindings.find((binding) => binding.entryId === 'echo')!.packageDataKey
+      ).toBe(retainedKey);
+      expect(readFileSync(join(retainedDirectory, 'retained.txt'), 'utf8')).toBe(
+        'original installation data'
+      );
+      expect(existsSync(retainedDirectory)).toBe(true);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('shares installation MCP data keys while preserving isolation and adopted data', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-data-key-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'package-data-owner');
+    const otherWorkspaceId = testEntityId('ws', 'package-data-copy');
+    const producer = { id: testEntityId('usr', 'package-data-owner'), kind: 'user' as const };
+    const createdAt = '2026-10-30T00:00:00.000Z';
+    const importPackage = (
+      targetWorkspaceId: string,
+      pluginId = 'data-pack',
+      memberIds?: Record<string, string>
+    ) =>
+      importWorkspacePlugin({
+        createdAt,
+        dataRoot,
+        expectedRevision: loadWorkspaceResourceCatalog(dataRoot, targetWorkspaceId).revision,
+        install: true,
+        memberIds,
+        pluginId,
+        producer,
+        treeRoot,
+        workspaceId: targetWorkspaceId,
+      });
+    const bindMembers = (imported: ReturnType<typeof importPackage>, targetWorkspaceId: string) => {
+      let catalog = imported.catalog;
+      const owner = { kind: 'workspace' as const, workspaceId: targetWorkspaceId };
+      for (const member of imported.version.members) {
+        catalog = selectMcpVersion({
+          dataRoot,
+          digest: member.versionDigest,
+          entryId: member.catalogId,
+          expectedRevision: catalog.revision,
+          owner,
+        });
+        catalog = updateMcpBinding({
+          binding: {
+            allowedTools: ['echo'],
+            credentialBindings: [],
+            enabled: false,
+            pinnedSchemaSnapshotId: null,
+            revision: 0,
+            schemaPolicy: 'tracking',
+            timeoutMs: 60_000,
+          },
+          dataRoot,
+          entryId: member.catalogId,
+          expectedRevision: catalog.revision,
+          owner,
+        });
+      }
+      return catalog;
+    };
+    try {
+      mkdirSync(treeRoot);
+      const writeManifest = (version: string) =>
+        writeFileSync(
+          join(treeRoot, 'plugin.json'),
+          JSON.stringify({
+            $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+            name: 'data-pack',
+            version,
+          })
+        );
+      writeManifest('1');
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: {
+            alpha: { type: 'streamable-http', url: 'https://mcp.example.test/alpha' },
+            beta: { type: 'streamable-http', url: 'https://mcp.example.test/beta' },
+          },
+        })
+      );
+      const first = importPackage(workspaceId);
+      let catalog = bindMembers(first, workspaceId);
+      const original = catalog.mcp.bindings.find((binding) => binding.entryId === 'alpha')!;
+      const sibling = catalog.mcp.bindings.find((binding) => binding.entryId === 'beta')!;
+      // MCP Catalog: one original installation owns one mutable data key.
+      expect.soft(sibling.packageDataKey).toBe(original.packageDataKey);
+      const dataDirectory = join(
+        dataRoot,
+        'workspaces',
+        workspaceId,
+        'catalog',
+        'mcp-data',
+        original.packageDataKey
+      );
+      writeFileSync(join(dataDirectory, 'retained.txt'), 'retained mutable process data');
+      const independent = bindMembers(
+        importPackage(workspaceId, 'independent-data-pack', {
+          'mcp/alpha': 'alpha-copy',
+          'mcp/beta': 'beta-copy',
+        }),
+        workspaceId
+      );
+      expect(
+        independent.mcp.bindings.find((binding) => binding.entryId === 'alpha-copy')!.packageDataKey
+      ).not.toBe(original.packageDataKey);
+      const copied = bindMembers(importPackage(otherWorkspaceId), otherWorkspaceId);
+      expect
+        .soft(copied.mcp.bindings.find((binding) => binding.entryId === 'alpha')!.packageDataKey)
+        .not.toBe(original.packageDataKey);
+
+      writeManifest('2');
+      const updated = importPackage(workspaceId);
+      expect(
+        updated.catalog.mcp.bindings.find((binding) => binding.entryId === 'alpha')!
+      ).toMatchObject({ packageDataKey: original.packageDataKey });
+      catalog = selectMcpVersion({
+        dataRoot,
+        digest: first.version.members.find((member) => member.catalogId === 'alpha')!.versionDigest,
+        entryId: 'alpha',
+        expectedRevision: updated.catalog.revision,
+        owner: { kind: 'workspace', workspaceId },
+      });
+      expect(
+        catalog.mcp.bindings.find((binding) => binding.entryId === 'alpha')!.packageDataKey
+      ).toBe(original.packageDataKey);
+      // An independent component revision adopts the existing member binding and data.
+      catalog = createMcpConfig({
+        createdAt,
+        dataRoot,
+        declaration: { kind: 'http', endpoint: 'https://mcp.example.test/adopted', headers: {} },
+        displayName: 'alpha',
+        expectedRevision: catalog.revision,
+        id: 'alpha',
+        owner: { kind: 'workspace', workspaceId },
+        selectCurrent: true,
+      }).catalog;
+      // No separate public uninstall command exists. The native publisher establishes
+      // owner-valid uninstall state from genuine admitted records, retaining the adopted binding.
+      catalog = publishWorkspaceResourceCatalog({
+        catalog: {
+          ...catalog,
+          mcp: {
+            ...catalog.mcp,
+            bindings: catalog.mcp.bindings.filter((binding) => binding.entryId !== 'beta'),
+          },
+          plugins: {
+            ...catalog.plugins,
+            installations: catalog.plugins.installations.filter(
+              (installation) => installation.pluginId !== 'data-pack'
+            ),
+          },
+        },
+        dataRoot,
+        expectedRevision: catalog.revision,
+        workspaceId,
+      });
+      expect(
+        catalog.mcp.bindings.find((binding) => binding.entryId === 'alpha')!.packageDataKey
+      ).toBe(original.packageDataKey);
+      expect(catalog.mcp.bindings.some((binding) => binding.entryId === 'beta')).toBe(false);
+      expect(readFileSync(join(dataDirectory, 'retained.txt'), 'utf8')).toBe(
+        'retained mutable process data'
+      );
+      expect(existsSync(dataDirectory)).toBe(true);
+      expect(
+        loadWorkspaceResourceCatalog(dataRoot, workspaceId).mcp.bindings.find(
+          (binding) => binding.entryId === 'alpha'
+        )!.packageDataKey
+      ).toBe(original.packageDataKey);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   // MCP Catalog portable declarations and Agent Plugin admission require local format
   // recognition, narrow component failures, and root/data working-directory containment.
   it.each([
