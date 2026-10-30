@@ -411,6 +411,36 @@ describe('Light App definitions in the Workspace Catalog', () => {
     expect(screen.getByText(/Format Unknown · Active definition Unknown/)).toBeInTheDocument();
   });
 
+  it('shows unknown revisions and blocks mutating commands when app revision facts are missing', async () => {
+    const user = userEvent.setup();
+    const { client, activate, restore } = fixture();
+    const upgrade = vi.spyOn(client.operations, 'kernel.format.upgrade');
+    const current = await client.operations['kernel.apps.get']({ workspaceId, appId });
+    vi.mocked(client.operations['kernel.apps.get']).mockResolvedValue({
+      ...current,
+      lifecycle: 'unavailable',
+      kernelFormatVersion: 1,
+      appRevision: null,
+      schemaRevision: null,
+      schemaDigest: null,
+    });
+    await user.click(await screen.findByRole('button', { name: 'Inspect definition Notes' }));
+    await user.click(await screen.findByRole('button', { name: `Choose version ${digest}` }));
+    await user.click(await screen.findByRole('button', { name: 'Inspect app Live notes' }));
+    expect(
+      await screen.findByText(/App revision Unknown · Schema revision Unknown/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("This app's revision is unknown. Refresh before changing it.")
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Apply definition to this app' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Upgrade app format to 2' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: `Restore snapshot ${snapshotId}` })).toBeDisabled();
+    expect(activate).not.toHaveBeenCalled();
+    expect(upgrade).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
+  });
+
   it('requires deliberate snapshot confirmation and drops it when the definition target changes', async () => {
     const user = userEvent.setup();
     const { restore } = fixture();

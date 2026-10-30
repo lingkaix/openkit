@@ -670,9 +670,14 @@ function AppActivation({
       ) : null}
       {current ? (
         <p className="break-all text-xs text-fg-muted">
-          {current.lifecycle} · App revision {current.appRevision} · Schema revision{' '}
-          {current.schemaRevision} · Format {current.kernelFormatVersion ?? 'Unknown'} · Active
-          definition {current.definitionVersion ?? 'Unknown'}
+          {current.lifecycle} · App revision {current.appRevision ?? 'Unknown'} · Schema revision{' '}
+          {current.schemaRevision ?? 'Unknown'} · Format {current.kernelFormatVersion ?? 'Unknown'}{' '}
+          · Active definition {current.definitionVersion ?? 'Unknown'}
+        </p>
+      ) : null}
+      {current && current.appRevision === null ? (
+        <p className="text-xs text-fg-muted">
+          This app&apos;s revision is unknown. Refresh before changing it.
         </p>
       ) : null}
       {current?.lifecycle === 'unavailable' ? (
@@ -683,9 +688,17 @@ function AppActivation({
       ) : null}
       <Button
         size="sm"
-        isDisabled={disabled || current?.lifecycle !== 'active'}
+        isDisabled={
+          disabled ||
+          current?.lifecycle !== 'active' ||
+          current?.appRevision == null ||
+          current?.schemaRevision == null
+        }
         onPress={() => {
           if (!current) return;
+          if (current.appRevision == null || current.schemaRevision == null) return;
+          const expectedAppRevision = current.appRevision;
+          const expectedSchemaRevision = current.schemaRevision;
           setRestore(null);
           change.mutate({
             run: () =>
@@ -694,8 +707,8 @@ function AppActivation({
                 appId,
                 entryId,
                 digest,
-                expectedAppRevision: current.appRevision,
-                expectedSchemaRevision: current.schemaRevision,
+                expectedAppRevision,
+                expectedSchemaRevision,
                 requestId: createRequestId(),
               }),
           });
@@ -706,16 +719,18 @@ function AppActivation({
       {canUpgrade ? (
         <Button
           size="sm"
-          isDisabled={disabled}
+          isDisabled={disabled || current?.appRevision == null}
           onPress={() => {
             if (!current) return;
+            if (current.appRevision == null) return;
+            const expectedAppRevision = current.appRevision;
             setRestore(null);
             change.mutate({
               run: () =>
                 client.operations['kernel.format.upgrade']({
                   workspaceId,
                   appId,
-                  expectedAppRevision: current.appRevision,
+                  expectedAppRevision,
                   requestId: createRequestId(),
                 }),
             });
@@ -745,10 +760,18 @@ function AppActivation({
             <Button
               size="sm"
               aria-label={`Restore snapshot ${snapshot.snapshotId}`}
-              isDisabled={disabled || snapshots.isFetching || !snapshots.isSuccess}
+              isDisabled={
+                disabled ||
+                snapshots.isFetching ||
+                !snapshots.isSuccess ||
+                current?.appRevision == null
+              }
               onPress={() => {
-                if (current)
-                  setRestore({ snapshotId: snapshot.snapshotId, appRevision: current.appRevision });
+                if (!current || current.appRevision == null) return;
+                setRestore({
+                  snapshotId: snapshot.snapshotId,
+                  appRevision: current.appRevision,
+                });
               }}
             >
               Restore snapshot {snapshot.snapshotId.slice(0, 8)}
