@@ -186,10 +186,10 @@ fn render_worker_policy(intent: &Value) -> Result<Value, &'static str> {
         {
             return Err("sandbox network intent name invalid");
         }
-        let host = intent_text(&entry["host"])?;
-        if host.trim().is_empty() {
-            return Err("sandbox network intent host invalid");
+        if policies.contains_key(name) {
+            return Err("sandbox network intent name duplicated");
         }
+        let host = canonical_network_host(intent_text(&entry["host"])?)?;
         let port = entry["port"]
             .as_u64()
             .filter(|port| *port > 0 && *port <= u16::MAX as u64)
@@ -247,7 +247,7 @@ fn render_worker_policy(intent: &Value) -> Result<Value, &'static str> {
         }
         admit_encoded_slash_setting(
             &mut encoded_slash_settings,
-            host,
+            &host,
             port,
             allow_encoded_slash.unwrap_or(false),
         )?;
@@ -794,6 +794,52 @@ mod tests {
         assert!(parse_native_policy(&native).is_err());
         native["networkPolicies"]["same"]["endpoints"][0]["port"] = json!(8443);
         assert!(parse_native_policy(&native).is_ok());
+    }
+
+    #[test]
+    fn network_endpoint_names_must_be_unique_before_native_projection() {
+        let endpoint = representative_intent()["additionalNetworkEndpoints"][0].clone();
+        let mut replacement = endpoint.clone();
+        replacement["host"] = json!("other.example.com");
+        replacement["binaries"] = json!(["/usr/bin/curl"]);
+        for endpoints in [
+            json!([endpoint, replacement]),
+            json!([replacement, endpoint]),
+        ] {
+            let intent =
+                json!({"additionalFilesystemGrants": [], "additionalNetworkEndpoints": endpoints});
+            assert!(render_sandbox_policy(&intent).is_err());
+        }
+        assert!(render_sandbox_policy(&representative_intent()).is_ok());
+    }
+
+    #[test]
+    fn network_endpoint_rendering_uses_the_admitted_canonical_host() {
+        for (canonical, equivalent) in [
+            ("api.example.com", "API.EXAMPLE.COM."),
+            ("127.0.0.1", "::ffff:127.0.0.1"),
+            ("[::1]", "0:0:0:0:0:0:0:1"),
+        ] {
+            let mut intent = representative_intent();
+            intent["additionalNetworkEndpoints"][0]["host"] = json!(canonical);
+            let expected = render_sandbox_policy(&intent).expect("canonical host admitted");
+            intent["additionalNetworkEndpoints"][0]["host"] = json!(equivalent);
+            let actual = render_sandbox_policy(&intent).expect("equivalent host admitted");
+            assert_eq!(actual, expected);
+            assert_eq!(
+                actual.network_policies["direct_api"].endpoints[0].host,
+                canonical
+            );
+            let mut conflicting = intent["additionalNetworkEndpoints"][0].clone();
+            conflicting["name"] = json!("strict_peer");
+            conflicting["host"] = json!(canonical);
+            conflicting["allowEncodedSlash"] = json!(true);
+            intent["additionalNetworkEndpoints"]
+                .as_array_mut()
+                .unwrap()
+                .push(conflicting);
+            assert!(render_sandbox_policy(&intent).is_err());
+        }
     }
 
     /// The input whose TypeScript-rendered bytes were captured before moving the projector.
