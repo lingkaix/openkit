@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { applyControlRecoveryMoveOut } from './control-store-recovery.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
@@ -167,20 +168,11 @@ export async function moveOutWorkspace(
       const capture = owned.proof.capture;
       if (!record.movedOut) {
         db.transaction(() => {
-          db.prepare(
-            "UPDATE control_workspaces SET revision=revision+1, record_json=json_set(record_json, '$.movedOut', json(?)) WHERE id=? AND revision=?"
-          ).run(
-            JSON.stringify({ backupId: input.backupId, manifestDigest: capture.manifestDigest }),
-            input.workspaceId,
-            revision
-          );
-          recordWorkspaceAuditEvent({
-            workspaceDb: bindWorkspaceSqlite(db, input.dataRoot, input.workspaceId),
+          applyControlRecoveryMoveOut(bindWorkspaceSqlite(db, input.dataRoot, input.workspaceId), {
             workspaceId: input.workspaceId,
-            action: 'workspace.move-out',
-            resource: `workspace:${input.workspaceId}`,
-            outcome: 'succeeded',
-            summary: `Moved out ${input.backupId} ${capture.manifestDigest}.`,
+            captureId: input.backupId,
+            expectedRevision: revision,
+            manifestDigest: capture.manifestDigest,
           });
           deps.atBoundary?.('before-moved-out-commit');
         }).immediate();

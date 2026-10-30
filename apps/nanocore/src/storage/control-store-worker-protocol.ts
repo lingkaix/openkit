@@ -82,6 +82,7 @@ import {
 import type {
   ControlRecoveryCaptureInput,
   ControlRecoveryCleanupInput,
+  ControlRecoveryMoveOutInput,
   ControlRecoverySafetyInput,
   ControlRecoverySafetyResult,
 } from './control-store-recovery.js';
@@ -173,6 +174,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'recovery-history'; readonly workspaceId: string }
       | { readonly operation: 'recovery-cleanup'; readonly input: ControlRecoveryCleanupInput }
       | { readonly operation: 'recovery-capture'; readonly input: ControlRecoveryCaptureInput }
+      | { readonly operation: 'recovery-move-out'; readonly input: ControlRecoveryMoveOutInput }
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
@@ -337,7 +339,8 @@ export type ControlWorkerReply = {
         | 'products'
         | 'publication'
         | 'recovery-cleanup'
-        | 'recovery-capture';
+        | 'recovery-capture'
+        | 'recovery-move-out';
     }
   | {
       readonly status: 'ok';
@@ -560,6 +563,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     reply.operation === 'products' ||
     reply.operation === 'recovery-cleanup' ||
     reply.operation === 'recovery-capture' ||
+    reply.operation === 'recovery-move-out' ||
     reply.operation === 'publication'
   )
     return true;
@@ -783,6 +787,25 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       WorkspaceIdSchema.safeParse(value.input.workspaceId).success &&
       typeof value.input.sourceDataRoot === 'string' &&
       isAbsolute(value.input.sourceDataRoot) &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'recovery-move-out')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      isRecord(value.input) &&
+      exactFields(value.input, [
+        'workspaceId',
+        'captureId',
+        'expectedRevision',
+        'manifestDigest',
+      ]) &&
+      WorkspaceIdSchema.safeParse(value.input.workspaceId).success &&
+      typeof value.input.captureId === 'string' &&
+      value.input.captureId.trim().length > 0 &&
+      Number.isSafeInteger(value.input.expectedRevision) &&
+      Number(value.input.expectedRevision) >= 1 &&
+      typeof value.input.manifestDigest === 'string' &&
+      /^sha256:[0-9a-f]{64}(?![\s\S])/.test(value.input.manifestDigest) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'recovery-capture')

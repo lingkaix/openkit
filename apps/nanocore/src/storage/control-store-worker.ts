@@ -107,6 +107,7 @@ import {
   applyControlRecoveryCapture,
   applyControlRecoveryCleanup,
   applyControlRecoveryHistory,
+  applyControlRecoveryMoveOut,
   applyControlRecoverySafety,
   type PreparedControlRecoveryHistory,
   type PreparedControlRecoverySafety,
@@ -152,6 +153,7 @@ type WriteCommand = Extract<
       | 'write'
       | 'recovery-cleanup'
       | 'recovery-capture'
+      | 'recovery-move-out'
       | 'recovery-history'
       | 'recovery-safety'
       | 'transition'
@@ -626,6 +628,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     case 'write':
     case 'recovery-cleanup':
     case 'recovery-capture':
+    case 'recovery-move-out':
     case 'recovery-history':
     case 'recovery-safety':
     case 'material':
@@ -1378,6 +1381,15 @@ function flush(owner: OwnedDatabase): void {
               operation: 'recovery-safety',
               result,
             };
+          } else if (request.operation === 'recovery-move-out') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            applyControlRecoveryMoveOut(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-move-out',
+            };
           } else if (request.operation === 'recovery-capture') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             applyControlRecoveryCapture(owner.scopeDb, request.input);
@@ -1858,6 +1870,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'write' ||
       value.operation === 'recovery-cleanup' ||
       value.operation === 'recovery-capture' ||
+      value.operation === 'recovery-move-out' ||
       value.operation === 'recovery-history' ||
       value.operation === 'recovery-safety' ||
       value.operation === 'transition' ||
@@ -1905,6 +1918,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           barrier:
             value.operation === 'recovery-cleanup' ||
             value.operation === 'recovery-capture' ||
+            value.operation === 'recovery-move-out' ||
             value.operation === 'recovery-history' ||
             value.operation === 'recovery-safety' ||
             archivedThreads(value).length > 0 ||

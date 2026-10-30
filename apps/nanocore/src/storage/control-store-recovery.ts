@@ -43,7 +43,7 @@ import {
   RECURRING_PORTABLE_PATHS,
   readRecurringPortableFiles,
 } from './recurring-portable-history.js';
-import { endCaptureInDb } from './workspace-capture-protection.js';
+import { endCaptureInDb, inspectCapture } from './workspace-capture-protection.js';
 import {
   ensureCanonicalDirectory,
   loadWorkspace,
@@ -66,6 +66,69 @@ export function applyControlRecoveryCapture(
 ): void {
   if (db.workspaceId !== input.workspaceId) throw new ControlProductPreconditionError();
   endCaptureInDb(db, input.workspaceId, input.captureId, input.state);
+}
+
+/** Original source seal tuple; marker publication and capture completion remain later fenced steps. */
+export interface ControlRecoveryMoveOutInput {
+  readonly workspaceId: string;
+  readonly captureId: string;
+  readonly expectedRevision: number;
+  readonly manifestDigest: string;
+}
+
+/** Commits current source lifecycle and its original Audit together, preserving active publication rights. */
+export function applyControlRecoveryMoveOut(
+  db: WorkspaceDb,
+  input: ControlRecoveryMoveOutInput
+): void {
+  if (
+    db.workspaceId !== input.workspaceId ||
+    !db.sqlite.inTransaction ||
+    inspectCapture(db, input.workspaceId, input.captureId)?.state !== 'active'
+  )
+    throw new ControlProductPreconditionError();
+  const current = readProduct(
+    db.sqlite,
+    { kind: 'workspace', workspaceId: input.workspaceId },
+    'workspace',
+    input.workspaceId
+  );
+  if (!current) throw new ControlProductPreconditionError();
+  // The frozen product view omits lifecycle extensions; inspect the original retained source fact.
+  const movedJson = db.sqlite
+    .prepare("SELECT json_extract(record_json, '$.movedOut') FROM control_workspaces WHERE id=?")
+    .pluck()
+    .get(input.workspaceId) as string | null;
+  const moved =
+    movedJson === null
+      ? undefined
+      : (JSON.parse(movedJson) as { backupId?: string; manifestDigest?: string });
+  if (
+    current.revision === input.expectedRevision + 1 &&
+    moved?.backupId === input.captureId &&
+    moved.manifestDigest === input.manifestDigest
+  )
+    return;
+  if (current.revision !== input.expectedRevision || moved !== undefined)
+    throw new ControlProductPreconditionError();
+  const result = db.sqlite
+    .prepare(
+      "UPDATE control_workspaces SET revision=revision+1, record_json=json_set(record_json, '$.movedOut', json(?)) WHERE id=? AND revision=?"
+    )
+    .run(
+      JSON.stringify({ backupId: input.captureId, manifestDigest: input.manifestDigest }),
+      input.workspaceId,
+      input.expectedRevision
+    );
+  if (result.changes !== 1) throw new ControlProductPreconditionError();
+  recordWorkspaceAuditEvent({
+    workspaceDb: db,
+    workspaceId: input.workspaceId,
+    action: 'workspace.move-out',
+    resource: `workspace:${input.workspaceId}`,
+    outcome: 'succeeded',
+    summary: `Moved out ${input.captureId} ${input.manifestDigest}.`,
+  });
 }
 
 /** Cleanup facts for an already admitted, unpublished restore or MOVE candidate. */

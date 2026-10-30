@@ -71,6 +71,7 @@ import {
 import type {
   ControlRecoveryCaptureInput,
   ControlRecoveryCleanupInput,
+  ControlRecoveryMoveOutInput,
   ControlRecoverySafetyInput,
   ControlRecoverySafetyResult,
 } from './control-store-recovery.js';
@@ -235,6 +236,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'project-cleanup':
     case 'recovery-cleanup':
     case 'recovery-capture':
+    case 'recovery-move-out':
     case 'recovery-history':
     case 'recovery-seal':
     case 'recovery-safety':
@@ -929,6 +931,21 @@ class ControlStoreWorkerClient {
       recovery
     );
     return (reply as Extract<Success, { operation: 'recovery-safety' }>).result;
+  }
+
+  /** Commits the exact source MOVE tuple and original Audit before acknowledging its covering FULL commit. */
+  async recoveryMoveOut(
+    database: string,
+    input: ControlRecoveryMoveOutInput,
+    recovery?: ControlRecoveryNativeCall
+  ): Promise<void> {
+    await this.request(
+      { operation: 'recovery-move-out', database, input },
+      undefined,
+      undefined,
+      false,
+      recovery
+    );
   }
 
   /** Ends exactly one capture through its original SQL owner; acknowledgement follows covering FULL COMMIT. */
