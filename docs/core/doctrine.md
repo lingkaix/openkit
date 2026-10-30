@@ -86,6 +86,8 @@ Doctrine does not promise compatibility with obsolete internal contracts. Contra
 
 `architecture.md` owns the stable App, Core, Agent, service, and projection boundaries that realize this doctrine.
 
+`fault-tolerance.md` owns the fault model, durable execution, the correctness properties that hold under failure, and the limits of what OpenKit guarantees.
+
 `runtime-model.md` and `agent-session.md` own bounded execution and continuity.
 
 `protocol.md`, `communication.md`, and `storage.md` own the contracts that carry and persist Core truth.
@@ -95,6 +97,8 @@ Doctrine does not promise compatibility with obsolete internal contracts. Contra
 `mediation.md` and `evidence.md` own governed external effects, accountability projections, measured consumption, Capture Coverage, and telemetry boundaries.
 
 `knowledge.md` owns reusable understanding and reviewed learning records.
+
+`generative-apps.md` owns Light Apps, the Generative Kernel, and Generative UI.
 
 `contract-evolution.md` owns how the clean current contract replaces obsolete internal shapes while preserving this doctrine.
 

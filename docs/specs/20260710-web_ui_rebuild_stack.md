@@ -126,7 +126,7 @@ These deltas remain recorded here as the stack-owned source for the reconciled `
 ## Current Implementation Projection
 
 - Current: `apps/web` is rebuilt in place with React, Zustand, React Router, TanStack Query, Tailwind CSS v4, React Aria Components, and the existing Iconify/Remix pattern.
-- Current Composer divergence: `apps/web/src/primitives/Composer.tsx` is text-only, uses fixed textarea rows, places Send beside the textarea, and exposes neither the accepted lower action row nor structured draft output.
+- Composer: `apps/web/src/primitives/Composer.tsx` submits a structured `ComposerDraft` that carries the conversation target and an optional reasoning effort.
 - Partial stack conformance: Chat Item rendering uses official `@a2ui/react@0.11.0` and `@a2ui/web_core@0.10.7` v0.9 imports for native presentations; `apps/web/src/screens/generative/` remains an unpublished local fixture and is not the product renderer. `apps/web/src/styles/tokens.css` is a hand-maintained Spectrum-derived semantic bridge rather than a projection sourced from Adobe's token package.
 - Missing direct dependencies: the Adobe Spectrum token package is still absent from `apps/web/package.json` and the lockfile. The official A2UI React renderer is pinned; nested zod 3 is isolated through root pnpm overrides.
 - Unaffected: `packages/core-client` and `packages/protocol` are framework-agnostic and require no change for the view-layer rebuild.

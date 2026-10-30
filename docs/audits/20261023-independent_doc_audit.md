@@ -1,0 +1,599 @@
+---
+date: "2026-10-23"
+---
+# Independent Documentation Audit Before v0.1.0
+
+This non-authorizing record summarizes the independent documentation audit that the engineer directed before the first OpenKit release, `v0.1.0`. It is an engineer-directed repository-integrity audit, so its owning rule is [Change Execution Governance](../change-execution.md). The audit follows the audit-record contract in [Documentation Model](../documentation-model.md#audit-records). It records observations, dispositions, open questions, and proposed decisions. It does not authorize design, and no correction in this branch takes effect until the engineer's review merges it.
+
+## Method
+
+- Audit base SHA: `996085376c65d973ce9e3c899779ba78d5297fec` (`main` on 2026-10-23).
+- Readiness channel: GitHub issue #440. A held group is not audited.
+- Roles: one primary context performs the Auditor function, which writes the findings and the dated records, and the Writer function, which writes the documentation corrections. Read-only inspector contexts collect G3 evidence. One fresh Reviewer context checks each group's diff.
+- Goals: G1 product vision to design, G2 Core against specifications, G3 specifications against implementation, G4 specification organization, and G5 writing rules under [Documentation Writing](../writing.md).
+- Branch: the session's designated branch is `audit/independent-docs-ag29v9`. The engineer's instruction named `audit/independent-docs-<yyyymmdd>`; the session harness fixed the branch name, so the date form was not used.
+- Supplement: a second audit session ran the same instruction from its own base and stopped when it found this audit. On the engineer's direction it added its unique findings: the [supplement record](20261025-independent_doc_audit_supplement.md) and the [G1 probe record](20261023-independent_doc_audit_g1_probe.md).
+
+## Inventory At The Base SHA
+
+`git ls-files` at the base SHA lists:
+
+- `docs/core/`: 22 files, which are 20 aspect documents, `README.md`, and `AGENTS.md`.
+- `docs/specs/` root: 101 dated specifications, `README.md`, and `AGENTS.md`.
+- `docs/specs/retired/` and `docs/specs/superseded/`: 67 files for the archive check.
+- Evidence only: 235 files under `docs/decisions/`, 176 files under `docs/changes/`, the files under `docs/audits/`, and the two OKF snapshots.
+
+## Coverage Ledger
+
+The ledger lists every Core document and every active specification with its home group and state. The home group is the Core document that owns the primary concept in the specification's `## Owns` section. A state is `open, pending` until its group record lands, then `audited` with a link to the group record. A held group keeps `held (#440)`.
+
+### Core Documents
+
+| Core document | Group | State | Group record |
+| --- | --- | --- | --- |
+| `docs/core/doctrine.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/core-concepts.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/README.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/AGENTS.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/core/contract-evolution.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/core/architecture.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/core/protocol.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
+| `docs/core/communication.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
+| `docs/core/identity.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
+| `docs/core/policy.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/core/vault.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/core/mediation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/core/agent-supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/core/sandbox.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/core/knowledge.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/core/generative-apps.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
+| `docs/core/storage.md` | storage | held (#440) | — |
+| `docs/core/runtime-model.md` | runtime-model | held (#440) | — |
+| `docs/core/fault-tolerance.md` | fault-tolerance | held (#440) | — |
+| `docs/core/evidence.md` | evidence | held (#440) | — |
+| `docs/core/work-model.md` | work-model | held (#440) | — |
+
+### Active Specifications
+
+| Specification | Group | State | Group record |
+| --- | --- | --- | --- |
+| `docs/specs/20260709-quick_chat_workspace.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/specs/20260711-scheduler_recurring_event_triggers.md` | foundation | audited | [foundation](20261024-independent_doc_audit_foundation.md) |
+| `docs/specs/20260703-schema_evolution_record_envelope.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20260715-contract_stability_baseline.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20261017-retained_format_register.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20260522-vendor_snapshot_packages.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20261012-product_integrity_check.md` | contract-evolution | audited | [contract-evolution](20261024-independent_doc_audit_contract_evolution.md) |
+| `docs/specs/20260813-internal_agent_runtime.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260909-internal_agent_resource_integration.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260704-workflow_coordinator_internal_agent.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260704-nanocore_bootstrap_readiness.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260708-container_image_packaging.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260909-deployment_host_requirements.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260910-app_update_delivery.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260628-web_product_surface_projection.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260710-web_ui_rebuild_stack.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20260910-agent_operator_skill.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20261020-compute_neutrality_target.md` | architecture | audited | [architecture](20261024-independent_doc_audit_architecture.md) |
+| `docs/specs/20261021-protocol_identifiers_and_enums.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
+| `docs/specs/20260704-app_api_openapi_projection.md` | protocol | audited | [protocol](20261024-independent_doc_audit_protocol.md) |
+| `docs/specs/20260703-worker_control_protocol.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
+| `docs/specs/20261002-remote_mcp_interface.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
+| `docs/specs/20260528-core_client_boundary.md` | communication | audited | [communication](20261024-independent_doc_audit_communication.md) |
+| `docs/specs/20260628-nanocore_config_identity_contract.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
+| `docs/specs/20260704-remote_auth_credential_bootstrap.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
+| `docs/specs/20260715-multi_user_workspace_system.md` | identity | audited | [identity](20261024-independent_doc_audit_identity.md) |
+| `docs/specs/20260629-openkit_policy_model.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260703-policy_enforcement_mapping.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260909-thread_visibility_and_sharing.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260930-pending_requests.md` | policy | audited | [policy](20261024-independent_doc_audit_policy.md) |
+| `docs/specs/20260703-vault_secret_injection.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260704-vault_backend_implementation.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260709-worker_credential_access_declarations.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20260703-openshell_mechanism_internalization.md` | vault | audited | [vault](20261024-independent_doc_audit_vault.md) |
+| `docs/specs/20261002-operation_definition.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260703-worker_agent_capability.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260704-capability_usage_gateway_foundation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260704-worker_mcp_tool_supply.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260526-llm_gateway_responses_api.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260708-pi_ai_unified_llm_backend.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260721-provider_subscription_accounts.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` | mediation | audited | [mediation](20261024-independent_doc_audit_mediation.md) |
+| `docs/specs/20260616-agent_environment_package.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260703-agent_manifest_aep_resolution.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260711-skill_catalog_versioning_pinning.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260907-mcp_catalog_management.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260704-workspace_data_source_catalog.md` | agent-supply | audited | [agent-supply](20261024-independent_doc_audit_agent_supply.md) |
+| `docs/specs/20260709-worker_sandbox_freedom_policy.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260721-worker_execution_environment_images.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260910-persistent_worker_volumes.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260922-delegated_worker_policy_maintenance.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260703-workspace_synchronization.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260629-worker_runtime_communication_model.md` | sandbox | audited | [sandbox](20261024-independent_doc_audit_sandbox.md) |
+| `docs/specs/20260704-agent_session_continuity.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260704-session_static_workspace_materialization.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260716-codex_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260716-opencode_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260716-pi_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260930-deepseek_worker_adapter.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
+| `docs/specs/20260702-knowledge_store_governance_rules.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260703-knowledge_store_implementation.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260909-personal_memory_and_knowledge_learning.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260909-knowledge_notebook_editing.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20261014-retrieval_kernel.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260703-worker_context_package.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260710-self_improvement_evaluation_loop.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
+| `docs/specs/20260908-generative_kernel_data_operations.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
+| `docs/specs/20260908-generative_ui_interaction.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
+| `docs/specs/20260529-test_strategy.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260529-l6_story_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260719-verification_calibration.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260729-documentation_field_contract.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260811-execution_residue_measurement.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260829-release_management.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260909-persistent_deployment_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260711-evaluation_harness_design.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/README.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/AGENTS.md` | process | audited (proposals only) | [process](20261025-independent_doc_audit_process.md) |
+| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | held (#440) | — |
+| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | held (#440) | — |
+| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | held (#440) | — |
+| `docs/specs/20260921-work_data_retention_format.md` | storage | held (#440, named) | — |
+| `docs/specs/20260704-workspace_backup_export_import.md` | storage | held (#440, named) | — |
+| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | held (#440) | — |
+| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | held (#440) | — |
+| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | held (#440, named) | — |
+| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | held (#440) | — |
+| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | held (#440) | — |
+| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | held (#440, named) | — |
+| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | held (#440) | — |
+| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | held (#440) | — |
+| `docs/specs/20260704-chat_mode_assistant.md` | work-model | held (#440) | — |
+| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | held (#440) | — |
+| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | held (#440) | — |
+| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | held (#440) | — |
+| `docs/specs/20261017-evaluation_foundation.md` | work-model | held (#440) | — |
+| `docs/specs/20261002-goal.md` | work-model | held (#440, named) | — |
+| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | held (#440) | — |
+| `docs/specs/20260831-unified_conversation_composer.md` | work-model | held (#440) | — |
+
+### Archive Check
+
+The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: not completed. The engineer ended the audit after the open groups; a preliminary read-only result is under Remaining Work.
+
+## Phase 0 Grouping
+
+### Group Order
+
+Open groups run first in dependency order, then the held groups after a release in #440, then the periphery group: foundation, contract-evolution, architecture, protocol, communication, identity, policy, vault, mediation, agent-supply, sandbox, agent-session, knowledge, generative-apps, process; held: storage, runtime-model, fault-tolerance, evidence, work-model; last: periphery.
+
+The `process` group has no Core home. Its eight specifications own engineering, verification, release, and documentation methods, and `docs/core/` owns product semantics only. This is recorded as finding P0-G2-01 below.
+
+### Code Map
+
+| Group | Main implementation paths |
+| --- | --- |
+| foundation | `apps/nanocore/src/thread-*`, `apps/nanocore/src/turn-*`, `apps/nanocore/src/workspace-*`, `apps/nanocore/src/scheduler-records.ts`, `apps/nanocore/src/runtime/`, `packages/protocol` |
+| contract-evolution | `packages/storage`, `packages/config-schema`, `packages/protocol`, `packages/codex-app-server-schema`, `packages/models-dev-catalog`, `apps/nanocore/src/storage/` |
+| architecture | `apps/nanocore/src/internal-agents/`, `apps/nanocore/src/bootstrap/`, `apps/nanocore/src/app-update/`, `apps/nanocore/src/docker/`, `apps/web/`, `skills/openkit-ops/`, `docker/`, `.github/workflows/` |
+| protocol | `packages/protocol`, `packages/app-api-schemas`, `apps/nanocore/src/openapi*.ts` |
+| communication | `packages/worker-protocol`, `packages/worker-shim`, `packages/core-client`, `apps/nanocore/src/remote-mcp-routes.ts`, `apps/nanocore/src/runtime/` |
+| identity | `apps/nanocore/src/auth/`, `apps/nanocore/src/config/`, `apps/nanocore/src/workspace-membership.ts`, `apps/nanocore/src/workspace-sharing*.ts`, `packages/config-schema` |
+| policy | `packages/policy-kernel`, `apps/nanocore/src/policy/`, `apps/nanocore/src/pending-request-operations.ts`, `apps/nanocore/src/thread-read-state.ts` |
+| vault | `apps/nanocore/src/vault/`, `apps/nanocore/src/vault-injection-*.ts`, `apps/nanohost/src/credential_slots.rs`, `apps/nanohost/src/openshell_policy.rs` |
+| mediation | `apps/nanocore/src/operation-*.ts`, `apps/nanocore/src/capability/`, `apps/nanocore/src/llm/`, `apps/nanocore/src/providers/`, `apps/nanocore/src/worker-mcp-routes.ts` |
+| agent-supply | `apps/nanocore/src/agents/`, `apps/nanocore/src/catalog/`, `apps/nanocore/src/context/`, `packages/config-schema` |
+| sandbox | `apps/nanohost/`, `apps/nanocore/src/worker-environments/`, `apps/nanocore/src/runtime/`, `packages/worker-shim` |
+| agent-session | `apps/nanocore/src/runtime/`, `packages/worker-shim`, `packages/pi-runtime-host`, `packages/codex-app-server-schema` |
+| knowledge | `apps/nanocore/src/knowledge/`, `apps/nanocore/src/knowledge-*.ts`, `apps/nanocore/src/memory-operations.ts`, `apps/nanocore/src/retrieval-*.ts`, `packages/retrieval-kernel`, `apps/nanocore/src/context/` |
+| generative-apps | `apps/nanocore/src/generative-kernel/`, `apps/nanocore/src/generative-ui/`, `apps/web/src/generative/` |
+| process | `tests/`, `stories/`, `scripts/`, `.github/workflows/` |
+
+Inspectors locate exact files at each group base SHA; the map above is a starting point, not a claim of completeness.
+
+### Specifications With No Clear Or With Two Equal Homes
+
+Each row is finding P0-G4-NN. The chosen home decides only the audit group; it changes no document.
+
+| ID | Specification | Candidate homes | Chosen home and reason |
+| --- | --- | --- | --- |
+| P0-G4-01 | `20260930-pending_requests.md` | `core-concepts.md` (`ApprovalRequest`), `policy.md` (approval gates), `work-model.md` (Human Attention Gate) | policy: it cites Policy eight times and owns approval execution authority. |
+| P0-G4-02 | `20260909-thread_visibility_and_sharing.md` | `core-concepts.md` (Thread visibility), `policy.md` (disclosure authorization) | policy: the owned decisions are disclosure and eligibility. |
+| P0-G4-03 | `20260629-worker_runtime_communication_model.md` | `sandbox.md`, `communication.md`, `runtime-model.md` | sandbox: it owns the Sandbox Integration boundary and cites Sandbox five times. |
+| P0-G4-04 | `20260703-openshell_mechanism_internalization.md` | `vault.md`, `policy.md` | vault: credential injection is the first owned mechanism. |
+| P0-G4-05 | `20260704-chat_mode_assistant.md` | `work-model.md` (Chat Mode), `architecture.md` (Core Assistant) | work-model (held): the first owned item is Chat Mode. |
+| P0-G4-06 | `20260703-worker_context_package.md` | `knowledge.md` (Context Package), `mediation.md` | knowledge: Context Package is a Knowledge term. |
+| P0-G4-07 | `20260704-workspace_data_source_catalog.md` | `agent-supply.md`, `storage.md` | agent-supply: manifests reference the catalog by name. |
+| P0-G4-08 | `20260711-worker_runtime_subagent_provenance.md` | `runtime-model.md`, `evidence.md` | runtime-model (held): the owned boundary is one worker execution. |
+| P0-G4-09 | `20260703-workspace_synchronization.md` | `sandbox.md`, `storage.md` | sandbox: `sandbox.md` names workspace synchronization. |
+| P0-G4-10 | `20260704-capability_usage_gateway_foundation.md` | `mediation.md` (`CapabilityCall`), `evidence.md` (usage) | mediation: the shared ledger serves `CapabilityCall` producers. |
+| P0-G4-11 | `20260715-multi_user_workspace_system.md` | `identity.md`, `policy.md` | identity: membership and invitation are Identity terms. |
+| P0-G4-12 | `20260721-provider_subscription_accounts.md` | `mediation.md`, `vault.md` | mediation: the binding is a Gateway route decision. |
+| P0-G4-13 | `20260711-scheduler_recurring_event_triggers.md` | `core-concepts.md` (`TriggerSource`), `runtime-model.md` | foundation: the schedules are trigger sources of Turn admission. |
+| P0-G4-14 | `20260831-unified_conversation_composer.md` | `work-model.md`, `communication.md` | work-model (held): the targets are product work modes. |
+| P0-G4-15 | `20261020-compute_neutrality_target.md` | `architecture.md`, `sandbox.md` | architecture: `architecture.md` owns Compute And Harness Neutrality. |
+
+### Phase 0 Finding
+
+- P0-G2-01 (G2/G4, no action yet): eight active `process` specifications have no Core home: test strategy, L6 story acceptance, verification calibration, documentation field contract, execution residue measurement, release management, persistent deployment acceptance, and evaluation harness design. Core owns product semantics, so the missing home is expected. The finding is that no governance document indexes these method owners as one family. Disposition: SPX-06 in the [process](20261025-independent_doc_audit_process.md) record; the specifications README index lists them, and no further action is taken.
+
+## G1 Whole-System Findings
+
+### Method
+
+- Top-down derivation: each capability that [Product Vision](../product-vision.md) requires was mapped to the Core document and the specification that should own it. The derivation used `git grep` over `docs/core/` and the active specifications at the base SHA.
+- Clean-room probe: `git archive 996085376c65d973ce9e3c899779ba78d5297fec docs AGENTS.md` was extracted into an empty directory outside the repository. Eight fresh read-only inspector contexts, one per module, received only that directory and a written brief: domain and protocol, identity and Policy, Vault and mediation, worker execution, storage and recovery, knowledge, the work model, and generative and deployment surfaces. Each wrote an implementation plan and a gap list. The brief and raw outputs stay uncommitted under the audit's temporary working space.
+- The probe produced 237 candidate gaps: 149 guesses, 47 contradictions, 17 dangling references, and 24 code dependences. A candidate is not reported as a fact until the group that owns it verifies it against the documents at the group base SHA. Each group record lists the candidates it verified and their dispositions.
+
+### Top-Down Derivation
+
+| ID | Vision capability | Finding | Owning group |
+| --- | --- | --- | --- |
+| G1-TD-01 | Multi-channel communication gateway (Product Vision 6.2: Discord, Signal, Slack) | `docs/core/communication.md` names Discord as the first external team channel and refers to a "common channel contract". No active specification owns that common channel contract. The Discord binding, pairing, and response rules live in a section of `20260930-pending_requests.md`. Signal and Slack have no owner and no recorded deferral. | communication |
+| G1-TD-02 | Dynamic orchestration through an `agent config pack` (Product Vision 6.1) | No Core document or specification uses the term or states that the direction is deferred. Workflow Coordinator owns worker selection only. | architecture |
+| G1-TD-03 | Compute and agent-platform neutrality, external platforms as peers, and return of user data (Product Vision 4.4) | `docs/core/architecture.md` states the doctrine. The only specification is `20261020-compute_neutrality_target.md` (`Draft`, `Not Started`). No accepted document defines the capability declaration that Policy uses to refuse a placement, or the data-return contract. | architecture |
+| G1-TD-04 | Unified proxy with LLM fallback, load balancing, and rate limiting (Product Vision 6.5) | The LLM Gateway owns ordered failover. No owner decides load balancing; `20260721-provider_subscription_accounts.md` excludes an account load balancer. `docs/core/mediation.md` lets early implementations omit rate-limit controls. | mediation |
+| G1-TD-05 | Minimum management and configuration burden: the NanoCore built-in agent generates and updates AEP and Policy, selects and maintains Worker Agent and sandbox image, and monitors work in the middle (Product Vision 9.1) | Only `20260922-delegated_worker_policy_maintenance.md` covers a bounded class of worker sandbox and network configuration. No Core document or specification owns AEP generation, Worker Agent or image selection and maintenance by an internal agent, or in-the-middle monitoring. | architecture |
+| G1-TD-06 | Task Evaluator internal agent (Product Vision 6.4) | `docs/core/architecture.md` reserves the role. No action: the reservation is explicit. | architecture |
+| G1-TD-07 | Tauri desktop packaging (Product Vision 1) | Deferred beyond `v0.1.0` by an engineer decision that `20260710-web_ui_rebuild_stack.md` cites. No action. | architecture |
+
+### Clean-Room Probe Themes
+
+| Theme | Candidate examples | Owning groups |
+| --- | --- | --- |
+| G1-CR-T1. Retained and wire shapes are defined by code, not by documents. Field sets of Workspace, Thread, Turn, Item, `CapabilityCall`, `UsageRecord`, Vault records, Policy statements, SQLite tables, and migrations are owned by schema packages, source files, and migration journals. | DOMAIN-02, DOMAIN-13, DOMAIN-14, AUTHZ-04, AUTHZ-20, MEDIATION-05, MEDIATION-10, MEDIATION-11, STORAGE-03, STORAGE-04 | protocol, contract-evolution, every held storage group; question Q-01 |
+| G1-CR-T2. Closed enumerations are named but not listed: Workspace, Thread, and Item status, `TriggerSource` values, `stopReason`, and the mapping from error code to HTTP status. | DOMAIN-01, DOMAIN-04, DOMAIN-09, DOMAIN-12, MEDIATION-13 | protocol, foundation, mediation |
+| G1-CR-T3. Contradictions between a Core document and a specification, between two specifications, or inside one specification. | DOMAIN-07, DOMAIN-15, AUTHZ-01, AUTHZ-05, AUTHZ-08, AUTHZ-14, AUTHZ-27, MEDIATION-08, MEDIATION-09, STORAGE-01, STORAGE-02 | the group of each cited owner |
+| G1-CR-T4. A specification interleaves its target contract and its current implementation, so a rebuilder cannot tell which behavior conforms. | DOMAIN-07, MEDIATION-19, MEDIATION-22 | mediation, vault, communication |
+| G1-CR-T5. An external library defines observable behavior or retained bytes, so a rebuild in another stack cannot reproduce it: pi-ai provider transport and credential serialization, Better Auth credentials and sessions. | MEDIATION-16, MEDIATION-17, AUTHZ-10 | mediation, identity; question Q-02 |
+| G1-CR-T6. Experience-chosen numbers, such as retry delays, idle bounds, and grace periods, are not stated. | MEDIATION-03, MEDIATION-14, MEDIATION-18, AUTHZ-07 | No action unless a number defines a wire or retained format: [Documentation Writing](../writing.md#normative-text) makes such numbers current defaults. |
+
+Raw candidate counts per module: domain 20, identity and Policy 34, Vault and mediation 27, worker execution 29, storage and recovery 27, knowledge 33, work model 32, surfaces 35.
+
+## Statistics Per Goal
+
+The engineer ended the audit on 2026-10-25 after the fifteen open groups. Counts at close-out:
+
+- Coverage: 99 ledger rows audited (every open Core document and specification, plus the Core and specifications guides); 26 rows held under #440 and not audited.
+- Group records: fifteen, one per open group, each with an independent Reviewer verdict and its dispositions.
+- G1: seven top-down findings and six clean-room themes from 237 raw candidates; each open group verified the candidates it owns.
+- G2 and G3: 61 GitHub issues opened with the `doc-audit` label, 17 of them blocking candidates (retained data, security, authorization, credentials, data loss, or recovery).
+- Documentation corrections: 67 files under `docs/core/` and `docs/specs/` changed by audit commits, each correction citing its evidence, with no design rule changed (see each record's Semantic Preservation table).
+- Questions: Q-01 to Q-170; 8 were withdrawn after review, so 162 remain for the engineer.
+- G4: one section move in the foundation group (FND-G4-01); no archive transition was made.
+- Supplement: corrections in 30 Core documents and specifications, issues #522 to #529 (one blocking candidate), questions Q-171 to Q-202, and a G1 probe with 296 findings compared one by one against these records. Totals: 69 `doc-audit` issues, 18 blocking candidates, and 194 open questions.
+
+## Remaining Work
+
+The engineer stopped the audit after the open groups. This list states what the audit did not do and what it recommends next.
+
+1. Held groups, when #440 releases them: the storage, runtime-model, fault-tolerance, evidence, and work-model Core documents and the 26 held ledger rows. Carry these hand-offs into them:
+   - `20260902-agent_runtime_context_compaction.md`: the `contextManagement` projection drift that the mediation group corrected in the Gateway specification (agent-session record).
+   - `20261002-goal.md`: KN-WCP-01, a Goal-dispatched Task needs both `goalId` and `taskId` in code (knowledge record).
+   - `20261019-durable_execution_and_control_store.md`: `main` changed it after the process base (commit `5b5ada8`); it was indexed in the specifications README but not audited.
+   - The held part of the clean-room candidates, which no open group verified.
+2. Periphery group (app and package guides, manuals, cookbooks, and `docs/toolchain.md`), with these known items:
+   - `packages/core-client/README.md`: "eleven" provider-subscription operations and the Quick Chat name (communication record).
+   - `apps/nanocore/README.md:487` and `packages/config-schema/README.md:31,89`: Thread visibility claims that issue #471 contradicts (policy record).
+   - `docs/specs/20260528-core_client_boundary.md:161`: names the removed Goal supervise route (policy record, PO-PEM-02).
+   - `docs/cookbooks/docker-app.md:104`: the missing `e2e:staging` call (issue #516).
+3. Archive check, deferred by the engineer on 2026-10-25 until a way to handle frozen archived documents is decided. A preliminary read-only pass over the 65 archived specifications and the two directory guides found complete lifecycle metadata and both reason sections in every file. Two kinds of `current-guidance` drift remain, and archived bytes may not change, so a new audit record must carry the current mapping:
+   - Targets that no longer exist: `docs/core/permissions.md` and `docs/core/audit.md` (`superseded/20260513-core_protocol_model_notes.md`), and `docs/core/agent-workflow.md` (three files under `superseded/agent-workflow/`).
+   - A target that is itself archived: `20260713-openkit_agent_skill_interface.md`, now under `retired/`, named by three superseded specifications.
+   - Fourteen inbound links from active specifications are supersession pointers or marked background; the two in the test strategy Related Docs are in Q-168.
+4. Root `AGENTS.md`: the audit-only reading and its change proposals were not made. `docs/specs/AGENTS.md` proposals are Q-170.
+5. Engineer decisions: answer the 194 open questions (the table below), and triage the 18 blocking-candidate issues before `v0.1.0`. Questions that need the engineer by rule include Q-161 (local guide rule), Q-166 (engineering doctrine), Q-169 (public-repository redaction of a decision record), and Q-170 (local `AGENTS.md`).
+6. After the engineer answers, apply the accepted recommendations in their owners, and close or retitle the issues that an answer changes (for example #510 after Q-156).
+7. Supplement hand-offs: the held-group audit takes the 84 findings that the Disposition column of the G1 probe record marks Held, and the former name "Permissions" in held documents; the periphery audit takes two periphery uses of "Core Permissions". The supplement record lists them.
+8. Writing and organization (G4 and G5) were recorded as questions, not rewritten. After the questions that set one rule for many documents are answered (Q-01 on shapes that only code defines, Q-23 on experience-chosen numbers, Q-28 on tracker labels, and Q-189 on canonical digests), rewrite in batches by owner under the method of issue #218: criterion inventory, rewrite, and an independent verifier.
+9. Before triage, recheck the 69 `doc-audit` issues against current `main`, and group the open questions into a decision sheet so that one rule answers each repeated family.
+
+After the mediation group, `main` added `providerModel` to `20260704-capability_usage_gateway_foundation.md` (audited by the mediation group) and to the held `20260703-audit_usage_evidence_records.md`. The close-out recheck found the field in `apps/nanocore/src/capability/usage-ledger.ts` and the Gateway, and the mediation corrections still apply. No new finding. The held Audit specification was read only as the owner that issue #514 cites.
+
+## Issues Opened
+
+| Issue | Group | Finding | Severity hint |
+| --- | --- | --- | --- |
+| #454 `[workspace-sharing] Personal Workspace share refusal emits a code outside the published error enum` | foundation | FND-PW-01 | ordinary |
+| #455 `[dashboard] Default Agent projection skips the User preference` | foundation | FND-CC-01 | ordinary |
+| #456 `[recurring-schedules] A very large fixed interval can stop every recurring scan` | foundation | FND-RT-04 | blocking candidate (recovery) |
+| #457 `[record-envelope] Envelope readers skip schemaVersion, minCoreVersion and Gateway requiredFeatures checks` | contract-evolution | CE-ENV-01, 02, 03, 05 | blocking candidate (retained data) |
+| #458 `[record-envelope] Required feature recurring-history-v1 does not use the registered identifier form` | contract-evolution | CE-ENV-REG | blocking candidate (retained data) |
+| #460 `[bootstrap] Signal handlers register after boot, and readiness does not derive vault, LLM gateway or knowledge index state` | architecture | AR-WFB-06, 07, 08 | blocking candidate (recovery) for the signal handlers |
+| #461 `[app-update] Status for a missing update ID returns app_update_unavailable instead of recovery_required` | architecture | AR-DEP-01 | blocking candidate (recovery) |
+| #462 `[internal-agent] A Tool result sanitizer exception becomes a correctable Tool error instead of a failed exit` | architecture | AR-IAR-02 | ordinary |
+| #463 `[nanohost] Harness-control routes forward client binding headers when the path has a query string` | communication | CM-WCP-03 | blocking candidate (authorization) |
+| #464 `[worker-control] Artifact notice, heartbeat persistence and final status differ from the specification` | communication | CM-WCP-01, 02, 10 | ordinary |
+| #465 `[core-client] Remove unused hand-maintained transport helpers after the definition-table cutover` | communication | CM-CCB-05 | low |
+| #466 `[auth] Plaintext transport gate trusts the TCP peer, so the bundled App image accepts bearer tokens over public plaintext HTTP` | identity | ID-RA-01 | blocking candidate (credentials) |
+| #467 `[config] Local mode accepts a non-loopback bind host and then grants every caller local administrator authority` | identity | ID-CFG-01 | blocking candidate (authorization) |
+| #468 `[auth] Bootstrap notice omits that the credential cannot be recovered, and the token file stays after consumption` | identity | ID-RA-07 | low |
+| #469 `[workspace-sharing] Access-change residue remains after the equal-member cutover, and the Workspace summary is not closed` | identity | ID-MU-06, 07 | low |
+| #470 `[config] knowledgeMaintenance parsing strips unknown keys although the contract gives it a strict shape` | identity | ID-CFG-05 | ordinary |
+| #471 `[thread] Thread records never emit the thread-entry and thread-visibility required features` | policy | PO-TVS-01 | blocking candidate (retained data) |
+| #472 `[discord] A paired Discord account gains administrator eligibility from an owned server-admin Token` | policy | PO-PR-04 | blocking candidate (authorization) |
+| #473 `[pending-requests] A repeated command-intent approval with a new request id is not deduplicated` | policy | PO-PR-01 | ordinary |
+| #474 `[vault] Worker MCP Gateway releases Vault material after a tool.use check, without the vault.use current-authority predicate` | vault | VA-SI-01 | blocking candidate (credentials) |
+| #475 `[vault] Worker credential declarations resolve secret material before the backend visibility check and before later declarations are validated` | vault | VA-CAD-01, 04 | blocking candidate (credentials) |
+| #476 `[vault] Credential revocation does not interrupt the resident binding or terminate the affected sandbox` | vault | VA-CAD-03, VA-SI-04, VA-VB-05 | blocking candidate (credentials) |
+| #477 `[vault] Credential declaration failures use free text instead of the stable error codes` | vault | VA-CAD-02 | ordinary |
+| #478 `[vault] Administrator MCP discovery preview checks grant provenance by id prefix, not by the issuance field` | vault | VA-SI-02 | low |
+| #479 `[vault] Restart re-resolution of collection runtime-env values reads the raw backend and writes no VaultUse` | vault | VA-VB-01, VA-SI-05 | ordinary |
+| #480 `[vault] Persistent Worker images refuse every runtime-file credential, so runtime-file visibility cannot launch` | vault | VA-SI-08, VA-CAD-06 | ordinary |
+| #481 `[mcp] A Workspace-origin captured call skips the catalog digest and credential recheck before dispatch` | mediation | MD-MCP-05 | blocking candidate (credentials) |
+| #482 `[providers] Account status never returns unavailable, so a locked Vault makes the status read fail with 503` | mediation | MD-PSA-01 | ordinary |
+| #483 `[mcp] An oversized tools/list fails with mcp-server-unavailable instead of mcp-result-too-large` | mediation | MD-MCP-03 | low |
+| #484 `[gateway] Prompt cache scope lets caller metadata override the trusted caller scope` | mediation | MD-LLM-04 | low |
+| #486 `[catalog] Agent Plugin import merges a name-derived id collision into an existing entry and records no source provenance` | agent-supply | AS-PLG-03, 04, 06 | blocking candidate (retained data) |
+| #487 `[catalog] Agent Plugin management has only list and import, and authored setup does not expand an installation` | agent-supply | AS-PLG-01, 02, 05 | enhancement |
+| #488 `[mcp] Plugin MCP import treats SSE as Streamable HTTP, skips the format version, and does not contain an explicit stdio cwd` | agent-supply | AS-MCC-05, 06 | ordinary |
+| #489 `[mcp] Workspace MCP management has no stage-version or remove, and selection names no expected current digest` | agent-supply | AS-MCC-02, 03, 07 | ordinary |
+| #490 `[mcp] Plugin MCP package data key derives from the entry id, so installations do not get their own key` | agent-supply | AS-MCC-04 | ordinary |
+| #491 `[aep] Build egress host accepts URL, path, and port forms at package resolution` | agent-supply | AS-MAR-02 | ordinary |
+| #492 `[catalog] Skill directory walk rejects a directory at depth 32 although 32 levels are allowed` | agent-supply | AS-SKL-05 | low |
+| #493 `[sandbox] OpenShell policy projection merges or drops AEP network grants instead of failing launch` | sandbox | SB-FRE-01, SB-FRE-03 | ordinary |
+| #494 `[gateway] A disallowed worker logical model fails with worker_inference_lineage_mismatch instead of worker_logical_model_not_allowed` | sandbox | SB-WRC-02 | low |
+| #495 `[sync] Captured Workspace snapshot candidates never become a change set, a review, or a worker output manifest` | sandbox | SB-SYN-01 | ordinary (enhancement) |
+| #496 `[workspace] Default session layout puts Turn-cleared slots under retained /workspace, and inputs bind to slots without a compatibility check` | agent-session | AG-SSM-03, 04 | ordinary |
+| #497 `[opencode] Adapter does not inspect native automatic recovery or prove its isolation outcomes before startup admission` | agent-session | AG-OPC-01, 02, 03 | blocking candidate (recovery, authorization) |
+| #498 `[pi] Pi runtime host emits free-form failure reasons instead of the closed vocabulary the reader admits` | agent-session | AG-PI-01 | low |
+| #502 `[knowledge] Workspace Proposal id and Review file use workspaceId instead of ownerScope` | knowledge | KN-IMP-02, 03 | blocking candidate (retained data) |
+| #503 `[knowledge] Knowledge Manager answer citations omit revision, digest, Source citations, and observed time` | knowledge | KN-KMR-04 | ordinary |
+| #504 `[knowledge] Model-backed draft-proposal entry and its knowledge.change.propose Tool are not implemented` | knowledge | KN-KMR-02 | ordinary (enhancement) |
+| #505 `[retrieval] Product sources are sent as inline text, so a scope larger than 8 MiB fails the whole search` | knowledge | KN-RTK-02 | ordinary |
+| #506 `[context] Context Package Material exclusion never records policy_excluded or budget_exceeded, and Knowledge exclusion rows omit notebookRevision` | knowledge | KN-WCP-03, 04 | ordinary |
+| #507 `[knowledge] Notebook publisher does not auto-admit embedded raw files or rewrite referrers on raw rename` | knowledge | KN-NBE-02 | ordinary (enhancement) |
+| #508 `[knowledge] Scope Schema lacks owner, timestamps, rules, and review requirements, and schema changes have no reviewed migration flow` | knowledge | KN-GOV-02 | ordinary |
+| #509 `[web] Notebook UI has no page state selection` | knowledge | KN-NBE-03 | low (enhancement) |
+| #510 `[generative-kernel] Record list reads count and rows outside one transaction, and request and response size limits are missing` | generative-apps | GA-GKD-01, 02 | ordinary |
+| #511 `[generative-kernel] Callers can choose the stable ids of new collections and fields` | generative-apps | GA-GKD-03 | ordinary |
+| #512 `[generative-kernel] Conflict and validation errors omit revisions and paths, and capability discovery omits most limits` | generative-apps | GA-GKD-04, 06 | ordinary |
+| #513 `[generative-ui] Presentation admission keeps extra keys such as theme on the declaration messages, and refresh accepts event context` | generative-apps | GA-GUI-01, 02 | low |
+| #514 `[generative-kernel] Kernel AuditEvents name no collection or record ids and no affected-set digest` | generative-apps | GA-GKD-05 | ordinary |
+| #515 `[generative-kernel] Kernel receipt key includes the actor, so a reused request id from another actor does not get idempotency_key_conflict` | generative-apps | GA-GKD-11 | ordinary |
+| #516 `[web] The Web staging e2e script e2e:staging does not exist, but the Docker app e2e script still calls it` | process | PR-TST-01 | low |
+| #517 `[ci] L3 NanoCore e2e and L5 smoke jobs keep no failure evidence beyond the job log` | process | PR-TST-05 | ordinary (enhancement) |
+| #518 `[tests] The NanoCore e2e import-boundary check misses multi-line, dynamic, and .mjs imports` | process | PR-TST-07 | low |
+| #519 `[scripts] Documentation field checks still run as two validators instead of one validator plus the index generator` | process | PR-DFC-01 | low (enhancement) |
+| #522 `[workspace-import] Ordinary import keeps the exported private owner instead of binding private Threads to the importing user` | supplement (policy) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | blocking candidate (authorization) |
+| #523 `[workspace-export] Workspace export fails for every non-administrator when the Workspace has any private Thread` | supplement (policy) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #524 `[deepseek] A native max_tokens stop is rejected before classification, so the Turn fails instead of reporting length` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #525 `[internal-agent] Two fixed system prompts live outside the shared built-in prompt source and its 3000-code-point test` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | low |
+| #526 `[internal-agent] Conversational objectives are not configurable, and the deadline is not checked against four times the objective` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #527 `[internal-agent] A Tool-returned image fails the run instead of surviving the Gateway round trip` | supplement (architecture) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #528 `[opencode] The adapter does not configure the V2 tool output limits or image resizing` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary |
+| #529 `[opencode] Each Turn reads the whole native conversation under one 16 MiB and 20-page bound, so a long Thread can stop accepting Turns` | supplement (agent-session) | [supplement](20261025-independent_doc_audit_supplement.md#issues-opened) | ordinary (recovery effect) |
+
+## Decisions Awaiting Engineer Approval
+
+None. The audit made no archive transition and needed no decision record.
+
+## Questions For The Engineer
+
+Each question states the context and evidence, the options, the recommendation with its first-principles reason, and what the audit did meanwhile.
+
+### Q-01. Does the rebuild test read schema packages and conformance fixtures as part of the documents?
+
+- Context: [Documentation Writing](../writing.md) and [Engineering Doctrine](../engineering-doctrine.md) make the documents the source of truth and test them by a rebuild from the documents alone. The doctrine also says that boundary conformance tests are part of the executable specification. `20260704-app_api_openapi_projection.md` makes the shared schema packages the single App API contract source, and `20261017-retained_format_register.md` names source readers and fixtures for retained formats. The clean-room probe could not recover field sets, SQLite tables, or migrations from `docs/` (theme G1-CR-T1).
+- Options: (A) The rebuild corpus includes the machine-readable schema packages, conformance fixtures, and migration files, and the documentation model says so. (B) Specifications state every retained and wire field in prose. (C) Durable retained formats get a generated, committed reference projection under the Generated Projections type, while release-coupled wire shapes stay in the schema packages under option A.
+- Recommendation: C. Retained data carries the only compatibility obligation (NONNEG-001), so its format must survive a rebuild in another stack. A generated projection keeps one fact in one place and cannot drift, and prose copies of schemas would violate One Fact, One Place.
+- Meanwhile: no document was changed for this theme. Group records cite the affected candidates.
+
+### Q-02. How are retained bytes that an external library defines governed?
+
+- Context: Better Auth owns password credentials and sessions (`20260628-nanocore_config_identity_contract.md`), and pi-ai owns the subscription credential serialization stored in the Vault (`20260721-provider_subscription_accounts.md`). A rebuild in another stack cannot open those retained records (theme G1-CR-T5).
+- Options: (A) Record each such format in the retained format register as externally owned, with its pinned dependency version and the continuity rule that applies to it. (B) Specify the bytes in OpenKit documents. (C) Accept that a rebuild resets these records.
+- Recommendation: A. It states the obligation where retained formats are already inventoried, and it does not copy a third-party format into prose.
+- Meanwhile: no change.
+
+### Questions Recorded In Group Records
+
+Each group record states the full context, options, recommendation, and interim action.
+
+| Question | Group | Subject | Recommendation |
+| --- | --- | --- | --- |
+| Q-03 | foundation | Keep the Quick Chat file name of the personal Workspace specification | Keep the path |
+| Q-04 | foundation | Drop the Quick Chat name from code and identifier derivation input | Rename code symbols only |
+| Q-05 | foundation | Must the origin-Thread handoff Item reference the receiving Thread | Add the reference to the Item |
+| Q-06 | foundation | Do stale pending expiries share the expired-range write bound | Read the bound per phase and say so |
+| Q-07 | foundation | Does the "Migration preserves" acceptance bullet still apply | Replace its first clause |
+| Q-08 | foundation | A past audit record contains a local absolute path | Approve a one-time redaction |
+| Q-09 | contract-evolution | Is the Pi coding agent patch an accepted exception to the no-patch rule | Record a bounded exception, then remove the patch upstream |
+| Q-10 | contract-evolution | Snapshot evidence for registry and rolling-API sources | Name three source kinds and their identities |
+| Q-11 | contract-evolution | Does the snapshot contract cover the Retrieval Kernel dictionary archive | State that build-supply archives are outside it |
+| Q-12 | contract-evolution | Re-derive the Terminal Turn Consistency read design against the control store | Re-derive it when the operation is implemented |
+| Q-13 | contract-evolution | Mechanism for the release-coupled contract identity gate | State the protocol version, doctor check and strict parsing |
+| Q-14 | contract-evolution | Narrow the L0 testing statement of the stability baseline | Narrow it to the frontmatter check |
+| Q-15 | contract-evolution | Casing of required features in Knowledge frontmatter | Add a named exception |
+| Q-16 | contract-evolution | When to re-baseline the retained format register against the control store | With the held control-store specification |
+| Q-17 | architecture | Keep the ten-kind Coordinator classification contract | Narrow it to explicit entry with the work-model release |
+| Q-18 | architecture | Drop planning and stopping from the Coordinator row in Core Architecture | Drop them after the Goal release |
+| Q-19 | architecture | Limits for a profile-less Knowledge Manager or Goal Coordinator run | Use the schema default for every role |
+| Q-20 | architecture | A maximum for `deadlineMs` | Add a schema maximum at the Node timer limit |
+| Q-21 | architecture | Does worker selection consume a runtime label | Remove it with the Goal release |
+| Q-22 | architecture | Name of Workspace quarantine | Name the error and reason codes with the fault-tolerance release |
+| Q-23 | architecture | Marking of experience-chosen numbers | Engineer states each property; mark as current defaults |
+| Q-24 | architecture | Default Core mode of a formal release App image | Change the image default to `server` |
+| Q-25 | architecture | Does the model-delivery refusal cover `app-update.preflight` | State that preflight is allowed |
+| Q-26 | architecture | May Vault screens show an AgentSession id | Vault owner defines a user-facing grant target |
+| Q-27 | architecture | The virtualization MUST | Replace with a measured-need rule |
+| Q-28 | architecture | Undefined plan labels | Link or replace each label |
+| Q-29 | protocol | `context-injection` or `knowledge-injection` | Change the documents to the retained `knowledge-injection` |
+| Q-30 | protocol | List `generative-ui-reference` and `context-summary` in the item-to-delta table | Add both rows |
+| Q-31 | protocol | What the error-code namespace rule requires | Allow flat Core command codes |
+| Q-32 | protocol | List the remaining closed enums in the identifiers specification | Add the five lists with Q-01 |
+| Q-33 | protocol | Owner of cross-event delta correlation | State a producer obligation proved by fixtures |
+| Q-34 | protocol | Closed OpenAPI exclusion list versus the coverage test | Add the three surfaces, drop test-support |
+| Q-35 | protocol | Actor allowed to read `/api/openapi.json` | State "authenticated" |
+| Q-36 | protocol | NanoCore reads the generated document for route identity | Derive from the catalog and definitions |
+| Q-37 | protocol | Property protected by the seven-day receipt expiry | Engineer states it; mark as current default |
+| Q-38 | communication | Structured credential reference in the remote MCP audit | Set `authentication` from the Token actor |
+| Q-39 | communication | Queued valid events when a stream envelope fails validation | Deliver them before the error |
+| Q-40 | communication | Inputs of the Harness `operationId` | Amend the wording to the Harness binding ref |
+| Q-41 | communication | Active Turns per Harness | State the per-AgentSession rule and `maxActiveTurns`, with the scheduling release |
+| Q-42 | communication | Which verification failures store quarantined evidence | Only authenticated, lineage-bearing rejections |
+| Q-43 | communication | The 1000 ms poll maximum under the serial loop | Add a priority path for `turn.interrupt` |
+| Q-44 | communication | Marking of worker-control timing numbers | As Q-23 |
+| Q-45 | communication | Worker-control labels S61, A1, #179 ruling | As Q-28 |
+| Q-46 | communication | Remote MCP exclusion list | State the non-JSON binding rule |
+| Q-47 | identity | May an administrator accept or decline another user's invitation | Limit it to the administrator's own invitations |
+| Q-48 | identity | Pending invitations after the inviter loses membership | Revoke them |
+| Q-49 | identity | Sign-up before bootstrap completes (high priority) | Refuse sign-up while no `server-admin` Token exists |
+| Q-50 | identity | Declared fronting proxy (CFG and RA conflict) | Add one explicit TLS-proxy declaration and amend CFG |
+| Q-51 | identity | `knowledgeMaintenance.schedule` member | Name `schedule` in the specification |
+| Q-52 | identity | Fields of the Server configuration file | State a reference rule and list `user.jsonc` |
+| Q-53 | identity | `BETTER_AUTH_TRUSTED_ORIGINS` override | Remove the override |
+| Q-54 | identity | Token expiry bound and rate limits | Add a maximum lifetime and state the rate limit |
+| Q-55 | identity | Synchronous last-used update | Amend the Risks text |
+| Q-56 | identity | Recovery request id source | State the path derivation |
+| Q-57 | identity | Private-Thread administrator gap and MU line 656 | Open a low issue |
+| Q-58 | identity | Identity numbers and labels | As Q-23 and Q-28 |
+| Q-59 | identity | "Roles" in Identity Core | Replace with policy attributes |
+| Q-60 | policy | Kernel trace names for a missing grant and a prohibition | Name the Kernel codes; keep the product reasons |
+| Q-61 | policy | Goal-domain activation and Task join status (PM and PEM conflict) | Amend PM to the PEM status when the Goal group is released |
+| Q-62 | policy | Did the three new Policy families land with their consumers | Restate in the present tense and name active consumers |
+| Q-63 | policy | `knowledge-manager` as a `Thread.entryPath` value | Add the value to TVS |
+| Q-64 | policy | Interim contract for an explicit `workspace` conversation Thread | Formal work only; refuse in a personal Workspace |
+| Q-65 | policy | Outcome Turn trigger actor for a withdrawal, and "first" | Ending actor; readiness order |
+| Q-66 | policy | Policy-grant actor clause | Mark as retained-read validation |
+| Q-67 | policy | Target id and `turnId` fields of response commands | Name them in Resolve |
+| Q-68 | policy | Order of authority, state, and shape checks | Authority, state, shape |
+| Q-69 | policy | Unreadable request rows in Thread lists | Count against the bound; refuse archive with `recovery_required` |
+| Q-70 | policy | Agent-principal status sentence in Core Doctrine | Move the status to the specifications |
+| Q-71 | policy | Policy numbers and labels | As Q-23 and Q-28 |
+| Q-72 | policy | Local-mode Discord administrator eligibility | Treat channel input as an ordinary actor in both modes |
+| Q-73 | vault | Grant validation in the audited Vault wrapper | Remove the any-`grantId` exception |
+| Q-74 | vault | Whole-store decryption on each audited resolve | Read only the addressed reference |
+| Q-75 | vault | Grant for server-owned provider credentials | State the server-owned provider exception |
+| Q-76 | vault | Decision lineage for administrator-issued grants | Record a `PermissionDecision` for worker-visible grants |
+| Q-77 | vault | Destruction trigger for expired prior versions | Destroy at the next rotation or inventory pass |
+| Q-78 | vault | Same-PID temporary file blocks revoke (high priority) | Random temporary suffix; revoke destroys writer temporaries |
+| Q-79 | vault | Master key in the unlock request and empty-store initialization | Same key; initialize only from the key file |
+| Q-80 | vault | Duplicate endpoint names and raw host in NanoHost policy | Reject duplicates; render the canonical host |
+| Q-81 | vault | Revocation-driven sandbox termination current or deferred | Keep the MUST; state the gap until #476 lands |
+| Q-82 | vault | Backend and file inventories in Core Vault and projections | Move the backend sentence to VB; name owners |
+| Q-83 | vault | Per-Turn or session-static runtime material | Amend SI to session-static |
+| Q-84 | vault | Vault labels, history, and example ids | As Q-28; use a canonical grant id |
+| Q-85 | mediation | Ownership of capability rate limits and budgets | Mediation owns the enforcement point; a named owner owns limit values |
+| Q-86 | mediation | Three-way ownership of the Operation definition | State the Core, OD, and Policy Enforcement split in each |
+| Q-87 | mediation | Boot self-check row I36 marked for later routing | Mark I36 Kernel-only |
+| Q-88 | mediation | Revoked actor call record: CUG versus Pending Requests | Add the after-claim record to CUG |
+| Q-89 | mediation | `schemaSnapshotId` as a replay attribution field | Add it to CUG and fix list-tools replay |
+| Q-90 | mediation | Null actor accepted by the shared recorder | Fail closed in the recorder |
+| Q-91 | mediation | No CapabilityCall for a repeated pending call | Record one denied, no-contact call |
+| Q-92 | mediation | Worker-visible capability error vocabulary | Document the MCP set; fold Policy-origin codes into `mcp-denied` |
+| Q-93 | mediation | `stdio` teardown on revocation | Add a revocation hook |
+| Q-94 | mediation | Discovery contact and usage | Only `tools/call` contact counts |
+| Q-95 | mediation | Remote MCP refusal codes and call annotations | Name the codes and the worst-case annotation rule |
+| Q-96 | mediation | Descriptor credential procedures and table facts | Update the OD lists |
+| Q-97 | mediation | Goal checks in common admission | Move them behind a Goal-owned strategy |
+| Q-98 | mediation | Header-carried request identity rule | State it once in OD |
+| Q-99 | mediation | Unmigrated operations and OD `Partial` | Remove the sentence after a route check; list open work |
+| Q-100 | mediation | Unconditional Work supply of `automation.event-admit` | Supply it only to the scheduled-poll Worker |
+| Q-101 | mediation | `work_artifact_submit` media-type refusal | Remove it from WAC |
+| Q-102 | mediation | Inactive advise and transform dispatch code | Remove until an owner exists |
+| Q-103 | mediation | Pi runtime host pi-ai dependency | State it is outside PIA |
+| Q-104 | mediation | Unhashed explicit prompt cache keys | Hash with provider and slot |
+| Q-105 | mediation | Unknown provider model metadata fields | Ignore with a diagnostic, per COMPAT-001 |
+| Q-106 | mediation | Startup reconciliation of subscription accounts | Reword to read-time reconciliation |
+| Q-107 | mediation | Quota `label` and `activeUntil` fields | Remove both |
+| Q-108 | mediation | Account-directory residue recovery | Clean own create residue; state the cleanup gate |
+| Q-109 | mediation | Audited reconcile on each Codex attempt | Read the setting without reconcile |
+| Q-110 | mediation | Create slot-id error code | Move the check to the owner |
+| Q-111 | mediation | Mediation labels, numbers, and OD paragraph length | As Q-28; split OD line 306 after Q-99 |
+| Q-112 | mediation | Knowledge package transfer channel | Administrator CLI in the Knowledge package owner |
+| Q-113 | agent-supply | Product-visible readiness vocabulary | MAR states the Core vocabulary; `stale` goes to the protocol summary |
+| Q-114 | agent-supply | Direct-Provider route arms in the package schema | Remove them |
+| Q-115 | agent-supply | Stale Provider references in MAR | Gateway endpoint bullet; drop `providers` |
+| Q-116 | agent-supply | Withdrawn after review (decided by SKL; issue #492) | — |
+| Q-117 | agent-supply | Skill conflict outcome and expected digest | The diagnostic is `conflict`; field mandatory |
+| Q-118 | agent-supply | Withdrawn after review (decided by PLG and MCC; issue #487) | — |
+| Q-119 | agent-supply | HTTPS-only Git data sources | State HTTPS and the key set |
+| Q-120 | agent-supply | Source-id lineage on capability rows | Applies to future source-aware producers |
+| Q-121 | agent-supply | Agent-supply history, status, numbers, time-relative text | As Q-28 |
+| Q-122 | sandbox | Git candidates and Workspace Sync Review | Add the Git carve-out: inspection evidence only |
+| Q-123 | sandbox | SYN State Model as a stored state machine | Trim to the persisted outcome values |
+| Q-124 | sandbox | Real-host check that `/capabilities/*` is absent | Prove the three enabled routes and nothing more |
+| Q-125 | sandbox | Worker-control protocol identifier, event list, interrupt | State the identifier once in the protocol owner; align the event list |
+| Q-126 | sandbox | IMG acceptance and layout lines | Install into a user environment under `/sandbox`; inert `ENTRYPOINT` and `CMD`; name `/openkit/instructions` |
+| Q-127 | sandbox | Writable temporary root and `http`/`https` grants | Name the root; refuse non-`rest` at authoring |
+| Q-128 | sandbox | `implementation: Partial` on the Deprecated Cell specification | Set `N/A` in a governance-approved metadata change |
+| Q-129 | sandbox | Sandbox history, numbers, labels | As Q-28 |
+| Q-130 | agent-session | Withdrawn after review (decided by PI) | — |
+| Q-131 | agent-session | Withdrawn after review (decided by Core Agent Supply and AMR) | — |
+| Q-132 | agent-session | Withdrawn after review (catalog grammar makes it unreachable) | — |
+| Q-133 | agent-session | SSM skeleton and layout example | Rewrite to the NWB and VOL layout; drop `fuse-mount` |
+| Q-134 | agent-session | `allow-anthropic-api-key` carrier | Settle it absent; remove the launcher branch |
+| Q-135 | agent-session | Agent-session history, repetition, numbers, labels | As Q-28 |
+| Q-136 | knowledge | Reads a maintenance run receives | The admitted snapshot and supplied Sources |
+| Q-137 | knowledge | Name of the daily maintenance switch (confirms Q-51) | Name `knowledgeMaintenance.schedule.enabled` |
+| Q-138 | knowledge | `knowledge-manager` as a `Thread.entryPath` value (confirms Q-63) | Add it to Thread Visibility |
+| Q-139 | knowledge | "Ephemeral or no-memory" work | Remove the phrase until an owner defines it |
+| Q-140 | knowledge | SIE operation names and scheduling sentence | Dotted names; scope the sentence |
+| Q-141 | knowledge | Sensitivity and freshness values that block retrieval | State the current stricter rule |
+| Q-142 | knowledge | Credential-pattern decision and page frontmatter values | Remove value-pattern rejection; keep field names |
+| Q-143 | knowledge | Withdrawn after review (decided by GOV; issue #508) | — |
+| Q-144 | knowledge | Diff overflow and the page index | State the refusal; remove the page index |
+| Q-145 | knowledge | Enumeration ceiling and sidecar cache boundary | Current default 1,000; per-generation reuse |
+| Q-146 | knowledge | User editor update `requestId` | Add it to the shape |
+| Q-147 | knowledge | WCP projection and field rules | Align the layout, counting, sorts, and fields |
+| Q-148 | knowledge | Knowledge history, numbers, labels, placement | As Q-28 |
+| Q-149 | generative-apps | Withdrawn after review (decided by the Audit specification; issue #514) | — |
+| Q-150 | generative-apps | Withdrawn after review (decided by GKD and Core protocol; issue #515) | — |
+| Q-151 | generative-apps | What the native render result embeds | State the code behavior |
+| Q-152 | generative-apps | Web inspection of an uncertain submission | Fresh id after failure; name the inspection path |
+| Q-153 | generative-apps | GKD scope items that are deferred | Move them to Deferred |
+| Q-154 | generative-apps | Policy mapping for the extra Kernel and catalog operations | Add rows |
+| Q-155 | generative-apps | Generative-apps proposal wording, dates, numbers, labels | As Q-28 |
+| Q-156 | generative-apps | App get for an app id that was never created | `not_found`; no placeholder values |
+| Q-157 | process | CI job and dispatch names in the test strategy | Domain terms in the contract; identifiers in the projection |
+| Q-158 | process | What the release gate runs | Cover the `verify:release` composition as admitted shards |
+| Q-159 | process | NanoHost installer gate on pull requests | Name it as a PR exception |
+| Q-160 | process | Worker MCP smoke placement | Move the Task proof to L3 |
+| Q-161 | process | Per-package `AGENTS.md` requirement | README required; `AGENTS.md` optional |
+| Q-162 | process | Real-provider runner terms | Define "run"; one vocabulary owner; accept the port default |
+| Q-163 | process | Story review on contract change | Review practice in the stories guide |
+| Q-164 | process | Verification calibration cadences | Audit-selected; remove from Owns |
+| Q-165 | process | Seeded-defect role | A function of the Auditor role |
+| Q-166 | process | Delegation premise falsifiability anchor | Add one doctrine sentence (governance) |
+| Q-167 | process | Five-file collection contract | Restate as an inventory assertion |
+| Q-168 | process | Process wording, numbers, labels, placement | As Q-28 |
+| Q-169 | process | Release-cadence decision path and host aliases | Redact the path |
+| Q-170 | process | Proposed changes to `docs/specs/AGENTS.md` | Join line breaks; point to the README |
+| Q-171 | supplement | Accept the Compute Neutrality Target before the freeze | Accept, or amend the decision |
+| Q-172 | supplement | Core owner of the Goal Coordinator role | `architecture.md` |
+| Q-173 | supplement | Restated and completed rules in `docs/core/AGENTS.md` | Point to the documentation model; standing rules |
+| Q-174 | supplement | Product vision name "Foundation" for `doctrine.md` | "Doctrine" |
+| Q-175 | supplement | Adapter-written native state that a resume reads | Record as retained families |
+| Q-176 | supplement | More than one Codex assistant message | Select `final_answer` after a probe |
+| Q-177 | supplement | Codex `contextWindowExceeded` as `length` proof | Treat as positive proof |
+| Q-178 | supplement | Codex inference-hint mapping in its specification | Add with a link to its owner |
+| Q-179 | supplement | Unrequested DeepSeek abort reported as completion | Record the pin limit; gate the template |
+| Q-180 | supplement | Pi protected environment and offline mode | List them in the Pi specification |
+| Q-181 | supplement | Pi "one adapter module" acceptance | Restate; move Pi names out of shared code |
+| Q-182 | supplement | Adapter diagnostic prefix owner | Per-Turn stderr prefix per adapter |
+| Q-183 | supplement | Pi native model representation and successor rule | State them |
+| Q-184 | supplement | Web disposition of the archive operations | Live, as the decision says |
+| Q-185 | supplement | Owner of the Core stream projection | One communication-owned stream specification |
+| Q-186 | supplement | Thread command surface | Closed operation set, revision, not-found code |
+| Q-187 | supplement | Producers and `stopReason` of a `cancelled` Turn | Decide with the runtime release; add the integrity row |
+| Q-188 | supplement | Pending Request winner and responsible user | Pending Requests owns them; register the kinds |
+| Q-189 | supplement | Canonical form of retained digests and derived ids | RFC 8785 JSON with SHA-256 in one owner |
+| Q-190 | supplement | Light App field removal and revision after restore | Disable removal; monotonic revision |
+| Q-191 | supplement | Deployment mode and authored configuration keys | One closed key list in the configuration contract |
+| Q-192 | supplement | Session-derived admin, email normalization, local bearer | State them exactly |
+| Q-193 | supplement | Workspace administrator and rights per association | State the table, or no tier |
+| Q-194 | supplement | Vault user scope and provider-subscription counts | Correct and home them |
+| Q-195 | supplement | Mediation rules that decide authorization | Decide each in its owner |
+| Q-196 | supplement | Mediation vocabularies and names | Close them; correct the names |
+| Q-197 | supplement | Readers of Server Knowledge and Knowledge rights | State readers and rights |
+| Q-198 | supplement | Knowledge retained shapes and lifecycle | State them in their owners |
+| Q-199 | supplement | AgentSession record and adapter probe facts | State fields, transitions, probe results |
+| Q-200 | supplement | Image promotion and release manifest keys | Release Management owns them |
+| Q-201 | supplement | Web inventory source and roadmap owners | Definition catalog; open items only |
+| Q-202 | supplement | Web scope of the monthly UTC Automations cadence | Amend the Web contract |

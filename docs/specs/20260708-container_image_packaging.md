@@ -82,7 +82,7 @@ scripts/docker/
   ci.yml
 ```
 
-The tree that gave `worker-codex`, `worker-opencode`, and `worker-pi` each their own Dockerfile is a pre-decision-27 layout. Today's repository still keeps those three directories as smoke owners under the shared `containers/workers/Dockerfile`. The accepted design replaces them with `containers/worker-runtimes/`. A later implementation slice removes the leaf directories.
+The tree that gave `worker-codex`, `worker-opencode`, and `worker-pi` each their own Dockerfile is a pre-decision-27 layout. The accepted design replaced them with `containers/worker-runtimes/`, and the repository no longer has the leaf directories.
 
 `containers/images.json` is the source of truth for OpenKit-owned images. Git tags such as `v0.0.1` are the source of truth for release versions. GitHub Actions publishes release images to GitHub Container Registry only after the existing release gate passes.
 
@@ -460,7 +460,7 @@ A repository-owned manifest template may select this local development image:
 openkit/worker-runtimes:dev
 ```
 
-Codex, OpenCode, Pi, and DeepSeek templates select that same image and differ by `targetRuntime`. Today's templates still name the leaf images. The accepted design replaces that selection. Copy-on-init on a new data root is a first write of the accepted templates.
+Codex, OpenCode, Pi, and DeepSeek templates select that same image and differ by `targetRuntime`. The current templates select `openkit/worker-runtimes:dev`. Copy-on-init on a new data root is a first write of the accepted templates.
 
 Every authored `AgentManifest` selects an OpenShell-compatible image reference that the NanoHost may pass to stock sandbox creation after admission; NanoCore copies that resolved reference into the AEP but performs no OpenShell lifecycle effect. A global `OPENKIT_OPENSHELL_WORKER_IMAGE` selector is not part of the current contract. Release manifests should use GHCR references or digests, while repository-owned local templates may use cataloged development tags.
 
@@ -497,7 +497,7 @@ scripts/docker/
   e2e-app.sh
 ```
 
-The shared worker Dockerfile exposes `worker-common` and the deployment target `worker-runtimes`. Today's tree still exposes `worker-codex`, `worker-opencode`, and `worker-pi`. The accepted design replaces those targets. `containers/worker-runtimes/smoke.sh` does not exist yet. The implementation slice creates it. The leaf directories are removed by that later slice.
+The shared worker Dockerfile exposes `worker-common` and the deployment target `worker-runtimes`. The leaf targets `worker-codex`, `worker-opencode`, and `worker-pi` and their directories are removed, and `containers/worker-runtimes/smoke.sh` exists.
 
 The initial migration should create only directories for live images.
 
