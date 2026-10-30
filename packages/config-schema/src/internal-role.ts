@@ -11,7 +11,8 @@ const InternalRoleLimitsSchema = z
   .object({
     maxModelTurns: z.number().int().positive(),
     maxToolCalls: z.number().int().positive(),
-    deadlineMs: z.number().int().positive(),
+    // The host timer cannot represent a longer delay.
+    deadlineMs: z.number().int().positive().max(2_147_483_647),
   })
   .strict();
 
