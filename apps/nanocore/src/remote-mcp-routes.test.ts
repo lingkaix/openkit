@@ -1193,6 +1193,11 @@ describe('remote MCP App endpoint', () => {
       (event) => event.action === 'remote-mcp.request'
     );
     expect(audit?.actor).toEqual({ kind: 'user', id: testEntityId('usr', 'user_remote_mcp') });
+    expect.soft(audit?.authentication).toEqual({
+      credentialKind: 'token',
+      credentialId: token.record.tokenId,
+    });
+    expect(audit?.outcome).toBe('succeeded');
     expect(audit?.summary).toContain(token.record.tokenId);
     expect(audit?.summary).toContain('remote-mcp');
     expect(audit?.requestId).toBe(requestId);

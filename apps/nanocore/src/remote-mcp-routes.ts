@@ -12,6 +12,7 @@ import { compareCodeUnits } from '@openkit/protocol';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { recordServerAuditEvent } from './audit-events.js';
+import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   createOperationInvocation,
@@ -221,6 +222,7 @@ export function registerRemoteMcpRoutes({
           coreDb: dependencies.coreDb,
           actor: { kind: 'user', id: actor.userId },
           action: 'remote-mcp.request',
+          authentication: auditAuthenticationFromActor(actor),
           resource: operationId ? `operation:${operationId}` : '/mcp',
           requestId: requestId ?? null,
           outcome: refused ? 'denied' : response.ok ? 'succeeded' : 'failed',
