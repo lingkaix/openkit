@@ -832,7 +832,8 @@ function createWorkResourceLineageExportInput(
   retainRepresentation = false,
   knowledgeExcerpt = false,
   includeKnowledgeOverview = false,
-  artifactFormat: 'markdown' | 'text' = 'markdown'
+  artifactFormat: 'markdown' | 'text' = 'markdown',
+  knowledgeExclusion?: 'current' | 'legacy'
 ): WriteWorkspaceExportTreeInput {
   const appliedContent = '# Portable\n';
   const input = createLineageExportInput(undefined, 'off', {
@@ -1097,33 +1098,35 @@ function createWorkResourceLineageExportInput(
           })}</knowledge_overviews>`,
         }
       : {}),
-    knowledgeSelections: [
-      {
-        content: knowledgeContent,
-        contentDigest: knowledgeContentDigest,
-        knowledgeBaseId: source.knowledgeBaseId,
-        knowledgePageId,
-        notebookRevision,
-        ...(knowledgeExcerpt
-          ? {
-              deliveredContent: knowledgeContent.slice(0, 2048),
-              projection: {
-                kind: 'excerpt' as const,
-                sourceRevision: notebookRevision,
-                representationId: 'original-utf8',
-                representationDigest: knowledgeContentDigest,
-                representationByteLength: Buffer.byteLength(knowledgeContent),
-                deliveredDigest: `sha256:${createHash('sha256').update(knowledgeContent.slice(0, 2048)).digest('hex')}`,
-                ranges: [{ start: 0, end: 2048 }],
-                byteLength: 2048,
-                truncated: true,
-                availability: 'incomplete' as const,
-              },
-            }
-          : {}),
-        sourceRefs: knowledgeSourceRefs,
-      },
-    ],
+    knowledgeSelections: knowledgeExclusion
+      ? []
+      : [
+          {
+            content: knowledgeContent,
+            contentDigest: knowledgeContentDigest,
+            knowledgeBaseId: source.knowledgeBaseId,
+            knowledgePageId,
+            notebookRevision,
+            ...(knowledgeExcerpt
+              ? {
+                  deliveredContent: knowledgeContent.slice(0, 2048),
+                  projection: {
+                    kind: 'excerpt' as const,
+                    sourceRevision: notebookRevision,
+                    representationId: 'original-utf8',
+                    representationDigest: knowledgeContentDigest,
+                    representationByteLength: Buffer.byteLength(knowledgeContent),
+                    deliveredDigest: `sha256:${createHash('sha256').update(knowledgeContent.slice(0, 2048)).digest('hex')}`,
+                    ranges: [{ start: 0, end: 2048 }],
+                    byteLength: 2048,
+                    truncated: true,
+                    availability: 'incomplete' as const,
+                  },
+                }
+              : {}),
+            sourceRefs: knowledgeSourceRefs,
+          },
+        ],
     materialSelections: [
       {
         bindingMutationRequestId: 'request_material_bind',
@@ -1257,6 +1260,17 @@ function createWorkResourceLineageExportInput(
         objectId: retrievalTraceId,
       },
     },
+    knowledgeExclusions: knowledgeExclusion
+      ? [
+          {
+            knowledgeBaseId: source.knowledgeBaseId,
+            knowledgePageId,
+            contentDigest: knowledgeContentDigest,
+            reason: 'budget_exceeded',
+            ...(knowledgeExclusion === 'current' ? { notebookRevision } : {}),
+          },
+        ]
+      : [],
     packageFiles,
     packageSnapshotId: snapshot.snapshotId,
     requestId: 'request_source',
@@ -2651,6 +2665,73 @@ describe('workspace auxiliary lineage reminting', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
       if (fixtureParent) rmSync(fixtureParent, { recursive: true, force: true });
+    }
+  });
+
+  it('binds imported Knowledge exclusion revisions to the target Notebook and preserves historical absence', () => {
+    // S51 remaps the complete S39 supplying Base/page/revision tuple; old missing data stays missing.
+    for (const version of ['legacy', 'current'] as const) {
+      const input = createWorkResourceLineageExportInput(
+        undefined,
+        undefined,
+        false,
+        false,
+        false,
+        'markdown',
+        version
+      );
+      const verified = writeWorkspaceExportTree(input);
+      const sourceRevision = verified.manifest.knowledgeNotebookRevision;
+      const imported = readWorkspaceImportSnapshot({
+        verified,
+        targetWorkspaceId,
+        targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
+      });
+      const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-exclusion-notebook-target-'));
+      onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
+      });
+      const files = Object.fromEntries(
+        [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+          path.slice('knowledge/pages/'.length),
+          content,
+        ])
+      );
+      const targetRevision = notebook.initialize({
+        files,
+        metadata: {
+          summary: 'Imported exclusion Notebook fixture',
+          producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+          authority: { kind: 'direct', instructionReference: 'test:import-exclusion-notebook' },
+          changeRequest: {
+            requestId: randomUUID(),
+            inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(files)).digest('hex')}`,
+          },
+          sourceReferences: [],
+        },
+      });
+      expect(targetRevision).not.toBe(sourceRevision);
+      imported.finalizeNotebookKnowledge!(readPortableWorkspaceNotebookPages(targetRoot));
+      const [traceText] = [...imported.portableFileState.workerContextPackageFiles]
+        .filter(([path]) => path.endsWith('/context-package.json'))
+        .map(([, text]) => text);
+      const trace = readRetainedContextTrace(
+        traceText!,
+        imported.portableFileState.workerContextPackageFiles
+      );
+      expect(trace.knowledgeExclusions).toEqual([
+        expect.objectContaining({
+          knowledgeBaseId: imported.defaultKnowledgeBaseId,
+          knowledgePageId: 'knowledge_portable_source',
+          reason: 'budget_exceeded',
+        }),
+      ]);
+      if (version === 'current') {
+        expect(trace.knowledgeExclusions[0]!.notebookRevision).toBe(targetRevision);
+      } else {
+        expect(trace.knowledgeExclusions[0]).not.toHaveProperty('notebookRevision');
+      }
     }
   });
 

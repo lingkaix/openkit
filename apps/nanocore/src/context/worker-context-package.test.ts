@@ -279,6 +279,7 @@ async function createAcceptedFixture(
     readonly turnId?: string;
     readonly threadId?: string;
     readonly knowledge?: boolean;
+    readonly exclusionNotebookRevision?: string;
     readonly sourceFiles?: readonly WorkerContextPackageSourceFileInput[];
   } = {}
 ): Promise<{
@@ -349,6 +350,9 @@ async function createAcceptedFixture(
           {
             knowledgeBaseId: KNOWLEDGE_BASE_ID,
             knowledgePageId: 'lessons/omitted',
+            ...(options.exclusionNotebookRevision
+              ? { notebookRevision: options.exclusionNotebookRevision }
+              : {}),
             contentDigest: sha256('Omitted page'),
             reason: 'budget_exceeded',
           },
@@ -1439,6 +1443,28 @@ describe('worker Context Package owner', () => {
     ).toThrow(/conflict/);
   });
 
+  it('retains the exact excluded Knowledge notebook revision across trace publication and reopening', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-exclusion-revision-'));
+    const notebookRevision = 'excluded-page-notebook-commit';
+    const fixture = await createAcceptedFixture(workspaceRoot, {
+      knowledge: true,
+      exclusionNotebookRevision: notebookRevision,
+    });
+    // S39 Knowledge Selection Input And Delivery retains the exact omitted page commit.
+    expect(fixture.trace.knowledgeExclusions).toEqual([
+      expect.objectContaining({ notebookRevision }),
+    ]);
+    writeWorkerContextPackageTrace({ ...fixture, workspaceRoot });
+    const reopened = readWorkerContextPackageTrace({
+      authorities: fixture.authorities,
+      workspaceRoot,
+      workspaceId: fixture.trace.workspaceId,
+      threadId: fixture.trace.threadId,
+      turnId: fixture.trace.turnId,
+    });
+    expect(reopened?.knowledgeExclusions).toEqual(fixture.trace.knowledgeExclusions);
+  });
+
   it.each([
     'live',
     'imported',
@@ -1484,6 +1510,9 @@ describe('worker Context Package owner', () => {
         trace: fixture.trace,
         verification: kind === 'live' ? 'strict' : 'imported-history',
       });
+      // Retained traces that predate exclusion revisions remain readable without inventing one.
+      if (kind === 'live')
+        expect(reopened.trace.knowledgeExclusions[0]).not.toHaveProperty('notebookRevision');
       expect(reopened.trace.fileInventory).toEqual(
         [
           ...manifest.fileInventory,

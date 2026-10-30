@@ -210,6 +210,7 @@ const KnowledgeSelectionSchema = z.object({
 });
 const KnowledgeExclusionSchema = z.object({
   knowledgeBaseId: KnowledgeBaseIdSchema,
+  notebookRevision: IdSchema.optional(),
   contentDigest: Sha256Schema,
   knowledgePageId: IdSchema,
   reason: z.literal('budget_exceeded'),
@@ -384,6 +385,8 @@ export interface WorkerContextPackageKnowledgeSelectionReference {
 
 /** S61-selected Knowledge page omitted only by the later package budget. */
 export interface WorkerContextPackageKnowledgeExclusion {
+  /** Exact selected Notebook commit; absent only in older retained exclusions. */
+  readonly notebookRevision?: string | undefined;
   /** Exact supplying default Knowledge Base; a page path alone is not an identity. */
   readonly knowledgeBaseId: string;
   /** Workspace Knowledge page identity. */

@@ -134,7 +134,10 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
-import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from '../test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -567,6 +570,7 @@ async function createWorkerContextExecutorFixture(
     /** Native outcome and turn.start delivery have no Task checkpoint to prepare. */
     readonly prepareTaskCheckpoint?: boolean;
     readonly materialContent?: string;
+    readonly knowledge?: Parameters<typeof seedDemoWorkspace>[2];
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
     /** The caller publishes its own Knowledge and binds its selected trace before launch. */
@@ -584,7 +588,7 @@ async function createWorkerContextExecutorFixture(
   // These Context Package scenarios own Demo only; keep its real publisher, not Quick Chat.
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  await seedDemoWorkspace(store);
+  await seedDemoWorkspace(store, LOCAL_USER_ID, options.knowledge);
   if (options.captureValue)
     store.setLiveCaptureCoverage({ scope: 'server', value: options.captureValue });
   recordWorkspaceOwnerMembership({
@@ -9795,6 +9799,69 @@ describe('WorkerGovernanceTurnExecutor', () => {
       prepareSpy.mockRestore();
       launchSpy.mockRestore();
       coreDb.sqlite.close();
+    }
+  }, 60_000);
+
+  it('retains the selected notebook revision when the real package producer excludes Knowledge', async () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const page = knowledgePageFixture(
+      {
+        id: 'package-budget-guidance',
+        title: 'Prepare worker context',
+        content: 'Prepare worker context guidance. '.repeat(200),
+        createdAt: '2026-07-18T00:00:00.000Z',
+        updatedAt: '2026-07-18T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
+    const fixture = await createWorkerContextExecutorFixture('knowledge-exclusion-revision', {
+      knowledge: [page],
+      maxContextTokens: 4_500,
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    try {
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(
+          fixture.coreDb.dataRoot,
+          'workspaces',
+          workspaceId,
+          'knowledge',
+          'notebook.git'
+        ),
+      });
+      const notebookRevision = notebook.publishedRevision();
+      const prepared = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(workspaceDb, workspaceId, fixture.turn.threadId, fixture.turn.id)!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: fixture.workerRequest,
+          workspaceId,
+        },
+        new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+      );
+      expect(prepared.packageFiles.knowledgeSelections).toEqual([]);
+      // S39 records the exact selected page commit, even when no page bytes are delivered.
+      expect(prepared.knowledgeExclusions).toEqual([
+        {
+          knowledgeBaseId: readDefaultKnowledgeBaseId({
+            dataRoot: fixture.coreDb.dataRoot,
+            scope: { kind: 'workspace', workspaceId },
+          }),
+          knowledgePageId: page.id,
+          notebookRevision,
+          contentDigest: page.contentDigest,
+          reason: 'budget_exceeded',
+        },
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
     }
   }, 60_000);
 

@@ -94,3 +94,5 @@ The Thread Material read projection uses the same portable trace reader as expor
 Canonical Turn and Item authority snapshots carry the Protocol work owner. Context verification requires the exact Workspace owner before it accepts their IDs, digests or source bytes. Context request selectors, trace addresses and scheduler admission references keep their existing Workspace fields.
 
 The fixed LLM projection tuple uses the shared Protocol canonical digest, preserving ordered messages, policy decisions and the `ctxpkg_sha256_` tag. The switch preserves valid-Unicode tuple bytes and does not rewrite delivered Context Packages or alter their manifest/trace readers. Run `llm-projection.test.ts` and `projection-policy.test.ts` for the projection contract.
+
+Knowledge package-budget exclusions retain the exact selected Notebook commit with the existing page identity and original digest. The retained reader preserves this revision when present and leaves older revision-absent exclusions unchanged; it never infers an old revision from current Notebook state.

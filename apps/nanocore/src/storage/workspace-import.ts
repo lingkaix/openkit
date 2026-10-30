@@ -3184,10 +3184,24 @@ function readWorkResourceImportState(
               'Worker Context Package Knowledge exclusion contradicts its retrieval trace.'
             );
           }
+          if (
+            exclusion.notebookRevision !== undefined &&
+            (!binding ||
+              binding.nativeKnowledgePages.get(
+                `knowledge/pages/${exclusion.knowledgePageId}.md`
+              ) !== target.content)
+          ) {
+            throw new Error(
+              'Portable Knowledge history requires unavailable historical notebook closure.'
+            );
+          }
           return {
             ...exclusion,
             knowledgeBaseId: context.targetKnowledgeBaseId,
             contentDigest: target.contentDigest,
+            ...(exclusion.notebookRevision !== undefined
+              ? { notebookRevision: binding!.notebookRevision }
+              : {}),
           };
         }),
         knowledgeSelectionInput: targetRetrievalReference
@@ -3311,7 +3325,8 @@ function readWorkResourceImportState(
     };
     if (
       sourceKnowledgeOverview !== undefined ||
-      sourceTrace.knowledgeSelections.some((entry) => entry.projection)
+      sourceTrace.knowledgeSelections.some((entry) => entry.projection) ||
+      sourceTrace.knowledgeExclusions.some((entry) => entry.notebookRevision !== undefined)
     ) {
       notebookFinalizers.push((binding) => finalizeTargetPackage(binding));
     } else finalizeTargetPackage();
