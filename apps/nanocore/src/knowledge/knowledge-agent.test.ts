@@ -1332,9 +1332,12 @@ it('answers from only current-self Memory through actual search, page and model-
   f.createResponses.mockImplementation(async (_provider, _request, context) => {
     context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
     if (++step === 1) return call('knowledge.retrieval', { query: 'meridian violet tea' });
-    if (step === 2) return call('knowledge.page.read', { pageId: f.citation });
-    if (step === 3)
-      return call('knowledge.source.read', { pageId: f.citation, sourceId: f.source.id });
+    if (step === 2) {
+      // The real loop reads the selected Page before admitting its Source, within one model batch.
+      const page = call('knowledge.page.read', { pageId: f.citation });
+      const source = call('knowledge.source.read', { pageId: f.citation, sourceId: f.source.id });
+      return { ...page, output: [...page.output, ...source.output] };
+    }
     return message('You prefer violet tea.', [f.citation], null);
   });
   const answer = await f.askMemory();
@@ -1356,7 +1359,7 @@ it('answers from only current-self Memory through actual search, page and model-
   expect(toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.page.read')).toContain(
     'USER_PRIVATE_PAGE'
   );
-  expect(toolOutput(f.createResponses.mock.calls[3]![1], 'knowledge.source.read')).toContain(
+  expect(toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.source.read')).toContain(
     'USER_PRIVATE_SOURCE'
   );
   expect(

@@ -1,5 +1,7 @@
 # nanocore
 
+The Memory Knowledge-query fixture batches its Page and Source requests in one external model response. The real loop reads the selected Page before admitting and reading its Source; all search, content, citation, trace, isolation and usage assertions remain. This avoids an unrelated extra model round trip without changing the 30-second test bound.
+
 Knowledge proposal and reversal tests isolate independent decision and evidence scenarios. The S39 Knowledge check shares one real completed Task across delivery and proposal-lineage observations, with bounded setup and the original assertions; its cleanup remains explicit. Each test and the shared S39 setup have a 60-second bound.
 
 The test-only `worker-mcp-lifecycle.fixture.ts` keeps the original captured-outcome scenarios and common assertions outside the production source root. Four focused test files run these scenarios in separate Vitest contexts with their original inputs, cleanup and bounds, so timed-out cleanup cannot close the next scenario's writer.
