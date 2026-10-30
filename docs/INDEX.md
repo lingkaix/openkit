@@ -258,6 +258,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261025-independent_doc_audit_knowledge.md` — Independent Documentation Audit: Knowledge Group
 - `docs/audits/20261025-independent_doc_audit_process.md` — Independent Documentation Audit: Process Group
 - `docs/audits/20261025-independent_doc_audit_supplement.md` — Independent Documentation Audit: Supplement From A Second Session
+- `docs/audits/20261030-independent_doc_audit_answers_p2a.md` — Independent Documentation Audit: Protocol And Communication Answers
 - `docs/audits/20261030-independent_doc_audit_answers_p2b.md` — Independent Documentation Audit: Answers For Identity And Policy
 - `docs/audits/20261030-independent_doc_audit_answers_p4.md` — Independent Documentation Audit: Answers For Sandbox And AgentSession
 - `docs/audits/20261030-independent_doc_audit_review_part1.md` — Independent Documentation Audit: Team Review Of Part 1

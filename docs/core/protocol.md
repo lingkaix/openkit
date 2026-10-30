@@ -194,7 +194,7 @@ Workspace-scoped operation parameters and transport addressing retain their Work
 
 The rc.10 reset admits this single retained shape. No dual reader, converter or migration interprets the retired Workspace record shape. Storage locations and existing creation, update, termination, retry and recovery rules remain with their accepted owners.
 
-Threads support create, list, get, resume, and archive semantics.
+Threads support create, list, get, update, resume, and archive semantics. Workspace deletion removes its Threads under the Workspace lifecycle; there is no standalone Thread-delete command.
 
 Thread resume means re-entering an existing durable thread context so a client or channel can read history and submit new turns.
 
@@ -236,7 +236,7 @@ Those sets classify the statuses above; they are not a second Turn state machine
 
 The core protocol does not define a `cancelling` turn state.
 
-Interrupt and cancellation commands asynchronously request interruption. A Turn whose authorization is withdrawn before completion MAY terminate as `cancelled`; the withdrawing actor is the holder of that Turn's authorization, which includes the owning workflow when it determines the work is superseded, and the specific reason is recorded in an Item rather than encoded as another terminal status; which path produces which terminal state is decided by the owning accepted specification, and multiple existing owners map authorized stops to `interrupted` with `stopReason=aborted`. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
+Interrupt and cancellation commands asynchronously request interruption. A Turn whose authorization is withdrawn before completion MAY terminate as `cancelled`; the withdrawing actor is the holder of that Turn's authorization, which includes the owning workflow when it determines the work is superseded, and the specific reason is recorded in an Item rather than encoded as another terminal status; which path produces which terminal state is decided by the owning accepted specification under the [four-terminal-state decision](../decisions/20260921-four_turn_terminal_states.md). A canonical terminal envelope for `cancelled` carries `stopReason=aborted`; worker abort completion produces `interrupted` with the same stop reason. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
 
 New input should use the same core input semantics across web UI, desktop UI, chat channels, and future transports.
 
@@ -297,7 +297,7 @@ Item types may include:
 - `command-execution`
 - `file-change`
 - `tool-call`
-- `context-injection`
+- `knowledge-injection`
 - `approval-request`
 - `approval-decision`
 - `user-input-request`
@@ -324,7 +324,7 @@ Delta kinds form a closed enum. Typed payloads MUST select their meaning by delt
 
 Deltas cover text and content parts, execution output, bounded snapshots, progress, pending requests, interactive content, Artifact projections, and context injection. Part and request correlation MUST remain exact and item-local unless an owning schema promotes those identities. Independent approvals and inline requests retain distinct scopes and SHOULD NOT duplicate the same human decision.
 
-Large content SHOULD use incremental updates or workspace/artifact-plane references rather than repeated full snapshots. Control-plane streams SHOULD NOT carry large binary blobs inline. Core-mediated context selections SHOULD fold into one context-injection Item unless an explicit product need requires more.
+Large content SHOULD use incremental updates or workspace/artifact-plane references rather than repeated full snapshots. Control-plane streams SHOULD NOT carry large binary blobs inline. Core-mediated context selections SHOULD fold into one knowledge-injection Item unless an explicit product need requires more.
 
 Core MUST validate each delta against the active protocol version's declared Item type and delta kind. An undeclared combination is a protocol violation. Core SHOULD drop it from the product Item log, record an audit event, and return a stable protocol error where feedback is available.
 
@@ -332,15 +332,15 @@ Item completion is authoritative. Clients MAY render deltas optimistically but M
 
 ## Pending Request Semantics
 
-A pending request is an approval request or a user-input request that waits for a person while work continues. An agent raises it through a governed tool call, or Core raises it for an actor's own governed command. It names its Thread, the Turn that raised it, its requester, and the responsible user who may resolve it. It is not a Turn status. Raising it does not pause, stop, or close the Turn or the AgentSession that raised it, and that Turn continues and may end while the request is outstanding.
+A pending request is an approval request or a user-input request that waits for a person while work continues. An agent raises it through a governed tool call, or Core raises it for an actor's own governed command. It names its Thread, the Turn that raised it, its requester, and its responsible user. The responsible user or an actor with a currently usable administrator credential may resolve it under [Policy](policy.md). Core records the actual deciding actor separately from the requester. It is not a Turn status. Raising it does not pause, stop, or close the Turn or the AgentSession that raised it, and that Turn continues and may end while the request is outstanding.
 
 A request is blocking when the requesting agent ended its Turn while the request was outstanding and no later Turn has run on its Thread. Blocking is derived from those facts and is not stored. It changes how the request is shown, never its lifecycle.
 
 Lifecycle:
 - **Raised.** The request is durable before the raising call returns its pending result. The request Item is written on the Turn that raised it.
-- **Resolved.** The responsible user grants or denies an approval, or answers a user-input request. One response wins. An exact replay returns the recorded outcome, and a conflicting response fails without writes.
+- **Resolved.** An eligible deciding actor grants or denies an approval, or answers a user-input request. One response wins. An exact replay returns the recorded outcome, and a conflicting response fails without writes.
 - **Executed.** For a granted approval that governs a call, the governed effect is claimed and executed at most once, and its disposition is recorded: executed, denied and not executed, execution error, or outcome unknown. For an agent's captured call other than a command-intent approval, the grant is recorded in one write with either its claim or its non-execution, so such a grant never waits unclaimed. A command-intent grant, whether requested by a person or the Coordinator, waits for its effect owner to consume it through the same re-evaluation-and-claim boundary; an applicable invalidating event before consumption keeps the grant and records that it was not executed. The claim excludes withdrawal and invalidation: a claimed request can no longer end, and an ended request can no longer be claimed. A claim whose execution did not finish before a restart becomes outcome unknown and is never executed again.
-- **Ended.** A request ends without resolution when the responsible user withdraws it, or on an invalidating event: archive or deletion of its Thread, deletion of its Workspace, or loss of the requester's or responsible user's membership or authority. An agent may later be allowed to withdraw its own request; that path is defined but not enabled. Ending records its reason, actor, and time durably, after which the request cannot be resolved.
+- **Ended.** A request ends without resolution when the responsible user or an eligible administrator withdraws it, or on an invalidating event: archive of its Thread, deletion of its Workspace, or loss of the requester's or responsible user's membership or authority. An agent may later be allowed to withdraw its own request; that path is defined but not enabled. Ending records its reason, actor, and time durably, after which the request cannot be resolved.
 - **No deadline.** A request has no default time limit. Release or replacement of the AgentSession that raised it does not end it.
 - **Bounded accumulation.** The number of outstanding requests on one Thread is bounded; a request over the bound is refused before it is recorded.
 
@@ -351,7 +351,7 @@ Delivery:
 - Delivery is proved by the executor's own boundary: native submission for a worker, the internal service's durable acceptance of the input for the Assistant or Coordinator, and the Turn's completion with its Items for a Core-local Turn. Only a worker delivery waits for worker scheduler capacity. A refusal proved before that boundary releases the frozen outcomes. When the boundary is unknown, those outcomes are marked delivery-unknown and are never resubmitted automatically; the Turn follows ordinary recovery.
 - The decision, answer, disposition, or ending is written as an Item on the delivering Turn, as its input, and records who decided and when. An outcome's Items are written once; a later delivery attempt after a refusal references them and writes none. The disposition of every granted approval that governs an agent's captured call other than a command-intent approval is delivered, whether or not the call was executed. A command-intent grant is delivered as a decision, and its consumption and result belong to its effect owner. It is never back-filled onto the Turn that raised the request.
 - When the requester is a person rather than an agent, the delivering Turn is Core-local: it records the Items and runs no agent.
-- When no requester can receive an outcome, because its Thread is archived or its requesting Agent is removed or loses its authority, the outcome is closed out: its Items, if not yet written, are written on a completed Core-local Turn that runs no agent, never on the Turn that raised the request or on another run's Turn, and it is never delivered afterwards. Archive writes this before the Thread's archived status, so no Turn is admitted after archive; it is refused while a granted call on the Thread is still executing, and while the Thread has a non-terminal Turn and something to close out. Deleting a Thread or Workspace deletes its requests with its history and writes no Item.
+- When no requester can receive an outcome, because its Thread is archived or its requesting Agent is removed or loses its authority, the outcome is closed out: its Items, if not yet written, are written on a completed Core-local Turn that runs no agent, never on the Turn that raised the request or on another run's Turn, and it is never delivered afterwards. Archive writes this before the Thread's archived status, so no Turn is admitted after archive; it is refused while a granted call on the Thread is still executing, and while the Thread has a non-terminal Turn and something to close out. Deleting a Workspace deletes its Threads' requests with their history and writes no Item.
 
 Core's durable pending-request record holds the request, its resolution or ending, any captured call it governs with its claim and disposition, and its delivery association, and it is the source of the Approval status; the owning specification defines that record and the predicates that command admission and canonical load check against its Items and receipts. A record that fails them is inspect-only, and neither load nor a command picks a winner or reconstructs authority from Items. Items remain the communication record of the request and its outcome. Reload never denies, ends, or re-pauses a request because the Turn that raised it has ended, and never reopens a terminal Turn. Missing, stale, or contradictory commands fail before they create or terminalize a Turn, and an incomplete receipt returns `recovery_required`.
 
@@ -374,10 +374,10 @@ Approval decisions should be explicit and auditable. Approval decisions never tr
 Approval status values should include:
 
 - `pending`: awaiting a decision
-- `granted`: approved by the responsible user, or granted by an accepted automatic policy, which is recorded as a policy grant and never as a human decision
-- `denied`: refused by the responsible user
+- `granted`: approved by the responsible user or an eligible administrator, or granted by an accepted automatic policy, which is recorded as a policy grant and never as a human decision
+- `denied`: refused by the responsible user or an eligible administrator
 - `expired`: ended by an invalidating event without a decision; there is no default time limit
-- `withdrawn`: withdrawn by the responsible user, or by the requesting agent once that path is enabled
+- `withdrawn`: withdrawn by the responsible user or an eligible administrator, or by the requesting agent once that path is enabled
 - `superseded`: reserved, with no current producer
 
 Implementations MAY support only a subset of approval statuses, but clients should tolerate the full status family once advertised by protocol version or capability flag.
@@ -410,9 +410,9 @@ Artifact records may be fetched independently through app or protocol APIs. Work
 
 ## Event Envelope
 
-All live protocol events should use one explicit envelope shape.
+All live protocol events should use an explicit envelope for their ownership scope.
 
-Conceptual envelope:
+Conceptual Workspace-scoped envelope:
 
 ```ts
 {
@@ -427,6 +427,8 @@ Conceptual envelope:
   data: unknown;
 }
 ```
+
+Server-owned Turn events carry `owner: { kind: 'server' }`, `threadId`, and `turnId`, and omit `workspaceId`. A Workspace stream MUST NOT admit Server-owned events.
 
 `protocolVersion` is the core protocol version used by the envelope.
 
@@ -479,9 +481,9 @@ Minimum turn-stream guarantees:
 
 Reconnect, replay, missed-event recovery, and backpressure rules are core protocol semantics.
 
-For a turn stream, a `since=N` cursor means the client has processed every event through sequence `N`. Core MUST replay retained events with `sequence > N`.
+For a turn stream, a non-initial `since=N` cursor means the client has processed every event through sequence `N`. Core MUST replay retained events with `sequence > N`. An initial `since=0` requests the current retained window and makes no claim that earlier events remain available.
 
-If the requested cursor is older than the retained replay window, Core MUST return `core.stream.cursor_expired`.
+If the first retained sequence is `F`, a non-initial cursor expires when `N < F - 1`. Core MUST return `core.stream.cursor_expired` for that cursor. `since=F-1` remains valid; the initial `since=0` is exempt from this comparison.
 
 A turn-stream envelope is terminal-affiliated when either its event marker is `turn.completed` or its payload discriminator is `turn-completed`.
 
@@ -515,7 +517,7 @@ Required command families include:
 - discover server capabilities
 - create or update workspace
 - list or read workspace resources
-- create, list, read, or archive threads
+- create, list, read, update, or archive threads
 - start a turn
 - submit input through an active-work delivery command defined by an accepted owning specification
 - interrupt or cancel a turn
@@ -569,7 +571,7 @@ The idempotency ledger MUST store only non-secret metadata needed to bind the im
 
 Baseline completed-receipt metadata is a closed set: command name, caller `requestId`, the smallest stable non-secret scope identifiers, canonical semantic-input hash, response resource kind and id, `createdAt`, and `expiresAt`. It MUST NOT contain an arbitrary result, request body, or HTTP response snapshot. An accepted command-specific owner MAY define only a closed non-authoritative replay-metadata exception that creates no precedent for another command.
 
-By default, `expiresAt` MUST be exactly seven days after `createdAt`. An accepted bounded exception MAY instead tie retention to an exact explicit in-progress owner. While that exact owner exists, the retained receipt remains valid replay authority. When no such exception is active, a receipt is replay authority only before expiry; at `referenceTime >= expiresAt`, it MUST be treated as absent and MAY be pruned. Ordinary expiry absence and pruning resume after the in-progress owner terminates. Expiry, or the end of the bounded exception, MUST NOT authorize inferred success or response reconstruction: existing request-owned effects without a valid completed receipt follow `recovery_required`.
+Completed receipts provide replay authority within a bounded client retry window. Under the current default, `expiresAt` MUST be exactly seven days after `createdAt`. An accepted bounded exception MAY instead tie retention to an exact explicit in-progress owner. While that exact owner exists, the retained receipt remains valid replay authority. When no such exception is active, a receipt is replay authority only before expiry; at `referenceTime >= expiresAt`, it MUST be treated as absent and MAY be pruned. Ordinary expiry absence and pruning resume after the in-progress owner terminates. Expiry, or the end of the bounded exception, MUST NOT authorize inferred success or response reconstruction: existing request-owned effects without a valid completed receipt follow `recovery_required`.
 
 If the same command, scope, and `requestId` are reused with different semantic input, Core MUST reject the request with `idempotency_key_conflict`.
 
@@ -642,9 +644,9 @@ Conceptual shape:
 }
 ```
 
-Error codes MUST be stable namespaced strings.
+Error codes MUST be stable machine-readable strings. Core command codes MAY be flat strings, including `recovery_required` and `idempotency_key_conflict`.
 
-Reserved namespaces include:
+Reserved namespaces for namespaced codes include:
 
 - `core.workspace.*`
 - `core.thread.*`

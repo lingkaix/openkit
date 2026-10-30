@@ -91,7 +91,15 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 - Every public App API route MUST be registered with: path, method, operation id, request schema references (params, query, body), response schema references per status code, error envelope reference, required auth scheme, and tags. Until a resource family is cut over, the canonical operation catalog authors that family's path, method, and operation id. When the family is cut over, those projection fields are derived from the definition table, and an author does not maintain a second path, method, or name. The three Workspace archive streaming bindings are not replaced by one JSON route.
 - Reusable structured request and response shapes MUST import from the shared packages. A route-local primitive path or query constraint MAY remain inline when no shared semantic schema exists and extracting one would create a speculative contract entity; when a shared id or value schema already exists, the registration MUST reference it instead of duplicating the constraint.
 - Until a resource family is cut over, its catalog operation ids MUST be unique, lowercase-camel identifiers and stable within one OpenKit version. They are exact anchors for fixtures and projections of that family. Renaming one is a release-coupled contract change, not a requirement to preserve an alias or compatibility window. When the family is cut over, the canonical operation id is the name [Operation Definition](20261002-operation_definition.md) owns, the transport spelling is derived, and the old lowercase-camel catalog id is deleted with the hand-maintained descriptor rather than kept as an alias.
-- Routes explicitly outside the projection are a closed list: the Core HTTP/SSE projection, browser-auth implementation routes, the OpenAI-compatible `/v1/*` gateway surface, worker-plane routes (`/worker-control/*`, `/inference/*`, and `/capabilities/*`), deterministic local-mode test-support routes, and internal diagnostics explicitly marked non-public. Every public App API route outside that list MUST be registered.
+- Routes explicitly outside the projection are a closed list:
+  - The Core HTTP/SSE projection, owned by [Core Client Boundary](20260528-core_client_boundary.md).
+  - Browser-auth implementation routes, owned by [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md).
+  - The OpenAI-compatible gateway, owned by [LLM Gateway](20260526-llm_gateway_responses_api.md).
+  - Worker-plane routes, whose transport is owned by [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md).
+  - Discord interactions ingress, owned by [Pending Requests](20260930-pending_requests.md).
+  - NanoHost transport routes, owned by [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md).
+  - Health and diagnostic support bindings, owned by [NanoCore Bootstrap Readiness](20260704-nanocore_bootstrap_readiness.md), plus this specification's OpenAPI serving route.
+- Every public App API route outside that list MUST be registered.
 
 ### Generated document
 
@@ -99,12 +107,12 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 - The document MUST carry: the App API version identifier, the protocol version it corresponds to (per `docs/core/protocol.md` versioning), and a projection-content digest so copies of the same generated projection can be compared exactly. These fields identify an exact contract set; they do not promise cross-version compatibility. The digest is not a source-file or commit identifier.
 - Authentication MUST be documented as security schemes matching `docs/specs/20260704-remote_auth_credential_bootstrap.md`: bearer token (`okt_` tokens) and the session-cookie path, applied per route.
 - The shared error envelope MUST be registered once as a component and referenced by every route's error responses; per-route error documentation adds typed codes, not new envelope shapes.
-- NanoCore MUST serve the generated App API document at a stable diagnostic route (implementation projection: `/api/openapi.json`), gated by the same auth posture as other diagnostics read models. A human-readable documentation UI MAY be mounted in development builds; it is not a product surface commitment.
+- NanoCore MUST serve the generated App API document at a stable diagnostic route (implementation projection: `/api/openapi.json`), available to authenticated readers. The document MUST contain no secrets. A human-readable documentation UI MAY be mounted in development builds; it is not a product surface commitment.
 
 ### SSE and streaming routes
 
 - OpenAPI cannot express the event envelope, ordering, cursor, and replay semantics that `docs/core/protocol.md` and `docs/core/communication.md` own. The projection MUST NOT attempt to become that owner.
-- The current Thread event stream route is part of the separate Core HTTP/SSE projection and therefore MUST NOT be added to the App API document. Its schemas, cursor behavior, and client implementation remain governed by `@openkit/protocol` and `@openkit/core-client`.
+- The current Thread event stream route is part of the separate Core HTTP/SSE projection and therefore MUST NOT be added to the App API document. [Core Protocol](../core/protocol.md#stream-cursor-and-replay) owns its cursor semantics, and [Core Client Boundary](20260528-core_client_boundary.md#current-implementation-projection) records its HTTP/SSE projection. The shared protocol schemas and Core Client implement those contracts.
 - If a future App API-owned route streams, it MUST appear in this document with its negotiated content type, a vendor extension (`x-openkit-sse`) naming the event families and protocol documentation, and component schemas imported from the owning shared schema package. That conditional rule does not transfer Core stream ownership to the App API.
 
 ### Drift and coverage checks

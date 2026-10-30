@@ -135,7 +135,7 @@ Core MUST assign the IDs of Core-owned durable records according to their owning
 
 The `aud` admission covers only the three accepted boot-start, boot-outcome and shutdown producers. The `pd` admission covers only the admitted captured Pending Request execution decision. The `krt` admission covers only the direct Task-preparation and Coordinator direct-Task trace producers. The `cap` admission covers only Pending Request execution, mediated MCP, terminal-checkpoint runtime accounting and Workspace export accounting. Each allocating owner declares its complete immutable name under the [accepted producer decisions](../decisions/20261016-identifier_derivation_and_import_allocations.md). Other independent allocation of these kinds remains UUIDv7. The [accepted declaration boundary](../decisions/20261015-identifier_owner_declarations.md) requires owner-backed derivation authority for every producer; kind registration never authorizes another deterministic-looking call ID. A UUID validates shape, not current attribution, claim, permission or effect status. Existing record failure, retry, retention and recovery rules remain binding. Acceptance requires stable complete-name encoding across reopen, correct kind admission, unchanged contact counts and refusal before effects on malformed or wrong-kind input.
 
-Clients and channel adapters MUST assign `requestId` values for mutating commands.
+Clients and channel adapters MUST assign UUID `requestId` values for mutating commands. These unprefixed command identities remain separate from entity identifiers.
 
 Protocol timestamps MUST be RFC3339 strings assigned by Core for Core-created records and events. Event ordering MUST use `sequence`; timestamps are for human time, indexing, and cross-system correlation.
 
@@ -161,7 +161,7 @@ Core item delta kinds are a closed enum:
 | `request-resolved` | Pending request resolution | Resolve or clear an item-scoped request. |
 | `interaction-delta` | Interactive or realtime stream | Stream interactive terminal, voice, media, or realtime interaction content. |
 | `artifact-updated` | Artifact projection update | Update artifact metadata, preview, or pointer associated with an item. |
-| `context-injection-updated` | Context projection update | Record knowledge-derived context selected or injected for the turn. |
+| `knowledge-injection-updated` | Context projection update | Record knowledge-derived context selected or injected for the turn. |
 
 Low-level payload operations such as append, replace, and patch MAY appear inside a typed delta payload, but they are not the top-level item delta kind.
 
@@ -178,13 +178,15 @@ Initial item-to-delta guidance:
 | `command-execution` | `output-delta`, `interaction-delta`, `progress-updated`, `request-started`, `request-resolved`, `snapshot-updated` |
 | `file-change` | `progress-updated`, `snapshot-updated` |
 | `tool-call` | `request-started`, `request-resolved`, `progress-updated`, `snapshot-updated` |
-| `context-injection` | `context-injection-updated`, `snapshot-updated` |
+| `knowledge-injection` | `knowledge-injection-updated`, `snapshot-updated` |
 | `approval-request` | `progress-updated`, `snapshot-updated` |
 | `approval-decision` | `snapshot-updated` |
 | `user-input-request` | `progress-updated`, `snapshot-updated` |
 | `user-input-response` | `snapshot-updated` |
 | `agent-handoff` | `progress-updated`, `snapshot-updated` |
 | `artifact-reference` | `artifact-updated`, `snapshot-updated` |
+| `generative-ui-reference` | `snapshot-updated` |
+| `context-summary` | None; published as a completed Item. |
 | `status` | `progress-updated`, `snapshot-updated` |
 
 `item.delta` events MUST include `deltaKind`.
@@ -210,6 +212,8 @@ Adding an item delta kind is a compatibility-sensitive protocol change.
 `indexed-text-delta` deltas MUST include `partId` or another item-type-defined part reference that was previously introduced by `part-started` or by the initial item payload.
 
 `requestRefId` and `partId` are item-local identifiers unless a future schema explicitly declares them as core durable IDs.
+
+Delta producers MUST preserve these correlations across each Item's event sequence. Conformance fixtures MUST check prior part introduction and matching request resolution; a stateless envelope check proves only field presence.
 
 ### Request Modeling Rules
 
@@ -237,9 +241,9 @@ Control-plane streams SHOULD NOT carry large binary blobs inline.
 
 ### Context Injection Rules
 
-A turn should use at most one `context-injection` item for Core-mediated knowledge or context unless there is a clear product reason to split it.
+A turn should use at most one `knowledge-injection` item for Core-mediated knowledge or context unless there is a clear product reason to split it.
 
-Multiple context selections or injections during the same turn should be represented as `context-injection-updated` deltas on that item so UI clients can fold worker context cleanly.
+Multiple context selections or injections during the same turn should be represented as `knowledge-injection-updated` deltas on that item so UI clients can fold worker context cleanly.
 
 ### Delta Validation
 
@@ -252,6 +256,51 @@ Protocol violations SHOULD be dropped from the product item log, recorded as aud
 ## Canonical Enums
 
 This section is the human-readable source for core closed enum families. Generated machine-readable schemas remain the validation source for concrete implementations.
+
+Workspace status:
+
+```text
+active
+archived
+```
+
+Thread status:
+
+```text
+active
+archived
+```
+
+Item status:
+
+```text
+in_progress
+completed
+failed
+declined
+```
+
+Terminal event `stopReason`:
+
+```text
+completed
+error
+aborted
+length
+budget_exhausted
+```
+
+Turn trigger-source kind:
+
+```text
+user-input
+system-input
+automation
+retry
+handoff
+approval-resolution
+running-work-steering
+```
 
 Reasoning effort, ordered from lowest to highest:
 
@@ -300,7 +349,7 @@ request-started
 request-resolved
 interaction-delta
 artifact-updated
-context-injection-updated
+knowledge-injection-updated
 ```
 
 AgentSession status:
@@ -319,7 +368,7 @@ closed
 
 ## Current Implementation Projection
 
-The shared protocol package supplies schemas, identifier allocation and derivation, and conformance fixtures in `packages/protocol/src/common/entity-id.ts`, `packages/protocol/src/common/item-delta.ts`, `packages/protocol/src/events/envelope.ts`, and `packages/protocol/conformance/`. The delta schemas reject an undeclared item type and delta kind combination when an event is parsed, and they check that correlation fields are present but not that a part or request was introduced earlier. No `core.protocol.*` error code or audit event exists for a delta violation. The code names the context delta kind and item type `knowledge-injection-updated` and `knowledge-injection`, and it has two item types outside the table above, `generative-ui-reference` (with `snapshot-updated`) and `context-summary` (with no delta kind).
+The shared protocol package supplies schemas, identifier allocation and derivation, and conformance fixtures in `packages/protocol/src/common/entity-id.ts`, `packages/protocol/src/common/item-delta.ts`, `packages/protocol/src/events/envelope.ts`, and `packages/protocol/conformance/`. The delta schemas reject an undeclared item type and delta kind combination when an event is parsed, and they check that correlation fields are present but not that a part or request was introduced earlier. No `core.protocol.*` error code or audit event exists for a delta violation.
 
 ## Rollout / Migration Plan
 
