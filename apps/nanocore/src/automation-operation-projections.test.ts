@@ -29,7 +29,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
     baseUrl: 'http://nanocore.test',
     fetch: async (url, init) => {
       const response = await createLoopbackAppFetch(app)(url, init);
-      responses.push(response.clone());
+      if (new URL(url).pathname !== '/api/meta') responses.push(response.clone());
       return response;
     },
   });

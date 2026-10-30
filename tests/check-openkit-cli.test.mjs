@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { PROTOCOL_VERSION } from '../packages/protocol/dist/index.js';
 
 const repoRoot = fileURLToPath(new URL('../', import.meta.url));
 const bundlePath = 'skills/openkit-ops/scripts/openkit';
@@ -118,6 +119,17 @@ test('CLI waits beyond 300 seconds only for long KM work and never retries eithe
     summary: 'The overview is current.',
   };
   const server = createServer(async (request, response) => {
+    if (request.url === '/api/meta' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: [],
+          eventFamilies: [],
+        })
+      );
+      return;
+    }
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString();

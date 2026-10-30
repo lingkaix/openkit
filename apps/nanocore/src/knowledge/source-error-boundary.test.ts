@@ -98,8 +98,8 @@ describe('public Source error contract', () => {
       receipts: f.store.listCommandRequests(),
     };
 
-    // The governed profile rejects this harmless title; capture must not relax that rule.
-    const response = await f.register('Foreign secret title');
+    // A transport-valid string can still violate the profile's non-empty title requirement.
+    const response = await f.register(' ');
     await expectError(response, 400, 'invalid_request', f.dataRoot);
     expect({
       revision: f.notebook.publishedRevision(),

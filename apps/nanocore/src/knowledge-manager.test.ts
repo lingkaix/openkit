@@ -22,7 +22,7 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
-import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
+import { parseOkfDocument } from './knowledge/okf.js';
 import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import { readManagedSourceText } from './knowledge/source-reading.js';
@@ -474,14 +474,11 @@ describe('Knowledge Store save-time validation', () => {
               changes: [
                 {
                   path: `${pageId}.md`,
-                  content: updateOkfFrontmatter({
-                    path: `${pageId}.md`,
-                    content: activePageBytes!,
-                    updates: { title: 'API token rotation' },
-                  }),
+                  // Forge a non-string title after encoding so the operation validates the fault.
+                  content: activePageBytes!.replace(/^title:.*$/m, 'title: []'),
                 },
               ],
-              summary: 'Reject secret-shaped page title',
+              summary: 'Reject structurally invalid page title',
             }),
           }
         )

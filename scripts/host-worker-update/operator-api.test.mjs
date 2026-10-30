@@ -1,6 +1,7 @@
 /** The operator API uses the existing credential owner and never follows a changed origin. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { PROTOCOL_VERSION } from '../../packages/protocol/dist/index.js';
 import { createOperatorApi } from './operator-api.mjs';
 
 const origin = 'https://staging.example.test';
@@ -30,6 +31,13 @@ test('request uses the exact endpoint, existing credential and no redirect or re
   const io = createOperatorApi(origin, {
     resolve: () => credential,
     fetch: async (url, options) => {
+      if (new URL(url).pathname === '/api/meta' && options.method === 'GET') {
+        return Response.json({
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: [],
+          eventFamilies: [],
+        });
+      }
       calls.push({ url, options });
       return Response.json({
         ready: false,

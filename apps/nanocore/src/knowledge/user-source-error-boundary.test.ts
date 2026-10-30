@@ -76,9 +76,9 @@ describe('public User Source error contract', () => {
     };
     expect(Object.keys(before.pointers)).toEqual([source.id]);
 
-    // Keep the governed secret-like title refusal; this literal contains no credential.
+    // A transport-valid string can still violate the profile's non-empty title requirement.
     const rejectedContent = 'Harmless rejected User original that must not appear in errors.\n';
-    const response = await f.register('Foreign secret title', rejectedContent);
+    const response = await f.register(' ', rejectedContent);
     const text = await response.text();
     expect.soft(response.status).toBe(400);
     expect.soft(response.headers.get('content-type')).toContain('application/json');
