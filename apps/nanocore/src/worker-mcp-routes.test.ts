@@ -781,7 +781,7 @@ describe('worker MCP routes', () => {
       const absentVersion = `sha256:${'2'.repeat(64)}`;
       admit(absentVersion, 'error');
       start = decisions().length;
-      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-policy-unavailable' } });
+      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
       const unavailable = assertRecords(start, 'error', 'unavailable');
       expect(boundaryCounts()).toEqual(allowedBoundary);
       admit(absentVersion);
@@ -926,7 +926,7 @@ describe('worker MCP routes', () => {
       start = decisions().length;
       const held = call();
       const refused = expect(held).rejects.toMatchObject({
-        data: { code: 'mcp-policy-unavailable' },
+        data: { code: 'mcp-call-failed' },
       });
       await participantEntered;
       revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
@@ -4541,7 +4541,7 @@ describe('worker MCP routes', () => {
       });
       await expect(
         echo.callTool({ arguments: { message: 'item-publication-failure' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'policy_evidence_unavailable' } });
+      ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
       createItem.mockRestore();
       expect(store.listAllItems()).toHaveLength(itemCountBeforePublicationFailure);
       const terminalDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -7177,7 +7177,7 @@ describe('MCP native admission and original closeout', () => {
       expect.soft(response).not.toHaveProperty('result');
       expect.soft(response).toMatchObject({
         error: {
-          data: { code: 'policy_evidence_unavailable' },
+          data: { code: 'recovery_required' },
           message: expect.stringMatching(/completed/i),
         },
       });
@@ -7801,7 +7801,7 @@ it('withholds a completed Tool result after authority loss without reopening its
     });
     const response = await f.call(6001);
     expect(revoked).toBe(true);
-    expect(response).toMatchObject({ error: { data: { code: 'mcp-policy-stale' } } });
+    expect(response).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
     expect(response).not.toHaveProperty('result');
     expect(f.contacts()).toBe(1);
     expectMcpCommittedTuples(f);
