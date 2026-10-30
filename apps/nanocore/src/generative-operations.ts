@@ -8,6 +8,7 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import {
+  assertKernelMutationRequestSize,
   batchRecords,
   createLightApp,
   getRecord,
@@ -147,6 +148,7 @@ export function createRemainingKernelOperationImplementations(
     run: (context: KernelCommandContext) => T | Promise<T>
   ) => {
     try {
+      if (input.requestId !== undefined) assertKernelMutationRequestSize(input);
       return await run(kernelContext(dependencies, input, invocation));
     } catch (error) {
       return kernelOperationFailure(error);

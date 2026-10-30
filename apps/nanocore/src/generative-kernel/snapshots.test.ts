@@ -9,6 +9,7 @@ import { lightAppDbPath, lightAppRoot } from '../storage/app-db.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import {
+  boundedKernelResponse,
   createLightApp,
   createRecord,
   getLightApp,
@@ -79,6 +80,20 @@ function proposal(app: Awaited<ReturnType<typeof createLightApp>>): LightAppSche
 }
 
 describe('Light App migration recovery', () => {
+  it('preserves exact UTF-8 response bytes at the limit and refuses one byte more', () => {
+    const maximum = 2 * 1024 * 1024;
+    const overhead = Buffer.byteLength(JSON.stringify({ text: '' }), 'utf8');
+    const response = { text: `${'x'.repeat(maximum - overhead - 2)}é` };
+    expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBe(maximum);
+    expect(boundedKernelResponse(response)).toBe(response);
+    const oversized = { text: `${response.text}x` };
+    expect(Buffer.byteLength(JSON.stringify(oversized), 'utf8')).toBe(maximum + 1);
+    expect(() => boundedKernelResponse(oversized)).toThrowError(
+      expect.objectContaining({ code: 'limit_exceeded', maximum })
+    );
+    expect(response.text.endsWith('é')).toBe(true);
+  });
+
   it('never reuses inspected schema revisions after restoring an older snapshot and restarting', async () => {
     const ctx = await context();
     const app = await createLightApp(ctx, schema);

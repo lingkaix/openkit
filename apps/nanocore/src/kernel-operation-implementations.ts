@@ -1,6 +1,11 @@
 import type { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { responsibleUserIdForActor } from '@openkit/protocol';
-import { createRecord, getLightApp } from './generative-kernel/commands.js';
+import {
+  assertKernelMutationRequestSize,
+  boundedKernelResponse,
+  createRecord,
+  getLightApp,
+} from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { resolveLightAppMeaning } from './generative-kernel/meaning.js';
 import { kernelExecutionLineage, kernelOperationFailure } from './generative-operations.js';
@@ -51,19 +56,14 @@ export function createKernelOperationImplementations(
             )
           ),
         };
-        const maximum = 2 * 1024 * 1024;
-        if (Buffer.byteLength(JSON.stringify(response), 'utf8') > maximum)
-          throw new KernelCommandError('limit_exceeded', 'Read response exceeds 2 MiB.', {
-            limit: 'readResponseBytes',
-            maximum,
-          });
-        return response;
+        return boundedKernelResponse(response);
       } catch (error) {
         kernelOperationFailure(error);
       }
     },
     'kernel.records.create': async (input, context) => {
       try {
+        assertKernelMutationRequestSize(input);
         const actor = context.actorRef;
         return await createRecord(
           {

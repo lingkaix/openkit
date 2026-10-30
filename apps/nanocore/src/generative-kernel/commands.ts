@@ -78,8 +78,38 @@ import { encodeSqlValue, normalizeLightAppFieldValue } from './values.js';
 const APP_DIRECTORY_LIMIT = 128;
 const RECORD_LIMIT = 10_000;
 const DATA_OBJECT_BYTE_LIMIT = 16 * 1024;
+const MUTATION_REQUEST_BYTE_LIMIT = 1024 * 1024;
+const READ_RESPONSE_BYTE_LIMIT = 2 * 1024 * 1024;
 const BATCH_POST = /^\/api\/collections\/([^/]+)\/records$/;
 const BATCH_PATCH = /^\/api\/collections\/([^/]+)\/records\/([^/]+)$/;
+
+/**
+ * Refuses oversized logical mutation input before any Kernel effect.
+ *
+ * @param input Complete admitted operation input, including its resource and request identity.
+ */
+export function assertKernelMutationRequestSize(input: unknown): void {
+  if (Buffer.byteLength(JSON.stringify(input), 'utf8') > MUTATION_REQUEST_BYTE_LIMIT)
+    throw new KernelCommandError('limit_exceeded', 'Mutation request exceeds 1 MiB.', {
+      limit: 'mutationRequestBytes',
+      maximum: MUTATION_REQUEST_BYTE_LIMIT,
+    });
+}
+
+/**
+ * Checks the complete projection without truncation; mutation callers use it before commit.
+ *
+ * @param response Complete Kernel projection or expanded meaning response.
+ * @returns The unchanged bounded response.
+ */
+export function boundedKernelResponse<T>(response: T): T {
+  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > READ_RESPONSE_BYTE_LIMIT)
+    throw new KernelCommandError('limit_exceeded', 'Read response exceeds 2 MiB.', {
+      limit: 'readResponseBytes',
+      maximum: READ_RESPONSE_BYTE_LIMIT,
+    });
+  return response;
+}
 
 /** Discoverable Kernel vocabulary returned by app get. */
 export const LIGHT_APP_CAPABILITIES = {
@@ -182,13 +212,13 @@ export function listLightApps(
   const totalItems = items.length;
   const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / perPage);
   const start = (page - 1) * perPage;
-  return {
+  return boundedKernelResponse({
     page,
     perPage,
     totalItems,
     totalPages,
     items: items.slice(start, start + perPage),
-  };
+  });
 }
 
 /**
@@ -279,11 +309,11 @@ export function getLightApp(
   }
   const item = inspectCatalogItem(dataRoot, workspaceId, appId);
   if (item.lifecycle === 'unavailable') {
-    return { ...item, schema: null, capabilities: LIGHT_APP_CAPABILITIES };
+    return boundedKernelResponse({ ...item, schema: null, capabilities: LIGHT_APP_CAPABILITIES });
   }
   const appDb = openExistingAppDb(dataRoot, workspaceId, appId);
   try {
-    return projectApp(appDb);
+    return boundedKernelResponse(projectApp(appDb));
   } finally {
     if (appDb.sqlite.open) appDb.sqlite.close();
   }
@@ -394,7 +424,7 @@ export function listLightAppSnapshots(
   workspaceId: string,
   appId: string
 ): { snapshots: LightAppSnapshot[] } {
-  return { snapshots: readLightAppSnapshots(dataRoot, workspaceId, appId) };
+  return boundedKernelResponse({ snapshots: readLightAppSnapshots(dataRoot, workspaceId, appId) });
 }
 
 /**
@@ -738,24 +768,26 @@ export function listRecords(
     const table = quoteIdent(collectionTableName(collection.id));
     const where = compiled ? `WHERE ${compiled.sql}` : '';
     const params = [...(compiled?.params ?? [])];
-    const totalRow = appDb.sqlite
-      .prepare(`SELECT COUNT(*) AS total FROM ${table} ${where}`)
-      .get(...params) as { total: number };
-    const totalItems = totalRow.total;
-    const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / perPage);
-    const offset = (page - 1) * perPage;
-    const rows = appDb.sqlite
-      .prepare(`SELECT * FROM ${table} ${where} ORDER BY ${order} LIMIT ? OFFSET ?`)
-      .all(...params, perPage, offset) as Record<string, unknown>[];
-    return {
-      page,
-      perPage,
-      totalItems,
-      totalPages,
-      schemaRevision: schema.schemaRevision,
-      completeResult: page === 1 && totalItems <= perPage,
-      items: rows.map((row) => projectRecord(collection, schema.schemaRevision, row, fieldSet)),
-    };
+    return appDb.sqlite.transaction(() => {
+      const totalRow = appDb.sqlite
+        .prepare(`SELECT COUNT(*) AS total FROM ${table} ${where}`)
+        .get(...params) as { total: number };
+      const totalItems = totalRow.total;
+      const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / perPage);
+      const offset = (page - 1) * perPage;
+      const rows = appDb.sqlite
+        .prepare(`SELECT * FROM ${table} ${where} ORDER BY ${order} LIMIT ? OFFSET ?`)
+        .all(...params, perPage, offset) as Record<string, unknown>[];
+      return boundedKernelResponse({
+        page,
+        perPage,
+        totalItems,
+        totalPages,
+        schemaRevision: schema.schemaRevision,
+        completeResult: page === 1 && totalItems <= perPage,
+        items: rows.map((row) => projectRecord(collection, schema.schemaRevision, row, fieldSet)),
+      });
+    })();
   } catch (error) {
     throw mapSqliteError(error);
   } finally {
@@ -789,7 +821,9 @@ export function getRecord(
     const metadata = readMetadata(appDb);
     const schema = requireCurrentSchema(metadata, schemaRevision);
     const collection = resolveCollection(schema, collectionSelector);
-    return readProjectedRecord(appDb, collection, schema.schemaRevision, recordId, fields);
+    return boundedKernelResponse(
+      readProjectedRecord(appDb, collection, schema.schemaRevision, recordId, fields)
+    );
   } finally {
     if (appDb.sqlite.open) appDb.sqlite.close();
   }
@@ -964,8 +998,8 @@ function runKernelCommand<T>(
       responseKind: spec.responseKind,
       appDb,
       appTransaction: true,
-      execute: spec.execute,
-      replay: spec.replay,
+      execute: () => boundedKernelResponse(spec.execute()),
+      replay: (record) => boundedKernelResponse(spec.replay(record)),
       responseId: spec.responseId,
     });
   } finally {

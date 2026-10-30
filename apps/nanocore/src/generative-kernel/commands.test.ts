@@ -7,6 +7,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { observeTestAppRecordCount } from '../test-support/store.js';
 import type { KernelCommandContext } from './commands.js';
 import {
   createLightApp,
@@ -92,6 +93,77 @@ async function createContext(
 }
 
 describe('Generative Kernel commands', () => {
+  it('reads count and selected records from one snapshot across a concurrent commit', async () => {
+    const context = await createContext();
+    const app = await createLightApp(context, MAPPING_SCHEMA);
+    const record = await createRecord(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      'mappings',
+      app.schemaRevision,
+      { membership_id: 'mem_snapshot', crm_id: 'crm_snapshot', annotation: null, active: true }
+    );
+    let injected = false;
+    let committedBeforeRows = false;
+    let write: ReturnType<typeof updateRecord> | undefined;
+    const restoreCount = observeTestAppRecordCount(
+      {
+        dataRoot: context.dataRoot,
+        workspaceId: context.workspaceId,
+        appId: app.appId,
+        collectionId: app.schema!.collections[0]!.id,
+      },
+      () => {
+        injected = true;
+        write = updateRecord(
+          { ...context, requestId: randomUUID() },
+          app.appId,
+          'mappings',
+          record.id,
+          {
+            schemaRevision: app.schemaRevision,
+            expectedRecordRevision: record.revision,
+            data: { active: false },
+          }
+        );
+        committedBeforeRows =
+          getRecord(
+            context.dataRoot,
+            context.workspaceId,
+            app.appId,
+            'mappings',
+            record.id,
+            app.schemaRevision
+          ).data.active === false;
+      }
+    );
+    try {
+      const result = listRecords(context.dataRoot, context.workspaceId, app.appId, 'mappings', {
+        schemaRevision: app.schemaRevision,
+        filter: 'active = true',
+        perPage: 100,
+      });
+      expect(injected).toBe(true);
+      expect(committedBeforeRows).toBe(true);
+      expect(result).toMatchObject({ totalItems: 1, totalPages: 1, completeResult: true });
+      expect(result.items).toEqual([record]);
+      expect(await write).toMatchObject({ revision: record.revision + 1, data: { active: false } });
+      expect(
+        getRecord(
+          context.dataRoot,
+          context.workspaceId,
+          app.appId,
+          'mappings',
+          record.id,
+          app.schemaRevision
+        ).data.active
+      ).toBe(false);
+    } finally {
+      await Promise.allSettled(write ? [write] : []);
+      restoreCount();
+    }
+  });
+
   it.each([
     ['create', 'collection'],
     ['create', 'field'],

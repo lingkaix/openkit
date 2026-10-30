@@ -1,6 +1,9 @@
 import { existsSync } from 'node:fs';
 import Database from 'better-sqlite3';
+import { vi } from 'vitest';
+import { collectionTableName, quoteIdent } from '../generative-kernel/native.js';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
+import { openExistingAppDb } from '../storage/app-db.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
@@ -116,4 +119,46 @@ export async function openTestNativeWorkspace(workspaceDb: WorkspaceDb): Promise
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
+}
+
+/**
+ * Observes one actual record COUNT in a valid private app, without exposing SQL or a handle.
+ * The callback can run a genuine native writer between count and selected rows; results stay unchanged.
+ * The caller restores the observer in finally after draining any callback work.
+ * @param scope Existing app and admitted collection in the caller-owned fixture root.
+ * @param afterCount One synchronous interleaving after the actual COUNT result is available.
+ * @returns Cleanup for the exact observer and its private read handle.
+ */
+export function observeTestAppRecordCount(
+  scope: { dataRoot: string; workspaceId: string; appId: string; collectionId: string },
+  afterCount: () => void
+): () => void {
+  const observer = openExistingAppDb(scope.dataRoot, scope.workspaceId, scope.appId);
+  const table = quoteIdent(collectionTableName(scope.collectionId));
+  const prepare = Database.prototype.prepare;
+  let observed = false;
+  const instrumentation = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+    this: Database.Database,
+    sql: string
+  ) {
+    const statement = prepare.call(this, sql) as Database.Statement;
+    if (
+      this.name === observer.sqlite.name &&
+      !observed &&
+      sql.startsWith(`SELECT COUNT(*) AS total FROM ${table} `)
+    ) {
+      const get = statement.get.bind(statement);
+      vi.spyOn(statement, 'get').mockImplementation((...parameters: unknown[]) => {
+        const count = get(...parameters);
+        observed = true;
+        afterCount();
+        return count;
+      });
+    }
+    return statement;
+  });
+  return () => {
+    instrumentation.mockRestore();
+    if (observer.sqlite.open) observer.sqlite.close();
+  };
 }

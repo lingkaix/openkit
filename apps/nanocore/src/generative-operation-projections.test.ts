@@ -703,3 +703,112 @@ it('refuses caller-supplied executing lineage in the native public mutation inpu
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
 });
+
+it('refuses an oversized app inventory without truncating owner-created titles', async () => {
+  const f = await fixture();
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const title = 'T'.repeat(192 * 1024);
+  try {
+    for (let index = 0; index < 11; index += 1) {
+      const response = await f.app.request('/api/app/operations/kernel.apps.create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+        body: JSON.stringify({ ...schema, title, workspaceId }),
+      });
+      expect(response.status).toBe(201);
+      expect((await response.json()).title).toBe(title);
+    }
+    const small = await f.app.request('/api/app/operations/kernel.apps.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId, perPage: 1 }),
+    });
+    expect(small.status).toBe(200);
+    const page = await small.json();
+    expect(page.totalItems).toBe(11);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0].title).toBe(title);
+    expect(Buffer.byteLength(JSON.stringify(page), 'utf8')).toBeLessThan(2 * 1024 * 1024);
+    const response = await f.app.request('/api/app/operations/kernel.apps.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId, perPage: 100 }),
+    });
+    expect.soft(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.code).toBe('limit_exceeded');
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});
+
+it('refuses an oversized mutation before records, Audit or receipts change', async () => {
+  const f = await fixture();
+  const { createCoreClient } = await import('../../../packages/core-client/src/index.js');
+  const client = createCoreClient({
+    baseUrl: 'http://nanocore.test',
+    fetch: createLoopbackAppFetch(f.app),
+  });
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  let appDb: ReturnType<typeof openExistingAppDb> | undefined;
+  try {
+    const definition = (await import('@openkit/app-api-schemas')).LightAppSchemaInputSchema.parse(
+      schema
+    );
+    const created = await client.operations['kernel.apps.create']({
+      ...definition,
+      workspaceId,
+      requestId: randomUUID(),
+    });
+    const scope = { workspaceId, appId: created.appId, schemaRevision: created.schemaRevision };
+    const small = await client.operations['kernel.records.batch']({
+      ...scope,
+      requestId: randomUUID(),
+      requests: [
+        {
+          method: 'POST',
+          url: '/api/collections/entries/records',
+          body: { data: { note: 'Accepted small batch.' } },
+        },
+      ],
+    });
+    expect(small.items).toHaveLength(1);
+    expect(small.items[0]!.data.note).toBe('Accepted small batch.');
+    const query = { ...scope, collection: 'entries' };
+    const beforeRecords = await client.operations['kernel.records.list'](query);
+    appDb = openExistingAppDb(f.store.getDataRoot()!, workspaceId, created.appId);
+    const beforeAudit = appDb.sqlite
+      .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+      .all();
+    const beforeReceipts = appDb.sqlite
+      .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+      .all();
+    const oversized = {
+      ...scope,
+      requestId: randomUUID(),
+      requests: [
+        {
+          method: 'POST' as const,
+          url: '/api/collections/entries/records',
+          body: { data: { note: 'Must not commit.' }, padding: 'x'.repeat(1024 * 1024) },
+        },
+      ],
+    };
+    expect(Buffer.byteLength(JSON.stringify(oversized), 'utf8')).toBeGreaterThan(1024 * 1024);
+    // The absolute ceiling forbids commit; invalid body shape may also refuse before the byte check.
+    await expect.soft(client.operations['kernel.records.batch'](oversized)).rejects.toMatchObject({
+      status: 400,
+      code: expect.stringMatching(/^(validation_failed|limit_exceeded)$/),
+    });
+    expect.soft(await client.operations['kernel.records.list'](query)).toEqual(beforeRecords);
+    expect
+      .soft(appDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all())
+      .toEqual(beforeAudit);
+    expect(
+      appDb.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all()
+    ).toEqual(beforeReceipts);
+  } finally {
+    appDb?.sqlite.close();
+    f.coreDb.sqlite.close();
+  }
+});

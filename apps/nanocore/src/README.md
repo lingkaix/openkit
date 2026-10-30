@@ -1,5 +1,7 @@
 # NanoCore Source
 
+Kernel record count and rows share one SQLite read transaction. The Kernel owner checks complete logical mutation input and projected responses against its fixed byte ceilings; mutation projections are checked inside the existing transaction, and expanded meaning responses reuse that same response check.
+
 A fresh authenticated User can list empty Memory through the existing first-query Notebook initialization. Retained Notebook, Source, config or initialization evidence still makes missing established storage a recovery refusal; list never repairs lost Memory.
 
 Preparation for the control-store switch reuses synchronous deciding bodies on supplied owning handles. SQLite-only Goal and Task helpers take `Pick<WorkspaceDb, 'sqlite'>`; they do not open another connection or bypass existing transactions or savepoints. `prepareAuditEvent` builds the existing validated value without writing or authorizing it; current recorders still insert on Main. Already asynchronous Thread/context, runtime, scheduling, administration and activation producers await existing Store results before they use or publish dependent values. Store signatures, file authority, SQL callbacks and Main SQL ownership stay unchanged until the separately qualified switch.
