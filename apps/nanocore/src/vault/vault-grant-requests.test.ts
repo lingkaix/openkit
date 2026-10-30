@@ -34,6 +34,10 @@ import { recoverPendingRequestsAtBoot } from '../runtime/pending-request-flow.js
 import * as pendingRequests from '../runtime/pending-requests.js';
 import { claimCommandIntentGrant, readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
+import {
+  getSchedulerPreparationClaims,
+  runSchedulerDispatchLoop,
+} from '../runtime/scheduler-dispatch-loop.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -782,6 +786,7 @@ it.each([
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
   let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
   const admittedTurns: string[] = [];
+  let successorCloseout: Promise<unknown> | undefined;
   const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
   try {
     const source = await prepare(f, ownerScope, 'workspace');
@@ -1064,7 +1069,37 @@ it.each([
     const laterTurn = f.store.getTurnById(outcome!.deliveryTurnId!);
     expect(laterTurn.triggerSource?.kind).toBe('approval-resolution');
     admittedTurns.push(laterTurn.id);
-    await native.executionFor(laterTurn.id).launched.promise;
+    // Boot's scheduler retries queued outcomes after the preceding native attempt releases.
+    const dispatch = runSchedulerDispatchLoop({
+      coreDb: f.coreDb,
+      store: f.store,
+      turnExecutor: native.executor,
+      executionBackend: native.executor.executionBackend!,
+      agentManifests: snapshot.agentManifests,
+      gatewayConfig: snapshot.gatewayConfig,
+      providerRegistry: snapshot.providerRegistry,
+      workspaceConfigs: snapshot.workspaceConfigs,
+      workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
+      maxDispatches: 1,
+    });
+    successorCloseout = dispatch.then((result) => {
+      const entry = result.startedTurns.find(
+        (started) => started.dispatch.entry.turnId === laterTurn.id
+      );
+      if (entry)
+        return getSchedulerPreparationClaims(f.coreDb).get(entry.dispatch.entry.queueEntryId);
+    });
+    void successorCloseout.catch(() => undefined);
+    await Promise.race([
+      native.executionFor(laterTurn.id).launched.promise,
+      dispatch.then((result) => {
+        if (!result.startedTurns.some((started) => started.dispatch.entry.turnId === laterTurn.id))
+          throw new Error(
+            `Outcome dispatch did not launch its Turn: ${JSON.stringify(result.terminalResult)}`
+          );
+        return native!.executionFor(laterTurn.id).launched.promise;
+      }),
+    ]);
     await native.waitForStartup(laterTurn.id);
     const laterPackage = native.workerControlGateway.authenticatePackageToken(
       `Bearer ${native.executor.capabilityToken}`,
@@ -1123,7 +1158,13 @@ it.each([
     try {
       native?.executor.completion.resolve();
       for (const turnId of admittedTurns) native?.executionFor(turnId).completion.resolve();
-      await Promise.all(admittedTurns.map((turnId) => native!.executionFor(turnId).execution));
+      const closeouts = [
+        ...admittedTurns.map((turnId) => native!.executionFor(turnId).execution),
+        successorCloseout,
+      ];
+      // Settle every owner before propagating an execution or dispatcher rejection.
+      await Promise.allSettled(closeouts);
+      await Promise.all(closeouts);
       await Promise.all(
         admissions.mock.results
           .filter((result) => result.type === 'return')
