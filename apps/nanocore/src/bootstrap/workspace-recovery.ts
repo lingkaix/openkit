@@ -172,7 +172,7 @@ export function restoreWorkspaceRecoveryAdmission(
           ? { captureId: owner.admission_id }
           : {
               admissionId: owner.admission_id,
-              revision: owner.revision,
+              revision: owner.revision - (owner.state === 'prepared' ? 0 : 1),
               candidateRef: owner.candidate_ref,
             }
       );

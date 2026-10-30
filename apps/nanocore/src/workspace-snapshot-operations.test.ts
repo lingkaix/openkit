@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import {
+import nodeFs, {
   chmodSync,
   existsSync,
   mkdirSync,
@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -19,7 +20,7 @@ import * as policyKernel from '@openkit/policy-kernel';
 import { ApiErrorSchema, allocateEntityId } from '@openkit/protocol';
 import * as durableBytes from '@openkit/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listServerAuditEvents } from './audit-events.js';
+import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import * as accessTokens from './auth/access-token-store.js';
 import { isScopeAdmitted } from './bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
@@ -33,11 +34,17 @@ import {
 import { openWorkspaceReadDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import * as captureProtection from './storage/workspace-capture-protection.js';
+import { nativeProductScope, readNativeProduct } from './storage/workspace-file-records.js';
 import { readRecoveryAdmission } from './storage/workspace-recovery-admissions.js';
 import { type CreateAppOptions, createAppWithLocalIdentity } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { closeTestCoreDb, createTestCoreDb, createTestSqliteError } from './test-support/store.js';
+import {
+  closeTestCoreDb,
+  createTestCoreDb,
+  createTestSqliteError,
+  setTestWorkspaceRevision,
+} from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact, listWorkspaceMembers } from './workspace-sharing.js';
@@ -157,6 +164,7 @@ function archiveFiles(compressed: Buffer): Map<string, Buffer> {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
   await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -952,9 +960,12 @@ describe('C-a composed snapshot App API', () => {
     }
   }, 120_000);
 
-  it('inspects a real crashed SQL-only capture without inventing purpose or sealed facts', async () => {
+  it('inspects a real crashed SQL-only capture and abandons it without inventing finish authority', async () => {
     const f = await fixture();
     const backupId = allocateEntityId('wsbak');
+    const configPath = join(f.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc');
+    const configBefore = readFileSync(configPath);
+    const historyBefore = f.store.listThreads(workspaceId);
     const emit = Worker.prototype.emit;
     let stopping: Promise<number> | undefined;
     const intercept = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
@@ -1033,9 +1044,404 @@ describe('C-a composed snapshot App API', () => {
       }
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       expect(f.admission.isClosed(workspaceId)).toBe(true);
+      const finish = await request(f.app, 'workspace.recovery-finish', { workspaceId, selection });
+      expect(finish.status, await finish.clone().text()).toBe(409);
+      expect(ApiErrorSchema.parse(await finish.json())).toMatchObject({
+        code: 'recovery-required',
+      });
+      expect(existsSync(join(generation, 'seal.json'))).toBe(false);
+      // Readmission must validate current authored config even after publication is abandoned.
+      writeFileSync(configPath, '{');
+      const invalid = await request(f.app, 'workspace.recovery-abandon', {
+        workspaceId,
+        selection,
+      });
+      expect(invalid.status, await invalid.clone().text()).toBe(409);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(f.admission.isClosed(workspaceId)).toBe(true);
+      writeFileSync(configPath, configBefore);
+      // Local Hot Capture permits abandonment without inventing absent bundle facts.
+      const abandoned = await request(f.app, 'workspace.recovery-abandon', {
+        workspaceId,
+        selection,
+      });
+      expect(abandoned.status, await abandoned.clone().text()).toBe(200);
+      expect(WorkspaceSnapshotReportSchema.parse(await abandoned.json())).toMatchObject({
+        command: 'abandon',
+        disposition: 'abandoned',
+        workspaceId,
+        selection,
+        nextAction: 'none',
+      });
+      const terminal = openWorkspaceReadDb(f.dataRoot, workspaceId);
+      try {
+        expect(captureProtection.inspectCapture(terminal, workspaceId, backupId)?.state).toBe(
+          'abandoned'
+        );
+      } finally {
+        closeTestCoreDb(terminal);
+      }
+      expect(f.store.listThreads(workspaceId)).toEqual(historyBefore);
+      expect(readFileSync(configPath)).toEqual(configBefore);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
+      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      const opposite = await request(f.app, 'workspace.recovery-finish', {
+        workspaceId,
+        selection,
+      });
+      expect(opposite.status, await opposite.clone().text()).toBe(409);
+      const fresh = await request(f.app, 'thread.create', {
+        workspaceId,
+        name: 'Canonical Store admitted after capture abandonment',
+        visibility: 'workspace',
+        requestId: randomUUID(),
+      });
+      expect(fresh.status, await fresh.clone().text()).toBe(200);
     } finally {
       intercept.mockRestore();
       await stopping;
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it('finishes one real prepared MOVE once and keeps its sealed source read-only', async () => {
+    const f = await fixture();
+    try {
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'move',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      const prepared = WorkspaceSnapshotReportSchema.parse(await captured.json());
+      expect(prepared.disposition).toBe('prepared');
+      const generation = join(f.dataRoot, 'server/backups/workspaces', workspaceId, backupId);
+      expect(existsSync(join(generation, 'seal.json'))).toBe(false);
+      const selection = { kind: 'capture', backupId };
+      const scope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId });
+      const before = readNativeProduct(scope, 'workspace', workspaceId)!;
+      const response = await request(f.app, 'workspace.recovery-finish', {
+        workspaceId,
+        selection,
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      const report = WorkspaceSnapshotReportSchema.parse(await response.json());
+      expect(report).toMatchObject({
+        command: 'finish',
+        disposition: 'moved-out',
+        workspaceId,
+        selection,
+        capture: { manifestDigest: prepared.capture!.manifestDigest },
+      });
+      // Source Seal 3–5 requires raw moved-out authority, one Audit and a durable marker.
+      const moved = readNativeProduct(scope, 'workspace', workspaceId)!;
+      expect(moved.revision).toBe(before.revision + 1);
+      expect(moved.record).toMatchObject({
+        movedOut: { backupId, manifestDigest: prepared.capture!.manifestDigest },
+      });
+      const db = openWorkspaceReadDb(f.dataRoot, workspaceId);
+      try {
+        expect(captureProtection.inspectCapture(db, workspaceId, backupId)?.state).toBe('finished');
+        expect(
+          listWorkspaceAuditEvents(db, workspaceId).filter(
+            (event) => event.action === 'workspace.move-out'
+          )
+        ).toHaveLength(1);
+      } finally {
+        closeTestCoreDb(db);
+      }
+      const seal = readFileSync(join(generation, 'seal.json'));
+      expect(JSON.parse(seal.toString())).toMatchObject({
+        backupId,
+        purpose: 'move',
+        manifestDigest: prepared.capture!.manifestDigest,
+      });
+      const replay = await request(f.app, 'workspace.recovery-finish', { workspaceId, selection });
+      expect(replay.status, await replay.clone().text()).toBe(200);
+      expect(WorkspaceSnapshotReportSchema.parse(await replay.json())).toEqual(report);
+      expect(readNativeProduct(scope, 'workspace', workspaceId)).toEqual(moved);
+      expect(readFileSync(join(generation, 'seal.json'))).toEqual(seal);
+      const replayDb = openWorkspaceReadDb(f.dataRoot, workspaceId);
+      try {
+        expect(
+          listWorkspaceAuditEvents(replayDb, workspaceId).filter(
+            (event) => event.action === 'workspace.move-out'
+          )
+        ).toHaveLength(1);
+      } finally {
+        closeTestCoreDb(replayDb);
+      }
+      // Source Seal 4 requires the current moved-out revision, not only a matching historical seal.
+      try {
+        setTestWorkspaceRevision(f.dataRoot, workspaceId, moved.revision + 1);
+        const stale = await request(f.app, 'workspace.backup-download', { workspaceId, backupId });
+        await stale.arrayBuffer();
+        expect
+          .soft(stale.status, 'Download must refuse a stale current moved-out revision.')
+          .toBe(409);
+      } finally {
+        setTestWorkspaceRevision(f.dataRoot, workspaceId, moved.revision);
+      }
+      const manifestPath = join(generation, 'manifest.json');
+      const sealPath = join(generation, 'seal.json');
+      const manifestBytes = readFileSync(manifestPath);
+      const manifestMode = nodeFs.statSync(manifestPath).mode & 0o777;
+      const sealMode = nodeFs.statSync(sealPath).mode & 0o777;
+      try {
+        // Deliberate physical corruption keeps the bundle self-consistent, but cannot change Core or source proof.
+        const changed = Buffer.from(
+          JSON.stringify({
+            ...JSON.parse(manifestBytes.toString()),
+            downloadProofProbe: 'changed descriptive bytes',
+          })
+        );
+        const changedDigest = `sha256:${createHash('sha256').update(changed).digest('hex')}`;
+        chmodSync(manifestPath, 0o600);
+        chmodSync(sealPath, 0o600);
+        writeFileSync(manifestPath, changed);
+        writeFileSync(
+          sealPath,
+          JSON.stringify({ ...JSON.parse(seal.toString()), manifestDigest: changedDigest })
+        );
+        const rebound = await request(f.app, 'workspace.backup-download', {
+          workspaceId,
+          backupId,
+        });
+        await rebound.arrayBuffer();
+        expect
+          .soft(
+            rebound.status,
+            'Download must bind materialized bytes to the original Core and source digest.'
+          )
+          .toBe(409);
+      } finally {
+        writeFileSync(manifestPath, manifestBytes);
+        writeFileSync(sealPath, seal);
+        chmodSync(manifestPath, manifestMode);
+        chmodSync(sealPath, sealMode);
+      }
+      // Source Seal 5 returns the verified bundle while the moved-out source stays excluded.
+      const download = await request(f.app, 'workspace.backup-download', { workspaceId, backupId });
+      expect(download.status, await download.clone().text()).toBe(200);
+      const files = archiveFiles(Buffer.from(await download.arrayBuffer()));
+      expect(
+        `sha256:${createHash('sha256').update(files.get('manifest.json')!).digest('hex')}`
+      ).toBe(prepared.capture!.manifestDigest);
+      expect(f.admission.isClosed(workspaceId)).toBe(true);
+      const opposite = await request(f.app, 'workspace.recovery-abandon', {
+        workspaceId,
+        selection,
+      });
+      expect(opposite.status, await opposite.clone().text()).toBe(409);
+      const write = await request(f.app, 'thread.create', {
+        workspaceId,
+        name: 'Moved source must remain read-only',
+        visibility: 'workspace',
+        requestId: randomUUID(),
+      });
+      expect(write.status, await write.clone().text()).toBe(409);
+      expect(f.admission.isClosed(workspaceId)).toBe(true);
+    } finally {
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it.each([
+    'finish',
+    'abandon',
+  ] as const)('explicitly %s a real interrupted restore through its original selected admission', async (decision) => {
+    const f = await fixture();
+    const final = join(f.dataRoot, 'workspaces', workspaceId);
+    const configPath = join(final, 'config/workspace.jsonc');
+    const rename = nodeFs.renameSync;
+    let reachedPlacement = false;
+    let newer: { backupId: string; manifestDigest: string } | undefined;
+    try {
+      const sibling = await f.store.createWorkspace('Healthy sibling of selected recovery');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
+      });
+      await f.store.updateThread(workspaceId, DEMO_THREAD_ID, { name: 'Captured target history' });
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      if (decision === 'finish') {
+        const newerId = allocateEntityId('wsbak');
+        const later = await request(f.app, 'workspace.backup-capture', {
+          workspaceId,
+          backupId: newerId,
+          purpose: 'backup',
+        });
+        expect(later.status, await later.clone().text()).toBe(200);
+        newer = {
+          backupId: newerId,
+          manifestDigest: WorkspaceSnapshotReportSchema.parse(await later.json()).capture!
+            .manifestDigest,
+        };
+      }
+      await f.store.updateThread(workspaceId, DEMO_THREAD_ID, {
+        name: 'Preserved predecessor history',
+      });
+      const configBefore = readFileSync(configPath);
+      const requestId = randomUUID();
+      roots.push(`${f.dataRoot}.workspace-recovery-${requestId}`);
+      const intercept = vi.spyOn(nodeFs, 'renameSync').mockImplementation((source, destination) => {
+        if (String(destination) === final && String(source) !== final) {
+          reachedPlacement = true;
+          throw new Error('Interrupt the real prepared candidate after predecessor preservation.');
+        }
+        return rename(source, destination);
+      });
+      syncBuiltinESMExports();
+      const interrupted = await request(f.app, 'workspace.backup-restore', {
+        workspaceId,
+        backupId,
+        requestId,
+        acknowledgeLostSafety: false,
+      });
+      expect(reachedPlacement).toBe(true);
+      expect(interrupted.ok).toBe(false);
+      intercept.mockRestore();
+      syncBuiltinESMExports();
+      const owned = readRecoveryAdmission(f.coreDb, requestId)!;
+      expect(owned).toMatchObject({
+        admission_id: requestId,
+        workspace_id: workspaceId,
+        state: 'prepared',
+      });
+      expect(owned.proof.candidateDigest).toBeDefined();
+      expect(existsSync(owned.candidate_ref)).toBe(true);
+      restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      const selection = { kind: 'admission', requestId };
+      const operation = `workspace.recovery-${decision}`;
+      // A sibling, unknown request and wrong selector cannot acquire this prepared candidate.
+      for (const input of [
+        { workspaceId: sibling.id, selection },
+        { workspaceId, selection: { kind: 'admission', requestId: randomUUID() } },
+        { workspaceId, selection: { kind: 'capture', backupId } },
+      ]) {
+        const refused = await request(f.app, operation, input);
+        expect(refused.status, await refused.clone().text()).toBe(409);
+        ApiErrorSchema.parse(await refused.json());
+        expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(owned);
+      }
+      const issued = accessTokens.createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.ownerId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      expect(accessTokens.revokeOpenKitAccessTokenRecord(f.coreDb, issued.tokenId)?.status).toBe(
+        'revoked'
+      );
+      const denied = await server.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${issued.secret}` },
+        body: JSON.stringify({ workspaceId, selection }),
+      });
+      expect([401, 403]).toContain(denied.status);
+      expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(owned);
+      if (decision === 'abandon') {
+        const candidateConfig = join(owned.candidate_ref, 'config/workspace.jsonc');
+        const retainedConfig = readFileSync(candidateConfig);
+        let reachedRetirement = false;
+        const retirement = vi
+          .spyOn(nodeFs, 'renameSync')
+          .mockImplementation((source, destination) => {
+            if (String(source) === owned.candidate_ref) {
+              reachedRetirement = true;
+              throw new Error(
+                'Interrupt candidate retirement after closing its publication right.'
+              );
+            }
+            return rename(source, destination);
+          });
+        syncBuiltinESMExports();
+        const incomplete = await request(f.app, operation, { workspaceId, selection });
+        expect(reachedRetirement).toBe(true);
+        expect(incomplete.ok).toBe(false);
+        retirement.mockRestore();
+        syncBuiltinESMExports();
+        // Target Admission closes finish rights before retirement; restart must permit the same decision.
+        expect(readRecoveryAdmission(f.coreDb, requestId)).toMatchObject({
+          state: 'abandoned',
+          proof: { result: { disposition: 'quarantined' } },
+        });
+        expect(readFileSync(candidateConfig)).toEqual(retainedConfig);
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+        expect(f.admission.isClosed(workspaceId)).toBe(true);
+        await shutdownControlStoreWorkerClient();
+        f.admission = new WorkspaceMutationAdmission();
+        restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
+        f.store = new FsStore({ dataRoot: f.dataRoot });
+        f.appOptions = { ...f.appOptions, store: f.store, workspaceMutationAdmission: f.admission };
+        f.app = createAppWithLocalIdentity(f.appOptions);
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+        expect(f.admission.isClosed(workspaceId)).toBe(true);
+      }
+      const response = await request(f.app, operation, { workspaceId, selection });
+      expect(response.status, await response.clone().text()).toBe(200);
+      const report = WorkspaceSnapshotReportSchema.parse(await response.json());
+      expect(report).toMatchObject({
+        command: decision,
+        disposition: decision === 'finish' ? 'restored' : 'abandoned',
+        workspaceId,
+        selection,
+        nextAction: 'none',
+      });
+      const terminal = readRecoveryAdmission(f.coreDb, requestId)!;
+      expect(terminal.state).toBe(decision === 'finish' ? 'finished' : 'abandoned');
+      expect(f.store.getThread(workspaceId, DEMO_THREAD_ID).name).toBe(
+        decision === 'finish' ? 'Captured target history' : 'Preserved predecessor history'
+      );
+      expect(readFileSync(configPath)).toEqual(configBefore);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
+      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      expect(f.admission.isClosed(sibling.id)).toBe(false);
+      if (newer) {
+        // Online Snapshot Policy makes a sealed generation independent of the restored source cut.
+        const verified = await request(f.app, 'workspace.backup-verify', {
+          workspaceId,
+          backupId: newer.backupId,
+        });
+        expect(verified.status, await verified.clone().text()).toBe(200);
+        expect(
+          WorkspaceSnapshotReportSchema.parse(await verified.json()).capture!.manifestDigest
+        ).toBe(newer.manifestDigest);
+      }
+      const opposite = await request(
+        f.app,
+        `workspace.recovery-${decision === 'finish' ? 'abandon' : 'finish'}`,
+        { workspaceId, selection }
+      );
+      expect(opposite.status, await opposite.clone().text()).toBe(409);
+      expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(terminal);
+      const fresh = await request(f.app, 'thread.create', {
+        workspaceId,
+        name: 'Fresh admission after explicit recovery',
+        visibility: 'workspace',
+        requestId: randomUUID(),
+      });
+      expect(fresh.status, await fresh.clone().text()).toBe(200);
+      const freshId = ((await fresh.json()) as { id: string }).id;
+      const replay = await request(f.app, operation, { workspaceId, selection });
+      expect(replay.status, await replay.clone().text()).toBe(200);
+      expect(WorkspaceSnapshotReportSchema.parse(await replay.json())).toEqual(report);
+      expect(f.store.getThread(workspaceId, freshId).name).toBe(
+        'Fresh admission after explicit recovery'
+      );
+    } finally {
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
       closeTestCoreDb(f.coreDb);
     }
   }, 120_000);

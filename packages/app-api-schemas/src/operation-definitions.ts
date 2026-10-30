@@ -120,6 +120,10 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
       WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.backup-restore'],
     'workspace.recovery-inspect':
       WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.recovery-inspect'],
+    'workspace.recovery-finish':
+      WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.recovery-finish'],
+    'workspace.recovery-abandon':
+      WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.recovery-abandon'],
     'workspace.backup-download':
       WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS['workspace.backup-download'],
   }

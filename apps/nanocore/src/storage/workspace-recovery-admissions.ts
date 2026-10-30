@@ -80,7 +80,6 @@ export function resumeWorkspaceRecoveryOwner(
   if (
     !current ||
     !isDeepStrictEqual(current, owned) ||
-    (current.state === 'abandoned' && current.proof.result.disposition !== 'abandoned') ||
     !RequestIdSchema.safeParse(current.admission_id).success ||
     !['restore', 'move-in'].includes(current.proof.input.command) ||
     current.candidate_ref !==
@@ -89,7 +88,8 @@ export function resumeWorkspaceRecoveryOwner(
         'workspaces',
         current.workspace_id
       ) ||
-    (current.state === 'prepared'
+    (current.state === 'prepared' ||
+    (current.state === 'abandoned' && current.proof.result.disposition === 'quarantined')
       ? unresolved.length !== 1 || unresolved[0]!.admission_id !== current.admission_id
       : unresolved.length !== 0) ||
     failures.length !== 1 ||
@@ -137,7 +137,10 @@ export function readWorkspaceRecoveryReadmission(
 }
 
 /** The same unresolved-owner predicate binds boot rejoin and terminal serving readmission. */
-function unresolvedRecoveryAdmissions(core: CoreDb, workspaceId: string): RecoveryAdmission[] {
+export function unresolvedRecoveryAdmissions(
+  core: CoreDb,
+  workspaceId: string
+): RecoveryAdmission[] {
   return recoveryAdmissions(core, workspaceId).filter(
     (row) =>
       row.state === 'prepared' ||

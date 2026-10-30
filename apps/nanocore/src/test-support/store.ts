@@ -19,6 +19,28 @@ export function createTestSqliteError(message: string, code: 'SQLITE_BUSY' | 'SQ
 }
 
 /**
+ * Changes only an existing Workspace revision for explicit physical-corruption fixtures.
+ * This bypasses product admission solely after genuine owner setup; it creates no lifecycle, receipt or Audit.
+ * Callers must exclude real writers and restore the original revision in finally.
+ * @param dataRoot Private fixture root containing the existing Workspace.
+ * @param workspaceId Exact Workspace whose physical revision is damaged or restored.
+ * @param revision Explicit fault value or the original revision to restore.
+ */
+export function setTestWorkspaceRevision(
+  dataRoot: string,
+  workspaceId: string,
+  revision: number
+): void {
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+  const db = new Database(scope.path, { fileMustExist: true });
+  try {
+    db.prepare('UPDATE control_workspaces SET revision=? WHERE id=?').run(revision, workspaceId);
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Creates a Store after initializing the native Core schema in a caller-owned fixture root.
  * Existing databases are never repaired or replaced. Callers retain root and writer cleanup ownership.
  *

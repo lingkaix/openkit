@@ -144,7 +144,9 @@ import { completeCapture, inspectCapture, protectCapture } from './workspace-cap
 import {
   ensureCanonicalDirectory,
   loadWorkspaceFileRecords,
+  nativeProductScope,
   publishCanonicalPath,
+  readNativeProduct,
   syncCanonicalDirectory,
   syncCanonicalTree,
 } from './workspace-file-records.js';
@@ -154,6 +156,9 @@ import {
   readRecoveryAdmission,
   recoveryReport,
   refuseRecovery as refuse,
+  resumeWorkspaceCaptureOwner,
+  unresolvedRecoveryAdmissions,
+  workspaceRecoveryPredecessorRoot,
 } from './workspace-recovery-admissions.js';
 
 /** Closed refusal codes shared by the offline Workspace commands. */
@@ -268,7 +273,8 @@ export function readWorkspaceRecoveryBlockers(
       failure.scope === 'workspace' && failure.id === input.workspaceId && failure.check !== 'index'
   );
   if (
-    refusal?.check !== 'recovery' ||
+    (refusal !== undefined && refusal.check !== 'recovery') ||
+    (!captureId && !refusal) ||
     (!('captureId' in selected) &&
       (selected.workspace_id !== input.workspaceId || !isDeepStrictEqual(current, selected))) ||
     (captureId &&
@@ -278,6 +284,35 @@ export function readWorkspaceRecoveryBlockers(
         !['capture', 'move-out'].includes(current.proof.input.command)))
   )
     return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+  if (
+    captureWorkerActive?.dataRoot === resolve(input.coreDb.dataRoot) &&
+    captureWorkerActive.workspaceId === input.workspaceId
+  )
+    return [
+      {
+        kind: 'snapshot',
+        reason: 'pending-publication',
+        reference: { backupId: captureWorkerActive.captureId },
+        actions: [],
+      },
+    ];
+  // An unpublished MOVE target has no registered runtime authority. Retained Core
+  // ownership still excludes every competing unfinished request before candidate close.
+  if (
+    current?.proof.input.command === 'move-in' &&
+    !existsSync(join(input.coreDb.dataRoot, 'workspaces', input.workspaceId)) &&
+    !input.coreDb.sqlite
+      .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id=?')
+      .get(input.workspaceId)
+  ) {
+    if (
+      unresolvedRecoveryAdmissions(input.coreDb, input.workspaceId).some(
+        (row) => row.admission_id !== current.admission_id
+      )
+    )
+      return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    return [];
+  }
   return readWorkspaceBlockerFacts(input, current, captureId);
 }
 
@@ -296,10 +331,15 @@ function readWorkspaceBlockerFacts(
   try {
     const { coreDb, workspaceId } = input;
     if (!isEntityId('ws', workspaceId)) throw new Error('Invalid Workspace scope.');
-    const reader = getWorkspaceProductReadHandle(
-      join(coreDb.dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'),
-      { kind: 'workspace', workspaceId }
-    );
+    const canonical = join(coreDb.dataRoot, 'workspaces', workspaceId);
+    const root =
+      selected?.proof.input.command === 'restore' && !existsSync(canonical)
+        ? workspaceRecoveryPredecessorRoot(selected)
+        : canonical;
+    const reader = getWorkspaceProductReadHandle(join(root, 'db/workspace.sqlite'), {
+      kind: 'workspace',
+      workspaceId,
+    });
     const db = reader.sqlite;
     const targetDb = bindWorkspaceSqlite(db, coreDb.dataRoot, workspaceId);
     const ids = (sql: string): string[] => db.prepare(sql).pluck().all(workspaceId) as string[];
@@ -1321,7 +1361,13 @@ type CaptureInput = Omit<WorkspaceBackupCreateInput, 'source'> & {
     | Exclude<WorkspaceBackupSource, { kind: 'live-workspace' }>
     | { kind: 'live-workspace'; dataRoot: string };
 };
-let captureWorkerActive = false;
+let captureWorkerActive:
+  | {
+      readonly dataRoot: string;
+      workspaceId: string;
+      readonly captureId: string;
+    }
+  | undefined;
 
 /** Enumerates sealed generation metadata only; attempts and mutable filesystem times spend no UTC day. */
 async function snapshotGenerations(
@@ -1590,7 +1636,11 @@ async function runWorkspaceCapture(
     refuse('invalid-arguments');
   if (input.source.kind !== 'live-workspace') return captureWorkspaceBackup(input);
   if (captureWorkerActive) refuse('capacity-exceeded');
-  captureWorkerActive = true;
+  captureWorkerActive = {
+    dataRoot: resolve(input.source.dataRoot),
+    workspaceId: input.workspaceId,
+    captureId: input.backupId,
+  };
   const live = input.source;
   let targetWorkspaceId = input.workspaceId;
   const reservations = new Map<number, FileStorageReservation>();
@@ -1683,6 +1733,7 @@ async function runWorkspaceCapture(
                 if (!automatic?.workspaceIds.includes(value.workspaceId))
                   refuse('invalid-arguments');
                 targetWorkspaceId = value.workspaceId;
+                captureWorkerActive!.workspaceId = targetWorkspaceId;
                 reply = 0;
                 if (isScopeAdmitted(live.dataRoot, 'workspace', targetWorkspaceId)) {
                   const candidate = live.mutationAdmission.tryFreeze(targetWorkspaceId, () =>
@@ -1859,7 +1910,7 @@ async function runWorkspaceCapture(
       }
     }
     releaseReplayRead?.();
-    captureWorkerActive = false;
+    captureWorkerActive = undefined;
     authorityError ??= cleanupFailure;
   }
   if (authorityError) throw authorityError;
@@ -2711,16 +2762,76 @@ function workspaceSnapshotLocalSource(
   input: { readonly workspaceId: string; readonly backupId: string },
   owned: ReturnType<typeof workspaceSnapshotOperationPolicy>
 ) {
+  let movedOutDigest: string | null = null;
   return {
     dataRoot: owned.dataRoot,
     source: { kind: 'local-snapshot' as const, ...input },
     acquireSource: () => {
-      const release = owned.mutationAdmission.enter(input.workspaceId);
-      if (!release)
-        throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
-          details: { workspaceId: input.workspaceId, retryable: true },
-        });
+      let release = owned.mutationAdmission.enter(input.workspaceId);
+      if (!release) {
+        // A finished MOVE retains its exact source exclusion while supplying the sealed bundle.
+        owned.currentAuthority();
+        const proof = readRecoveryAdmission(owned.coreDb, input.backupId);
+        const source = readNativeProduct(
+          nativeProductScope(owned.dataRoot, { kind: 'workspace', workspaceId: input.workspaceId }),
+          'workspace',
+          input.workspaceId
+        );
+        const movedOut = source?.record.movedOut as
+          | { backupId?: string; manifestDigest?: string }
+          | undefined;
+        if (
+          !proof ||
+          proof.workspace_id !== input.workspaceId ||
+          proof.backup_id !== input.backupId ||
+          proof.purpose !== 'move' ||
+          proof.state !== 'finished' ||
+          !['capture', 'move-out'].includes(proof.proof.input.command) ||
+          source?.revision !== proof.proof.manifest.capturedRevision + 1 ||
+          !/^sha256:[0-9a-f]{64}$/.test(proof.proof.capture.manifestDigest) ||
+          movedOut?.backupId !== input.backupId ||
+          movedOut.manifestDigest !== proof.proof.capture.manifestDigest
+        )
+          throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+            details: { workspaceId: input.workspaceId, retryable: true },
+          });
+        const freeze = resumeWorkspaceCaptureOwner(
+          owned.coreDb,
+          input.workspaceId,
+          input.backupId,
+          owned.mutationAdmission,
+          () =>
+            readWorkspaceRecoveryBlockers(
+              { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
+              { captureId: input.backupId }
+            )
+        );
+        if (freeze.status !== 'frozen') refuse('recovery-required');
+        release = freeze.release;
+        movedOutDigest = proof.proof.capture.manifestDigest;
+      }
+      try {
+        owned.currentAuthority();
+        const reader = getWorkspaceProductReadHandle(
+          join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite'),
+          { kind: 'workspace', workspaceId: input.workspaceId }
+        );
+        const capture = inspectCapture(
+          bindWorkspaceSqlite(reader.sqlite, owned.dataRoot, input.workspaceId),
+          input.workspaceId,
+          input.backupId
+        );
+        // Restoring an older cut may omit this independently sealed generation's source row.
+        if (capture && capture.state !== 'finished') refuse('recovery-required');
+      } catch (error) {
+        release();
+        throw error;
+      }
       return release;
+    },
+    /** Checks the independent verified copy before the source proof can expose its bytes. */
+    assertManifestDigest: (manifestDigest: string) => {
+      if (movedOutDigest !== null && manifestDigest !== movedOutDigest) refuse('recovery-required');
     },
   };
 }
@@ -2752,6 +2863,7 @@ export async function inspectWorkspaceSnapshot(
         })
       : undefined;
     assertOwner();
+    const source = freeze ? undefined : workspaceSnapshotLocalSource(input, owned);
     const result = await stageWorkspaceBackup({
       ...owned.verification,
       bundleRoot: join(
@@ -2765,13 +2877,14 @@ export async function inspectWorkspaceSnapshot(
             dataRoot: owned.dataRoot,
             source: { kind: 'local-snapshot', ...input },
           }
-        : workspaceSnapshotLocalSource(input, owned),
+        : source!,
       expectedWorkspaceId: input.workspaceId,
       expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
       purpose: metadata?.manifest.purpose ?? 'backup',
       ...(freeze ? { allowPreparedMove: true } : {}),
       candidateRoot: join(container.container, 'verified'),
     });
+    source?.assertManifestDigest(result.report.manifestDigest);
     assertOwner();
     if (
       freeze &&
@@ -2847,15 +2960,17 @@ export function createWorkspaceSnapshotOperationImplementations(
     ): Promise<Response> =>
       invoke(async () => {
         const owned = policy(context);
+        const source = workspaceSnapshotLocalSource(input, owned);
         // Verification acquires independent copies before exposing a stream. Keep its callback alive until cancellation or completion.
         return new Promise<Response>((resolveResponse, rejectResponse) => {
           void withVerifiedWorkspaceSnapshotSource(
             {
               ...owned.verification,
               includeMetadata: true,
-              ...workspaceSnapshotLocalSource(input, owned),
+              ...source,
             },
             async (bundle) => {
+              source.assertManifestDigest(bundle.manifestDigest);
               owned.currentAuthority();
               const chunks = async function* () {
                 for (const path of ['manifest.json', 'seal.json']) {

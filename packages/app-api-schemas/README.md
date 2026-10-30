@@ -1,6 +1,6 @@
 # @openkit/app-api-schemas
 
-`workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. The complete capture, verify, download, same-deployment backup-restore and recovery-inspect definitions are composed; selected recovery finish/abandon and MOVE remain uncomposed until their owners activate them. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.
+`workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. The complete capture, verify, download, same-deployment backup-restore and selected recovery inspect/finish/abandon definitions are composed; MOVE remains uncomposed until its owners activate it. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.
 
 Knowledge retrieval exclusion reasons distinguish `selector_mismatch` for exact metadata filters from `policy_excluded` for current authorization or Source-policy refusal. The response shape and native admission boundary are unchanged.
 
@@ -34,7 +34,7 @@ Dashboard work-status and active-work schemas carry recorded activity and output
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
-`src/workspace-freeze.ts` defines the public lifecycle refusal, typed blockers and one quick-action union using existing operation inputs. The snapshot owner supplies authoritative facts and disclosure filtering; schemas grant no authority or cleanup proof. `src/workspace-snapshot-operations.ts` freezes ten administrator snapshot contracts. Capture, verify, download, same-deployment backup-restore and recovery-inspect have complete scoped handlers in the composed table; selected recovery finish/abandon and MOVE remain uncomposed until backend activation supplies their complete handlers. Only sealed-bundle download and MOVE-in are streaming. Inputs name owned identities, never server paths. The [snapshot owner](../../docs/specs/20260704-workspace_backup_export_import.md#scoped-freeze-and-blockers) defines refusal, freeze, consistency and recovery.
+`src/workspace-freeze.ts` defines the public lifecycle refusal, typed blockers and one quick-action union using existing operation inputs. The snapshot owner supplies authoritative facts and disclosure filtering; schemas grant no authority or cleanup proof. `src/workspace-snapshot-operations.ts` freezes ten administrator snapshot contracts. Capture, verify, download, same-deployment backup-restore and selected recovery inspect/finish/abandon have complete scoped handlers in the composed table; MOVE remains uncomposed until backend activation supplies its complete handlers. Only sealed-bundle download and MOVE-in are streaming. Inputs name owned identities, never server paths. The [snapshot owner](../../docs/specs/20260704-workspace_backup_export_import.md#scoped-freeze-and-blockers) defines refusal, freeze, consistency and recovery.
 
 The Skill row returned by `catalog.read` optionally exposes `pinAuditRef`, the recorded winning pin command's Audit identity. An absent field means that attribution was not retained; a digest alone does not identify the actor who last pinned it.
 
@@ -280,9 +280,9 @@ Plugin import responses include component `diagnostics` with package keys and fi
 
 Plugin import accepts optional `pluginId` and `memberIds` to name explicit scoped catalog targets while retaining original package names. The existing native owner checks collisions and preserves prior member mappings; these inputs grant no permission or publisher trust.
 
-Same-deployment Workspace backup restore now joins the composed operation table. Its existing selectors, safety acknowledgement and report are unchanged; capture-selected recovery and MOVE activation remain separate.
+Same-deployment Workspace backup restore now joins the composed operation table. Its existing selectors, safety acknowledgement and report are unchanged; selected recovery finish/abandon use the original capture or target owner; MOVE activation remains separate.
 
-Workspace recovery inspection uses the existing path-free report and capture/admission selectors. Its complete composition reads current administrator-authorized facts; finish, abandonment and MOVE remain with their separate activation work.
+Workspace recovery inspection uses the existing path-free report and capture/admission selectors. Its complete composition reads current administrator-authorized facts. Selected finish and abandonment now reuse their original lifecycle owners; MOVE activation remains separate.
 
 Workspace MCP management exposes `catalog.mcp-stage-version` and `catalog.mcp-remove` alongside create, select and binding. Select requires nullable `expectedCurrentDigest` from the observed entry; stage preserves current selection and removal retains history.
 

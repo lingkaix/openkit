@@ -436,6 +436,8 @@ export function readWorkspaceCaptureRecoveryAtCore(
 ) {
   if (resolve(core.dataRoot) !== resolve(input.dataRoot) || input.selection.kind !== 'capture')
     refuseRecovery('recovery-required');
+  if (!existsSync(join(core.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')))
+    refuseRecovery('recovery-required');
   const db = openWorkspaceReadDb(core.dataRoot, input.workspaceId);
   try {
     const row = readNativeProduct(

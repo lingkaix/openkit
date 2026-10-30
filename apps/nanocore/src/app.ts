@@ -2784,7 +2784,13 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
   }
   // Bootstrap owns durable reconstruction; its existing authority refusal also excludes direct producers.
   for (const failure of scopeAdmissionFailures(input.dataRoot)) {
-    if (failure.scope === 'workspace' && failure.check !== 'index')
+    if (
+      failure.scope === 'workspace' &&
+      failure.check !== 'index' &&
+      // Generic refusal must not replace bootstrap's exact capture/recovery closure.
+      (failure.check === 'retired' ||
+        !input.workspaceMutationAdmission.isClosed(failure.id, 'capture'))
+    )
       input.workspaceMutationAdmission.restoreClosed(
         failure.id,
         failure.check === 'retired' ? 'ordinary' : 'capture'

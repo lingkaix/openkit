@@ -25,10 +25,9 @@ import {
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { readProduct } from './control-store-products.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
-import { type CoreDb, openWorkspaceReadDb } from './db.js';
+import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
 import {
@@ -46,7 +45,6 @@ import {
   WORKSPACE_BACKUP_MANIFEST_FILE,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
-import { inspectCapture } from './workspace-capture-protection.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -54,7 +52,10 @@ import {
   syncCanonicalDirectory,
 } from './workspace-file-records.js';
 import {
+  abandonWorkspaceCaptureAtCore,
+  finishWorkspaceCaptureAtCore,
   inspectWorkspaceRecoveryAtCore,
+  readWorkspaceCaptureRecoveryAtCore,
   selectRecoveryAdmission,
   type WorkspaceRecoveryDependencies,
   type WorkspaceRecoverySelectedInput,
@@ -70,6 +71,7 @@ import {
   readWorkspaceRecoveryReadmission,
   recoveryReport,
   refuseRecovery,
+  resumeWorkspaceCaptureOwner,
   resumeWorkspaceRecoveryOwner,
   withRecoveryRoot,
   workspaceRecoveryPredecessorRoot,
@@ -728,6 +730,291 @@ async function bindTargetCandidate(
   }
 }
 
+/** Revalidates canonical source bytes without borrowing a replaced target's candidate digest. */
+function activateSourceCapture(
+  owned: ReturnType<typeof workspaceSnapshotOperationPolicy>,
+  input: WorkspaceRecoverySelectedInput,
+  freeze: WorkspaceFrozenAdmission,
+  manager: RuntimeConfigManager
+): void {
+  const before = readWorkspaceCaptureRecoveryAtCore(owned.coreDb, input);
+  if (
+    before.movedOut ||
+    before.capture.state === 'active' ||
+    !owned.mutationAdmission.ownsRecoveryOrigin(input.workspaceId, freeze, {
+      captureId: before.capture.captureId,
+    }) ||
+    (before.owned && before.owned.state !== 'abandoned')
+  )
+    refuseRecovery('recovery-required');
+  const failure = scopeAdmissionFailures(owned.dataRoot).find(
+    (row) => row.scope === 'workspace' && row.id === input.workspaceId && row.check !== 'index'
+  );
+  if (failure && failure.check !== 'recovery') refuseRecovery('recovery-required');
+  try {
+    owned.store.reloadRecoveredWorkspace(input.workspaceId, freeze);
+    manager.reloadRecoveredWorkspace(input.workspaceId, owned.mutationAdmission, freeze);
+  } catch (error) {
+    throw new OperationError(
+      'recovery-required',
+      'Canonical Workspace validation is unavailable.',
+      409,
+      { cause: error }
+    );
+  }
+  owned.currentAuthority();
+  if (
+    !isDeepStrictEqual(before, readWorkspaceCaptureRecoveryAtCore(owned.coreDb, input)) ||
+    failure !==
+      scopeAdmissionFailures(owned.dataRoot).find(
+        (row) => row.scope === 'workspace' && row.id === input.workspaceId && row.check !== 'index'
+      ) ||
+    readWorkspaceRecoveryBlockers(
+      { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
+      { captureId: before.capture.captureId }
+    ).length
+  )
+    refuseRecovery('recovery-required');
+  owned.store.settleRecoveredWorkspacePublication(input.workspaceId, freeze);
+  if (failure)
+    settleWorkspaceRecoveryScope({
+      dataRoot: owned.dataRoot,
+      failure,
+      admission: owned.mutationAdmission,
+      freeze,
+    });
+  owned.mutationAdmission.reopen(input.workspaceId, 'capture');
+}
+
+/** Completes one original selection under the existing nonwaiting freeze and native drain. */
+async function decideWorkspaceRecovery(
+  dependencies: OperationInvocationDependencies,
+  input: Omit<WorkspaceRecoverySelectedInput, 'dataRoot' | 'expectedRelease'>,
+  context: AdmittedOperationContext,
+  decision: 'finish' | 'abandon'
+) {
+  return invokeWorkspaceRecoveryOperation(async () => {
+    const owned = workspaceSnapshotOperationPolicy(dependencies, context);
+    const manager = dependencies.runtimeConfigManager;
+    if (
+      !manager ||
+      manager.getDataRoot() === null ||
+      resolve(manager.getDataRoot()!) !== resolve(owned.dataRoot)
+    )
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'Workspace configuration is unavailable.',
+        503
+      );
+    const selected = {
+      ...input,
+      dataRoot: owned.dataRoot,
+      expectedRelease: owned.verification.expectedRelease,
+    };
+    const target =
+      input.selection.kind === 'admission'
+        ? selectRecoveryAdmission(owned.coreDb, selected)
+        : undefined;
+    const source =
+      input.selection.kind === 'capture'
+        ? readWorkspaceCaptureRecoveryAtCore(owned.coreDb, selected)
+        : undefined;
+    // A SQL pin alone does not prove a complete generation or its intended finish.
+    if (
+      source &&
+      decision === 'finish' &&
+      !existsSync(
+        join(
+          owned.dataRoot,
+          'server/backups/workspaces',
+          input.workspaceId,
+          source.capture.captureId,
+          WORKSPACE_BACKUP_MANIFEST_FILE
+        )
+      )
+    )
+      refuseRecovery('recovery-required');
+    const terminal = target?.state ?? source!.capture.state;
+    if (
+      (terminal === 'finished' && decision === 'abandon') ||
+      (terminal === 'abandoned' && decision === 'finish')
+    )
+      refuseRecovery('request-conflict');
+    // A committed replay never reloads or replaces the target's later healthy work.
+    if (
+      isScopeAdmitted(owned.dataRoot, 'workspace', input.workspaceId) &&
+      !owned.mutationAdmission.isClosed(input.workspaceId) &&
+      terminal !== 'prepared' &&
+      terminal !== 'active'
+    ) {
+      owned.currentAuthority();
+      if (target)
+        return WorkspaceSnapshotReportSchema.parse({
+          ...target.proof.result,
+          command: decision,
+          selection: input.selection,
+        });
+      if (terminal === 'abandoned')
+        return WorkspaceSnapshotReportSchema.parse({
+          command: decision,
+          disposition: 'abandoned',
+          workspaceId: input.workspaceId,
+          selection: input.selection,
+          currentRevision: source!.revision,
+          droppedSourceMemberIds: [],
+          restrictedRecovery: false,
+          nextAction: 'none',
+        });
+      const verified = await inspectWorkspaceSnapshot(
+        { workspaceId: input.workspaceId, backupId: source!.capture.captureId },
+        owned
+      );
+      owned.currentAuthority();
+      return WorkspaceSnapshotReportSchema.parse({
+        ...recoveryReport(decision, 'sealed', verified.report),
+        selection: input.selection,
+        currentRevision: source!.revision,
+      });
+    }
+    owned.store.setWorkspaceMutationAdmission(owned.mutationAdmission);
+    const inspect = () =>
+      readWorkspaceRecoveryBlockers(
+        { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
+        target ?? { captureId: source!.capture.captureId }
+      );
+    let hold: Promise<() => void> | null = null;
+    const inspectAndHold = () => {
+      const blockers = inspect();
+      if (blockers.length) return blockers;
+      hold = getControlStoreWorkerClient(owned.mutationAdmission).tryPauseForWorkspaceCapture(
+        `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`,
+        owned.mutationAdmission
+      );
+      return hold
+        ? []
+        : [
+            {
+              kind: 'publication' as const,
+              reason: 'pending-publication' as const,
+              reference: { workspaceId: input.workspaceId },
+              actions: [],
+            },
+          ];
+    };
+    const wasClosed = owned.mutationAdmission.isClosed(input.workspaceId);
+    const freeze = wasClosed
+      ? target
+        ? resumeWorkspaceRecoveryOwner(
+            owned.coreDb,
+            target,
+            owned.mutationAdmission,
+            inspectAndHold
+          )
+        : resumeWorkspaceCaptureOwner(
+            owned.coreDb,
+            input.workspaceId,
+            source!.capture.captureId,
+            owned.mutationAdmission,
+            inspectAndHold
+          )
+      : owned.mutationAdmission.tryFreeze(input.workspaceId, inspectAndHold);
+    if (freeze.status !== 'frozen')
+      throw new OperationError(
+        freeze.status === 'busy' && wasClosed ? 'workspace_frozen' : 'workspace_blocked',
+        'Workspace recovery is not admitted.',
+        409,
+        {
+          details: {
+            workspaceId: input.workspaceId,
+            operation: 'restore',
+            retryable: freeze.status === 'busy' && wasClosed,
+            blockers:
+              freeze.status === 'blocked'
+                ? freeze.blockers
+                : [
+                    {
+                      kind: 'publication',
+                      reason: wasClosed ? 'frozen' : 'pending-publication',
+                      reference: { workspaceId: input.workspaceId },
+                      actions: [],
+                    },
+                  ],
+          },
+        }
+      );
+    let release: (() => void) | undefined;
+    try {
+      try {
+        if (!hold) refuseRecovery('recovery-required');
+        release = await hold;
+        owned.currentAuthority();
+        const blockers = inspect();
+        if (blockers.length)
+          throw new OperationError(
+            'workspace_blocked',
+            'Workspace recovery is not admitted.',
+            409,
+            {
+              details: {
+                workspaceId: input.workspaceId,
+                operation: 'restore',
+                retryable: false,
+                blockers,
+              },
+            }
+          );
+      } finally {
+        release?.();
+      }
+      const owner = {
+        core: owned.coreDb,
+        fileAdmission: owned.verification.admission,
+        native: { gate: owned.mutationAdmission, freeze },
+        currentAuthority: owned.currentAuthority,
+      };
+      let report: WorkspaceRecoveryCliReport;
+      if (target) {
+        report =
+          decision === 'finish'
+            ? await finishWorkspaceRecoveryAtCore(owner, selected)
+            : await abandonWorkspaceRecoveryAtCore(owner, selected);
+        owned.currentAuthority();
+        if (decision === 'finish' || target.proof.input.command === 'restore')
+          activateWorkspaceRecoveryAtCore(owner, {
+            requestId: target.admission_id,
+            store: owned.store,
+            runtimeConfigManager: manager,
+            currentAuthority: owned.currentAuthority,
+          });
+      } else {
+        report =
+          decision === 'finish'
+            ? await finishWorkspaceCaptureAtCore(owned, selected, freeze)
+            : await abandonWorkspaceCaptureAtCore(owned, selected, freeze);
+        owned.currentAuthority();
+        if (!readWorkspaceCaptureRecoveryAtCore(owned.coreDb, selected).movedOut)
+          activateSourceCapture(owned, selected, freeze, manager);
+      }
+      return WorkspaceSnapshotReportSchema.parse(report);
+    } catch (error) {
+      refuseScope(owned.dataRoot, { scope: 'workspace', id: input.workspaceId, check: 'recovery' });
+      if (target)
+        owned.mutationAdmission.restoreRecoveryClosed(input.workspaceId, {
+          admissionId: target.admission_id,
+          revision: target.revision - (target.state === 'prepared' ? 0 : 1),
+          candidateRef: target.candidate_ref,
+        });
+      else
+        owned.mutationAdmission.restoreRecoveryClosed(input.workspaceId, {
+          captureId: source!.capture.captureId,
+        });
+      throw error;
+    } finally {
+      freeze.release();
+    }
+  });
+}
+
 /** Composes same-deployment restore through the existing target and admission owners only. */
 export function createWorkspaceRestoreOperationImplementations(
   dependencies: OperationInvocationDependencies
@@ -735,7 +1022,14 @@ export function createWorkspaceRestoreOperationImplementations(
   type Input = import('zod').infer<
     (typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS)['workspace.backup-restore']['inputSchema']
   >;
+  type SelectedInput = import('zod').infer<
+    (typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS)['workspace.recovery-finish']['inputSchema']
+  >;
   return {
+    'workspace.recovery-finish': (input: SelectedInput, context: AdmittedOperationContext) =>
+      decideWorkspaceRecovery(dependencies, input, context, 'finish'),
+    'workspace.recovery-abandon': (input: SelectedInput, context: AdmittedOperationContext) =>
+      decideWorkspaceRecovery(dependencies, input, context, 'abandon'),
     'workspace.recovery-inspect': (
       input: import('zod').infer<
         (typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS)['workspace.recovery-inspect']['inputSchema']
@@ -749,32 +1043,15 @@ export function createWorkspaceRestoreOperationImplementations(
           return WorkspaceSnapshotReportSchema.parse(
             inspectWorkspaceRecoveryAtCore(owned.coreDb, selected)
           );
-        let state: ReturnType<typeof inspectCapture>;
-        let current: NonNullable<ReturnType<typeof readProduct>>;
-        try {
-          const db = openWorkspaceReadDb(owned.dataRoot, input.workspaceId);
-          try {
-            const product = readProduct(
-              db.sqlite,
-              { kind: 'workspace', workspaceId: input.workspaceId },
-              'workspace',
-              input.workspaceId
-            );
-            state = inspectCapture(db, input.workspaceId, input.selection.backupId);
-            if (!product || !state) refuseRecovery('recovery-required');
-            current = product;
-          } finally {
-            db.sqlite.close();
-          }
-        } catch {
-          refuseRecovery('recovery-required');
-        }
+        const facts = readWorkspaceCaptureRecoveryAtCore(owned.coreDb, selected);
+        const state = facts.capture;
+        const current = facts;
         const retained = readRecoveryAdmission(owned.coreDb, input.selection.backupId);
         if (retained)
           return WorkspaceSnapshotReportSchema.parse(
             inspectWorkspaceRecoveryAtCore(owned.coreDb, selected, {
               revision: current.revision,
-              movedOut: !!current.record.movedOut,
+              movedOut: !!current.movedOut,
             })
           );
         // SQL lifecycle alone proves neither capture purpose nor a transferable seal.

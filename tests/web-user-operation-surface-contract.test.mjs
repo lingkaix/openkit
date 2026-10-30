@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 342;
-const EXPECTED_SERVER_SIZE = 91;
+const EXPECTED_CATALOG_SIZE = 346;
+const EXPECTED_SERVER_SIZE = 93;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 248;
+const EXPECTED_INCLUDED_SIZE = 250;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -23,6 +23,8 @@ const SERVER_WEB_OPERATIONS = {
   'workspace.backup-download': { disposition: 'roadmap', roadmap: 'R048' },
   'workspace.backup-restore': { disposition: 'roadmap', roadmap: 'R048' },
   'workspace.recovery-inspect': { disposition: 'roadmap', roadmap: 'R048' },
+  'workspace.recovery-finish': { disposition: 'roadmap', roadmap: 'R048' },
+  'workspace.recovery-abandon': { disposition: 'roadmap', roadmap: 'R048' },
 };
 
 /** Operations whose current Web projection is explicitly deferred to a Roadmap owner. */
@@ -32,6 +34,8 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.backup-download', 'R048'],
   ['workspace.backup-restore', 'R048'],
   ['workspace.recovery-inspect', 'R048'],
+  ['workspace.recovery-finish', 'R048'],
+  ['workspace.recovery-abandon', 'R048'],
   ['workspace.delete', 'R049'],
   ['workspace.resource-access-request', 'R033'],
   ['workspace.resource-access-apply', 'R033'],
@@ -154,6 +158,8 @@ const WEB_OPERATION_GROUPS = {
     'kernel.format.upgrade': { disposition: 'live', surface: 'Catalog' },
 
     'catalog.mcp-create': { disposition: 'live', surface: 'Catalog' },
+    'catalog.mcp-stage-version': { disposition: 'live', surface: 'Catalog' },
+    'catalog.mcp-remove': { disposition: 'live', surface: 'Catalog' },
     'catalog.skill-candidate-decide': { disposition: 'live', surface: 'Catalog' },
     'catalog.read': { disposition: 'live', surface: 'Catalog' },
     'catalog.shared-mcp-list': { disposition: 'live', surface: 'Catalog' },
