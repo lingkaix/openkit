@@ -1191,16 +1191,6 @@ function collectSecretLikeErrors(
   errors: KnowledgeValidationError[],
   ancestors: Set<object> = new Set()
 ): void {
-  if (typeof value === 'string') {
-    if (SECRET_FIELD_PATTERN.test(value)) {
-      errors.push({
-        code: 'profile.secret_like_value',
-        field: 'frontmatter',
-        message: 'Knowledge pages must not carry secret-like values.',
-      });
-    }
-    return;
-  }
   if (typeof value !== 'object' || value === null || ancestors.has(value)) return;
   ancestors.add(value);
   if (Array.isArray(value)) {

@@ -587,7 +587,43 @@ describe('validateOpenKitKnowledgeProfile', () => {
     expect(knowledgeReferenceErrors(parsed.document, new Map(), new Set())).toEqual([]);
   });
 
-  it('rejects secret-like fields and values recursively through mappings and arrays', () => {
+  // Governance permits ordinary values while retaining recursive structural exclusions.
+  it('accepts ordinary frontmatter values without changing their content', () => {
+    const parsed = governedPage({
+      title: 'Token budget',
+      extra: [
+        'metadata:',
+        '  description: "Password reset instructions"',
+        '  provenance:',
+        '    - label: "Private key cryptography"',
+        '    - notes:',
+        '        - "API key documentation"',
+        '        - "Secret sharing research"',
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const original = structuredClone(parsed.document);
+    expect(parsed.document.frontmatter).toMatchObject({
+      title: 'Token budget',
+      metadata: {
+        description: 'Password reset instructions',
+        provenance: [
+          { label: 'Private key cryptography' },
+          { notes: ['API key documentation', 'Secret sharing research'] },
+        ],
+      },
+    });
+    expect(parsed.document.body).toBe('Status body.\n');
+    expect(validateScopeKnowledgeSchema(parsed.document)).toMatchObject({
+      conformance: 'scope-schema-valid',
+      errors: [],
+    });
+    expect(parsed.document).toEqual(original);
+  });
+
+  it('rejects secret-like field names recursively through mappings and arrays', () => {
     const secretFieldCanary = 'api_token_canary_do_not_echo';
     const secretValuePathCanary = 'value_path_canary_do_not_echo';
     const parsed = governedPage({
@@ -598,19 +634,19 @@ describe('validateOpenKitKnowledgeProfile', () => {
         `    - ${secretFieldCanary}: concealed`,
         `  ${secretValuePathCanary}:`,
         '    - ordinary',
-        '    - "contains sk-secret material"',
+        '    - details:',
+        '        password: concealed',
       ],
     });
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const errors = validateOpenKitKnowledgeProfile(parsed.document).errors;
-    expect(errors).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: 'profile.secret_like_field' }),
-        expect.objectContaining({ code: 'profile.secret_like_value' }),
-      ])
-    );
+    expect(errors).toHaveLength(2);
+    expect(errors).toEqual([
+      expect.objectContaining({ code: 'profile.secret_like_field', field: 'frontmatter' }),
+      expect.objectContaining({ code: 'profile.secret_like_field', field: 'frontmatter' }),
+    ]);
     expect(JSON.stringify(errors)).not.toContain(secretFieldCanary);
     expect(JSON.stringify(errors)).not.toContain(secretValuePathCanary);
   });
@@ -739,6 +775,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
 });
 
 function governedPage(input: {
+  title?: string;
   openkitStatus?: 'draft' | 'active' | 'archived' | 'superseded' | 'invalid' | 'deleted';
   status?: 'draft' | 'stable' | 'deprecated';
   sourceRefsYaml?: string;
@@ -749,7 +786,7 @@ function governedPage(input: {
     content: [
       '---',
       'type: "KnowledgePage"',
-      'title: "Status page"',
+      `title: ${JSON.stringify(input.title ?? 'Status page')}`,
       `schema_version: ${JSON.stringify(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION)}`,
       `openkit_status: ${JSON.stringify(input.openkitStatus ?? 'active')}`,
       ...(input.status ? [`status: ${JSON.stringify(input.status)}`] : []),
