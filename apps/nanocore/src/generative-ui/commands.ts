@@ -334,6 +334,13 @@ export function refreshGenerativePresentation(
   if (action.kind !== 'refresh') {
     throw new KernelCommandError('validation_failed', 'Refresh refuses mutating bindings.');
   }
+  if (Object.keys(event.action.context ?? {}).length > 0) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Refresh actions expect empty event context.',
+      { path: 'action.context' }
+    );
+  }
   const admitted = admitProducerMessages({
     threadId: presentation.threadId,
     turnId: presentation.turnId,

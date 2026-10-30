@@ -33,6 +33,29 @@ function messages(components: unknown[]) {
 }
 
 describe('native A2UI admission', () => {
+  it.each([
+    [0, 'body', 'theme'],
+    [1, 'body', 'style'],
+    [0, 'envelope', 'extra'],
+    [1, 'envelope', 'extra'],
+  ] as const)('refuses an extra %s %s declaration key %s', (index, location, key) => {
+    const declaration = messages([{ id: 'root', component: 'Text', text: 'Keep the valid view.' }]);
+    const message = declaration[index]! as unknown as Record<string, unknown>;
+    const body = index === 0 ? message.createSurface : message.updateComponents;
+    (location === 'envelope' ? message : (body as Record<string, unknown>))[key] = 'Unsupported';
+    expect(() =>
+      admitProducerMessages({
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        title: 'Closed declaration',
+        fallbackText: 'Keep the valid view.',
+        messages: declaration,
+        source: { kind: 'item', itemId: randomUUID(), contentDigest: DIGEST },
+        actions: [],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'validation_failed' }));
+  });
+
   it('rejects unofficial Text.usageHint, List.alignment, and literalString bindings', () => {
     const source = {
       kind: 'item' as const,

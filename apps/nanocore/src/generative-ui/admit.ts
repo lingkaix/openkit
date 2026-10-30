@@ -99,16 +99,10 @@ export function admitProducerMessages(
   const updateComponents = asRecord(input.messages[1], 'messages[1]');
   assertMessageVersion(createSurface, 'messages[0]');
   assertMessageVersion(updateComponents, 'messages[1]');
-  if (
-    createSurface.updateDataModel !== undefined ||
-    updateComponents.updateDataModel !== undefined
-  ) {
-    throw new KernelCommandError(
-      'validation_failed',
-      'Producer messages must not include updateDataModel.'
-    );
-  }
+  assertKnownKeys(createSurface, ['version', 'createSurface'], 'messages[0]');
+  assertKnownKeys(updateComponents, ['version', 'updateComponents'], 'messages[1]');
   const surface = asRecord(createSurface.createSurface, 'createSurface');
+  assertKnownKeys(surface, ['surfaceId', 'catalogId', 'sendDataModel'], 'createSurface');
   const surfaceId = requiredString(surface.surfaceId, 'createSurface.surfaceId');
   if (surface.catalogId !== GENERATIVE_UI_NATIVE_CATALOG_ID) {
     throw new KernelCommandError('validation_failed', 'Unsupported A2UI catalog.');
@@ -117,6 +111,7 @@ export function admitProducerMessages(
     throw new KernelCommandError('validation_failed', 'createSurface.sendDataModel must be false.');
   }
   const update = asRecord(updateComponents.updateComponents, 'updateComponents');
+  assertKnownKeys(update, ['surfaceId', 'components'], 'updateComponents');
   if (requiredString(update.surfaceId, 'updateComponents.surfaceId') !== surfaceId) {
     throw new KernelCommandError('validation_failed', 'A2UI messages must share one surface id.');
   }
@@ -639,6 +634,25 @@ function templateComponentIds(components: Map<string, AdmittedComponent>): Set<s
 function assertMessageVersion(message: Record<string, unknown>, path: string): void {
   if (message.version !== GENERATIVE_UI_PROTOCOL_VERSION) {
     throw new KernelCommandError('validation_failed', `${path}.version must be v0.9.`);
+  }
+}
+
+/**
+ * Keeps the release-owned declaration envelopes and bodies closed before retaining their exact bytes.
+ * @param record One already checked message object.
+ * @param allowed Known keys owned by that message.
+ * @param path Input location for a typed refusal.
+ */
+function assertKnownKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string
+): void {
+  const key = Object.keys(record).find((candidate) => !allowed.includes(candidate));
+  if (key !== undefined) {
+    throw new KernelCommandError('validation_failed', `Unknown ${path} field: ${key}.`, {
+      path: `${path}.${key}`,
+    });
   }
 }
 

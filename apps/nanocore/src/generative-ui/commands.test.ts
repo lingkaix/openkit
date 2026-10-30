@@ -516,6 +516,22 @@ describe('Generative UI commands', () => {
       expect(published.messages).toHaveLength(3);
       const reread = getGenerativePresentation(context, published.id);
       expect(reread.itemId).toBe(published.itemId);
+      // Interaction235 requires refresh events to carry no additional context.
+      expect
+        .soft(() =>
+          refreshGenerativePresentation(context, published.id, {
+            version: GENERATIVE_UI_PROTOCOL_VERSION,
+            action: {
+              name: 'refreshNow',
+              surfaceId: 'surface-item',
+              sourceComponentId: 'refresh',
+              timestamp: new Date().toISOString(),
+              context: { ignored: 'Must refuse.' },
+            },
+          })
+        )
+        .toThrowError(expect.objectContaining({ code: 'validation_failed' }));
+      expect(getGenerativePresentation(context, published.id)).toEqual(reread);
       const refreshed = refreshGenerativePresentation(context, published.id, {
         version: GENERATIVE_UI_PROTOCOL_VERSION,
         action: {
