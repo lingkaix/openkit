@@ -79,6 +79,7 @@ export const SessionWorkspaceLayoutSchema = z
   .strict()
   .superRefine((layout, ctx) => {
     const ids = new Set<string>();
+    const retainedRoot = normalizeWorkerPath(layout.root);
     const paths = new Set<string>();
 
     for (const [index, slot] of layout.slots.entries()) {
@@ -99,6 +100,22 @@ export const SessionWorkspaceLayoutSchema = z
           path: ['slots', index, 'path'],
         });
         continue;
+      }
+
+      if (
+        slot.retention === 'turn' &&
+        (!isAncestorPath('/openkit', safePath) ||
+          safePath === '/openkit/threads' ||
+          isAncestorPath('/openkit/threads', safePath) ||
+          !retainedRoot ||
+          safePath === retainedRoot ||
+          isAncestorPath(retainedRoot, safePath))
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Turn-cleared slot ${slot.id} must stay under disposable /openkit outside the retained root.`,
+          path: ['slots', index, 'path'],
+        });
       }
 
       if (paths.has(safePath)) {
@@ -285,11 +302,22 @@ export function planSessionWorkspaceMaterialization(
     selectedSlotIds: layout.slots.map((slot) => slot.id),
     inputs: (input.environmentPackage.workspace?.inputs ?? []).map((workspaceInput) => {
       const slot = selectSlotForInput(layout, workspaceInput, input.environmentPackage.scope);
+      const mode = selectModeForInput(workspaceInput);
+      if (
+        workspaceInput.source?.kind === undefined ||
+        !slot.allowedSourceKinds.includes(workspaceInput.source.kind) ||
+        workspaceInput.access !== slot.access ||
+        !slot.allowedMaterializationModes.includes(mode)
+      ) {
+        throw new Error(
+          `Workspace input ${workspaceInput.id} is incompatible with slot ${slot.id}.`
+        );
+      }
 
       return {
         inputId: workspaceInput.id,
         slotId: slot.id,
-        mode: selectModeForInput(workspaceInput),
+        mode,
         access: workspaceInput.access,
       };
     }),
@@ -394,7 +422,7 @@ function createDefaultSessionWorkspaceLayout(
       slot(
         'turn-inputs',
         'input',
-        `${root}/inputs`,
+        `${sessionRoot}/inputs`,
         'read-only',
         [
           'workspace-file',
@@ -421,7 +449,7 @@ function createDefaultSessionWorkspaceLayout(
       slot(
         'artifact-input',
         'artifact-input',
-        `${root}/artifacts/in`,
+        `${sessionRoot}/artifacts/in`,
         'read-only',
         ['openkit-artifact'],
         ['copy', 'upload', 'rsync'],
@@ -442,7 +470,7 @@ function createDefaultSessionWorkspaceLayout(
       slot(
         'scratch',
         'scratch',
-        `${root}/scratch`,
+        `${sessionRoot}/scratch`,
         'read-write',
         ['generated'],
         ['create-empty'],

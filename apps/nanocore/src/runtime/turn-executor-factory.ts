@@ -7832,9 +7832,30 @@ function nanoHostSandboxCompatibilityKey(
                     ) {
                       return { ...rule, workerPath: 'agent-session-context' };
                     }
-                    return rule.workerPath === mainWorktreePath
-                      ? { ...rule, workerPath: 'worker-storage-worktree' }
-                      : rule;
+                    if (rule.workerPath === mainWorktreePath) {
+                      return { ...rule, workerPath: 'worker-storage-worktree' };
+                    }
+                    // Only planner-bound input rules lose private paths; other policy stays literal.
+                    const binding = materialization.inputs.find(
+                      (input) => 'id' in rule && input.inputId === rule.id
+                    );
+                    const slot = layout.slots.find((entry) => entry.id === binding?.slotId);
+                    if (
+                      slot &&
+                      (slot.id === 'turn-inputs' || slot.id === 'artifact-input') &&
+                      slot.path === rule.workerPath &&
+                      typeof rule.workerPath === 'string' &&
+                      rule.workerPath.startsWith(`${sessionRoot}/`) &&
+                      environmentPackage.workspace.inputs.some(
+                        (input) => input.id === binding?.inputId && input.target === rule.workerPath
+                      )
+                    ) {
+                      return {
+                        ...rule,
+                        workerPath: `agent-session${rule.workerPath.slice(sessionRoot.length)}`,
+                      };
+                    }
+                    return rule;
                   }),
                 },
               }
@@ -7863,7 +7884,13 @@ function nanoHostSandboxCompatibilityKey(
           inputs: environmentPackage.workspace.inputs.flatMap((input, index) =>
             materialization.inputs[index]?.slotId === 'context'
               ? []
-              : [nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId)]
+              : [
+                  nanoHostStaticWorkspaceInput(
+                    input,
+                    materialization.inputs[index]?.slotId,
+                    sessionRoot
+                  ),
+                ]
           ),
           layout: {
             ...layout,
@@ -7880,7 +7907,9 @@ function nanoHostSandboxCompatibilityKey(
                   ? { ...slot, path: 'worker-storage-worktree' }
                   : slot.id === 'turn-output'
                     ? { ...slot, path: 'agent-session-output' }
-                    : slot
+                    : slot.path.startsWith(`${sessionRoot}/`)
+                      ? { ...slot, path: `agent-session-slot/${slot.id}` }
+                      : slot
             ),
             control: { ...layout.control, contextRoot: 'agent-session-context' },
           },
@@ -7966,7 +7995,8 @@ function nanoHostSharedHarnessMapKey(
 /** Removes Turn content lineage while retaining one input's static isolation envelope. */
 function nanoHostStaticWorkspaceInput(
   input: AgentEnvironmentPackage['workspace']['inputs'][number],
-  slotId: string | undefined
+  slotId: string | undefined,
+  sessionRoot: string
 ): Record<string, unknown> {
   const { commit: _commit, ...source } = input.source;
   const { contentDigest: _contentDigest, ...materialization } = input.materialization ?? {};
@@ -7982,7 +8012,9 @@ function nanoHostStaticWorkspaceInput(
         ? 'agent-session-context'
         : slotId === 'main-worktree'
           ? 'worker-storage-worktree'
-          : input.target,
+          : input.target.startsWith(`${sessionRoot}/`)
+            ? `agent-session${input.target.slice(sessionRoot.length)}`
+            : input.target,
   };
 }
 

@@ -87,6 +87,59 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('session workspace layout schema', () => {
+  it('keeps every default Turn-retention slot in the disposable AgentSession namespace', () => {
+    const environmentPackage = packageFixture();
+    const planned = planSessionWorkspaceMaterialization({ environmentPackage });
+    const turnSlots = planned.layout.slots.filter((slot) => slot.retention === 'turn');
+
+    // Concurrency And Slot Hygiene forbids automatic cleanup inside retained volumes.
+    expect(turnSlots.length).toBeGreaterThan(0);
+    for (const slot of turnSlots) {
+      expect(
+        slot.path.startsWith(`/openkit/sessions/${environmentPackage.scope.agentSessionId}/`)
+      ).toBe(true);
+    }
+  });
+
+  it.each([
+    '/workspace',
+    '/sandbox',
+    '/openkit/threads',
+  ])('rejects Turn cleanup below the retained root %s', (retainedRoot) => {
+    const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
+    const scratch = planned.layout.slots.find((slot) => slot.id === 'scratch')!;
+    const layout = {
+      ...planned.layout,
+      root: retainedRoot,
+      workingDirectory: `${retainedRoot}/worktrees/wsl_demo`,
+      slots: [{ ...scratch, path: `${retainedRoot}/nested/turn-scratch` }],
+    };
+
+    expect(SessionWorkspaceLayoutSchema.safeParse(layout).success).toBe(false);
+    expect(
+      SessionWorkspaceLayoutSchema.safeParse({
+        ...layout,
+        slots: [{ ...scratch, path: '/openkit/sessions/as_demo/scratch' }],
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects Turn cleanup in the separate retained threads mount with the ordinary workspace root', () => {
+    const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
+    const scratch = planned.layout.slots.find((slot) => slot.id === 'scratch')!;
+
+    // The retained threads mount is separate from layout.root and still forbids Turn cleanup.
+    expect(planned.layout.root).toBe('/workspace');
+    for (const path of ['/openkit/threads', '/openkit/threads/th_retained/nested/turn-scratch']) {
+      expect(
+        SessionWorkspaceLayoutSchema.safeParse({
+          ...planned.layout,
+          slots: [{ ...scratch, path }],
+        }).success
+      ).toBe(false);
+    }
+  });
+
   it('keeps generated output slots private to each admitted AgentSession', () => {
     for (const agentSessionId of [
       'as_00000000-0000-75c4-8f9b-15087ed5df6e',
@@ -214,6 +267,57 @@ describe('session workspace layout schema', () => {
 });
 
 describe('session workspace planner', () => {
+  it.each([
+    ['repository', 'git', 'read-write', 'main-worktree', 'checkout'],
+    ['directory', 'workspace-dir', 'read-write', 'main-worktree', 'copy'],
+    ['object-store', 's3', 'read-only', 'external-data', 'object-store-sync'],
+    ['artifact', 'openkit-artifact', 'read-only', 'artifact-input', 'copy'],
+    ['attachment', 'openkit-upload', 'read-only', 'turn-inputs', 'copy'],
+    ['generated', 'generated', 'read-only', 'turn-inputs', 'copy'],
+  ] as const)('binds %s inputs within the declared source, access and mode envelope', (kind, sourceKind, access, slotId, mode) => {
+    const planned = planSessionWorkspaceMaterialization({
+      environmentPackage: packageFixture({
+        workspace: {
+          root: '/workspace',
+          inputs: [{ id: 'input', kind, source: { kind: sourceKind }, access }],
+          outputs: [],
+        },
+      }),
+    });
+    const slot = planned.layout.slots.find((candidate) => candidate.id === slotId)!;
+
+    expect(planned.materialization.inputs).toEqual([{ inputId: 'input', slotId, mode, access }]);
+    expect(slot.allowedSourceKinds).toContain(sourceKind);
+    expect(slot.allowedMaterializationModes).toContain(mode);
+    expect(slot.access).toBe(access);
+  });
+
+  it.each([
+    ['unsupported source kind', { source: { kind: 's3' } }],
+    ['missing source kind', { source: {} }],
+    ['access escalation', { access: 'read-write' }],
+  ])('refuses an input outside its selected slot envelope: %s', (_label, change) => {
+    expect(() =>
+      planSessionWorkspaceMaterialization({
+        environmentPackage: packageFixture({
+          workspace: {
+            root: '/workspace',
+            inputs: [
+              {
+                id: 'attachment',
+                kind: 'attachment',
+                source: { kind: 'openkit-upload' },
+                access: 'read-only',
+                ...change,
+              },
+            ],
+            outputs: [],
+          },
+        }),
+      })
+    ).toThrow();
+  });
+
   it('isolates distinct work slots and preserves one explicitly transferred slot', () => {
     const first = planSessionWorkspaceMaterialization({
       environmentPackage: packageFixture(),

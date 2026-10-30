@@ -148,3 +148,5 @@ MCP binding, effective-server and AEP supply shapes retain only allowedTools. Cu
 `validateAgentEnvironmentPackageForBackend` reads only the package identity and backend requirement metadata, so runtime admission can validate a secret-free preview before resolving credentials. It does not create capture admission, credential material or a dispatchable AEP; the existing exact AEP schema still validates final construction.
 
 MCP declaration and configuration digests reuse Protocol canonical JSON while retaining their domain prefix and NUL separator. This replaces the private code-unit serializer without changing valid retained JSON declaration bytes. Catalog consumers import the encoder directly from Protocol; locale-dependent Source and Session compatibility digest correction stays with #532.
+
+The Session workspace planner keeps every Turn-cleared slot beneath the disposable `/openkit/sessions/<agentSessionId>/` tree. Layout admission rejects automatic cleanup inside the retained workspace root. Each planned input must match the selected slot's source kind, access and materialization mode before launch; the planner never widens a slot to fit an input.
