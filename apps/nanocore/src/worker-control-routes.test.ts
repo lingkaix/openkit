@@ -869,7 +869,14 @@ describe('worker control routes', () => {
 
   it('keeps event append sequence conflicts durable across default gateway instances', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-sequence-')));
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Durable sequence thread'
@@ -908,7 +915,6 @@ describe('worker control routes', () => {
     };
 
     try {
-      applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -990,13 +996,22 @@ describe('worker control routes', () => {
       expect(conflict.status).toBe(409);
       expect(body.code).toBe('worker_control_sequence_conflict');
     } finally {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
       coreDb.sqlite.close();
     }
   });
 
   it('persists accepted worker-control records through the default gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-records-')));
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Durable control records thread'
@@ -1035,7 +1050,6 @@ describe('worker control routes', () => {
     };
 
     try {
-      applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -1117,6 +1131,8 @@ describe('worker control routes', () => {
         sequence: 1,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
       coreDb.sqlite.close();
     }
   });
@@ -1240,7 +1256,14 @@ describe('worker control routes', () => {
 
   it('records rejected worker-control evidence through the default gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rejected-')));
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Rejected control records thread'
@@ -1279,7 +1302,6 @@ describe('worker control routes', () => {
     };
 
     try {
-      applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -1355,6 +1377,8 @@ describe('worker control routes', () => {
       });
       expect(acceptedCount.count).toBe(0);
     } finally {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
       coreDb.sqlite.close();
     }
   });
