@@ -5,6 +5,7 @@ import {
   createSecureServer as createSecureHttp2Server,
 } from 'node:http2';
 import { createServer as createHttpsServer } from 'node:https';
+import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import {
@@ -131,7 +132,14 @@ import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-r
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
-import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
+import {
+  runWorkspaceSnapshotMaintenance,
+  WORKSPACE_BACKUP_POLICY,
+} from './storage/workspace-backup.js';
+import {
+  discardAbandonedWorkspaceStaging,
+  ensureCanonicalDirectory,
+} from './storage/workspace-file-records.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
@@ -787,10 +795,36 @@ recurringSchedules = startRecurringScheduleService({
   onError: () => console.warn('Recurring schedule maintenance requires inspection.'),
 });
 schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
-  runRecoveryMaintenance: requireBootValue(
-    runRecoveryMaintenance,
-    'Scheduler recovery maintenance was not initialized.'
-  ),
+  runRecoveryMaintenance: {
+    ...requireBootValue(
+      runRecoveryMaintenance,
+      'Scheduler recovery maintenance was not initialized.'
+    ),
+    snapshots: async () => {
+      const release = releaseIdentity;
+      // Unknown source identity cannot produce a verifiable generation.
+      if (!release?.sourceCommit) return;
+      const stagingParent = join(dataRoot, 'server/backups');
+      ensureCanonicalDirectory(stagingParent);
+      await runWorkspaceSnapshotMaintenance({
+        ...WORKSPACE_BACKUP_POLICY,
+        source: {
+          kind: 'live-workspace',
+          dataRoot,
+          coreDb: activeCoreDb,
+          store,
+          mutationAdmission: workspaceMutationAdmission,
+        },
+        admission: fileAdmission,
+        stagingParent,
+        expectedSourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+        expectedRelease: {
+          version: release.releaseTag ?? 'source',
+          buildId: release.sourceCommit,
+        },
+      });
+    },
+  },
   intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
 });
 

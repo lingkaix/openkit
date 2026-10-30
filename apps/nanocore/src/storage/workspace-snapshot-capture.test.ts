@@ -21,6 +21,15 @@ import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import {
+  createSourceFile,
+  forEachChild,
+  isCallExpression,
+  ModuleKind,
+  type Node,
+  ScriptTarget,
+  transpileModule,
+} from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -48,6 +57,10 @@ import {
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
 import { claimOrRefuseGrant, pendingRequestItemId } from '../runtime/pending-requests.js';
 import { startRecurringScheduleService } from '../runtime/recurring-schedule-service.js';
+import {
+  type SchedulerAttemptMaintenanceInput,
+  startSchedulerAttemptMaintenanceService,
+} from '../runtime/scheduler-attempt-maintenance-service.js';
 import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
@@ -95,6 +108,7 @@ import {
   readBlockers,
   runWorkspaceSnapshotMaintenance,
   stageWorkspaceBackup,
+  WORKSPACE_BACKUP_POLICY,
 } from './workspace-backup.js';
 import {
   type VerifiedWorkspaceBackupBundle,
@@ -103,6 +117,7 @@ import {
 } from './workspace-backup-bundle.js';
 import { abandonCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import {
+  ensureCanonicalDirectory,
   nativeProductScope,
   readNativeProductEntries,
   readNativeTurnHistory,
@@ -2431,6 +2446,110 @@ describe('C-a capture and existing deletion ownership', () => {
 });
 
 describe('C-b daily snapshot policy and retention', () => {
+  it('activates idle capture through the actual entrypoint maintenance callback', async () => {
+    const f = await fixture();
+    mkdirSync(join(f.workspaceRoot, 'files'), { recursive: true });
+    writeFileSync(join(f.workspaceRoot, 'files/activation-proof.txt'), 'real idle capture');
+    const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Still running', {
+      kind: 'user',
+      id: f.ownerId,
+    });
+    const source = createSourceFile(
+      'index.ts',
+      readFileSync(new URL('../index.ts', import.meta.url), 'utf8'),
+      ScriptTarget.Latest,
+      true
+    );
+    let argument: Node | undefined;
+    const visit = (node: Node): void => {
+      if (
+        isCallExpression(node) &&
+        node.expression.getText(source) === 'startSchedulerAttemptMaintenanceService'
+      )
+        argument = node.arguments[0];
+      forEachChild(node, visit);
+    };
+    visit(source);
+    if (!argument) throw new Error('Entrypoint attempt maintenance is missing.');
+    const releaseIdentity = {
+      releaseTag: release.version,
+      sourceCommit: release.buildId as string | undefined,
+    };
+    // Evaluate the shipped composition without booting unrelated process and network owners.
+    const bindings = {
+      runRecoveryMaintenance: {
+        scheduler: vi.fn(async () => undefined),
+        native: vi.fn(async () => undefined),
+        checkpoints: vi.fn(async () => undefined),
+      },
+      requireBootValue: <T>(value: T) => value,
+      SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS: 30_000,
+      releaseIdentity,
+      dataRoot: f.dataRoot,
+      activeCoreDb: f.coreDb,
+      store: f.store,
+      workspaceMutationAdmission: f.mutationAdmission,
+      fileAdmission: f.policy.admission,
+      WORKSPACE_BACKUP_POLICY,
+      join,
+      ensureCanonicalDirectory,
+      readDataRootLayoutMarker,
+      runWorkspaceSnapshotMaintenance,
+    };
+    const javascript = transpileModule(`const input = ${argument.getText(source)};`, {
+      compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+    }).outputText;
+    const input = new Function(...Object.keys(bindings), `${javascript}\nreturn input;`)(
+      ...Object.values(bindings)
+    ) as SchedulerAttemptMaintenanceInput;
+    let tick = () => {};
+    const pool = join(f.dataRoot, 'server/backups/workspaces', workspaceId);
+    const sealed = () =>
+      existsSync(pool)
+        ? readdirSync(pool).filter((name) => existsSync(join(pool, name, 'seal.json')))
+        : [];
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(captureDay(1));
+    const service = startSchedulerAttemptMaintenanceService({
+      ...input,
+      setInterval: (callback) => {
+        tick = callback;
+        return 'existing-maintenance-timer';
+      },
+      clearInterval: vi.fn(),
+    });
+    try {
+      await service.runOnce();
+      expect(sealed()).toEqual([]);
+      expect(f.store.getTurnById(turn.id)).toEqual(turn);
+      await f.store.completeTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      releaseIdentity.sourceCommit = undefined;
+      tick();
+      await service.runOnce();
+      expect(sealed()).toEqual([]);
+      releaseIdentity.sourceCommit = release.buildId;
+      tick();
+      await service.runOnce();
+      // Online Snapshot Policy: the existing tick captures an eligible idle Workspace once per UTC day.
+      expect(sealed()).toHaveLength(1);
+      await f.read(sealed()[0]!, async (bundle) => {
+        expect(bundle.manifest.capture.completedAt).toBe('2099-01-01T12:00:00.000Z');
+        expect(await bytes(bundle, 'files/activation-proof.txt')).toEqual(
+          Buffer.from('real idle capture')
+        );
+      });
+      tick();
+      await service.runOnce();
+      expect(sealed()).toHaveLength(1);
+    } finally {
+      await service.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('selects one healthy Workspace per pass and uses sealed UTC success instead of filesystem time', async () => {
     const f = await fixture();
     const sibling = await f.store.createWorkspace('Independent daily backup target');
