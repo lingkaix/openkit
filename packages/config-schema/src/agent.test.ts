@@ -45,6 +45,48 @@ function validAgentConfig() {
 }
 
 describe('AuthoredAgentConfigSchema', () => {
+  it.each([
+    { host: 'https://registry.npmjs.org', accepted: false },
+    { host: 'registry.npmjs.org/packages', accepted: false },
+    { host: 'registry.npmjs.org:443', accepted: false },
+    { host: ' registry.npmjs.org', accepted: false },
+    { host: 'registry.npmjs.org ', accepted: false },
+    { host: 'registry .npmjs.org', accepted: false },
+    { host: 'registry.npmjs.org', accepted: true },
+    { host: '203.0.113.10', accepted: true },
+    { host: '2001:db8::10', accepted: true },
+  ])('validates exact build-egress host $host', ({ host, accepted }) => {
+    const config = validAgentConfig();
+    const content = 'FROM scratch';
+    const result = AuthoredAgentConfigSchema.safeParse({
+      ...config,
+      runtime: {
+        ...config.runtime,
+        image: {
+          arguments: {},
+          contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          contextRef: 'build-context://empty/v1',
+          egress: [{ host, port: 8443 }],
+          input: {
+            content,
+            digest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+            kind: 'dockerfile',
+          },
+          kind: 'build',
+          layerLimit: 1,
+          outputLimitBytes: 1024,
+          timeLimitSeconds: 60,
+        },
+      },
+    });
+
+    // AEP Declared Build Egress: grants preserve one explicit host-port pair, never a URL or path.
+    expect(result.success).toBe(accepted);
+    if (result.success && result.data.runtime.image.kind === 'build') {
+      expect(result.data.runtime.image.egress).toEqual([{ host, port: 8443 }]);
+    }
+  });
+
   it.each(['runtime', 'sandbox'] as const)('refuses profile-owned %s authority', (field) => {
     const config = validAgentConfig();
     const result = AuthoredAgentConfigSchema.safeParse({

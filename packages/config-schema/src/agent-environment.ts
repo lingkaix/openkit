@@ -240,6 +240,18 @@ export const AgentEnvironmentBinarySchema = z
   })
   .strict();
 
+/** Exact build destinations shared by authored and resolved image declarations. */
+export const AgentEnvironmentBuildEgressSchema = z
+  .array(
+    z
+      .object({
+        host: z.union([z.hostname(), z.ipv4(), z.ipv6()]),
+        port: z.number().int().min(1).max(65_535),
+      })
+      .strict()
+  )
+  .min(1);
+
 /**
  * Worker runtime image declaration.
  */
@@ -258,19 +270,7 @@ export const AgentEnvironmentRuntimeImageSchema = z
         argumentsDigest: z.string().min(1),
         contextDigest: z.literal(EMPTY_BUILD_CONTEXT_DIGEST),
         contextRef: z.literal(EMPTY_BUILD_CONTEXT_REF),
-        egress: z
-          .array(
-            z
-              .object({
-                host: z
-                  .string()
-                  .min(1)
-                  .refine((host) => !host.includes('*')),
-                port: z.number().int().min(1).max(65_535),
-              })
-              .strict()
-          )
-          .min(1),
+        egress: AgentEnvironmentBuildEgressSchema,
         input: AgentEnvironmentDockerfileInputSchema,
         kind: z.literal('build'),
         layerLimit: z.number().int().min(1).max(128),

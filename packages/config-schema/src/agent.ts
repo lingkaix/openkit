@@ -6,6 +6,7 @@ import {
 import { z } from 'zod';
 import {
   AgentEnvironmentBinarySchema,
+  AgentEnvironmentBuildEgressSchema,
   AgentEnvironmentCredentialDeclarationSchema,
   AgentEnvironmentCredentialRequirementSchema,
   AgentEnvironmentDockerfileInputSchema,
@@ -46,19 +47,7 @@ const AuthoredAgentRuntimeImageBuildSchema = z
     arguments: z.record(z.string().regex(BUILD_ARGUMENT_NAME_PATTERN), z.string()).default({}),
     contextDigest: z.literal(EMPTY_BUILD_CONTEXT_DIGEST),
     contextRef: z.literal(EMPTY_BUILD_CONTEXT_REF),
-    egress: z
-      .array(
-        z
-          .object({
-            host: z
-              .string()
-              .min(1)
-              .refine((host) => !host.includes('*')),
-            port: z.number().int().min(1).max(65_535),
-          })
-          .strict()
-      )
-      .min(1),
+    egress: AgentEnvironmentBuildEgressSchema,
     input: AgentEnvironmentDockerfileInputSchema,
     kind: z.literal('build'),
     // Reference-only selectors cannot coexist with the build arm.
