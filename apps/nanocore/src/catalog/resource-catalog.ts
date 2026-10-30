@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import {
   type CatalogProducer,
@@ -39,7 +39,7 @@ import {
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
 import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
-import type { ZodError } from 'zod';
+import { ZodError, z } from 'zod';
 
 import { ensureWorkspaceLayout, resolveDataRootPath } from '../storage/fs-layout.js';
 import {
@@ -1051,7 +1051,11 @@ export function importWorkspacePlugin(input: {
   readonly selectedPackageKeys?: readonly string[];
   readonly treeRoot: string;
   readonly workspaceId: string;
-}): { catalog: ResourceCatalogDocument; version: PluginVersionRecord } {
+}): {
+  catalog: ResourceCatalogDocument;
+  diagnostics: Array<{ packageKey: string; reason: string }>;
+  version: PluginVersionRecord;
+} {
   const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   if (current.revision !== input.expectedRevision) {
     throw new CatalogConflictError();
@@ -1061,6 +1065,16 @@ export function importWorkspacePlugin(input: {
     maxEntries: 4_096,
   });
   const parsed = parsePluginPackage(packageTree.entries);
+  if (input.install && input.selectedPackageKeys) {
+    for (const key of input.selectedPackageKeys) {
+      const diagnostic = parsed.diagnostics.find(
+        (item) => item.packageKey === key || (item.packageKey === 'mcp' && key.startsWith('mcp/'))
+      );
+      if (diagnostic) throw new CatalogInputError(`${key}: ${diagnostic.reason}`);
+      if (![...parsed.skills, ...parsed.mcp].some((item) => item.packageKey === key))
+        throw new CatalogInputError(`Unknown Agent Plugin member: ${key}.`);
+    }
+  }
   const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
   const pluginId = parsed.id;
   materializeSnapshot(
@@ -1178,7 +1192,7 @@ export function importWorkspacePlugin(input: {
     expectedRevision: input.expectedRevision,
     workspaceId: input.workspaceId,
   });
-  return { catalog, version };
+  return { catalog, diagnostics: parsed.diagnostics, version };
 }
 
 /** Projects enabled MCP bindings into the Gateway's effective catalog. */
@@ -1516,6 +1530,7 @@ function effectiveMcpServer(
 
 /** Parses the captured package bytes; source mutation cannot change admitted members. */
 function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
+  diagnostics: Array<{ packageKey: string; reason: string }>;
   description: string | null;
   displayName: string;
   id: string;
@@ -1547,14 +1562,34 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
     return value as Record<string, unknown>;
   };
   const pluginJson = readJson('plugin.json', true)!;
-  for (const field of ['name', 'description', 'version']) {
-    if (
-      pluginJson[field] !== undefined &&
-      (typeof pluginJson[field] !== 'string' || pluginJson[field].length === 0)
-    )
-      throw new CatalogInputError(`Agent Plugin ${field} must be a non-empty string.`);
-  }
-  const displayName = (pluginJson.name as string | undefined) ?? 'plugin';
+  if (pluginJson.$schema !== 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json')
+    throw new CatalogInputError('Unsupported Agent Plugin format version.');
+  const manifest = z
+    .object({
+      name: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/)
+        .refine((value) => !value.includes('--') && !value.includes('..')),
+      description: z.string().optional(),
+      version: z.string().optional(),
+      author: z
+        .object({
+          name: z.string().optional(),
+          email: z.string().optional(),
+          url: z.string().optional(),
+        })
+        .strict()
+        .optional(),
+      homepage: z.string().optional(),
+      repository: z.string().optional(),
+      license: z.string().optional(),
+      keywords: z.array(z.string()).optional(),
+    })
+    .safeParse(pluginJson);
+  if (!manifest.success) throw new CatalogInputError('Invalid Agent Plugin manifest.');
+  const displayName = manifest.data.name;
   const id = skillIdFromDisplayName(displayName);
   const skills: Array<{
     displayName: string;
@@ -1591,52 +1626,115 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
     id: string;
     packageKey: string;
   }> = [];
-  const mcpJson = readJson('mcp.json', false);
-  const servers = mcpJson?.mcpServers ?? {};
-  if (typeof servers !== 'object' || servers === null || Array.isArray(servers))
-    throw new CatalogInputError('Agent Plugin mcpServers must contain an object.');
-  for (const [key, server] of Object.entries(servers)) {
-    if (server === null || typeof server !== 'object' || Array.isArray(server))
-      throw new CatalogInputError('Agent Plugin MCP declarations must contain objects.');
-    mcp.push({
-      declaration: pluginMcpDeclaration(server as Record<string, unknown>),
-      displayName: key,
-      id: skillIdFromDisplayName(key),
-      packageKey: `mcp/${key}`,
-    });
+  const diagnostics: Array<{ packageKey: string; reason: string }> = [];
+  let mcpJson: Record<string, unknown> | null = null;
+  try {
+    mcpJson = readJson('mcp.json', false);
+    if (
+      mcpJson &&
+      (mcpJson.$schema !== 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json' ||
+        Object.keys(mcpJson).some((key) => key !== '$schema' && key !== 'mcpServers'))
+    )
+      throw new CatalogInputError('Unsupported or invalid Agent Plugin MCP format version.');
+    if (
+      mcpJson &&
+      (typeof mcpJson.mcpServers !== 'object' ||
+        mcpJson.mcpServers === null ||
+        Array.isArray(mcpJson.mcpServers))
+    )
+      throw new CatalogInputError('Agent Plugin mcpServers must contain an object.');
+  } catch (error) {
+    if (!(error instanceof CatalogInputError)) throw error;
+    diagnostics.push({ packageKey: 'mcp', reason: error.message });
+    mcpJson = null;
+  }
+  for (const [key, server] of Object.entries(mcpJson?.mcpServers ?? {})) {
+    try {
+      if (server === null || typeof server !== 'object' || Array.isArray(server))
+        throw new CatalogInputError('Agent Plugin MCP declarations must contain objects.');
+      mcp.push({
+        declaration: pluginMcpDeclaration(server as Record<string, unknown>),
+        displayName: key,
+        id: skillIdFromDisplayName(key),
+        packageKey: `mcp/${key}`,
+      });
+    } catch (error) {
+      // Only fixed management reasons leave the parser; declarations can contain private data.
+      if (!(error instanceof CatalogInputError) && !(error instanceof ZodError)) throw error;
+      diagnostics.push({
+        packageKey: `mcp/${key}`,
+        reason:
+          error instanceof CatalogInputError
+            ? error.message
+            : 'Invalid Agent Plugin MCP declaration.',
+      });
+    }
   }
   return {
-    description: (pluginJson.description as string | undefined) ?? null,
+    diagnostics,
+    description: manifest.data.description || null,
     displayName,
     id,
     mcp,
-    publisherLabel: (pluginJson.version as string | undefined) ?? null,
+    publisherLabel: manifest.data.version || null,
     skills,
   };
 }
 
 /** Maps a public MCP declaration into the local validated transport. */
 function pluginMcpDeclaration(server: Record<string, unknown>): McpValidatedDeclaration {
-  if (typeof server.url === 'string' || typeof server.endpoint === 'string') {
-    if (Object.hasOwn(server, 'auth')) {
-      throw new CatalogInputError(
-        'Upstream OAuth connection required; NanoCore OAuth onboarding and refresh are not implemented'
-      );
-    }
-    if (Object.hasOwn(server, 'query')) {
-      throw new CatalogInputError('MCP HTTP query options are unsupported.');
-    }
+  if (Object.hasOwn(server, 'auth')) {
+    throw new CatalogInputError(
+      'Upstream OAuth connection required; NanoCore OAuth onboarding and refresh are not implemented'
+    );
+  }
+  if (Object.hasOwn(server, 'query'))
+    throw new CatalogInputError('MCP HTTP query options are unsupported.');
+  if (server.type !== 'stdio' && server.type !== 'streamable-http')
+    throw new CatalogInputError('Unsupported Agent Plugin MCP transport.');
+  const allowed =
+    server.type === 'stdio'
+      ? ['type', 'command', 'args', 'env', 'cwd']
+      : ['type', 'url', 'headers'];
+  if (Object.keys(server).some((key) => !allowed.includes(key)))
+    throw new CatalogInputError('Unsupported Agent Plugin MCP declaration field.');
+  if (server.type === 'streamable-http') {
     return McpValidatedDeclarationSchema.parse({
-      endpoint: String(server.url ?? server.endpoint),
-      headers: asStringRecord(server.headers),
+      endpoint: server.url,
+      headers: server.headers,
       kind: 'http',
     });
   }
+  let cwd: string | null = null;
+  if (server.cwd !== undefined) {
+    if (typeof server.cwd !== 'string' || server.cwd.includes('\\') || server.cwd.includes('\0'))
+      throw new CatalogInputError('Invalid Agent Plugin MCP cwd.');
+    const root = server.cwd.startsWith('./')
+      ? '.'
+      : /* biome-ignore lint/suspicious/noTemplateCurlyInString: Portable placeholders stay literal. */
+        ['${PLUGIN_ROOT}', '${PLUGIN_DATA}'].find(
+          (value) => server.cwd === value || (server.cwd as string).startsWith(`${value}/`)
+        );
+    if (!root) throw new CatalogInputError('Invalid Agent Plugin MCP cwd root.');
+    const relative = server.cwd.slice(root.length).replace(/^\//, '');
+    const normalized = posix.normalize(relative || '.');
+    if (
+      normalized === '..' ||
+      normalized.startsWith('../') ||
+      normalized.startsWith('/') ||
+      relative.includes(`${'$'}{PLUGIN_ROOT}`) ||
+      relative.includes(`${'$'}{PLUGIN_DATA}`)
+    )
+      throw new CatalogInputError('Agent Plugin MCP cwd escapes its declared root.');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Portable placeholders stay literal.
+    const placeholder = root === '.' ? '${PLUGIN_ROOT}' : root;
+    cwd = normalized === '.' ? placeholder : `${placeholder}/${normalized}`;
+  }
   return McpValidatedDeclarationSchema.parse({
-    args: Array.isArray(server.args) ? server.args.map((value) => String(value)) : [],
-    command: String(server.command ?? ''),
-    cwd: typeof server.cwd === 'string' ? server.cwd : null,
-    environment: asStringRecord(server.env ?? server.environment),
+    args: server.args,
+    command: server.command,
+    cwd,
+    environment: server.env,
     kind: 'stdio',
   });
 }
@@ -1719,14 +1817,4 @@ function skillIdFromDisplayName(value: string): string {
     throw new CatalogInputError(`Cannot derive a catalog id from name: ${value}`);
   }
   return normalized;
-}
-
-/** Coerces an unknown map into string records. */
-function asStringRecord(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-  return Object.fromEntries(
-    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-  );
 }

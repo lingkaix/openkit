@@ -79,7 +79,11 @@ describe('Catalog mutation Audit', () => {
             kind: 'file',
             path: 'plugin.json',
             contentBase64: Buffer.from(
-              JSON.stringify({ name: 'audit-pack', version: '1.0.0' })
+              JSON.stringify({
+                $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+                name: 'audit-pack',
+                version: '1.0.0',
+              })
             ).toString('base64'),
           },
         ],

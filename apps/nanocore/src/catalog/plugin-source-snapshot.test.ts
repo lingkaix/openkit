@@ -44,7 +44,11 @@ function fixture(content: string) {
   mkdirSync(join(treeRoot, 'skills', 'alpha'), { recursive: true });
   writeFileSync(
     join(treeRoot, 'plugin.json'),
-    JSON.stringify({ name: 'source-pack', version: '1' })
+    JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'source-pack',
+      version: '1',
+    })
   );
   writeFileSync(skillPath, content);
   return {

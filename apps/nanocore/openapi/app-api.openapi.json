@@ -106163,6 +106163,27 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "packageKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "packageKey",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
           "entry": {
             "type": "object",
             "properties": {
@@ -106225,6 +106246,7 @@
           }
         },
         "required": [
+          "diagnostics",
           "entry",
           "revision",
           "versionDigest"
@@ -152151,5 +152173,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:26cd12b6110b630f53fd60604c03b3d0a309d06bb09e91d885fbb4cccb1e6773"
+  "x-openkit-source-digest": "sha256:21f7519a54ed17b30613dbb246d51c12a4ed79afe64a1e40900ef24e7e76b720"
 }

@@ -933,6 +933,7 @@ export function createCatalogOperationImplementations(
         );
         afterMutation(input.workspaceId);
         return {
+          diagnostics: result.diagnostics,
           entry: pluginEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
           revision: result.catalog.revision,
           versionDigest: result.version.digest,

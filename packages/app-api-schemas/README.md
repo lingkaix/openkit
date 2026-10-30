@@ -275,3 +275,5 @@ Goal proposal inputs expose registered product operations and native Goal, Works
 Goal proposal actions use a runtime-neutral enum. NanoCore's `src/policy/goal-domains.test.ts` checks exact parity with the native Policy registry. Changes to this shared schema package require its package-boundary tests, the Web browser-package-boundary test, and regeneration checks for OpenAPI and the bundled administrator CLI.
 
 The closed Workspace sharing failure family includes `personal_workspace_not_deletable` without details. New governed deletion of an active personal home returns HTTP 409 before effects; the [Workspace owner](../../docs/specs/20260715-multi_user_workspace_system.md#governed-deletion) defines eligibility. The existing Core Client parser consumes this same error schema.
+
+Plugin import responses include component `diagnostics` with package keys and fixed management reasons. An empty list means complete component admission; diagnostics do not grant activation or change immutable valid membership.

@@ -221,7 +221,11 @@ describe('B5 catalog operation projections', () => {
               kind: 'file',
               path: 'plugin.json',
               contentBase64: Buffer.from(
-                JSON.stringify({ name: 'proof-pack', version: '1.0.0' })
+                JSON.stringify({
+                  $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+                  name: 'proof-pack',
+                  version: '1.0.0',
+                })
               ).toString('base64'),
             },
           ],
@@ -229,6 +233,7 @@ describe('B5 catalog operation projections', () => {
       });
       expect(plugin.status).toBe(201);
       const pluginBody = await plugin.json();
+      expect(pluginBody.diagnostics).toEqual([]);
       const pluginList = await call(f, 'catalog.plugin-list', { workspaceId: f.workspace.id });
       expect(pluginList.status).toBe(200);
       expect((await pluginList.json()).items).toEqual([pluginBody.entry]);
@@ -609,7 +614,12 @@ function mutations(workspaceId: string) {
         {
           kind: 'file',
           path: 'plugin.json',
-          contentBase64: Buffer.from(JSON.stringify({ name: 'proof' })).toString('base64'),
+          contentBase64: Buffer.from(
+            JSON.stringify({
+              $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+              name: 'proof',
+            })
+          ).toString('base64'),
         },
       ],
       expectedRevision: 0,

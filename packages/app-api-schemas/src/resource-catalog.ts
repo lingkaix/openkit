@@ -375,6 +375,10 @@ export const ImportPluginRequestSchema = z
 /** Plugin import response. */
 export const ImportPluginResponseSchema = z
   .object({
+    /** Omitted unsupported components; an empty list denotes complete admission. */
+    diagnostics: z.array(
+      z.object({ packageKey: z.string().min(1), reason: z.string().min(1) }).strict()
+    ),
     entry: PluginCatalogEntrySchema,
     revision: z.number().int().nonnegative(),
     versionDigest: z.string().regex(SHA256),

@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -20,6 +20,7 @@ import {
 } from './catalog-portability.js';
 import {
   CatalogForbiddenError,
+  CatalogInputError,
   CatalogIntegrityError,
   catalogDocumentPath,
   createMcpConfig,
@@ -59,7 +60,11 @@ function writeStdioPluginPackage(packageRoot: string, scriptBody: string): void 
   mkdirSync(join(packageRoot, 'scripts'), { recursive: true });
   writeFileSync(
     join(packageRoot, 'plugin.json'),
-    JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+    JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'demo-pack',
+      version: '1.0.0',
+    })
   );
   writeFileSync(
     join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
@@ -69,7 +74,8 @@ function writeStdioPluginPackage(packageRoot: string, scriptBody: string): void 
   writeFileSync(
     join(packageRoot, 'mcp.json'),
     JSON.stringify({
-      mcpServers: { echo: { args: ['scripts/run.sh'], command: 'node' } },
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+      mcpServers: { echo: { type: 'stdio', args: ['scripts/run.sh'], command: 'node' } },
     })
   );
 }
@@ -97,6 +103,257 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
+  // MCP Catalog portable declarations and Agent Plugin admission require local format
+  // recognition, narrow component failures, and root/data working-directory containment.
+  it.each([
+    undefined,
+    'https://agent-plugins.org/schemas/9.0.0/plugin.schema.json',
+  ])('refuses an unrecognized plugin format %s before publication', (schema) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-format-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'format-refusal');
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      writeFileSync(
+        join(treeRoot, 'plugin.json'),
+        JSON.stringify({ $schema: schema, name: 'demo-pack' })
+      );
+      expect(() =>
+        importWorkspacePlugin({
+          createdAt: '2026-10-30T00:00:00.000Z',
+          dataRoot,
+          expectedRevision: 0,
+          install: false,
+          producer: { id: testEntityId('usr', 'format-refusal'), kind: 'user' },
+          treeRoot,
+          workspaceId,
+        })
+      ).toThrow(CatalogInputError);
+      const retained = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+      expect(retained.revision).toBe(0);
+      expect(retained.plugins.versions).toEqual([]);
+      expect(retained.mcp.versions).toEqual([]);
+      expect(catalogHasStagingResidue(dataRoot, workspaceId)).toBe(false);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    { name: undefined },
+    { keywords: 47 },
+  ])('refuses an invalid supported manifest %j', (override) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-manifest-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'manifest-refusal');
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      writeFileSync(
+        join(treeRoot, 'plugin.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'demo-pack',
+          ...override,
+        })
+      );
+      expect(() =>
+        importWorkspacePlugin({
+          createdAt: '2026-10-30T00:00:00.000Z',
+          dataRoot,
+          expectedRevision: 0,
+          install: false,
+          producer: { id: testEntityId('usr', 'manifest-refusal'), kind: 'user' },
+          treeRoot,
+          workspaceId,
+        })
+      ).toThrow(CatalogInputError);
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(0);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    { label: 'null arguments', server: { type: 'stdio', command: 'node', args: null } },
+    { label: 'null environment', server: { type: 'stdio', command: 'node', env: null } },
+    {
+      label: 'null headers',
+      server: { type: 'streamable-http', url: 'https://mcp.example.test/mcp', headers: null },
+    },
+    { label: 'legacy SSE', server: { type: 'sse', url: 'https://mcp.example.test/sse' } },
+    { label: 'undeclared transport', server: { url: 'https://mcp.example.test/mcp' } },
+    {
+      label: 'client-specific transport',
+      server: { type: 'streamable-http', endpoint: 'https://mcp.example.test/mcp' },
+    },
+  ])('keeps $label unavailable while admitting unrelated valid components', ({ server }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-component-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'component-refusal');
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: {
+            echo: server,
+            valid: { type: 'streamable-http', url: 'https://mcp.example.test/mcp' },
+          },
+        })
+      );
+      const request = {
+        createdAt: '2026-10-30T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: testEntityId('usr', 'component-refusal'), kind: 'user' as const },
+        treeRoot,
+        workspaceId,
+      };
+      // An explicitly requested invalid member must not publish even valid siblings.
+      expect(() =>
+        importWorkspacePlugin({ ...request, selectedPackageKeys: ['mcp/echo'] })
+      ).toThrow(/mcp\/echo/);
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(0);
+      const imported = importWorkspacePlugin(request);
+      expect(imported.diagnostics).toEqual([
+        { packageKey: 'mcp/echo', reason: expect.any(String) },
+      ]);
+      expect(imported.diagnostics[0]!.reason.length).toBeGreaterThan(0);
+      expect(imported.version.members.map((member) => member.packageKey)).toEqual([
+        'skills/alpha',
+        'mcp/valid',
+      ]);
+      expect(imported.catalog.plugins.installations[0]!.selectedPackageKeys).toEqual([
+        'skills/alpha',
+        'mcp/valid',
+      ]);
+      expect(imported.catalog.mcp.versions).toHaveLength(1);
+      expect(imported.catalog.mcp.versions[0]!.declaration.kind).toBe('http');
+      expect(imported.catalog.mcp.bindings).toEqual([]);
+      expect(imported.version).not.toHaveProperty('diagnostics');
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps an unsupported MCP format local to MCP while retaining a valid Skill', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-mcp-format-'));
+    const treeRoot = join(dataRoot, 'source');
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/9.0.0/mcp.schema.json',
+          mcpServers: { echo: { type: 'stdio', command: 'node' } },
+        })
+      );
+      const imported = importWorkspacePlugin({
+        createdAt: '2026-10-30T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: testEntityId('usr', 'mcp-format'), kind: 'user' },
+        treeRoot,
+        workspaceId: testEntityId('ws', 'mcp-format'),
+      });
+      expect(imported.diagnostics).toEqual([{ packageKey: 'mcp', reason: expect.any(String) }]);
+      expect(imported.version.members.map((member) => member.packageKey)).toEqual(['skills/alpha']);
+      expect(imported.catalog.mcp.versions).toEqual([]);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    '/tmp/outside-plugin',
+    'scripts',
+    '../outside',
+    './scripts/../../outside',
+    `\${PLUGIN_ROOT}/../outside`,
+    `\${PLUGIN_DATA}/../outside`,
+    `\${PLUGIN_ROOT}/scripts/../../../outside`,
+    `\${HOME}/scripts`,
+  ])('refuses imported stdio cwd %s before explicitly requested publication', (cwd) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-cwd-invalid-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'cwd-invalid');
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: { echo: { type: 'stdio', command: 'node', cwd } },
+        })
+      );
+      expect(() =>
+        importWorkspacePlugin({
+          createdAt: '2026-10-30T00:00:00.000Z',
+          dataRoot,
+          expectedRevision: 0,
+          install: true,
+          selectedPackageKeys: ['mcp/echo'],
+          producer: { id: testEntityId('usr', 'cwd-invalid'), kind: 'user' },
+          treeRoot,
+          workspaceId,
+        })
+      ).toThrow(/mcp\/echo/);
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(0);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    { cwd: undefined, expectedDirectory: '/verified-plugin' },
+    { cwd: './', expectedDirectory: '/verified-plugin' },
+    { cwd: './scripts', expectedDirectory: '/verified-plugin/scripts' },
+    { cwd: `./literal-\${UNKNOWN}`, expectedDirectory: `/verified-plugin/literal-\${UNKNOWN}` },
+    { cwd: `\${PLUGIN_ROOT}`, expectedDirectory: '/verified-plugin' },
+    { cwd: `\${PLUGIN_ROOT}/scripts`, expectedDirectory: '/verified-plugin/scripts' },
+    { cwd: `\${PLUGIN_DATA}`, expectedDirectory: '/binding-data' },
+    { cwd: `\${PLUGIN_DATA}/state/../cache`, expectedDirectory: '/binding-data/cache' },
+  ])('keeps valid imported stdio cwd $cwd rooted at its declared directory', ({
+    cwd,
+    expectedDirectory,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-cwd-valid-'));
+    const treeRoot = join(dataRoot, 'source');
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: { echo: { type: 'stdio', command: 'node', cwd } },
+        })
+      );
+      const imported = importWorkspacePlugin({
+        createdAt: '2026-10-30T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: testEntityId('usr', 'cwd-valid'), kind: 'user' },
+        treeRoot,
+        workspaceId: testEntityId('ws', 'cwd-valid'),
+      });
+      const declaration = imported.catalog.mcp.versions[0]!.declaration;
+      expect(declaration).toMatchObject({ command: 'node', kind: 'stdio' });
+      if (declaration.kind !== 'stdio') throw new Error('Expected the declared stdio transport.');
+      // The Gateway expands these two placeholders before process spawn. Equivalent
+      // declaration encodings are valid only when they retain the declared root.
+      const effectiveDirectory = (declaration.cwd ?? '/verified-plugin')
+        .replaceAll(`\${PLUGIN_ROOT}`, '/verified-plugin')
+        .replaceAll(`\${PLUGIN_DATA}`, '/binding-data');
+      expect(resolve(effectiveDirectory)).toBe(expectedDirectory);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('refuses candidate entropy failure before changing catalog or payload bytes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-candidate-entropy-'));
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -330,7 +587,11 @@ describe('workspace resource catalog', () => {
       mkdirSync(join(packageRoot, 'skills', 'alpha'), { recursive: true });
       writeFileSync(
         join(packageRoot, 'plugin.json'),
-        JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'demo-pack',
+          version: '1.0.0',
+        })
       );
       writeFileSync(
         join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
@@ -367,7 +628,11 @@ describe('workspace resource catalog', () => {
       // Package metadata changes package identity without changing the Skill's immutable origin.
       writeFileSync(
         join(packageRoot, 'plugin.json'),
-        JSON.stringify({ name: 'demo-pack', version: '2.0.0' })
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'demo-pack',
+          version: '2.0.0',
+        })
       );
       const second = importWorkspacePlugin({
         createdAt: '2026-09-08T00:01:00.000Z',
@@ -400,7 +665,11 @@ describe('workspace resource catalog', () => {
       mkdirSync(join(packageRoot, 'skills', 'alpha'), { recursive: true });
       writeFileSync(
         join(packageRoot, 'plugin.json'),
-        JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'demo-pack',
+          version: '1.0.0',
+        })
       );
       writeFileSync(
         join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
@@ -705,7 +974,7 @@ describe('workspace resource catalog', () => {
       value: { 'read-only': 'true' },
       reason: 'MCP HTTP query options are unsupported.',
     },
-  ])('refuses foreign HTTP $field configuration before inert import publication', ({
+  ])('refuses explicitly selected foreign HTTP $field configuration before publication', ({
     field,
     value,
     reason,
@@ -713,11 +982,20 @@ describe('workspace resource catalog', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-deferred-'));
     const treeRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-source-'));
     try {
-      writeFileSync(join(treeRoot, 'plugin.json'), JSON.stringify({ name: 'deferred' }));
+      writeFileSync(
+        join(treeRoot, 'plugin.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'deferred',
+        })
+      );
       writeFileSync(
         join(treeRoot, 'mcp.json'),
         JSON.stringify({
-          mcpServers: { echo: { url: 'https://mcp.example.test/mcp', [field]: value } },
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: {
+            echo: { type: 'streamable-http', url: 'https://mcp.example.test/mcp', [field]: value },
+          },
         })
       );
       expect(() =>
@@ -726,7 +1004,8 @@ describe('workspace resource catalog', () => {
           dataRoot,
           expectedRevision: 0,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          install: false,
+          install: true,
+          selectedPackageKeys: ['mcp/echo'],
           producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
           treeRoot,
         })
@@ -746,10 +1025,19 @@ describe('workspace resource catalog', () => {
     const treeRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-source-'));
     const endpoint = 'https://mcp.example.test/mcp?read-only=true';
     try {
-      writeFileSync(join(treeRoot, 'plugin.json'), JSON.stringify({ name: 'query-endpoint' }));
+      writeFileSync(
+        join(treeRoot, 'plugin.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'query-endpoint',
+        })
+      );
       writeFileSync(
         join(treeRoot, 'mcp.json'),
-        JSON.stringify({ mcpServers: { echo: { url: endpoint } } })
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: { echo: { type: 'streamable-http', url: endpoint } },
+        })
       );
       importWorkspacePlugin({
         createdAt: '2026-10-03T00:00:00.000Z',
@@ -857,7 +1145,11 @@ describe('workspace resource catalog', () => {
       mkdirSync(join(packageRoot, 'skills', 'beta'), { recursive: true });
       writeFileSync(
         join(packageRoot, 'plugin.json'),
-        JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'demo-pack',
+          version: '1.0.0',
+        })
       );
       writeFileSync(
         join(packageRoot, 'skills', 'alpha', 'SKILL.md'),
@@ -870,7 +1162,8 @@ describe('workspace resource catalog', () => {
       writeFileSync(
         join(packageRoot, 'mcp.json'),
         JSON.stringify({
-          mcpServers: { echo: { args: ['fixtures/echo.mjs'], command: 'node' } },
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+          mcpServers: { echo: { type: 'stdio', args: ['fixtures/echo.mjs'], command: 'node' } },
         })
       );
       const imported = importWorkspacePlugin({
