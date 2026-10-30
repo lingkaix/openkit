@@ -10816,7 +10816,12 @@ describe('nanocore server', () => {
 
     expect(response.status).toBe(404);
   });
-  it('applies only accepted fixed proposals and refuses unavailable published evidence', async () => {
+  it.each([
+    'accepted',
+    'rejected',
+    'deferred',
+    'interrupted',
+  ] as const)('checks %s Knowledge proposal decisions and published evidence', async (scenario) => {
     const coreDb = createCoreDb(false);
     // Review admission uses Demo only, not an unrelated Quick Chat publication.
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
@@ -10829,77 +10834,73 @@ describe('nanocore server', () => {
     const app = await createApp({ coreDb, store });
 
     try {
-      const accepted = await draftKnowledgeProposalFixture(app, store, 'accepted');
-      const acceptedRequestId = knowledgeProposalRequestId('decision-accepted');
-      const firstRes = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        accepted.proposalId,
-        acceptedRequestId,
-        'accepted'
-      );
-      expect(firstRes.status, await firstRes.clone().text()).toBe(200);
-      const first = await firstRes.json();
-      expect(first).toMatchObject({
-        review: {
-          reviewId: deriveEntityId('kr', {
-            ownerScope: {
-              kind: 'workspace',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            },
-            proposalId: accepted.proposalId,
-            requestId: acceptedRequestId,
-          }),
-          proposalId: accepted.proposalId,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          requestId: acceptedRequestId,
-          decision: 'accepted',
-          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          proposalDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-          knowledgePageId: accepted.knowledgePageId,
-          contentDigest: accepted.contentDigest,
-          targetAbsentAtDecision: true,
-          decidedAt: expect.any(String),
-        },
-        application: {
-          knowledgePageId: accepted.knowledgePageId,
-          contentDigest: accepted.contentDigest,
-          present: true,
-        },
-      });
-      expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBe(
-        accepted.canonicalPageBytes
-      );
-
-      const replayRes = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        accepted.proposalId,
-        acceptedRequestId,
-        'accepted'
-      );
-      expect(replayRes.status).toBe(200);
-      expect(await replayRes.json()).toEqual(first);
-
-      const conflictRes = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        accepted.proposalId,
-        acceptedRequestId,
-        'rejected'
-      );
-      expect(conflictRes.status).toBe(409);
-      await expect(conflictRes.json()).resolves.toMatchObject({
-        code: 'idempotency_key_conflict',
-      });
-
-      for (const decision of ['rejected', 'deferred'] as const) {
-        const fixture = await draftKnowledgeProposalFixture(
+      if (scenario === 'accepted') {
+        const accepted = await draftKnowledgeProposalFixture(app, store, 'accepted');
+        const acceptedRequestId = knowledgeProposalRequestId('decision-accepted');
+        const firstRes = await submitKnowledgeProposalDecision(
           app,
           store,
-          decision,
-          accepted.sourceResponse
+          accepted.proposalId,
+          acceptedRequestId,
+          'accepted'
         );
+        expect(firstRes.status, await firstRes.clone().text()).toBe(200);
+        const first = await firstRes.json();
+        expect(first).toMatchObject({
+          review: {
+            reviewId: deriveEntityId('kr', {
+              ownerScope: {
+                kind: 'workspace',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              },
+              proposalId: accepted.proposalId,
+              requestId: acceptedRequestId,
+            }),
+            proposalId: accepted.proposalId,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            requestId: acceptedRequestId,
+            decision: 'accepted',
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            proposalDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+            knowledgePageId: accepted.knowledgePageId,
+            contentDigest: accepted.contentDigest,
+            targetAbsentAtDecision: true,
+            decidedAt: expect.any(String),
+          },
+          application: {
+            knowledgePageId: accepted.knowledgePageId,
+            contentDigest: accepted.contentDigest,
+            present: true,
+          },
+        });
+        expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBe(
+          accepted.canonicalPageBytes
+        );
+
+        const replayRes = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          accepted.proposalId,
+          acceptedRequestId,
+          'accepted'
+        );
+        expect(replayRes.status).toBe(200);
+        expect(await replayRes.json()).toEqual(first);
+
+        const conflictRes = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          accepted.proposalId,
+          acceptedRequestId,
+          'rejected'
+        );
+        expect(conflictRes.status).toBe(409);
+        await expect(conflictRes.json()).resolves.toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+      } else if (scenario === 'rejected' || scenario === 'deferred') {
+        const decision = scenario;
+        const fixture = await draftKnowledgeProposalFixture(app, store, decision);
         const response = await submitKnowledgeProposalDecision(
           app,
           store,
@@ -10917,55 +10918,50 @@ describe('nanocore server', () => {
           application: null,
         });
         expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBeUndefined();
-      }
-
-      const interrupted = await draftKnowledgeProposalFixture(
-        app,
-        store,
-        'interrupted',
-        accepted.sourceResponse
-      );
-      const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
-      const completed = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        interrupted.proposalId,
-        interruptedRequestId,
-        'accepted'
-      );
-      expect(completed.status, await completed.clone().text()).toBe(200);
-      const publishedRevision = fixtureNotebook(store).publishedRevision();
-      const missingBlobPath = removeKnowledgeFixtureBlob(
-        store,
-        publishedRevision,
-        interrupted.knowledgePageId
-      );
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      workspaceDb.sqlite
-        .prepare(
-          `DELETE FROM idempotency_requests
+      } else {
+        const interrupted = await draftKnowledgeProposalFixture(app, store, 'interrupted');
+        const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
+        const completed = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          interrupted.proposalId,
+          interruptedRequestId,
+          'accepted'
+        );
+        expect(completed.status, await completed.clone().text()).toBe(200);
+        const publishedRevision = fixtureNotebook(store).publishedRevision();
+        const missingBlobPath = removeKnowledgeFixtureBlob(
+          store,
+          publishedRevision,
+          interrupted.knowledgePageId
+        );
+        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+        workspaceDb.sqlite
+          .prepare(
+            `DELETE FROM idempotency_requests
            WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-        )
-        .run(interruptedRequestId);
-      workspaceDb.sqlite
-        .prepare('DELETE FROM audit_events WHERE request_id = ?')
-        .run(interruptedRequestId);
-      workspaceDb.sqlite.close();
+          )
+          .run(interruptedRequestId);
+        workspaceDb.sqlite
+          .prepare('DELETE FROM audit_events WHERE request_id = ?')
+          .run(interruptedRequestId);
+        workspaceDb.sqlite.close();
 
-      const resumed = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        interrupted.proposalId,
-        interruptedRequestId,
-        'accepted'
-      );
-      expect(resumed.status, await resumed.clone().text()).toBe(409);
-      await expect(resumed.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      expect(existsSync(missingBlobPath)).toBe(false);
-      expect(fixtureNotebook(store).publishedRevision()).toBe(publishedRevision);
-      expect(store.getKnowledgeProposalReviewDecision(interrupted.proposalId)?.decision).toBe(
-        'accepted'
-      );
+        const resumed = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          interrupted.proposalId,
+          interruptedRequestId,
+          'accepted'
+        );
+        expect(resumed.status, await resumed.clone().text()).toBe(409);
+        await expect(resumed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        expect(existsSync(missingBlobPath)).toBe(false);
+        expect(fixtureNotebook(store).publishedRevision()).toBe(publishedRevision);
+        expect(store.getKnowledgeProposalReviewDecision(interrupted.proposalId)?.decision).toBe(
+          'accepted'
+        );
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -11137,7 +11133,11 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it('reverses only the unchanged proposal-created page and replays without another effect', async () => {
+  it.each([
+    'unchanged',
+    'edited',
+    'missing',
+  ] as const)('checks %s page evidence for Knowledge proposal reversal', async (scenario) => {
     const coreDb = createCoreDb(false);
     // Reversal uses the real Demo Notebook; Quick Chat is outside this contract.
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
@@ -11150,140 +11150,132 @@ describe('nanocore server', () => {
     const app = await createApp({ coreDb, store });
 
     try {
-      const accepted = await draftKnowledgeProposalFixture(app, store, 'reverse');
-      const decisionResponse = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        accepted.proposalId,
-        knowledgeProposalRequestId('decision-reverse'),
-        'accepted'
-      );
-      expect(decisionResponse.status, await decisionResponse.clone().text()).toBe(200);
-      const decision = (await decisionResponse.json()) as { review: { reviewId: string } };
-      const reversalRequest = {
-        requestId: knowledgeProposalRequestId('reversal-1'),
-        reviewId: decision.review.reviewId,
-        knowledgePageId: accepted.knowledgePageId,
-        expectedContentDigest: accepted.contentDigest,
-        baseRevision: fixtureNotebook(store).publishedRevision(),
-        confirmRemoval: true as const,
-      };
-      const firstRes = await submitKnowledgeProposalReversal(
-        app,
-        accepted.proposalId,
-        reversalRequest
-      );
-      expect(firstRes.status, await firstRes.clone().text()).toBe(200);
-      const first = await firstRes.json();
-      expect(first).toEqual({
-        proposalId: accepted.proposalId,
-        reviewId: decision.review.reviewId,
-        application: {
+      if (scenario === 'unchanged') {
+        const accepted = await draftKnowledgeProposalFixture(app, store, 'reverse');
+        const decisionResponse = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          accepted.proposalId,
+          knowledgeProposalRequestId('decision-reverse'),
+          'accepted'
+        );
+        expect(decisionResponse.status, await decisionResponse.clone().text()).toBe(200);
+        const decision = (await decisionResponse.json()) as { review: { reviewId: string } };
+        const reversalRequest = {
+          requestId: knowledgeProposalRequestId('reversal-1'),
+          reviewId: decision.review.reviewId,
           knowledgePageId: accepted.knowledgePageId,
-          contentDigest: accepted.contentDigest,
-          present: false,
-          notebookRevision: fixtureNotebook(store).publishedRevision(),
-        },
-      });
-      expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBeUndefined();
+          expectedContentDigest: accepted.contentDigest,
+          baseRevision: fixtureNotebook(store).publishedRevision(),
+          confirmRemoval: true as const,
+        };
+        const firstRes = await submitKnowledgeProposalReversal(
+          app,
+          accepted.proposalId,
+          reversalRequest
+        );
+        expect(firstRes.status, await firstRes.clone().text()).toBe(200);
+        const first = await firstRes.json();
+        expect(first).toEqual({
+          proposalId: accepted.proposalId,
+          reviewId: decision.review.reviewId,
+          application: {
+            knowledgePageId: accepted.knowledgePageId,
+            contentDigest: accepted.contentDigest,
+            present: false,
+            notebookRevision: fixtureNotebook(store).publishedRevision(),
+          },
+        });
+        expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBeUndefined();
 
-      const replayRes = await submitKnowledgeProposalReversal(
-        app,
-        accepted.proposalId,
-        reversalRequest
-      );
-      expect(replayRes.status).toBe(200);
-      expect(await replayRes.json()).toEqual(first);
+        const replayRes = await submitKnowledgeProposalReversal(
+          app,
+          accepted.proposalId,
+          reversalRequest
+        );
+        expect(replayRes.status).toBe(200);
+        expect(await replayRes.json()).toEqual(first);
 
-      const conflictRes = await submitKnowledgeProposalReversal(app, accepted.proposalId, {
-        ...reversalRequest,
-        expectedContentDigest: artifactDigest('different bytes'),
-      });
-      expect(conflictRes.status).toBe(409);
-      await expect(conflictRes.json()).resolves.toMatchObject({
-        code: 'idempotency_key_conflict',
-      });
-
-      const changed = await draftKnowledgeProposalFixture(
-        app,
-        store,
-        'reverse-changed',
-        accepted.sourceResponse
-      );
-      const changedDecision = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        changed.proposalId,
-        knowledgeProposalRequestId('decision-reverse-changed'),
-        'accepted'
-      );
-      expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
-      const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
-      const changedBytes = `${changed.canonicalPageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
-      const editResponse = await app.request(
-        ...knowledgeOperationRequest(
-          'knowledge.notebook.update',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          {
-            body: JSON.stringify({
-              requestId: knowledgeProposalRequestId('human-intervening-edit'),
-              baseRevision: fixtureNotebook(store).publishedRevision(),
-              changes: [{ path: `${changed.knowledgePageId}.md`, content: changedBytes }],
-              summary: 'Explicit human edit after Review',
-            }),
-          }
-        )
-      );
-      expect(editResponse.status, await editResponse.clone().text()).toBe(200);
-      const publishedChangedBytes = fixtureKnowledgeBytes(store, changed.knowledgePageId);
-      expect(publishedChangedBytes).toBe(changedBytes);
-      const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
-        requestId: knowledgeProposalRequestId('reversal-changed'),
-        reviewId: changedReview.review.reviewId,
-        knowledgePageId: changed.knowledgePageId,
-        expectedContentDigest: changed.contentDigest,
-        baseRevision: fixtureNotebook(store).publishedRevision(),
-        confirmRemoval: true,
-      });
-      expect(changedReversal.status).toBe(409);
-      await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
-      expect(fixtureKnowledgeBytes(store, changed.knowledgePageId)).toBe(publishedChangedBytes);
-
-      const missing = await draftKnowledgeProposalFixture(
-        app,
-        store,
-        'reverse-missing',
-        accepted.sourceResponse
-      );
-      const missingDecision = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        missing.proposalId,
-        knowledgeProposalRequestId('decision-reverse-missing'),
-        'accepted'
-      );
-      expect(missingDecision.status, await missingDecision.clone().text()).toBe(200);
-      const missingReview = (await missingDecision.json()) as { review: { reviewId: string } };
-      const missingBase = fixtureNotebook(store).publishedRevision();
-      const missingBlobPath = removeKnowledgeFixtureBlob(
-        store,
-        missingBase,
-        missing.knowledgePageId
-      );
-      const missingReversal = await submitKnowledgeProposalReversal(app, missing.proposalId, {
-        requestId: knowledgeProposalRequestId('reversal-missing'),
-        reviewId: missingReview.review.reviewId,
-        knowledgePageId: missing.knowledgePageId,
-        expectedContentDigest: missing.contentDigest,
-        baseRevision: missingBase,
-        confirmRemoval: true,
-      });
-      expect(missingReversal.status).toBe(409);
-      expect(existsSync(missingBlobPath)).toBe(false);
-      expect(fixtureNotebook(store).publishedRevision()).toBe(missingBase);
-      await expect(missingReversal.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
+        const conflictRes = await submitKnowledgeProposalReversal(app, accepted.proposalId, {
+          ...reversalRequest,
+          expectedContentDigest: artifactDigest('different bytes'),
+        });
+        expect(conflictRes.status).toBe(409);
+        await expect(conflictRes.json()).resolves.toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+      } else if (scenario === 'edited') {
+        const changed = await draftKnowledgeProposalFixture(app, store, 'reverse-changed');
+        const changedDecision = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          changed.proposalId,
+          knowledgeProposalRequestId('decision-reverse-changed'),
+          'accepted'
+        );
+        expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
+        const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
+        const changedBytes = `${changed.canonicalPageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
+        const editResponse = await app.request(
+          ...knowledgeOperationRequest(
+            'knowledge.notebook.update',
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+            {
+              body: JSON.stringify({
+                requestId: knowledgeProposalRequestId('human-intervening-edit'),
+                baseRevision: fixtureNotebook(store).publishedRevision(),
+                changes: [{ path: `${changed.knowledgePageId}.md`, content: changedBytes }],
+                summary: 'Explicit human edit after Review',
+              }),
+            }
+          )
+        );
+        expect(editResponse.status, await editResponse.clone().text()).toBe(200);
+        const publishedChangedBytes = fixtureKnowledgeBytes(store, changed.knowledgePageId);
+        expect(publishedChangedBytes).toBe(changedBytes);
+        const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
+          requestId: knowledgeProposalRequestId('reversal-changed'),
+          reviewId: changedReview.review.reviewId,
+          knowledgePageId: changed.knowledgePageId,
+          expectedContentDigest: changed.contentDigest,
+          baseRevision: fixtureNotebook(store).publishedRevision(),
+          confirmRemoval: true,
+        });
+        expect(changedReversal.status).toBe(409);
+        await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
+        expect(fixtureKnowledgeBytes(store, changed.knowledgePageId)).toBe(publishedChangedBytes);
+      } else {
+        const missing = await draftKnowledgeProposalFixture(app, store, 'reverse-missing');
+        const missingDecision = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          missing.proposalId,
+          knowledgeProposalRequestId('decision-reverse-missing'),
+          'accepted'
+        );
+        expect(missingDecision.status, await missingDecision.clone().text()).toBe(200);
+        const missingReview = (await missingDecision.json()) as { review: { reviewId: string } };
+        const missingBase = fixtureNotebook(store).publishedRevision();
+        const missingBlobPath = removeKnowledgeFixtureBlob(
+          store,
+          missingBase,
+          missing.knowledgePageId
+        );
+        const missingReversal = await submitKnowledgeProposalReversal(app, missing.proposalId, {
+          requestId: knowledgeProposalRequestId('reversal-missing'),
+          reviewId: missingReview.review.reviewId,
+          knowledgePageId: missing.knowledgePageId,
+          expectedContentDigest: missing.contentDigest,
+          baseRevision: missingBase,
+          confirmRemoval: true,
+        });
+        expect(missingReversal.status).toBe(409);
+        expect(existsSync(missingBlobPath)).toBe(false);
+        expect(fixtureNotebook(store).publishedRevision()).toBe(missingBase);
+        await expect(missingReversal.json()).resolves.toMatchObject({
+          code: 'recovery_required',
+        });
+      }
     } finally {
       coreDb.sqlite.close();
     }

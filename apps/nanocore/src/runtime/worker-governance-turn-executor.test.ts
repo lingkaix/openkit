@@ -54,7 +54,17 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  type MockInstance,
+  onTestFinished,
+  vi,
+} from 'vitest';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
@@ -9850,212 +9860,223 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
-    const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
-      maxContextTokens: 240_000,
-      skipInitialKnowledgeSelection: true,
-    });
-    const app = createApp({
-      coreDb: fixture.coreDb,
-      dataRoot: fixture.coreDb.dataRoot,
-      mode: 'local',
-      store: fixture.store,
-    });
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        workspaceIdForOwner(fixture.turn.owner),
-        'knowledge',
-        'notebook.git'
-      ),
-    });
-    const knowledge = {
-      id: 'worker-guidance',
-      title: 'Zygomorphic worker guidance',
-      content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
+  describe.sequential('direct-Task Knowledge delivery and completed-work lineage', () => {
+    // Keep the same completed Task for both observations; each runs without another physical launch.
+    let completed: {
+      fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
+      app: ReturnType<typeof createApp>;
+      notebook: KnowledgeNotebook;
+      launchSpy: MockInstance<FakeWorkerGovernanceBackend['submit']>;
     };
-    const oversizedKnowledge = {
-      id: 'oversized-worker-guidance',
-      title: 'Oversized zygomorphic worker guidance',
-      content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`,
-    };
-    // One native human publication preserves both pages' authority without repeating the Git/Audit setup.
-    const authoredAt = new Date().toISOString();
-    const seeded = await app.request(
-      ...knowledgeOperationRequest(
-        'knowledge.notebook.update',
-        { workspaceId: workspaceIdForOwner(fixture.turn.owner) },
-        {
-          body: JSON.stringify({
-            requestId: randomUUID(),
-            baseRevision: notebook.publishedRevision(),
-            changes: [knowledge, oversizedKnowledge].map((entry) => ({
-              path: `${entry.id}.md`,
-              content: serializeKnowledgePageFixture(
-                {
-                  ...entry,
-                  createdAt: authoredAt,
-                  updatedAt: authoredAt,
-                },
-                { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) }
-              ),
-            })),
-            summary: 'Seed human-authored Knowledge for direct Task delivery.',
-          }),
-        }
-      )
-    );
-    expect(seeded.status, await seeded.clone().text()).toBe(200);
-    const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
-    const retrievalTraceRef = {
-      scopeId: `retrieval-trace/turn/${workspaceIdForOwner(fixture.turn.owner)}/${fixture.turn.threadId}/${fixture.turn.id}`,
-      objectId: retrievalTraceId,
-    };
-    const retrieval = await retrieveWorkspaceKnowledge({
-      access: {
-        actor: fixture.turn.triggerActor,
+    beforeAll(async () => {
+      const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
+        maxContextTokens: 240_000,
+        skipInitialKnowledgeSelection: true,
+      });
+      const app = createApp({
         coreDb: fixture.coreDb,
-        outputThreadId: fixture.turn.threadId,
-        outputTurnId: fixture.turn.id,
+        dataRoot: fixture.coreDb.dataRoot,
+        mode: 'local',
         store: fixture.store,
-      },
-      caller: 'task-mode',
-      dataRoot: fixture.coreDb.dataRoot,
-      limit: 5,
-      pinnedReferences: [],
-      query: 'Zygomorphic worker guidance',
-      traceId: retrievalTraceId,
-      workspaceId: workspaceIdForOwner(fixture.turn.owner),
-    });
-    const publishedNotebook = notebook.readRevision(notebook.publishedRevision());
-    expect(publishedNotebook.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
-    const publishedPages = publishedNotebook.files;
-    const knowledgePageBytes = publishedPages[`${knowledge.id}.md`]!;
-    const knowledgePageDigest = turnRuntimeSha256(Buffer.from(knowledgePageBytes, 'utf8'));
-    const oversizedKnowledgePageBytes = publishedPages[`${oversizedKnowledge.id}.md`]!;
-    const oversizedKnowledgePageDigest = turnRuntimeSha256(
-      Buffer.from(oversizedKnowledgePageBytes, 'utf8')
-    );
-    expect(retrieval.selected).toHaveLength(2);
-    expect(retrieval.selected).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          contentDigest: knowledgePageDigest,
-          reference: {
-            objectId: knowledge.id,
-            scopeId: `page/workspace/${workspaceIdForOwner(fixture.turn.owner)}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) } })}`,
-          },
-          sourceReferences: [],
-        }),
-        expect.objectContaining({
-          contentDigest: oversizedKnowledgePageDigest,
-          reference: {
-            objectId: oversizedKnowledge.id,
-            scopeId: `page/workspace/${workspaceIdForOwner(fixture.turn.owner)}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) } })}`,
-          },
-          sourceReferences: [],
-        }),
-      ])
-    );
-
-    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
-    const checkpoint = getWorkerCheckpoint(
-      workspaceDb,
-      workspaceIdForOwner(fixture.turn.owner),
-      fixture.turn.threadId,
-      fixture.turn.id
-    )!;
-    await upsertWorkerCheckpoint(workspaceDb, {
-      diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
-        contextDigest: commandInputHash(fixture.workerRequest),
-        contextRefs: [],
-        knowledgeSelectionInput: { retrievalTraceRef },
-        repositoryResourceId: 'repo_default',
-      }),
-      goalId: null,
-      iteration: checkpoint.iteration,
-      requestId: checkpoint.requestId,
-      requestInputHash: checkpoint.requestInputHash,
-      stage: 'preparing',
-      taskId: null,
-      threadId: fixture.turn.threadId,
-      turnId: fixture.turn.id,
-      workspaceId: workspaceIdForOwner(fixture.turn.owner),
-    });
-    workspaceDb.sqlite.close();
-
-    const backend = new FakeWorkerGovernanceBackend();
-    const launch = backend.submit.bind(backend);
-    const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
-      expect(
-        parseWorkerContextPackageTrace(
-          JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
-          readFileSync(join(fixture.packageRoot, 'package.json'))
+      });
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(
+          fixture.coreDb.dataRoot,
+          'workspaces',
+          workspaceIdForOwner(fixture.turn.owner),
+          'knowledge',
+          'notebook.git'
+        ),
+      });
+      const knowledge = {
+        id: 'worker-guidance',
+        title: 'Zygomorphic worker guidance',
+        content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
+      };
+      const oversizedKnowledge = {
+        id: 'oversized-worker-guidance',
+        title: 'Oversized zygomorphic worker guidance',
+        content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(55_000)}`,
+      };
+      // One native human publication preserves both pages' authority without repeating the Git/Audit setup.
+      const authoredAt = new Date().toISOString();
+      const seeded = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.notebook.update',
+          { workspaceId: workspaceIdForOwner(fixture.turn.owner) },
+          {
+            body: JSON.stringify({
+              requestId: randomUUID(),
+              baseRevision: notebook.publishedRevision(),
+              changes: [knowledge, oversizedKnowledge].map((entry) => ({
+                path: `${entry.id}.md`,
+                content: serializeKnowledgePageFixture(
+                  {
+                    ...entry,
+                    createdAt: authoredAt,
+                    updatedAt: authoredAt,
+                  },
+                  { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) }
+                ),
+              })),
+              summary: 'Seed human-authored Knowledge for direct Task delivery.',
+            }),
+          }
         )
-      ).toMatchObject({
-        goalId: null,
-        knowledgeExclusions: [],
-        knowledgeSelectionInput: { retrievalTraceRef },
-        knowledgeSelections: expect.arrayContaining([
+      );
+      expect(seeded.status, await seeded.clone().text()).toBe(200);
+      const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
+      const retrievalTraceRef = {
+        scopeId: `retrieval-trace/turn/${workspaceIdForOwner(fixture.turn.owner)}/${fixture.turn.threadId}/${fixture.turn.id}`,
+        objectId: retrievalTraceId,
+      };
+      const retrieval = await retrieveWorkspaceKnowledge({
+        access: {
+          actor: fixture.turn.triggerActor,
+          coreDb: fixture.coreDb,
+          outputThreadId: fixture.turn.threadId,
+          outputTurnId: fixture.turn.id,
+          store: fixture.store,
+        },
+        caller: 'task-mode',
+        dataRoot: fixture.coreDb.dataRoot,
+        limit: 5,
+        pinnedReferences: [],
+        query: 'Zygomorphic worker guidance',
+        traceId: retrievalTraceId,
+        workspaceId: workspaceIdForOwner(fixture.turn.owner),
+      });
+      const publishedNotebook = notebook.readRevision(notebook.publishedRevision());
+      expect(publishedNotebook.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
+      const publishedPages = publishedNotebook.files;
+      const knowledgePageBytes = publishedPages[`${knowledge.id}.md`]!;
+      const knowledgePageDigest = turnRuntimeSha256(Buffer.from(knowledgePageBytes, 'utf8'));
+      const oversizedKnowledgePageBytes = publishedPages[`${oversizedKnowledge.id}.md`]!;
+      const oversizedKnowledgePageDigest = turnRuntimeSha256(
+        Buffer.from(oversizedKnowledgePageBytes, 'utf8')
+      );
+      expect(retrieval.selected).toHaveLength(2);
+      expect(retrieval.selected).toEqual(
+        expect.arrayContaining([
           expect.objectContaining({
             contentDigest: knowledgePageDigest,
-            knowledgePageId: knowledge.id,
-            knowledgeBaseId: readDefaultKnowledgeBaseId({
-              dataRoot: fixture.coreDb.dataRoot,
-              scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
-            }),
-            notebookRevision: notebook.publishedRevision(),
-            packagePath: `knowledge/pages/${knowledge.id}.md`,
-            sourceRefs: [],
-            projection: expect.objectContaining({ kind: 'body', truncated: false }),
+            reference: {
+              objectId: knowledge.id,
+              scopeId: `page/workspace/${workspaceIdForOwner(fixture.turn.owner)}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) } })}`,
+            },
+            sourceReferences: [],
           }),
           expect.objectContaining({
             contentDigest: oversizedKnowledgePageDigest,
-            knowledgePageId: oversizedKnowledge.id,
-            knowledgeBaseId: readDefaultKnowledgeBaseId({
-              dataRoot: fixture.coreDb.dataRoot,
-              scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
-            }),
-            notebookRevision: notebook.publishedRevision(),
-            projection: expect.objectContaining({
-              kind: 'excerpt',
-              representationDigest: oversizedKnowledgePageDigest,
-              sourceRevision: notebook.publishedRevision(),
-              truncated: true,
-              availability: 'incomplete',
-            }),
+            reference: {
+              objectId: oversizedKnowledge.id,
+              scopeId: `page/workspace/${workspaceIdForOwner(fixture.turn.owner)}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.coreDb.dataRoot, scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) } })}`,
+            },
+            sourceReferences: [],
           }),
-        ]),
-        taskId: null,
-      });
-      expect(
-        readFileSync(join(fixture.packageRoot, 'knowledge', 'pages', `${knowledge.id}.md`), 'utf8')
-      ).toBe(knowledgePageBytes);
-      const excerpt = readFileSync(
-        join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`),
-        'utf8'
+        ])
       );
-      expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(2048);
-      expect(oversizedKnowledgePageBytes.startsWith(excerpt)).toBe(true);
-      expect(excerpt).not.toBe(oversizedKnowledgePageBytes);
-      expect(
-        notebook.readRevision(notebook.publishedRevision()).files[`${oversizedKnowledge.id}.md`]
-      ).toBe(oversizedKnowledgePageBytes);
-      return launch(...args);
-    });
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb: fixture.coreDb,
-      createAgentSessionId: () => fixture.agentSessionId,
-      environmentBackend: {
-        kind: 'openshell',
-      },
-      now: () => '2026-07-15T00:00:03.000Z',
-    });
 
-    try {
+      const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+      const checkpoint = getWorkerCheckpoint(
+        workspaceDb,
+        workspaceIdForOwner(fixture.turn.owner),
+        fixture.turn.threadId,
+        fixture.turn.id
+      )!;
+      await upsertWorkerCheckpoint(workspaceDb, {
+        diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+          contextDigest: commandInputHash(fixture.workerRequest),
+          contextRefs: [],
+          knowledgeSelectionInput: { retrievalTraceRef },
+          repositoryResourceId: 'repo_default',
+        }),
+        goalId: null,
+        iteration: checkpoint.iteration,
+        requestId: checkpoint.requestId,
+        requestInputHash: checkpoint.requestInputHash,
+        stage: 'preparing',
+        taskId: null,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        workspaceId: workspaceIdForOwner(fixture.turn.owner),
+      });
+      workspaceDb.sqlite.close();
+
+      const backend = new FakeWorkerGovernanceBackend();
+      const launch = backend.submit.bind(backend);
+      const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
+        expect(
+          parseWorkerContextPackageTrace(
+            JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
+            readFileSync(join(fixture.packageRoot, 'package.json'))
+          )
+        ).toMatchObject({
+          goalId: null,
+          knowledgeExclusions: [],
+          knowledgeSelectionInput: { retrievalTraceRef },
+          knowledgeSelections: expect.arrayContaining([
+            expect.objectContaining({
+              contentDigest: knowledgePageDigest,
+              knowledgePageId: knowledge.id,
+              knowledgeBaseId: readDefaultKnowledgeBaseId({
+                dataRoot: fixture.coreDb.dataRoot,
+                scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
+              }),
+              notebookRevision: notebook.publishedRevision(),
+              packagePath: `knowledge/pages/${knowledge.id}.md`,
+              sourceRefs: [],
+              projection: expect.objectContaining({ kind: 'body', truncated: false }),
+            }),
+            expect.objectContaining({
+              contentDigest: oversizedKnowledgePageDigest,
+              knowledgePageId: oversizedKnowledge.id,
+              knowledgeBaseId: readDefaultKnowledgeBaseId({
+                dataRoot: fixture.coreDb.dataRoot,
+                scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
+              }),
+              notebookRevision: notebook.publishedRevision(),
+              projection: expect.objectContaining({
+                kind: 'excerpt',
+                representationDigest: oversizedKnowledgePageDigest,
+                sourceRevision: notebook.publishedRevision(),
+                truncated: true,
+                availability: 'incomplete',
+              }),
+            }),
+          ]),
+          taskId: null,
+        });
+        expect(
+          readFileSync(
+            join(fixture.packageRoot, 'knowledge', 'pages', `${knowledge.id}.md`),
+            'utf8'
+          )
+        ).toBe(knowledgePageBytes);
+        const excerpt = readFileSync(
+          join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`),
+          'utf8'
+        );
+        expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(2048);
+        expect(oversizedKnowledgePageBytes.startsWith(excerpt)).toBe(true);
+        expect(excerpt).not.toBe(oversizedKnowledgePageBytes);
+        expect(
+          notebook.readRevision(notebook.publishedRevision()).files[`${oversizedKnowledge.id}.md`]
+        ).toBe(oversizedKnowledgePageBytes);
+        return launch(...args);
+      });
+      const executor = new WorkerGovernanceTurnExecutor({
+        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb: fixture.coreDb,
+        createAgentSessionId: () => fixture.agentSessionId,
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => '2026-07-15T00:00:03.000Z',
+      });
+
+      completed = { fixture, app, notebook, launchSpy };
       await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
         attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
         agentSessionId: fixture.agentSessionId,
@@ -10065,7 +10086,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
         triggerActor: fixture.turn.triggerActor,
         workspaceRoots: [],
       });
+    }, 60_000);
+    afterAll(() => {
+      if (completed) {
+        completed.launchSpy.mockRestore();
+        completed.fixture.coreDb.sqlite.close();
+      }
+    });
+    it('delivers selected Knowledge body and bounded excerpt through S39', () => {
+      const { launchSpy } = completed;
       expect(launchSpy).toHaveBeenCalledTimes(1);
+    }, 60_000);
+    it('proves exact completed-work proposal lineage and refuses unavailable recovery evidence', async () => {
+      const { fixture, app, notebook } = completed;
 
       const completedTurn = fixture.store.getTurn(
         workspaceIdForOwner(fixture.turn.owner),
@@ -10324,12 +10357,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(
         notebook.readRevision(notebook.publishedRevision()).files['direct-task-lesson.md']
       ).toBe(changedPageBytes);
-    } finally {
-      launchSpy.mockRestore();
-      fixture.coreDb.sqlite.close();
-    }
+    }, 60_000);
     // This harness covers real Kernel, Git, S39 launch and Review recovery; it is not a product latency oracle.
-  }, 60_000);
+  });
 
   it('fails closed when a direct Task checkpoint lacks its governed Knowledge selection', async () => {
     const fixture = await createWorkerContextExecutorFixture('task-knowledge-missing');

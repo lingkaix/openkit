@@ -1,5 +1,7 @@
 # nanocore
 
+Knowledge proposal and reversal tests isolate independent decision and evidence scenarios. The S39 Knowledge check shares one real completed Task across delivery and proposal-lineage observations, with bounded setup and the original assertions; its cleanup remains explicit. Each test and the shared S39 setup have a 60-second bound.
+
 The test-only `worker-mcp-lifecycle.fixture.ts` keeps the original captured-outcome scenarios and common assertions outside the production source root. Four focused test files run these scenarios in separate Vitest contexts with their original inputs, cleanup and bounds, so timed-out cleanup cannot close the next scenario's writer.
 
 Knowledge Review and S39 Context Package fixtures publish only their required Demo Workspace through the real snapshot owner. Server Review fixtures reuse one real native Source acknowledgement for distinct proposals instead of repeating unrelated Source registration. Native SQLite, Git, request replay and retained-lineage assertions keep their original boundaries and timeouts.
