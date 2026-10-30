@@ -526,7 +526,7 @@ export async function abandonWorkspaceRecovery(
 
 /** Closes original finish rights and retires only its owned target under the supplied Core. */
 export async function abandonWorkspaceRecoveryAtCore(
-  owner: Pick<WorkspaceRecoveryTargetOwner, 'core' | 'native'>,
+  owner: Pick<WorkspaceRecoveryTargetOwner, 'core' | 'native' | 'currentAuthority'>,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   if (!owner.native) refuseRecovery('recovery-required');
@@ -545,6 +545,26 @@ async function abandonSelectedTarget(
   if (owned.state === 'finished') refuseRecovery('request-conflict');
   if (owned.state === 'abandoned' && owned.proof.result.disposition === 'abandoned')
     return owned.proof.result;
+  if (owner.native && owned.state === 'prepared' && !owned.proof.candidateDigest) {
+    // A digest is published only after native seal/close. Partial preparation can instead
+    // leave a real writer open: freeze alone cannot authorize retiring that database.
+    const bindings = bindWorkspaceRecoveryNativeOwner(
+      core,
+      owned,
+      owner.native.gate,
+      owner.native.freeze
+    );
+    const client = getControlStoreWorkerClient(owner.native.gate);
+    for (const binding of [bindings.canonical, bindings.candidate]) {
+      if (!binding) continue;
+      await client.open(binding.binding.command, binding);
+      assertTargetRecoveryOwner(owner, core.dataRoot, input.workspaceId);
+      await client.close(binding.binding.command.database, binding);
+      assertTargetRecoveryOwner(owner, core.dataRoot, input.workspaceId);
+    }
+    if (!isDeepStrictEqual(readRecoveryAdmission(core, owned.admission_id), owned))
+      refuseRecovery('recovery-required');
+  }
   endRecoveryAdmission(core, owned.admission_id, 'abandoned');
   const final = join(input.dataRoot, 'workspaces', input.workspaceId);
   const retired = join(dirname(owned.candidate_ref), 'abandoned');

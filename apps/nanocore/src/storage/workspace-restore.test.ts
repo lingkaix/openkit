@@ -531,6 +531,94 @@ async function readmissionFixture(
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('selected abandon closes an unsealed native candidate before terminal authority or byte retirement', async () => {
+    const f = await fixture();
+    const core = openCoreDb(f.dataRoot);
+    readmissionCleanups.push(() => core.sqlite.close());
+    const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
+    readmissionCleanups.push(() => lock.release());
+    const gate = new WorkspaceMutationAdmission();
+    const freeze = gate.tryFreeze(workspaceId, () => []);
+    if (freeze.status !== 'frozen') throw new Error('Expected the original target freeze.');
+    readmissionCleanups.push(() => freeze.release());
+    const owner = {
+      core,
+      fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
+      native: { gate, freeze },
+    };
+    const client = getControlStoreWorkerClient(gate);
+    const preparationFailure = new Error('Interrupted candidate preparation.');
+    const closeFailure = new Error('Candidate native close is unavailable.');
+    let candidateDatabase = '';
+    let refuseClose = true;
+    let closed = false;
+    const cleanup = vi.spyOn(client, 'recoveryCleanup').mockImplementationOnce(async (database) => {
+      candidateDatabase = database;
+      throw preparationFailure;
+    });
+    const actualClose = client.close.bind(client);
+    const closing = vi.spyOn(client, 'close').mockImplementation(async (...args) => {
+      if (args[0] !== candidateDatabase) return actualClose(...args);
+      const owned = readRecoveryAdmission(core, f.requestId)!;
+      // Scoped Freeze requires actual writer exclusion before the first terminal Core effect.
+      expect(owned.state).toBe('prepared');
+      expect(existsSync(owned.candidate_ref)).toBe(true);
+      if (refuseClose) throw closeFailure;
+      await actualClose(...args);
+      closed = true;
+      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+      expect(existsSync(owned.candidate_ref)).toBe(true);
+    });
+    try {
+      await expect(
+        admitWorkspaceBackupAtCore(owner, {
+          command: 'restore',
+          dataRoot: f.dataRoot,
+          bundleRoot: f.bundleRoot,
+          workspaceId,
+          requestId: f.requestId,
+          acknowledgeLostSafety: false,
+          expectedRelease: f.manifest.release,
+        })
+      ).rejects.toBe(closeFailure);
+      await expect(cleanup.mock.results[0]!.value).rejects.toBe(preparationFailure);
+      const prepared = readRecoveryAdmission(core, f.requestId)!;
+      expect(prepared.state).toBe('prepared');
+      expect(prepared.proof.candidateDigest).toBeUndefined();
+      expect(candidateDatabase).toBe(
+        `workspace:${join(prepared.candidate_ref, 'db/workspace.sqlite')}`
+      );
+      const candidateBefore = inventoryRegularFiles(prepared.candidate_ref);
+      const selected = {
+        command: 'abandon' as const,
+        dataRoot: f.dataRoot,
+        workspaceId,
+        selection: { kind: 'admission' as const, requestId: f.requestId },
+      };
+      await expect(abandonWorkspaceRecoveryAtCore(owner, selected)).rejects.toThrow();
+      expect(readRecoveryAdmission(core, f.requestId)).toEqual(prepared);
+      expect(inventoryRegularFiles(prepared.candidate_ref)).toEqual(candidateBefore);
+      expect(closed).toBe(false);
+      expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
+      refuseClose = false;
+      await expect(abandonWorkspaceRecoveryAtCore(owner, selected)).resolves.toMatchObject({
+        disposition: 'abandoned',
+      });
+      expect(closed).toBe(true);
+      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('abandoned');
+      expect(existsSync(prepared.candidate_ref)).toBe(false);
+      // Native close can checkpoint SQLite; retained non-database content must stay exact.
+      expect(
+        inventoryRegularFiles(join(dirname(prepared.candidate_ref), 'abandoned')).filter(
+          (entry) => !entry.path.startsWith('db/')
+        )
+      ).toEqual(candidateBefore.filter((entry) => !entry.path.startsWith('db/')));
+    } finally {
+      cleanup.mockRestore();
+      closing.mockRestore();
+    }
+  }, 120_000);
+
   it.each([
     'before-target-rename',
     'after-target-rename',
