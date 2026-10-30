@@ -204,10 +204,10 @@ function mergeStableScope(
   callerScope: PromptCacheKeyScope,
   metadataScope: PromptCacheKeyScope
 ): PromptCacheKeyScope {
-  const workspaceId = metadataScope.workspaceId ?? callerScope.workspaceId;
-  const threadId = metadataScope.threadId ?? callerScope.threadId;
-  const agentSessionId = metadataScope.agentSessionId ?? callerScope.agentSessionId;
-  const sessionId = metadataScope.sessionId ?? callerScope.sessionId;
+  const workspaceId = callerScope.workspaceId ?? metadataScope.workspaceId;
+  const threadId = callerScope.threadId ?? metadataScope.threadId;
+  const agentSessionId = callerScope.agentSessionId ?? metadataScope.agentSessionId;
+  const sessionId = callerScope.sessionId ?? metadataScope.sessionId;
   const output: MutableOpenKitMetadataScope = {};
 
   if (workspaceId) {

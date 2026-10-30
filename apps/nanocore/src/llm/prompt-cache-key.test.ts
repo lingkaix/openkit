@@ -62,6 +62,50 @@ function chatRequest(
 }
 
 describe('PromptCacheKeyResolver', () => {
+  it.each(['workspaceId', 'threadId', 'agentSessionId', 'sessionId'] as const)(
+    'keeps trusted %s when public metadata conflicts',
+    (field) => {
+      const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        agentSessionId: 'trusted-agent-session',
+        sessionId: 'trusted-session',
+      };
+      const baseline = resolver.withPromptCacheKey(providerConfig(), responsesRequest(), scope);
+      const conflicted = resolver.withPromptCacheKey(
+        providerConfig(),
+        responsesRequest({ metadata: { openkit: { [field]: `advisory-${field}` } } }),
+        scope
+      );
+
+      // Cache Scope Input: public metadata cannot override server-owned authority.
+      expect(conflicted.prompt_cache_key).toBe(baseline.prompt_cache_key);
+    }
+  );
+
+  it.each(['workspaceId', 'threadId', 'agentSessionId', 'sessionId'] as const)(
+    'uses advisory %s when the trusted caller omits it',
+    (field) => {
+      const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        agentSessionId: 'trusted-agent-session',
+        sessionId: 'trusted-session',
+      };
+      const { [field]: advisoryValue, ...partialScope } = scope;
+      const baseline = resolver.withPromptCacheKey(providerConfig(), responsesRequest(), scope);
+      const supplemented = resolver.withPromptCacheKey(
+        providerConfig(),
+        responsesRequest({ metadata: { openkit: { [field]: advisoryValue } } }),
+        partialScope
+      );
+
+      expect(supplemented.prompt_cache_key).toBe(baseline.prompt_cache_key);
+    }
+  );
+
   it('keeps an explicit request prompt cache key', () => {
     const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
     const request = resolver.withPromptCacheKey(
