@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { createCoreClient } from '@openkit/core-client';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { expect, it } from 'vitest';
 import { isQuestionAnswerResponse } from '../e2e/_lib/question-answer-response.js';
 
@@ -13,6 +14,13 @@ it.each([
     baseUrl: 'http://nanocore.test',
     fetch: async (url, init) => {
       const request = new Request(url, init);
+      if (new URL(request.url).pathname === '/api/meta') {
+        return Response.json({
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: [],
+          eventFamilies: [],
+        });
+      }
       observed.push({ request: () => ({ method: () => request.method }), url: () => request.url });
       return Response.json({
         requestId: 'question_1',
