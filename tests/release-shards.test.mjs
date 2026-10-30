@@ -314,7 +314,7 @@ test('workflow matrix derives its complete membership and aggregate fails closed
   );
 });
 
-test('one exact-source build cache feeds every shard and worker probe without omitting prerequisites', () => {
+test('one exact-source build cache feeds every authoritative shard without omitting prerequisites', () => {
   const { jobs } = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
   const build = jobs['l0-l2-build'];
   assert.ok(build.needs.includes('test-image'));
@@ -328,34 +328,32 @@ test('one exact-source build cache feeds every shard and worker probe without om
   assert.match(uploaded.with.name, /github.sha/);
   assert.match(uploaded.with.name, /github.run_attempt/);
   assert.ok(!uploaded.with.name.startsWith('l0-l2-'), 'build cache is not a shard observation');
-  for (const id of ['l0-l2-shards', 'l0-l2-worker-probes']) {
-    assert.ok(jobs[id].needs.includes('l0-l2-build'));
-    const downloaded = jobs[id].steps.find((step) => step.name === 'Restore shared build cache');
-    assert.equal(downloaded.with.name, uploaded.with.name);
-    assert.equal(downloaded.with.path, '.turbo/cache');
-    assert.ok(!downloaded.with['run-id']);
-    assert.ok(!downloaded['continue-on-error']);
-    assert.ok(jobs[id].steps.some((step) => /pnpm install --frozen-lockfile/.test(step.run ?? '')));
-  }
+  const shards = jobs['l0-l2-shards'];
+  assert.ok(shards.needs.includes('l0-l2-build'));
+  const downloaded = shards.steps.find((step) => step.name === 'Restore shared build cache');
+  assert.equal(downloaded.with.name, uploaded.with.name);
+  assert.equal(downloaded.with.path, '.turbo/cache');
+  assert.ok(!downloaded.with['run-id']);
+  assert.ok(!downloaded['continue-on-error']);
+  assert.ok(shards.steps.some((step) => /pnpm install --frozen-lockfile/.test(step.run ?? '')));
 });
 
-test('manual worker probes repeat exactly the Factory bin and never enter the coverage union', () => {
+test('completed worker-width probes are retired without changing authoritative coverage or workers', () => {
   const { jobs } = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
-  const probe = jobs['l0-l2-worker-probes'];
-  assert.equal(probe.if, "github.event_name == 'workflow_dispatch' && inputs.gate == 'l0-l2'");
-  assert.deepEqual(probe.strategy.matrix, { workers: [3, 4] });
-  assert.equal(probe.strategy['fail-fast'], false);
-  assert.ok(!probe['continue-on-error']);
-  const run = probe.steps.find((step) => step.env?.PROBE_WORKERS);
-  assert.match(run.run, /--run nanocore-1 --workers/);
-  assert.match(run.run, /nproc/);
-  assert.match(run.run, /MemTotal/);
-  const artifact = probe.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
-  assert.match(artifact.with.name, /^ci-worker-probe-/);
-  assert.ok(!artifact.with.name.startsWith('l0-l2-'));
+  assert.equal(jobs['l0-l2-worker-probes'], undefined);
+  for (const job of Object.values(jobs)) {
+    for (const step of job.steps ?? []) {
+      assert.equal(step.env?.PROBE_WORKERS, undefined);
+      assert.ok(!String(step.with?.name ?? '').startsWith('ci-worker-probe-'));
+    }
+  }
   assert.ok(!jobs['l0-l2-shards'].steps.some((step) => /--workers/.test(step.run ?? '')));
   assert.ok(jobs['l0-l2-shards'].steps.some((step) => /nproc/.test(step.run ?? '')));
-  assert.equal(shardPlan().length + probe.strategy.matrix.workers.length + 2, 20);
+  assert.equal(shardPlan().length + 2, 18, 'sixteen authoritative jobs and two fixed installers');
+  assert.deepEqual(coveragePlan(), [
+    { id: 'nanocore', owners: ['@openkit/nanocore'], count: 8 },
+    { id: 'worker-shim', owners: ['@openkit/worker-shim'], count: 2 },
+  ]);
 });
 
 test('only NanoCore accepts bounded explicit worker probes, with two remaining the default', () => {

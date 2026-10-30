@@ -16,7 +16,7 @@ test('test image jobs reap orphaned processes through Docker init', () => {
   const jobs = Object.entries(workflow.jobs).filter(
     ([, job]) => job.container?.image === actionExpression('needs.test-image.outputs.image')
   );
-  assert.equal(jobs.length, 12);
+  assert.equal(jobs.length, 11);
   for (const [name, job] of jobs) {
     assert.equal(job.container.options, '--init', `${name} must reap orphaned processes`);
   }
@@ -546,7 +546,8 @@ test('release notes are checked before publication and verified against the gene
 // Complete main verification adds L4 to main/release gates and the registry dependency; all other Web and registry steps stay unchanged.
 // New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
 // #533 re-records runner selection and the two-LTS installer matrix; all other job bytes stay frozen.
-// CI speed proof adds shared build/manual worker probes and changes only the shard prerequisites/observations.
+// CI speed proof adds shared build; completed worker probes are retired.
+// The shard raw block changes only because its trailing temporary-probe comments are removed.
 const unchangedJobBaseline = {
   'container-image-matrix': 'aaf9dbadd90c16a7be23c7198f043c96a0903ed9673f9692d070ff9a6d18a88d',
   'build-app-candidate': '11ee3d0655617efd27aaeaca35f343f331565e9423dac70191a178be29276e23',
@@ -581,8 +582,7 @@ const candidateJobBaseline = {
 const shardJobBaseline = {
   'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
   'l0-l2-build': 'd64709af62693597cde5f273c0c8ef1752f36609dce4ea30fdb1705467aeab2e',
-  'l0-l2-shards': '086a437e2ce6169ef26ccf3d878acc79a088797dacb7c80f6533e9225847d4dc',
-  'l0-l2-worker-probes': '2a47307b39835f761350d2a84ffd7a4d7b6f5df1e59729add04297fc1144f5b0',
+  'l0-l2-shards': 'f7b5733bb480eb7e76d53824317099c608a2930d3662e217a14e8a12a7e1f55c',
   'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
   'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
 };
