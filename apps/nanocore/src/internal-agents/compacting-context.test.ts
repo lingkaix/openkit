@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import type { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { createTestStore } from '../test-support/store.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
@@ -31,7 +36,15 @@ afterEach(() => {
 /** Uses actual current-Turn Items; the external fake Provider owns only model output. */
 async function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnById']> }) {
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
-  const store = previous?.store ?? new FsStore();
+  let store = previous?.store;
+  if (!store) {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-compacting-context-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    store = createTestStore({ dataRoot });
+  }
   const workspace = previous
     ? { id: workspaceIdForOwner(previous.turn.owner) }
     : await store.createWorkspace('Compaction');
@@ -367,7 +380,12 @@ describe('bounded current-run compaction', () => {
 
 it('uses the shared summary Item and exact current-run retrieval for a Server-owned KM Turn', async () => {
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
-  const store = new FsStore();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-compacting-context-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = createTestStore({ dataRoot });
   const thread = await store.createServerThread('Server Knowledge maintenance');
   const turn = await store.createServerTurn(
     thread.id,
