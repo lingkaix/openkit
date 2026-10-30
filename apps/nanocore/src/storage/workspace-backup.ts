@@ -623,7 +623,12 @@ export type WorkspaceBackupCreateResult = Readonly<{
 /** A request-owned, absent destination on the target filesystem; no registration is changed. */
 export interface WorkspaceBackupStageInput extends WorkspaceBackupVerificationInput {
   /** Local pool resolution stays with the one bundle owner, before candidate admission. */
-  readonly snapshotSource?: { readonly dataRoot: string; readonly source: SnapshotSource };
+  readonly snapshotSource?: {
+    readonly dataRoot: string;
+    readonly source: SnapshotSource;
+    /** Original-byte acquisition only; Main already holds admission for capture replay. */
+    readonly acquireSource?: () => () => void;
+  };
   readonly candidateRoot: string;
   readonly expectedWorkspaceId: string;
   readonly expectedSourceDeploymentId: string;
@@ -1316,6 +1321,7 @@ export async function createWorkspaceBackup(
   const live = input.source;
   const reservations = new Map<number, FileStorageReservation>();
   let releaseFreeze: (() => void) | undefined;
+  let releaseReplayRead: (() => void) | undefined;
   let resumeNative: (() => void) | undefined;
   let worker: Worker | undefined;
   let authorityError: unknown;
@@ -1325,6 +1331,15 @@ export async function createWorkspaceBackup(
   const signal = new Int32Array(new SharedArrayBuffer(4));
   try {
     live.currentAuthority?.();
+    // Presence selects acquisition only. The worker still proves finished capture and exact bytes.
+    // The existing worker slot excludes another owned capture publishing this path meanwhile.
+    if (existsSync(input.bundleRoot)) {
+      releaseReplayRead = live.mutationAdmission.enter(input.workspaceId) ?? undefined;
+      if (!releaseReplayRead)
+        throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+          details: { workspaceId: input.workspaceId, retryable: true },
+        });
+    }
     const request: WorkspaceCaptureWorkerInput = {
       dataRoot: live.dataRoot,
       workspaceId: input.workspaceId,
@@ -1539,6 +1554,7 @@ export async function createWorkspaceBackup(
         cleanupFailure ??= error;
       }
     }
+    releaseReplayRead?.();
     captureWorkerActive = false;
     authorityError ??= cleanupFailure;
   }
@@ -2216,6 +2232,8 @@ export async function stageWorkspaceBackup(
     );
   } catch (error) {
     if (owned) rmSync(input.candidateRoot, { recursive: true, force: true });
+    // Live source acquisition is an admission refusal, not invalid retained bytes.
+    if (error instanceof OperationError && error.code === 'workspace_frozen') throw error;
     return failure(error, 'invalid-bundle');
   } finally {
     if (staging) rmSync(staging.container, { recursive: true, force: true });
@@ -2383,6 +2401,22 @@ export function createWorkspaceSnapshotOperationImplementations(
       },
     };
   };
+  // Online readers acquire here; Main already holds acquisition admission for sealed replay.
+  const localSource = (
+    input: Input<'workspace.backup-verify'>,
+    owned: ReturnType<typeof policy>
+  ) => ({
+    dataRoot: owned.dataRoot,
+    source: { kind: 'local-snapshot' as const, ...input },
+    acquireSource: () => {
+      const release = owned.mutationAdmission.enter(input.workspaceId);
+      if (!release)
+        throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+          details: { workspaceId: input.workspaceId, retryable: true },
+        });
+      return release;
+    },
+  });
   const inspect = async (
     input: Input<'workspace.backup-verify'>,
     owned: ReturnType<typeof policy>
@@ -2397,7 +2431,7 @@ export function createWorkspaceSnapshotOperationImplementations(
           input.workspaceId,
           input.backupId
         ),
-        snapshotSource: { dataRoot: owned.dataRoot, source: { kind: 'local-snapshot', ...input } },
+        snapshotSource: localSource(input, owned),
         expectedWorkspaceId: input.workspaceId,
         expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
         purpose: 'backup',
@@ -2468,8 +2502,7 @@ export function createWorkspaceSnapshotOperationImplementations(
             {
               ...owned.verification,
               includeMetadata: true,
-              dataRoot: owned.dataRoot,
-              source: { kind: 'local-snapshot', ...input },
+              ...localSource(input, owned),
             },
             async (bundle) => {
               owned.currentAuthority();

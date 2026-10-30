@@ -804,6 +804,8 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
   input: Omit<WorkspaceBackupVerificationInput, 'bundleRoot'> & {
     readonly dataRoot: string;
     readonly source: SnapshotSource;
+    /** Live callers exclude retention until the original pool bytes have independent copies. */
+    readonly acquireSource?: () => () => void;
   },
   consume: (bundle: VerifiedWorkspaceBackupBundle) => Promise<T>
 ): Promise<T> {
@@ -813,6 +815,8 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
       consume
     );
   const { workspaceId, backupId } = input.source;
+  // Caller-owned freeze refusals keep their original identity, outside bundle validation.
+  let releaseSource = input.acquireSource?.();
   let materialized: string | undefined;
   let reservation: FileStorageReservation | undefined;
   let consuming = false;
@@ -881,6 +885,8 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
         destinationPath: join(materialized, WORKSPACE_BACKUP_SEAL_FILE),
         bytes: sealBytes,
       });
+    releaseSource?.();
+    releaseSource = undefined;
     result = await withVerifiedWorkspaceBackupBundle(
       { ...input, bundleRoot: materialized },
       async (bundle) => {
@@ -897,6 +903,7 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
             error instanceof FileAdmissionError ? 'capacity-exceeded' : 'invalid-bundle'
           );
   } finally {
+    releaseSource?.();
     let removed = true;
     if (materialized) {
       try {

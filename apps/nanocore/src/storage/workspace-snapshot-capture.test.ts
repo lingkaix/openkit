@@ -37,7 +37,7 @@ import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
-import { projectOperationError } from '../operation-error.js';
+import { OperationError, projectOperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import {
@@ -89,7 +89,7 @@ import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
-import { createWorkspaceBackup, readBlockers } from './workspace-backup.js';
+import { createWorkspaceBackup, readBlockers, stageWorkspaceBackup } from './workspace-backup.js';
 import {
   type VerifiedWorkspaceBackupBundle,
   withVerifiedWorkspaceBackupBundle,
@@ -2408,6 +2408,108 @@ describe('C-a capture and existing deletion ownership', () => {
       db.sqlite.close();
     }
     expect(mutationAdmission.isClosed(workspaceId)).toBe(false);
+  });
+});
+
+describe('C-b original-byte acquisition protection', () => {
+  it('excludes retention during acquisition and releases before independent verified consumption', async () => {
+    const f = await fixture();
+    const captured = await createWorkspaceBackup(f.input());
+    const refusal = new OperationError('workspace_frozen', 'Workspace capture is frozen.', 409, {
+      details: {
+        workspaceId,
+        operation: 'capture',
+        retryable: true,
+        blockers: [{ kind: 'snapshot', reason: 'frozen', actions: [] }],
+      },
+    });
+    let duringAcquisition: string | undefined;
+    const reserve = vi.fn((...args: Parameters<typeof f.policy.admission.reserve>) => {
+      if (duringAcquisition === undefined) {
+        const attempt = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+        duringAcquisition = attempt.status;
+        if (attempt.status === 'frozen') attempt.release();
+      }
+      return f.policy.admission.reserve(...args);
+    });
+    const input = {
+      ...f.policy,
+      dataRoot: f.dataRoot,
+      source: {
+        kind: 'local-snapshot' as const,
+        workspaceId,
+        backupId: captured.manifest.backupId,
+      },
+      admission: { reserve },
+      acquireSource: () => {
+        const release = f.mutationAdmission.enter(workspaceId);
+        if (!release) throw refusal;
+        return release;
+      },
+    };
+    await withVerifiedWorkspaceSnapshotSource(input, async (bundle) => {
+      // Online Snapshot Policy makes an independent verified stream inert after acquisition.
+      const attempt = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+      expect(attempt.status).toBe('frozen');
+      if (attempt.status !== 'frozen') throw new Error('Acquisition admission was not released.');
+      try {
+        expect(bundle.manifestDigest).toBe(captured.report.manifestDigest);
+        for (const entry of bundle.manifest.inventory)
+          expect(digest(await bytes(bundle, entry.path))).toBe(entry.sha256);
+      } finally {
+        attempt.release();
+      }
+    });
+    // The real gate must exclude retention while original bytes still require the local pool.
+    expect(duringAcquisition).toBe('busy');
+
+    const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    expect(frozen.status).toBe('frozen');
+    if (frozen.status !== 'frozen') throw new Error('Control freeze was not admitted.');
+    const sourceOpen = vi.spyOn(await import('node:fs/promises'), 'open');
+    const consume = vi.fn(async () => undefined);
+    const beforePool = tree(join(f.dataRoot, 'server/backups/workspaces', workspaceId));
+    const beforeStaging = tree(f.policy.stagingParent);
+    reserve.mockClear();
+    try {
+      await expect(withVerifiedWorkspaceSnapshotSource(input, consume)).rejects.toBe(refusal);
+      expect(consume).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      expect(sourceOpen).not.toHaveBeenCalled();
+      expect(tree(join(f.dataRoot, 'server/backups/workspaces', workspaceId))).toEqual(beforePool);
+      expect(tree(f.policy.stagingParent)).toEqual(beforeStaging);
+      const staged = await stageWorkspaceBackup({
+        ...f.input(captured.manifest.backupId),
+        snapshotSource: input,
+        candidateRoot: join(f.root, 'frozen-verification-candidate'),
+        expectedWorkspaceId: workspaceId,
+      }).catch((error: unknown) => error);
+      expect.soft(staged).toBe(refusal);
+      const workersBeforeReplay = captureWorkerProbe.workers.length;
+      const replay = await createWorkspaceBackup(f.input(captured.manifest.backupId)).catch(
+        (error: unknown) => error
+      );
+      expect.soft(projectOperationError(replay)).toMatchObject({ code: 'workspace_frozen' });
+      expect.soft(captureWorkerProbe.workers).toHaveLength(workersBeforeReplay);
+    } finally {
+      sourceOpen.mockRestore();
+      frozen.release();
+    }
+
+    duringAcquisition = undefined;
+    const replay = await createWorkspaceBackup({
+      ...f.input(captured.manifest.backupId),
+      admission: { reserve },
+    });
+    expect(replay.report.manifestDigest).toBe(captured.report.manifestDigest);
+    expect.soft(duringAcquisition).toBe('busy');
+
+    // A valid owner-created generation is damaged only to prove failure releases admission.
+    writeFileSync(join(captured.bundleRoot, 'manifest.json'), '{');
+    await expect(withVerifiedWorkspaceSnapshotSource(input, consume)).rejects.toThrow();
+    const afterFailure = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    expect(afterFailure.status).toBe('frozen');
+    if (afterFailure.status === 'frozen') afterFailure.release();
   });
 });
 
