@@ -1,6 +1,5 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useIsMutating, useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -10,7 +9,6 @@ import {
   Page,
   PageHeader,
   Skeleton,
-  TextField,
 } from '../../primitives';
 import { useCurrentWorkspaceId } from './data';
 import { ServerVaultSecretsPanel } from './ServerVaultSecretsPanel';
@@ -25,12 +23,10 @@ function vaultRequestError(error: unknown) {
   );
 }
 
-/** Administer the deployment Vault with ephemeral key input and session-derived authority. */
+/** Administer the deployment Vault with session-derived authority. */
 export function VaultAdminScreen() {
   const client = useCoreClient();
-  const [masterKey, setMasterKey] = useState('');
   const secretWrites = useIsMutating({ mutationKey: ['vault-admin-secret'] });
-  const keyHold = useRef<string | null>(null);
   const status = useQuery({
     queryKey: ['settings', 'vault-admin'],
     queryFn: async () => {
@@ -45,12 +41,9 @@ export function VaultAdminScreen() {
   });
   const operation = useMutation({
     mutationFn: async (action: 'unlock' | 'lock') => {
-      const masterKeyBase64 = keyHold.current;
-      keyHold.current = null;
       try {
         if (action === 'unlock') {
-          if (!masterKeyBase64) throw new Error('Master key is required.');
-          await client.operations['vault.unlock']({ masterKeyBase64 });
+          await client.operations['vault.unlock']({});
         } else {
           await client.operations['vault.lock']({});
         }
@@ -62,10 +55,6 @@ export function VaultAdminScreen() {
     onSuccess: async () => {
       await status.refetch();
     },
-    onSettled: () => {
-      keyHold.current = null;
-      setMasterKey('');
-    },
   });
   const denied = [status.error, operation.error].some(
     (error) => error instanceof ApiCallError && (error.status === 401 || error.status === 403)
@@ -76,18 +65,9 @@ export function VaultAdminScreen() {
   const canLock =
     !busy && !status.isError && !operation.isError && status.data?.state === 'available';
 
-  useEffect(() => {
-    if (denied || status.isError || status.data?.state !== 'locked') {
-      setMasterKey('');
-      keyHold.current = null;
-    }
-  }, [denied, status.isError, status.data?.state]);
-
   /** Recheck current authority and state without replaying a prior mutation. */
   function retry() {
     operation.reset();
-    setMasterKey('');
-    keyHold.current = null;
     void status.refetch();
   }
 
@@ -134,21 +114,13 @@ export function VaultAdminScreen() {
             </Card>
           ) : null}
           <Card className="flex flex-col gap-4">
-            <TextField
-              label="Master key (base64)"
-              description="Enter the existing Vault master key encoded as base64. The field clears when submitted."
-              type="password"
-              autoComplete="off"
-              value={masterKey}
-              onChange={setMasterKey}
-              isDisabled={!canUnlock}
-            />
+            <p className="text-sm text-fg-muted">
+              Unlock reloads the Vault key file configured on the server.
+            </p>
             <Button
-              isDisabled={!canUnlock || !masterKey.trim()}
+              isDisabled={!canUnlock}
               onPress={() => {
-                if (!canUnlock || !masterKey.trim()) return;
-                keyHold.current = masterKey.trim();
-                setMasterKey('');
+                if (!canUnlock) return;
                 operation.mutate('unlock');
               }}
             >

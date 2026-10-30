@@ -13,7 +13,6 @@ const STATUS = {
   backendKind: 'encrypted-file' as const,
   state: 'locked' as const,
   diagnostic: 'Vault is locked.',
-  masterKeyBase64: KEY,
   secret: POISON,
 };
 
@@ -50,10 +49,9 @@ function renderScreen(client: CoreClient) {
   };
 }
 
-/** Submit a synthetic key through the password control and explicit action. */
+/** Trigger unlock through the explicit action. */
 async function unlock() {
-  await userEvent.type(await screen.findByLabelText('Master key (base64)'), KEY);
-  await userEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Unlock' }));
 }
 
 /** Check both caches, including mutation variables and errors, for secret retention. */
@@ -91,8 +89,8 @@ describe('Vault backend administration', () => {
     const { container, queryClient } = renderScreen(client);
     expect(await screen.findByText('Vault is locked.')).toBeInTheDocument();
     expect(client.operations['vault.status']).toHaveBeenCalledExactlyOnceWith({});
-    expect(screen.getByLabelText('Master key (base64)')).toHaveAttribute('type', 'password');
-    expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
+    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlock' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Lock' })).toBeDisabled();
     expect(client.operations['vault.unlock']).not.toHaveBeenCalled();
     vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
@@ -102,10 +100,7 @@ describe('Vault backend administration', () => {
     });
     await unlock();
     expect(await screen.findByText('Vault is available.')).toBeInTheDocument();
-    expect(client.operations['vault.unlock']).toHaveBeenCalledExactlyOnceWith({
-      masterKeyBase64: KEY,
-    });
-    expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
+    expect(client.operations['vault.unlock']).toHaveBeenCalledExactlyOnceWith({});
     expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Lock' }));
     expect(await screen.findByText('Vault is locked.')).toBeInTheDocument();
@@ -151,7 +146,6 @@ describe('Vault backend administration', () => {
     const { container, queryClient } = renderScreen(client);
     await screen.findByText('Vault is locked.');
     if (action === 'refetch') {
-      await userEvent.type(screen.getByLabelText('Master key (base64)'), KEY);
       vi.mocked(client.operations['vault.status']).mockRejectedValueOnce(
         new ApiCallError(401, POISON)
       );
@@ -173,7 +167,7 @@ describe('Vault backend administration', () => {
     expect(container.innerHTML).not.toContain(POISON);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('Vault is locked.');
-    expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
+    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
     expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(action === 'unlock' ? 1 : 0);
     expect(client.operations['vault.lock']).toHaveBeenCalledTimes(action === 'lock' ? 1 : 0);
     expectSafeCaches(queryClient);
@@ -189,7 +183,7 @@ describe('Vault backend administration', () => {
     const { container, queryClient } = renderScreen(client);
     await unlock();
     await screen.findByRole('alert');
-    expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
+    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
     expect(container.innerHTML).not.toContain(KEY);
     expect(container.innerHTML).not.toContain(POISON);
     expectSafeCaches(queryClient);
@@ -197,7 +191,7 @@ describe('Vault backend administration', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(1);
     expect(client.operations['vault.lock']).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Unlock' })).toBeEnabled();
   });
 
   it.each([
@@ -222,8 +216,7 @@ describe('Vault backend administration', () => {
     if (action === 'unlock') await unlock();
     else await userEvent.click(await screen.findByRole('button', { name: 'Lock' }));
     expect(await screen.findByRole('status')).toBeInTheDocument();
-    expect(screen.getByLabelText('Master key (base64)')).toBeDisabled();
-    expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
+    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
     for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
     expectSafeCaches(queryClient);
     await act(async () => finish());
@@ -263,7 +256,6 @@ describe('Vault backend administration', () => {
     );
     await unlock();
     await waitFor(() => expect(client.operations['vault.status']).toHaveBeenCalledTimes(2));
-    expect(screen.getByLabelText('Master key (base64)')).toBeDisabled();
     for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
     await act(async () => fail());
     await screen.findByRole('alert');
@@ -271,7 +263,7 @@ describe('Vault backend administration', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('Vault is locked.');
     expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
+    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
   });
 
   it('redacts secret-shaped diagnostic text before caching', async () => {
@@ -294,7 +286,7 @@ describe('Vault backend administration', () => {
     });
     renderScreen(client);
     await screen.findByText('unavailable');
-    expect(screen.getByLabelText('Master key (base64)')).toBeDisabled();
+    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Lock' })).toBeDisabled();
   });
