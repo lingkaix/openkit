@@ -106099,6 +106099,21 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "pluginId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "memberIds": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+            }
+          },
           "expectedRevision": {
             "type": "integer",
             "minimum": 0,
@@ -152173,5 +152188,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:21f7519a54ed17b30613dbb246d51c12a4ed79afe64a1e40900ef24e7e76b720"
+  "x-openkit-source-digest": "sha256:9d3e7c2e5b50a73781841ad000977c470ba5837a8e2366d30c0d30a0a520cfa2"
 }

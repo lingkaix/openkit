@@ -364,6 +364,9 @@ export const UpdateMcpBindingRequestSchema = z
 /** Import a plugin from an uploaded tree of files. */
 export const ImportPluginRequestSchema = z
   .object({
+    /** Explicit scoped ids for original package names that require remapping. */
+    pluginId: z.string().regex(CATALOG_ID).optional(),
+    memberIds: z.record(z.string().min(1), z.string().regex(CATALOG_ID)).optional(),
     expectedRevision: z.number().int().nonnegative(),
     install: z.boolean().default(true),
     requestId: RequestIdSchema,

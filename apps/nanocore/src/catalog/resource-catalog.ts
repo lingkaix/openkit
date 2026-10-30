@@ -1048,6 +1048,9 @@ export function importWorkspacePlugin(input: {
   readonly expectedRevision: number;
   readonly install: boolean;
   readonly producer: CatalogProducer;
+  /** Explicit scoped targets preserve original package names without normalization. */
+  readonly pluginId?: string;
+  readonly memberIds?: Readonly<Record<string, string>>;
   readonly selectedPackageKeys?: readonly string[];
   readonly treeRoot: string;
   readonly workspaceId: string;
@@ -1075,15 +1078,104 @@ export function importWorkspacePlugin(input: {
         throw new CatalogInputError(`Unknown Agent Plugin member: ${key}.`);
     }
   }
+  const parsedId = ResourceCatalogIdSchema.safeParse(input.pluginId ?? parsed.displayName);
+  if (!parsedId.success)
+    throw new CatalogInputError('Plugin catalog id requires explicit remapping.');
+  const pluginId = parsedId.data;
+  const existingPlugin = current.plugins.entries.find((item) => item.id === pluginId);
+  if (existingPlugin && !input.pluginId && existingPlugin.displayName !== parsed.displayName)
+    throw new CatalogConflictError(
+      'Plugin name collides with another source; explicit remapping required.'
+    );
+  if (existingPlugin?.availability === 'removed') throw new CatalogNotFoundError('Plugin removed.');
+  const history = current.plugins.versions.filter((item) => item.entryId === pluginId);
+  const mapping = new Map<string, string>();
+  for (const version of history) {
+    for (const member of version.members) {
+      const prior = mapping.get(member.packageKey);
+      if (prior && prior !== member.catalogId)
+        throw new CatalogConflictError(
+          'Plugin member mapping is ambiguous; remapping requires inspection.'
+        );
+      mapping.set(member.packageKey, member.catalogId);
+    }
+  }
+  const allMembers = [...parsed.skills, ...parsed.mcp];
+  if (
+    Object.keys(input.memberIds ?? {}).some(
+      (key) => !allMembers.some((item) => item.packageKey === key)
+    )
+  )
+    throw new CatalogInputError('Plugin remapping names an unknown member.');
+  const assigned = new Set<string>();
+  const memberId = (
+    member: { packageKey: string; displayName: string },
+    kind: 'skill' | 'mcp'
+  ): string => {
+    const prior = mapping.get(member.packageKey);
+    const id = ResourceCatalogIdSchema.safeParse(
+      input.memberIds?.[member.packageKey] ?? prior ?? member.displayName
+    );
+    if (!id.success)
+      throw new CatalogInputError('Plugin member catalog id requires explicit remapping.');
+    if (prior && prior !== id.data)
+      throw new CatalogConflictError('Existing Plugin member mapping cannot be replaced.');
+    const entries = kind === 'skill' ? current.skills.entries : current.mcp.entries;
+    const existing = entries.find((item) => item.id === id.data);
+    if (existing && (!prior || existing.availability === 'removed'))
+      throw new CatalogConflictError(
+        'Plugin member collides with another source; explicit remapping required.'
+      );
+    const key = `${kind}:${id.data}`;
+    if (assigned.has(key))
+      throw new CatalogConflictError(
+        'Different Plugin members require distinct catalog ids; explicit remapping required.'
+      );
+    assigned.add(key);
+    return id.data;
+  };
+  const skills = parsed.skills.map((skill) => ({ ...skill, id: memberId(skill, 'skill') }));
+  const mcpMembers = parsed.mcp.map((mcp) => ({ ...mcp, id: memberId(mcp, 'mcp') }));
+  const proposedMembers: PluginVersionRecord['members'] = [
+    ...skills.map((skill) => ({
+      catalogId: skill.id,
+      kind: 'skill' as const,
+      packageKey: skill.packageKey,
+      versionDigest: validateCatalogTree(skill.tree).digest,
+    })),
+    ...mcpMembers.map((mcp) => ({
+      catalogId: mcp.id,
+      kind: 'mcp' as const,
+      packageKey: mcp.packageKey,
+      versionDigest: digestMcpConfig(mcp.declaration, packageTree.digest),
+    })),
+  ];
+  const existingInstallation = current.plugins.installations.find(
+    (item) => item.pluginId === pluginId
+  );
+  if (input.install && existingInstallation) {
+    const source = history.find((item) => item.digest === existingInstallation.versionDigest);
+    for (const override of existingInstallation.memberOverrides) {
+      const before = source?.members.find(
+        (item) => item.packageKey === override.packageKey && item.kind === override.kind
+      );
+      const after = proposedMembers.find(
+        (item) => item.packageKey === override.packageKey && item.kind === override.kind
+      );
+      if (!before || !after || before.versionDigest !== after.versionDigest)
+        throw new CatalogConflictError(
+          'Plugin update conflicts with a locally overridden source member.'
+        );
+    }
+  }
   const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
-  const pluginId = parsed.id;
   materializeSnapshot(
     join(layout.catalogPluginSnapshots, pluginId, packageTree.digest.slice('sha256:'.length)),
     packageTree.entries
   );
   let catalog = current;
-  const members: PluginVersionRecord['members'] = [];
-  for (const skill of parsed.skills) {
+  const members = proposedMembers;
+  for (const skill of skills) {
     const imported = importWorkspaceSkill({
       activate: false,
       baseCatalog: catalog,
@@ -1101,14 +1193,8 @@ export function importWorkspacePlugin(input: {
       workspaceId: input.workspaceId,
     });
     catalog = imported.catalog;
-    members.push({
-      catalogId: skill.id,
-      kind: 'skill',
-      packageKey: skill.packageKey,
-      versionDigest: imported.version.digest,
-    });
   }
-  for (const mcp of parsed.mcp) {
+  for (const mcp of mcpMembers) {
     const created = createMcpConfig({
       baseCatalog: catalog,
       createdAt: input.createdAt,
@@ -1124,33 +1210,26 @@ export function importWorkspacePlugin(input: {
       owner: { kind: 'workspace', workspaceId: input.workspaceId },
     });
     catalog = created.catalog;
-    members.push({
-      catalogId: mcp.id,
-      kind: 'mcp',
-      packageKey: mcp.packageKey,
-      versionDigest: created.version.digest,
-    });
   }
-  const version: PluginVersionRecord = {
+  const version: PluginVersionRecord = history.find(
+    (item) => item.digest === packageTree.digest
+  ) ?? {
     createdAt: input.createdAt,
     digest: packageTree.digest,
     digestFormat: 'openkit-tree-v1',
     entryId: pluginId,
     members,
-    provenance: { sourceCommit: null, uploadedSourceId: null },
+    provenance: { sourceCommit: null, uploadedSourceId: packageTree.digest },
     publisherLabel: parsed.publisherLabel,
   };
   const selectedPackageKeys = [
     ...(input.selectedPackageKeys ?? members.map((member) => member.packageKey)),
   ];
-  const existingInstallation = catalog.plugins.installations.find(
-    (item) => item.pluginId === pluginId
-  );
   const installation: PluginInstallationRecord | undefined = input.install
     ? {
         ...existingInstallation,
         memberOverrides: existingInstallation?.memberOverrides ?? [],
-        pluginId,
+        pluginId: pluginId,
         selectedPackageKeys,
         versionDigest: version.digest,
       }
@@ -1533,15 +1612,13 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
   diagnostics: Array<{ packageKey: string; reason: string }>;
   description: string | null;
   displayName: string;
-  id: string;
   mcp: Array<{
     declaration: McpValidatedDeclaration;
     displayName: string;
-    id: string;
     packageKey: string;
   }>;
   publisherLabel: string | null;
-  skills: Array<{ displayName: string; id: string; packageKey: string; tree: CatalogTreeFile[] }>;
+  skills: Array<{ displayName: string; packageKey: string; tree: CatalogTreeFile[] }>;
 } {
   const readJson = (path: string, required: boolean): Record<string, unknown> | null => {
     const entry = packageEntries.find((item) => item.path === path);
@@ -1590,10 +1667,8 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
     .safeParse(pluginJson);
   if (!manifest.success) throw new CatalogInputError('Invalid Agent Plugin manifest.');
   const displayName = manifest.data.name;
-  const id = skillIdFromDisplayName(displayName);
   const skills: Array<{
     displayName: string;
-    id: string;
     packageKey: string;
     tree: CatalogTreeFile[];
   }> = [];
@@ -1610,7 +1685,6 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
     validateSkillTree(entries);
     skills.push({
       displayName: name,
-      id: skillIdFromDisplayName(name),
       packageKey: `skills/${name}`,
       tree: entries.map((entry) => ({
         ...(entry.content ? { contentBase64: entry.content.toString('base64') } : {}),
@@ -1623,7 +1697,6 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
   const mcp: Array<{
     declaration: McpValidatedDeclaration;
     displayName: string;
-    id: string;
     packageKey: string;
   }> = [];
   const diagnostics: Array<{ packageKey: string; reason: string }> = [];
@@ -1655,7 +1728,6 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
       mcp.push({
         declaration: pluginMcpDeclaration(server as Record<string, unknown>),
         displayName: key,
-        id: skillIdFromDisplayName(key),
         packageKey: `mcp/${key}`,
       });
     } catch (error) {
@@ -1674,7 +1746,6 @@ function parsePluginPackage(packageEntries: readonly OpenKitTreeEntry[]): {
     diagnostics,
     description: manifest.data.description || null,
     displayName,
-    id,
     mcp,
     publisherLabel: manifest.data.version || null,
     skills,

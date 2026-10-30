@@ -277,3 +277,5 @@ Goal proposal actions use a runtime-neutral enum. NanoCore's `src/policy/goal-do
 The closed Workspace sharing failure family includes `personal_workspace_not_deletable` without details. New governed deletion of an active personal home returns HTTP 409 before effects; the [Workspace owner](../../docs/specs/20260715-multi_user_workspace_system.md#governed-deletion) defines eligibility. The existing Core Client parser consumes this same error schema.
 
 Plugin import responses include component `diagnostics` with package keys and fixed management reasons. An empty list means complete component admission; diagnostics do not grant activation or change immutable valid membership.
+
+Plugin import accepts optional `pluginId` and `memberIds` to name explicit scoped catalog targets while retaining original package names. The existing native owner checks collisions and preserves prior member mappings; these inputs grant no permission or publisher trust.

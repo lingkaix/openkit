@@ -918,6 +918,8 @@ export function createCatalogOperationImplementations(
           dataRoot: root(),
           expectedRevision: input.expectedRevision,
           install: input.install,
+          ...(input.pluginId ? { pluginId: input.pluginId } : {}),
+          ...(input.memberIds ? { memberIds: input.memberIds } : {}),
           producer: { id: publicOperationActor(context).userId, kind: 'user' },
           ...(input.selectedPackageKeys ? { selectedPackageKeys: input.selectedPackageKeys } : {}),
           treeRoot: staging,

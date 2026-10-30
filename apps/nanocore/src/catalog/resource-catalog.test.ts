@@ -19,6 +19,7 @@ import {
   reconstructImportedWorkspaceCatalog,
 } from './catalog-portability.js';
 import {
+  CatalogConflictError,
   CatalogForbiddenError,
   CatalogInputError,
   CatalogIntegrityError,
@@ -29,6 +30,7 @@ import {
   loadWorkspaceResourceCatalog,
   materializeCatalogTree,
   projectEffectiveWorkspaceMcpCatalog,
+  publishWorkspaceResourceCatalog,
   replaceWorkspaceEffectiveMcpCatalog,
   selectMcpVersion,
   selectWorkspaceSkillDefault,
@@ -580,6 +582,299 @@ describe('workspace resource catalog', () => {
     }
   });
 
+  it.each([
+    'skill',
+    'mcp',
+  ] as const)('requires remapping before another PluginEntry can reuse its %s member id', (kind) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-member-collision-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'ws_demo');
+    const request = {
+      createdAt: '2026-10-30T00:00:00.000Z',
+      dataRoot,
+      install: true,
+      producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
+      treeRoot,
+      workspaceId,
+    };
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("first");');
+      if (kind === 'skill') rmSync(join(treeRoot, 'mcp.json'));
+      else rmSync(join(treeRoot, 'skills'), { recursive: true });
+      const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
+      const manifestPath = join(treeRoot, 'plugin.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: 'other-pack' }));
+      if (kind === 'skill') {
+        writeFileSync(
+          join(treeRoot, 'skills', 'alpha', 'SKILL.md'),
+          '---\nname: alpha\ndescription: Another package member.\n---\n# Different\n'
+        );
+      } else writeFileSync(join(treeRoot, 'scripts', 'run.sh'), 'console.log("other");');
+      // Packaging owner: a colliding member from another source requires explicit remapping.
+      expect(() =>
+        importWorkspacePlugin({
+          ...request,
+          expectedRevision: first.catalog.revision,
+        })
+      ).toThrow(/remap/i);
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(first.catalog);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps distinct original package member keys separate or requires explicit remapping', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-original-names-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'ws_demo');
+    try {
+      mkdirSync(treeRoot, { recursive: true });
+      writeFileSync(
+        join(treeRoot, 'plugin.json'),
+        JSON.stringify({
+          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+          name: 'name-pack',
+        })
+      );
+      for (const name of ['alpha.one', 'alpha-one']) {
+        mkdirSync(join(treeRoot, 'skills', name), { recursive: true });
+        writeFileSync(
+          join(treeRoot, 'skills', name, 'SKILL.md'),
+          `---\nname: alpha\ndescription: Distinct original member.\n---\n# ${name}\n`
+        );
+      }
+      let imported: ReturnType<typeof importWorkspacePlugin> | undefined;
+      let refusal: unknown;
+      try {
+        imported = importWorkspacePlugin({
+          createdAt: '2026-10-30T00:00:00.000Z',
+          dataRoot,
+          expectedRevision: 0,
+          install: true,
+          producer: { id: testEntityId('usr', 'user_original'), kind: 'user' },
+          treeRoot,
+          workspaceId,
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      if (refusal !== undefined) {
+        expect(refusal).toBeInstanceOf(Error);
+        expect((refusal as Error).message).toMatch(/remap/i);
+        expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(0);
+      } else {
+        expect(imported!.version.members.map((member) => member.packageKey).sort()).toEqual([
+          'skills/alpha-one',
+          'skills/alpha.one',
+        ]);
+        expect(new Set(imported!.version.members.map((member) => member.catalogId)).size).toBe(2);
+        expect(imported!.catalog.skills.entries.map((entry) => entry.displayName).sort()).toEqual([
+          'alpha-one',
+          'alpha.one',
+        ]);
+      }
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'changed',
+    'removed',
+    'unchanged',
+  ] as const)('preserves an explicit local override when its source member is %s', (change) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-override-update-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'ws_demo');
+    const producer = { id: testEntityId('usr', 'user_original'), kind: 'user' as const };
+    const request = {
+      createdAt: '2026-10-30T00:00:00.000Z',
+      dataRoot,
+      install: true,
+      producer,
+      treeRoot,
+      workspaceId,
+    };
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("first");');
+      rmSync(join(treeRoot, 'mcp.json'));
+      const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
+      const sourceMember = first.version.members[0]!;
+      const candidate = submitWorkspaceSkillCandidate({
+        baseDigest: sourceMember.versionDigest,
+        createdAt: '2026-10-30T00:01:00.000Z',
+        dataRoot,
+        entryId: sourceMember.catalogId,
+        expectedRevision: first.catalog.revision,
+        producer,
+        summary: 'Retain the explicit local improvement.',
+        tree: skillTree('# Local improvement\n'),
+        workspaceId,
+      });
+      // This owner's exported publisher installs an exact override of an owner-admitted version.
+      // It does not fabricate a digest or claim coverage of the missing public override operation.
+      const override = { ...sourceMember, versionDigest: candidate.candidate.candidateDigest };
+      const bound = publishWorkspaceResourceCatalog({
+        catalog: {
+          ...candidate.catalog,
+          plugins: {
+            ...candidate.catalog.plugins,
+            installations: candidate.catalog.plugins.installations.map((installation) => ({
+              ...installation,
+              memberOverrides: [override],
+            })),
+          },
+        },
+        dataRoot,
+        expectedRevision: candidate.catalog.revision,
+        workspaceId,
+      });
+      const manifestPath = join(treeRoot, 'plugin.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0' }));
+      if (change === 'changed')
+        writeFileSync(
+          join(treeRoot, 'skills', 'alpha', 'SKILL.md'),
+          '---\nname: alpha\ndescription: Changed upstream member.\n---\n# Upstream change\n'
+        );
+      if (change === 'removed') rmSync(join(treeRoot, 'skills', 'alpha'), { recursive: true });
+      if (change !== 'unchanged') {
+        // Packaging Update clause: conflicting source changes cannot advance the installation.
+        expect(() =>
+          importWorkspacePlugin({
+            ...request,
+            expectedRevision: bound.revision,
+          })
+        ).toThrow(CatalogConflictError);
+        expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(bound);
+      } else {
+        const updated = importWorkspacePlugin({ ...request, expectedRevision: bound.revision });
+        expect(updated.version.digest).not.toBe(first.version.digest);
+        expect(updated.version.members).toEqual(first.version.members);
+        expect(updated.catalog.plugins.installations[0]!.memberOverrides).toEqual([override]);
+        expect(updated.catalog.plugins.versions[0]).toEqual(first.version);
+        expect(updated.catalog.skills.versions).toEqual(bound.skills.versions);
+      }
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'skill',
+    'mcp',
+  ] as const)('imports a colliding %s member through an explicit fresh scoped mapping', (kind) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-explicit-mapping-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'ws_demo');
+    const request = {
+      createdAt: '2026-10-30T00:00:00.000Z',
+      dataRoot,
+      install: true,
+      producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
+      treeRoot,
+      workspaceId,
+    };
+    try {
+      writeStdioPluginPackage(treeRoot, 'console.log("first");');
+      if (kind === 'skill') rmSync(join(treeRoot, 'mcp.json'));
+      else rmSync(join(treeRoot, 'skills'), { recursive: true });
+      const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
+      const manifestPath = join(treeRoot, 'plugin.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: 'other-pack' }));
+      const packageKey = kind === 'skill' ? 'skills/alpha' : 'mcp/echo';
+      const mappedRequest = {
+        ...request,
+        expectedRevision: first.catalog.revision,
+        memberIds: { [packageKey]: 'other-member' },
+        pluginId: 'other-pack',
+      };
+      const second = importWorkspacePlugin(mappedRequest);
+      expect(second.version.members).toEqual([
+        {
+          catalogId: 'other-member',
+          kind,
+          packageKey,
+          versionDigest: expect.any(String),
+        },
+      ]);
+      expect(second.version.entryId).toBe('other-pack');
+      expect(second.catalog.plugins.versions[0]).toEqual(first.version);
+      const originalMembers = kind === 'skill' ? first.catalog.skills : first.catalog.mcp;
+      const updatedMembers = kind === 'skill' ? second.catalog.skills : second.catalog.mcp;
+      expect(updatedMembers.entries).toEqual(expect.arrayContaining(originalMembers.entries));
+      expect(updatedMembers.versions).toEqual(expect.arrayContaining(originalMembers.versions));
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retains original member names and a scoped explicit mapping on same-source update', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-retained-mapping-'));
+    const treeRoot = join(dataRoot, 'source');
+    const workspaceId = testEntityId('ws', 'ws_demo');
+    const request = {
+      createdAt: '2026-10-30T00:00:00.000Z',
+      dataRoot,
+      install: true,
+      producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
+      treeRoot,
+      workspaceId,
+    };
+    try {
+      mkdirSync(treeRoot, { recursive: true });
+      const manifest = {
+        $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+        name: 'original.pack',
+        version: '1.0.0',
+      };
+      writeFileSync(join(treeRoot, 'plugin.json'), JSON.stringify(manifest));
+      for (const name of ['alpha.one', 'alpha-one']) {
+        mkdirSync(join(treeRoot, 'skills', name), { recursive: true });
+        writeFileSync(
+          join(treeRoot, 'skills', name, 'SKILL.md'),
+          `---\nname: alpha\ndescription: Preserve original source names.\n---\n# ${name}\n`
+        );
+      }
+      const firstRequest = {
+        ...request,
+        expectedRevision: 0,
+        pluginId: 'mapped-pack',
+        memberIds: { 'skills/alpha.one': 'member-dot', 'skills/alpha-one': 'member-hyphen' },
+      };
+      const first = importWorkspacePlugin(firstRequest);
+      expect(first.version.entryId).toBe('mapped-pack');
+      expect(first.catalog.plugins.entries[0]!.displayName).toBe('original.pack');
+      expect(first.version.members).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ catalogId: 'member-dot', packageKey: 'skills/alpha.one' }),
+          expect.objectContaining({ catalogId: 'member-hyphen', packageKey: 'skills/alpha-one' }),
+        ])
+      );
+      expect(first.catalog.skills.entries.map((entry) => entry.displayName).sort()).toEqual([
+        'alpha-one',
+        'alpha.one',
+      ]);
+      writeFileSync(
+        join(treeRoot, 'plugin.json'),
+        JSON.stringify({ ...manifest, version: '2.0.0' })
+      );
+      const updateRequest = {
+        ...request,
+        expectedRevision: first.catalog.revision,
+        pluginId: 'mapped-pack',
+      };
+      const second = importWorkspacePlugin(updateRequest);
+      expect(second.version.members).toEqual(first.version.members);
+      expect(second.catalog.skills).toEqual(first.catalog.skills);
+      expect(second.catalog.plugins.versions[0]).toEqual(first.version);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('retains exact Skill provenance when a later PluginVersion has identical Skill bytes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-provenance-plugin-'));
     const packageRoot = join(dataRoot, 'plugin-source');
@@ -624,6 +919,22 @@ describe('workspace resource catalog', () => {
         },
       ]);
       expect(first.catalog.skills.entries[0]?.currentDigest).toBeNull();
+      // Plugin identity and source provenance are immutable first-admission facts.
+      expect.soft(first.version.provenance.sourceCommit).toBeNull();
+      expect.soft(first.version.provenance.uploadedSourceId).toEqual(expect.any(String));
+      expect.soft(first.version.provenance.uploadedSourceId).not.toBe('');
+      const repeated = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:00:30.000Z',
+        dataRoot,
+        expectedRevision: first.catalog.revision,
+        install: true,
+        producer: { id: testEntityId('usr', 'user_later'), kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: testEntityId('ws', 'ws_demo'),
+      });
+      expect.soft(repeated.version).toEqual(first.version);
+      expect.soft(repeated.catalog.plugins.versions).toEqual([first.version]);
+      expect.soft(repeated.catalog.skills.versions).toEqual([original]);
 
       // Package metadata changes package identity without changing the Skill's immutable origin.
       writeFileSync(
@@ -637,7 +948,7 @@ describe('workspace resource catalog', () => {
       const second = importWorkspacePlugin({
         createdAt: '2026-09-08T00:01:00.000Z',
         dataRoot,
-        expectedRevision: first.catalog.revision,
+        expectedRevision: repeated.catalog.revision,
         install: true,
         producer: { id: testEntityId('usr', 'user_later'), kind: 'user' },
         treeRoot: packageRoot,
