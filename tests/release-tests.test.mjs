@@ -404,7 +404,7 @@ test('merged coverage preserves original thresholds and propagates the deciding 
   assert(command.some((arg) => arg.startsWith('--merge-reports=')));
   assert(!command.some((arg) => arg.startsWith('--coverage.thresholds')));
 });
-test('four actual partition blobs merge to original coverage and unchanged thresholds refuse lost coverage', (t) => {
+test('eight actual partition blobs merge to original coverage and unchanged thresholds refuse lost coverage', (t) => {
   const owner = vitestFixture(
     t,
     'test("first branch",()=>{ expect(process.env.VITEST_MAX_WORKERS).toBe("2"); expect(value(1)).toBe(1); });'
@@ -420,6 +420,10 @@ test('four actual partition blobs merge to original coverage and unchanged thres
     ['other', 2],
     ['third', 3],
     ['fourth', 4],
+    ['fifth', 1],
+    ['sixth', 2],
+    ['seventh', 3],
+    ['eighth', 1],
   ])
     writeFileSync(
       path.join(owner.cwd, `${file}.test.js`),
@@ -429,28 +433,28 @@ test('four actual partition blobs merge to original coverage and unchanged thres
   const config = (threshold) =>
     `import CiSequencer from ${JSON.stringify(sequencer)}; export default {test:{sequence:{sequencer:CiSequencer},globals:true,maxWorkers:1,pool:"threads",include:["*.test.js"],coverage:{provider:"v8",reporter:["text"],include:["subject.js"],thresholds:{lines:${threshold},branches:${threshold},functions:${threshold},statements:${threshold}}}}};`;
   writeFileSync(path.join(owner.cwd, 'vitest.config.js'), config(100));
-  for (const index of [1, 2, 3, 4]) {
+  for (const index of [1, 2, 3, 4, 5, 6, 7, 8]) {
     const prefix = `part-${index}`;
     const result = runAdmissionFixture(
-      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 4 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
+      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 8 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
     );
     assert.equal(result.status, 0, result.stdout + result.stderr);
   }
-  const call = `mergeCoveredSuite(${JSON.stringify(owner)},${JSON.stringify({ directory, count: 4, reportFile: path.join(directory, 'merged.report') })});`;
+  const call = `mergeCoveredSuite(${JSON.stringify(owner)},${JSON.stringify({ directory, count: 8, reportFile: path.join(directory, 'merged.report') })});`;
   const complete = runAdmissionFixture(call);
   assert.equal(complete.status, 0, complete.stdout + complete.stderr);
   const report = JSON.parse(readFileSync(path.join(directory, 'merged.report')));
-  assert.equal(report.numPassedTests, 4);
-  assert.equal(report.testResults.length, 4);
-  // Keep the original 100% thresholds and four passing tests, but leave the final branch uncovered.
+  assert.equal(report.numPassedTests, 8);
+  assert.equal(report.testResults.length, 8);
+  // Keep the original 100% thresholds and eight passing tests, but leave the final branch uncovered.
   writeFileSync(
     path.join(owner.cwd, 'fourth.test.js'),
     'import {value} from "./subject.js"; test("branch 4",()=>expect(value(1)).toBe(1));'
   );
-  for (const index of [1, 2, 3, 4]) {
+  for (const index of [1, 2, 3, 4, 5, 6, 7, 8]) {
     const prefix = `part-${index}`;
     const result = runAdmissionFixture(
-      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 4 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
+      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 8 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
     );
     assert.equal(result.status, 0, result.stdout + result.stderr);
   }
