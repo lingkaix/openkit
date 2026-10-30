@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -56,6 +57,60 @@ function warningCallCorrelation(record: Record<string, unknown>): string {
 }
 
 describe('internal Agent loop', () => {
+  it('terminates with tool_result_invalid when Tool result sanitization throws', async () => {
+    const privateValue = randomUUID();
+    const rawResult = JSON.stringify({ privateValue });
+    const privateFailure = randomUUID();
+    let executed = false;
+    let sanitizerFaults = 0;
+    const parse = JSON.parse;
+    const parseSpy = vi.spyOn(JSON, 'parse').mockImplementation((text, reviver) => {
+      if (executed && text === rawResult) {
+        sanitizerFaults += 1;
+        throw new RangeError(privateFailure);
+      }
+      return parse(text, reviver);
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const execute = vi.fn(async () => {
+      executed = true;
+      return { content: [{ type: 'text' as const, text: rawResult }] };
+    });
+    const tool: AgentTool = {
+      name: 'environment.status',
+      description: 'Read admitted native state.',
+      inputSchema: { type: 'object', additionalProperties: false },
+      execute,
+    };
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({
+        message: assistantMessage([
+          { type: 'toolCall', callId: 'sanitize-result', name: tool.name, arguments: {} },
+        ]),
+      })
+      .mockResolvedValueOnce({ message: assistantMessage([{ type: 'text', text: 'Stopped.' }]) });
+    try {
+      const result = await runInternalAgentLoop(input([tool]), call);
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(sanitizerFaults).toBe(1);
+      // Model-Visible Results And Errors: sanitizer failure is terminal before another model turn.
+      expect.soft(result).toMatchObject({ kind: 'failed', code: 'tool_result_invalid' });
+      expect.soft(call).toHaveBeenCalledTimes(1);
+      const visible = JSON.stringify({
+        result,
+        requests: call.mock.calls,
+        warnings: warn.mock.calls,
+      });
+      expect(visible).not.toContain(privateValue);
+      expect(visible).not.toContain(privateFailure);
+    } finally {
+      parseSpy.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it.each([
     false,
     true,

@@ -295,7 +295,12 @@ export async function runInternalAgentLoop(
           );
           const cancelledAfterTool = exitForCancellation();
           if (cancelledAfterTool) return cancelledAfterTool;
-          const content = sanitizeToolContent(result.content);
+          let content: readonly AgentContent[] | null;
+          try {
+            content = sanitizeToolContent(result.content);
+          } catch {
+            return { kind: 'failed', messages, code: 'tool_result_invalid' };
+          }
           if (!content) {
             return { kind: 'failed', messages, code: 'tool_result_invalid' };
           }
