@@ -1895,7 +1895,10 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 owner.scopeDb.workspaceId !== value.input.workspaceId
               )
                 throw new ControlProductPreconditionError();
-              preparedRecoverySafety = prepareControlRecoverySafety(value.input);
+              preparedRecoverySafety = await prepareControlRecoverySafety(
+                value.input,
+                dirname(dirname(owner.path))
+              );
             }
             if (value.operation === 'item' || value.operation === 'event') {
               if (owner.scopeDb?.scope !== 'workspace' || !owner.contentMount)

@@ -428,17 +428,6 @@ async function bindTargetCandidate(
           captureStartedAt: manifest.capture.startedAt,
           lossDetectedAt: now,
         };
-      } else {
-        // A failure after proved safety is a copy failure, never consent to discard current safety.
-        writeFileSync(
-          join(root, 'config/workspace.jsonc'),
-          readFileSync(join(core.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc'))
-        );
-        mkdirSync(join(root, 'catalog'), { recursive: true });
-        writeFileSync(
-          join(root, 'catalog/catalog.json'),
-          JSON.stringify(readWorkspaceResourceCatalog(core.dataRoot, workspaceId))
-        );
       }
     }
     const records = loadWorkspaceFileRecords(dataRoot).find(

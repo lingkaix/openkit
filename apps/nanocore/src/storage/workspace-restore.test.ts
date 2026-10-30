@@ -23,7 +23,12 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import {
+  publishWorkspaceResourceCatalog,
+  readWorkspaceResourceCatalog,
+} from '../catalog/resource-catalog.js';
 import { createChannelServices } from '../channel-services.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   compactWorkspaceEvidenceBundles,
@@ -486,6 +491,24 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(authority);
   }, 120_000);
 
+  it('WM restore step 3: unavailable current config refuses replacement even with lost-safety acknowledgement', async () => {
+    const f = await fixture();
+    const originalPath = workspaceDbPath(f.dataRoot, workspaceId);
+    const original = statSync(originalPath);
+    const before = sha(readFileSync(originalPath));
+    const safety = rows(originalPath, 'evidence_bundles');
+    const authority = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+    const configPath = join(f.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc');
+    // Current safety is readable; only the subsequent current-file copy is unavailable.
+    rmSync(configPath);
+    await refuses(f, 'recovery-required', [...f.argv, '--acknowledge-lost-safety']);
+    expect(statSync(originalPath).ino).toBe(original.ino);
+    expect(sha(readFileSync(originalPath))).toBe(before);
+    expect(rows(originalPath, 'evidence_bundles')).toEqual(safety);
+    expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(authority);
+    expect(existsSync(configPath)).toBe(false);
+  }, 120_000);
+
   it('WM restore preparation: a refused recovery Audit publishes no replacement or success', async () => {
     const f = await fixture(false, true);
     const originalPath = workspaceDbPath(f.dataRoot, workspaceId);
@@ -858,7 +881,24 @@ describe('D0-2 same-deployment restore', () => {
       requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
       workspace: { name: 'Current restricted Workspace', policy: { mediation: policy } },
     });
-    writeFileSync(configPath, JSON.stringify(config));
+    const configBytes = Buffer.from(
+      `// Current post-capture policy: 🌍\r\n${JSON.stringify(config, null, 2)}\r\n`,
+      'utf8'
+    );
+    writeFileSync(configPath, configBytes);
+    const capturedCatalog = readWorkspaceResourceCatalog(f.dataRoot, workspaceId);
+    const currentCatalog = {
+      ...capturedCatalog,
+      revision: capturedCatalog.revision + 1,
+      recoveryNote: 'Current post-capture catalog',
+      mcp: { ...capturedCatalog.mcp, recoveryNote: 'Retained current annotation' },
+    };
+    publishWorkspaceResourceCatalog({
+      dataRoot: f.dataRoot,
+      workspaceId,
+      expectedRevision: capturedCatalog.revision,
+      catalog: currentCatalog,
+    });
     const current = Object.fromEntries(
       ['workspace_registry', 'workspace_members', 'openkit_access_tokens'].map((table) => [
         table,
@@ -882,7 +922,12 @@ describe('D0-2 same-deployment restore', () => {
     for (const [table, expected] of Object.entries(current))
       expect(rows(coreDbPath(f.dataRoot), table)).toEqual(expected);
     expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'evidence_bundles')).toEqual(safety);
-    expect(JSON.parse(readFileSync(configPath, 'utf8')).workspace.policy.mediation).toEqual(policy);
+    expect(readFileSync(configPath)).toEqual(configBytes);
+    expect(
+      WorkspaceConfigSchema.parse(parseJsoncObject(readFileSync(configPath, 'utf8'))).workspace
+        .policy?.mediation
+    ).toEqual(policy);
+    expect(readWorkspaceResourceCatalog(f.dataRoot, workspaceId)).toEqual(currentCatalog);
     expect(output.map((line) => JSON.parse(line))).toEqual([report]);
     expect(output.join('')).not.toContain(f.root);
   }, 120_000);
