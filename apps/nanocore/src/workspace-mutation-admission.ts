@@ -12,9 +12,17 @@ export interface WorkspaceFrozenAdmission {
   readonly release: () => void;
 }
 
+/** Exact retained recovery identity that caused this process-local boot exclusion. */
+export interface WorkspaceRecoveryFreezeOrigin {
+  readonly admissionId: string;
+  readonly revision: number;
+  readonly candidateRef: string;
+}
+
 /** Recovery uses the same closure, with at most its canonical and owned candidate bindings. */
 interface CaptureClosure {
   owner: WorkspaceFrozenAdmission | null;
+  readonly origin?: WorkspaceRecoveryFreezeOrigin;
   recovery?: { readonly canonical?: object; readonly candidate: object };
 }
 
@@ -46,24 +54,79 @@ export class WorkspaceMutationAdmission {
     if (this.isClosed(workspaceId) || state.admitted !== 0) return { status: 'busy' };
     const closure: CaptureClosure = { owner: null };
     state.captureClosed = closure;
-    let blockers: readonly WorkspaceBlocker[];
-    try {
-      blockers = readBlockers();
-    } catch {
-      blockers = [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
-    }
+    const blockers = this.freezeBlockers(readBlockers);
     if (blockers.length !== 0) {
       if (state.captureClosed === closure) state.captureClosed = null;
       return { status: 'blocked', blockers };
     }
-    if (state.captureClosed !== closure) return { status: 'busy' };
+    if (state.captureClosed !== closure || state.closed) return { status: 'busy' };
+    return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Rejoins only the retained origin of an ownerless recovery exclusion, without opening it. */
+  public tryResumeRecovery(
+    workspaceId: string,
+    origin: WorkspaceRecoveryFreezeOrigin,
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): WorkspaceFreezeAdmission {
+    const state = this.gates.get(workspaceId);
+    const closure = state?.captureClosed;
+    if (
+      !state ||
+      state.closed ||
+      state.admitted !== 0 ||
+      !closure ||
+      closure.owner !== null ||
+      closure.origin?.admissionId !== origin.admissionId ||
+      closure.origin.revision !== origin.revision ||
+      closure.origin.candidateRef !== origin.candidateRef
+    )
+      return { status: 'busy' };
+    const blockers = this.freezeBlockers(readBlockers);
+    if (blockers.length !== 0) return { status: 'blocked', blockers };
+    if (
+      state.captureClosed !== closure ||
+      state.closed ||
+      state.admitted !== 0 ||
+      closure.owner !== null
+    )
+      return { status: 'busy' };
+    return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Restores exclusion provenance only; this never recovers a live permission. */
+  public restoreRecoveryClosed(workspaceId: string, origin: WorkspaceRecoveryFreezeOrigin): void {
+    this.state(workspaceId).captureClosed = { owner: null, origin: Object.freeze({ ...origin }) };
+  }
+
+  /** Both entry paths preserve the original closed, typed inspection failure. */
+  private freezeBlockers(
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): readonly WorkspaceBlocker[] {
+    try {
+      return readBlockers();
+    } catch {
+      return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    }
+  }
+
+  /** Gives the same closure a live owner; a resumed release restores its prior exclusion. */
+  private ownFreeze(
+    workspaceId: string,
+    state: WorkspaceMutationGateState,
+    closure: CaptureClosure
+  ): WorkspaceFrozenAdmission {
     let released = false;
     const owner: WorkspaceFrozenAdmission = {
       status: 'frozen',
       release: () => {
         if (released) return;
         released = true;
-        if (state.captureClosed === closure) this.reopen(workspaceId, 'capture');
+        if (state.captureClosed !== closure) return;
+        if (closure.origin) {
+          closure.owner = null;
+          delete closure.recovery;
+        } else this.reopen(workspaceId, 'capture');
       },
     };
     closure.owner = owner;

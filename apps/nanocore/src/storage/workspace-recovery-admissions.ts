@@ -5,7 +5,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import type {
+  WorkspaceFreezeAdmission,
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
@@ -56,6 +58,67 @@ export interface RecoveryAdmission {
   readonly revision: number;
   readonly candidate_ref: string;
   readonly proof: RecoveryProof;
+}
+
+/** Rejoins the exact boot-restored exclusion without clearing scoped authority failure. */
+export function resumeWorkspaceRecoveryOwner(
+  core: CoreDb,
+  owned: RecoveryAdmission,
+  admission: WorkspaceMutationAdmission,
+  readBlockers: Parameters<WorkspaceMutationAdmission['tryFreeze']>[1]
+): WorkspaceFreezeAdmission {
+  const current = readRecoveryAdmission(core, owned.admission_id);
+  const failures = scopeAdmissionFailures(core.dataRoot).filter(
+    (failure) =>
+      failure.scope === 'workspace' &&
+      failure.id === owned.workspace_id &&
+      failure.check !== 'index'
+  );
+  const unresolved = recoveryAdmissions(core, owned.workspace_id).filter(
+    (row) =>
+      row.workspace_id === owned.workspace_id &&
+      (row.state === 'prepared' ||
+        (row.admission_id.startsWith('wsbak_') && row.state === 'finished') ||
+        (row.state === 'abandoned' &&
+          ['moved-out', 'quarantined'].includes(row.proof.result.disposition)))
+  );
+  if (
+    !current ||
+    !isDeepStrictEqual(current, owned) ||
+    current.state !== 'prepared' ||
+    !RequestIdSchema.safeParse(current.admission_id).success ||
+    !['restore', 'move-in'].includes(current.proof.input.command) ||
+    current.candidate_ref !==
+      join(
+        `${resolve(core.dataRoot)}.workspace-recovery-${current.admission_id}`,
+        'workspaces',
+        current.workspace_id
+      ) ||
+    unresolved.length !== 1 ||
+    unresolved[0]!.admission_id !== current.admission_id ||
+    failures.length !== 1 ||
+    failures[0]!.check !== 'recovery'
+  )
+    refuseRecovery('recovery-required');
+  return admission.tryResumeRecovery(
+    current.workspace_id,
+    {
+      admissionId: current.admission_id,
+      revision: current.revision,
+      candidateRef: current.candidate_ref,
+    },
+    readBlockers
+  );
+}
+
+/** Uses the existing Core selection for both predecessor discovery and exclusive recovery ownership. */
+function recoveryAdmissions(core: CoreDb, workspaceId?: string): RecoveryAdmission[] {
+  const ids = core.sqlite
+    .prepare(
+      'SELECT admission_id FROM workspace_recovery_admissions WHERE (? IS NULL OR workspace_id=?)'
+    )
+    .all(workspaceId ?? null, workspaceId ?? null) as { admission_id: string }[];
+  return ids.map(({ admission_id }) => readRecoveryAdmission(core, admission_id)!);
 }
 
 /** Binds the exact prepared recovery's physical databases to its still-live mutation freeze. */
@@ -141,11 +204,7 @@ export function listWorkspaceRecoveryPredecessors(
   core: CoreDb
 ): readonly { dataRoot: string; workspaceId: string }[] {
   const predecessors: { dataRoot: string; workspaceId: string }[] = [];
-  const ids = core.sqlite
-    .prepare('SELECT admission_id FROM workspace_recovery_admissions')
-    .all() as { admission_id: string }[];
-  for (const { admission_id: id } of ids) {
-    const owned = readRecoveryAdmission(core, id)!;
+  for (const owned of recoveryAdmissions(core)) {
     if (owned.proof.input.command !== 'restore') continue;
     if (!RequestIdSchema.safeParse(owned.admission_id).success) refuseRecovery('recovery-required');
     const container = `${resolve(core.dataRoot)}.workspace-recovery-${owned.admission_id}`;

@@ -23,4 +23,6 @@ Personal Workspace boot resolution uses the Core User current binding. Terminal 
 
 Workspace recovery rebuilds the existing mutation fence from its quarantine census before recurrence scanners start. Prepared MOVE and unfinished manual captures stay closed across restart, including repeated inspection of an already refused scope; index-only degradation leaves mutation admission unchanged.
 
+When exactly one Core recovery owns a refused target, the restored closure records that admission's identity, revision and candidate. Explicit recovery can rejoin only that same closure after fresh Core and recovery-only authority checks; release returns it to quarantine. Generic refusals provide no recovery permission, and this join neither clears readiness nor composes live recovery operations.
+
 Before scoped migrations, restart abandons only an explicitly automatic, active capture with no local seal. This uses the existing capture decision owner while the data-root lock is held and before native/request publishers start. An absent origin column supplies no automatic proof; manual, sealed, ambiguous and independently refused scopes keep their existing inspection and quarantine.

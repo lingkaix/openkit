@@ -95,6 +95,66 @@ describe('Workspace freeze admission', () => {
     releaseMutation!();
   });
 
+  it('rejoins only exact boot recovery provenance without reopening the quarantined target', () => {
+    const gate = new WorkspaceMutationAdmission();
+    const origin = { admissionId: 'owned-recovery', revision: 1, candidateRef: '/owned/candidate' };
+    gate.restoreRecoveryClosed(workspaceId, origin);
+    const inspect = vi.fn(() => {
+      expect(gate.enter(workspaceId)).toBeNull();
+      expect(gate.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+      return [];
+    });
+    expect(gate.tryFreeze(workspaceId, inspect)).toEqual({ status: 'busy' });
+    expect(gate.tryResumeRecovery(workspaceId, { ...origin, revision: 2 }, inspect)).toEqual({
+      status: 'busy',
+    });
+    expect(
+      gate.tryResumeRecovery(workspaceId, { ...origin, candidateRef: '/other/candidate' }, inspect)
+    ).toEqual({ status: 'busy' });
+    expect(
+      gate.tryResumeRecovery(workspaceId, { ...origin, admissionId: 'other-recovery' }, inspect)
+    ).toEqual({ status: 'busy' });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gate.tryResumeRecovery(workspaceId, origin, () => [turnBlocker])).toEqual({
+      status: 'blocked',
+      blockers: [turnBlocker],
+    });
+    expect(gate.enter(workspaceId)).toBeNull();
+    const resumed = gate.tryResumeRecovery(workspaceId, { ...origin }, inspect);
+    if (resumed.status !== 'frozen') throw new Error('Expected the exact recovery owner.');
+    const candidate = {};
+    gate.bindRecovery(workspaceId, resumed, { candidate });
+    expect(gate.isRecoveryBinding(workspaceId, resumed, candidate)).toBe(true);
+    expect(gate.tryResumeRecovery(workspaceId, origin, inspect)).toEqual({ status: 'busy' });
+    const sibling = gate.enter(siblingId);
+    expect(sibling).toBeTypeOf('function');
+    sibling!();
+    resumed.release();
+    expect(gate.isRecoveryBinding(workspaceId, resumed, candidate)).toBe(false);
+    expect(gate.enter(workspaceId)).toBeNull();
+    const replacement = gate.tryResumeRecovery(workspaceId, origin, inspect);
+    if (replacement.status !== 'frozen') throw new Error('Expected an explicit exact-owner retry.');
+    resumed.release();
+    expect(gate.ownsFreeze(workspaceId, replacement)).toBe(true);
+    replacement.release();
+    expect(gate.isClosed(workspaceId, 'capture')).toBe(true);
+  });
+
+  it('does not turn ownerless or independently closed admission into recovery authority', () => {
+    const gate = new WorkspaceMutationAdmission();
+    const origin = { admissionId: 'owned-recovery', revision: 1, candidateRef: '/owned/candidate' };
+    const inspect = vi.fn(() => []);
+    gate.restoreClosed(workspaceId, 'capture');
+    expect(gate.tryResumeRecovery(workspaceId, origin, inspect)).toEqual({ status: 'busy' });
+    const independent = new WorkspaceMutationAdmission();
+    independent.restoreRecoveryClosed(workspaceId, origin);
+    independent.restoreClosed(workspaceId);
+    expect(independent.tryResumeRecovery(workspaceId, origin, inspect)).toEqual({ status: 'busy' });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gate.enter(workspaceId)).toBeNull();
+    expect(independent.enter(workspaceId)).toBeNull();
+  });
+
   it('limits recovery bindings to the exact live gate, Workspace and current binding objects', () => {
     const gate = new WorkspaceMutationAdmission();
     const otherGate = new WorkspaceMutationAdmission();

@@ -23,6 +23,8 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
+import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from '../bootstrap/readiness.js';
+import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import {
   publishWorkspaceResourceCatalog,
@@ -67,6 +69,7 @@ import { nativeProductScope, readNativeTurnHistory } from './workspace-file-reco
 import {
   bindWorkspaceRecoveryNativeOwner,
   readRecoveryAdmission,
+  resumeWorkspaceRecoveryOwner,
 } from './workspace-recovery-admissions.js';
 import {
   runWorkspaceRecoveryCli,
@@ -490,6 +493,105 @@ describe('D0-2 same-deployment restore', () => {
       freeze.release();
       core.sqlite.close();
       lock.release();
+    }
+  }, 120_000);
+
+  it('rejoins the exact Core recovery owner after boot without clearing scoped quarantine', async () => {
+    const f = await fixture();
+    let reachedPlacement = false;
+    await expect(
+      admitWorkspaceBackup(
+        {
+          command: 'restore',
+          dataRoot: f.dataRoot,
+          bundleRoot: f.bundleRoot,
+          workspaceId,
+          requestId: f.requestId,
+          acknowledgeLostSafety: false,
+          expectedRelease: f.manifest.release,
+        },
+        {
+          atBoundary: (point) => {
+            if (point !== 'before-target-rename') return;
+            reachedPlacement = true;
+            throw new Error('Interrupt a real prepared recovery before canonical placement.');
+          },
+        }
+      )
+    ).rejects.toMatchObject({ code: 'recovery-required' });
+    expect(reachedPlacement).toBe(true);
+    const core = openCoreDb(f.dataRoot);
+    try {
+      const owned = readRecoveryAdmission(core, f.requestId)!;
+      expect(owned.state).toBe('prepared');
+      const gate = new WorkspaceMutationAdmission();
+      restoreWorkspaceRecoveryAdmission(core, gate);
+      const failures = scopeAdmissionFailures(f.dataRoot);
+      expect(failures).toContainEqual({ scope: 'workspace', id: workspaceId, check: 'recovery' });
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      const inspect = vi.fn(() => {
+        expect(gate.enter(workspaceId)).toBeNull();
+        return [];
+      });
+      expect(gate.tryFreeze(workspaceId, inspect)).toEqual({ status: 'busy' });
+      const client = getControlStoreWorkerClient(gate);
+      const scope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId });
+      const command = {
+        database: `workspace:${scope.path}`,
+        path: scope.path,
+        dataRoot: f.dataRoot,
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+        create: false,
+        initialize: 'workspace' as const,
+      };
+      await expect(client.open(command)).rejects.toMatchObject({ code: 'workspace_frozen' });
+      expect(() =>
+        resumeWorkspaceRecoveryOwner(
+          core,
+          { ...owned, revision: owned.revision + 1 },
+          gate,
+          inspect
+        )
+      ).toThrow(WorkspaceRecoveryError);
+      expect(() =>
+        resumeWorkspaceRecoveryOwner(core, { ...owned, admission_id: randomUUID() }, gate, inspect)
+      ).toThrow(WorkspaceRecoveryError);
+      expect(inspect).not.toHaveBeenCalled();
+      const resumed = resumeWorkspaceRecoveryOwner(core, owned, gate, inspect);
+      if (resumed.status !== 'frozen') throw new Error('Expected the exact boot recovery owner.');
+      const native = bindWorkspaceRecoveryNativeOwner(core, owned, gate, resumed);
+      expect(native.candidate.freeze).toBe(resumed);
+      expect(native.canonical?.freeze).toBe(resumed);
+      expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      const siblingId = allocateEntityId('ws');
+      const sibling = gate.enter(siblingId);
+      expect(sibling).toBeTypeOf('function');
+      sibling!();
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', siblingId)).toBe(true);
+      resumed.release();
+      expect(gate.ownsFreeze(workspaceId, resumed)).toBe(false);
+      expect(gate.enter(workspaceId)).toBeNull();
+      const retried = resumeWorkspaceRecoveryOwner(core, owned, gate, inspect);
+      if (retried.status !== 'frozen') throw new Error('Expected an explicit exact-owner retry.');
+      resumed.release();
+      expect(gate.ownsFreeze(workspaceId, retried)).toBe(true);
+      retried.release();
+      // A superseding independent refusal is a negative fault, never recovery authority.
+      refuseScope(f.dataRoot, { scope: 'workspace', id: workspaceId, check: 'retired' });
+      expect(() => resumeWorkspaceRecoveryOwner(core, owned, gate, inspect)).toThrow(
+        WorkspaceRecoveryError
+      );
+      expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual({
+        scope: 'workspace',
+        id: workspaceId,
+        check: 'retired',
+      });
+      expect(gate.enter(workspaceId)).toBeNull();
+      expect(readRecoveryAdmission(core, f.requestId)).toEqual(owned);
+    } finally {
+      core.sqlite.close();
     }
   }, 120_000);
 
