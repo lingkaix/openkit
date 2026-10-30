@@ -65,7 +65,7 @@ import {
   fieldColumnName,
   quoteIdent,
 } from './native.js';
-import { admitLightAppSchema } from './schema.js';
+import { admitLightAppSchema, assertSafeSchemaEvolution } from './schema.js';
 import {
   assertSnapshotIntegrity,
   readLightAppSnapshot,
@@ -331,6 +331,7 @@ export async function updateLightAppSchema(
         const admitted = sourceSelection
           ? LightAppAdmittedSchemaSchema.parse({ ...schema, appId, schemaRevision })
           : admitLightAppSchema(schema, appId, schemaRevision, parseSchema(current));
+        if (sourceSelection) assertSafeSchemaEvolution(admitted, parseSchema(current));
         const schemaJson = `${JSON.stringify(admitted)}\n`;
         const schemaDigest = persistDefinition(
           lightAppRoot(context.dataRoot, context.workspaceId, appId),

@@ -235,7 +235,10 @@ function resolveSelector(selector: string, ids: Map<string, string>, label: stri
  * @param next Resolved proposed schema.
  * @param existing Admitted schema.
  */
-function assertSafeSchemaEvolution(next: LightAppSchemaInput, existing: LightAppSchemaInput): void {
+export function assertSafeSchemaEvolution(
+  next: LightAppSchemaInput,
+  existing: LightAppSchemaInput
+): void {
   for (const previous of existing.collections) {
     const match = next.collections.find((collection) => collection.id === previous.id);
     if (!match) {
