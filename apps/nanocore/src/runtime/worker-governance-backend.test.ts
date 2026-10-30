@@ -515,16 +515,19 @@ describe('exact AEP network projection', () => {
     expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
   });
 
-  it.each(['id', 'host', 'port', 'protocol', 'binaries'] as const)(
-    'refuses an allow rule without %s instead of omitting or completing it',
-    async (field) => {
-      const pkg = await createNanoHostPackage();
-      const { [field]: _omitted, ...incomplete } = grant;
-      pkg.policy.network!.rules = [incomplete];
+  it.each([
+    'id',
+    'host',
+    'port',
+    'protocol',
+    'binaries',
+  ] as const)('refuses an allow rule without %s instead of omitting or completing it', async (field) => {
+    const pkg = await createNanoHostPackage();
+    const { [field]: _omitted, ...incomplete } = grant;
+    pkg.policy.network!.rules = [incomplete];
 
-      expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
-    }
-  );
+    expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+  });
 
   it('refuses an allow rule with no binary constraints instead of omitting it', async () => {
     const pkg = await createNanoHostPackage();
