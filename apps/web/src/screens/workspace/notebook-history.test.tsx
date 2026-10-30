@@ -37,7 +37,11 @@ function renderNotebook({
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const path = new URL(String(input)).pathname;
     if (path === '/api/meta')
-      return Response.json({ protocolVersion: '1', capabilities: [], eventFamilies: [] });
+      return Response.json({
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: [],
+        eventFamilies: [],
+      });
     const body = JSON.parse(String(init?.body));
     switch (path) {
       case operationHttpPath('workspace.list'):

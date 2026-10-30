@@ -3,6 +3,7 @@ import {
   ListAuthorizedWorkspacesResponseSchema,
 } from '@openkit/app-api-schemas';
 import { createCoreClient, type WorkspaceRecord } from '@openkit/core-client';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -111,7 +112,15 @@ function renderConsumers(
 ) {
   let items = options.items ?? RELATIONSHIPS;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-    expect(new URL(String(input)).pathname).toBe('/api/app/operations/workspace.list');
+    const path = new URL(String(input)).pathname;
+    if (path === '/api/meta') {
+      return Response.json({
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: [],
+        eventFamilies: [],
+      });
+    }
+    expect(path).toBe('/api/app/operations/workspace.list');
     expect(init?.method).toBe('POST');
     const response = ListAuthorizedWorkspacesResponseSchema.parse({ items });
     return new Response(JSON.stringify(response), {

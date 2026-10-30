@@ -1,6 +1,6 @@
 import { operationHttpPath } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -71,7 +71,7 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
     const path = new URL(String(input)).pathname;
     let body: unknown;
     if (path === '/api/meta') {
-      body = { protocolVersion: '1', capabilities: [], eventFamilies: [] };
+      body = { protocolVersion: PROTOCOL_VERSION, capabilities: [], eventFamilies: [] };
     } else {
       expect(init?.method).toBe('POST');
       const request = JSON.parse(String(init?.body));
