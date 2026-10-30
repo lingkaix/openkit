@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { RequestIdSchema } from '@openkit/protocol';
+import { isEntityId, RequestIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import { z } from 'zod';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import type {
@@ -400,7 +401,135 @@ export async function withRecoveryRoot<T>(
     lock?.release();
   }
 }
-/** Reads the retained core before any bundle or mapping revalidation. */
+const retainedPath = z.string().min(1);
+const retainedRelease = z.object({ version: retainedPath, buildId: retainedPath }).optional();
+const backupIdentity = z.string().refine((value) => isEntityId('wsbak', value));
+const retainedRecoveryIntent = z.discriminatedUnion('command', [
+  z.strictObject({
+    command: z.literal('capture'),
+    source: z.discriminatedUnion('kind', [
+      z.strictObject({ kind: z.literal('live-workspace') }),
+      z.strictObject({ kind: z.literal('stopped-data-root'), dataRoot: retainedPath }),
+      z.strictObject({ kind: z.literal('data-root-backup'), backupRoot: retainedPath }),
+    ]),
+    workspaceId: WorkspaceIdSchema,
+    expectedSourceDeploymentId: z.string().refine((value) => isEntityId('dep', value)),
+    bundleRoot: retainedPath,
+    backupId: backupIdentity,
+    purpose: z.literal('move'),
+  }),
+  z.strictObject({
+    command: z.literal('move-out'),
+    dataRoot: retainedPath,
+    workspaceId: WorkspaceIdSchema,
+    backupId: backupIdentity,
+    bundleRoot: retainedPath,
+    expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    expectedRelease: retainedRelease,
+  }),
+  z.strictObject({
+    command: z.literal('restore'),
+    dataRoot: retainedPath,
+    bundleRoot: retainedPath,
+    workspaceId: WorkspaceIdSchema,
+    requestId: RequestIdSchema,
+    acknowledgeLostSafety: z.boolean(),
+    expectedRelease: retainedRelease,
+  }),
+  z.strictObject({
+    command: z.literal('move-in'),
+    dataRoot: retainedPath,
+    bundleRoot: retainedPath,
+    requestId: RequestIdSchema,
+    targetOwnerId: UserIdSchema,
+    memberMappings: z.array(
+      z.strictObject({
+        sourceAccountId: UserIdSchema,
+        targetAccountId: UserIdSchema,
+      })
+    ),
+    expectedRelease: retainedRelease,
+  }),
+]);
+
+/** Validates original authority-bearing intent without treating current accounts as historical facts. */
+function validateRecoveryProof(id: string, candidate: string, proof: RecoveryProof) {
+  const parsed = retainedRecoveryIntent.safeParse(proof.input);
+  if (!parsed.success) refuseRecovery('recovery-required');
+  const input = parsed.data;
+  const manifest = parseWorkspaceBackupManifest(proof.manifest);
+  const capture = proof.capture;
+  if (
+    !capture ||
+    !proof.result ||
+    !/^sha256:[0-9a-f]{64}$/.test(capture.manifestDigest) ||
+    capture.backupId !== manifest.backupId ||
+    capture.workspaceId !== manifest.workspaceId ||
+    capture.sourceDeploymentId !== manifest.sourceDeploymentId ||
+    capture.capturedRevision !== manifest.capturedRevision ||
+    proof.result.workspaceId !== manifest.workspaceId ||
+    !proof.result.capture ||
+    (
+      [
+        'backupId',
+        'workspaceId',
+        'sourceDeploymentId',
+        'capturedRevision',
+        'manifestDigest',
+      ] as const
+    ).some((key) => proof.result.capture![key] !== capture[key]) ||
+    (proof.candidateDigest !== undefined && !/^[0-9a-f]{64}$/.test(proof.candidateDigest))
+  )
+    refuseRecovery('recovery-required');
+  if (input.command === 'capture' || input.command === 'move-out') {
+    if (
+      id !== manifest.backupId ||
+      input.backupId !== id ||
+      input.workspaceId !== manifest.workspaceId ||
+      manifest.purpose !== 'move' ||
+      (isAbsolute(input.bundleRoot) && resolve(input.bundleRoot) !== resolve(candidate)) ||
+      (input.command === 'capture'
+        ? input.expectedSourceDeploymentId !== manifest.sourceDeploymentId
+        : input.expectedRevision !== manifest.capturedRevision)
+    )
+      refuseRecovery('recovery-required');
+  } else {
+    // These are original descriptor paths, not current-location authority after a data-root move.
+    if (
+      input.requestId !== id ||
+      (isAbsolute(input.dataRoot) &&
+        candidate !==
+          join(
+            `${resolve(input.dataRoot)}.workspace-recovery-${id}`,
+            'workspaces',
+            manifest.workspaceId
+          )) ||
+      (input.command === 'restore'
+        ? input.workspaceId !== manifest.workspaceId || manifest.purpose !== 'backup'
+        : manifest.purpose !== 'move')
+    )
+      refuseRecovery('recovery-required');
+    if (input.command === 'move-in') {
+      const sources = new Set<string>([manifest.accounts.ownerId, ...manifest.accounts.memberIds]);
+      const mapped = new Set<string>();
+      const targets = new Map<string, string>([[input.targetOwnerId, manifest.accounts.ownerId]]);
+      for (const pair of input.memberMappings) {
+        if (
+          !sources.has(pair.sourceAccountId) ||
+          mapped.has(pair.sourceAccountId) ||
+          (targets.has(pair.targetAccountId) &&
+            targets.get(pair.targetAccountId) !== pair.sourceAccountId)
+        )
+          refuseRecovery('recovery-required');
+        mapped.add(pair.sourceAccountId);
+        targets.set(pair.targetAccountId, pair.sourceAccountId);
+      }
+    }
+  }
+  return { ...proof, manifest };
+}
+
+/** Reads the closed original intent before any bundle, current mapping or effect revalidation. */
 export function readRecoveryAdmission(core: CoreDb, id: string): RecoveryAdmission | undefined {
   const row = core.sqlite
     .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
@@ -408,18 +537,23 @@ export function readRecoveryAdmission(core: CoreDb, id: string): RecoveryAdmissi
     | (Omit<RecoveryAdmission, 'proof'> & { proof_json: string; schema_version: number })
     | undefined;
   if (!row) return undefined;
-  const proof = JSON.parse(row.proof_json) as RecoveryProof;
-  const manifest = parseWorkspaceBackupManifest(proof.manifest);
+  let proof: RecoveryProof;
+  try {
+    proof = validateRecoveryProof(id, row.candidate_ref, JSON.parse(row.proof_json));
+  } catch {
+    refuseRecovery('recovery-required');
+  }
   if (
     row.schema_version !== 1 ||
     !['prepared', 'finished', 'abandoned'].includes(row.state) ||
+    !Number.isSafeInteger(row.revision) ||
     row.revision < 1 ||
-    manifest.backupId !== row.backup_id ||
-    manifest.workspaceId !== row.workspace_id ||
-    proof.capture.manifestDigest !== proof.result.capture?.manifestDigest
+    proof.manifest.purpose !== row.purpose ||
+    proof.manifest.backupId !== row.backup_id ||
+    proof.manifest.workspaceId !== row.workspace_id
   )
     refuseRecovery('recovery-required');
-  return { ...row, proof: { ...proof, manifest } };
+  return { ...row, proof };
 }
 /** Creates ownership before placement; the enclosing caller holds the root lock. */
 export function prepareRecoveryAdmission(
@@ -428,6 +562,7 @@ export function prepareRecoveryAdmission(
   candidate: string,
   proof: RecoveryProof
 ): void {
+  validateRecoveryProof(id, candidate, proof);
   const now = new Date().toISOString();
   core.sqlite
     .prepare(

@@ -6,6 +6,7 @@ import {
   type WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS,
   WorkspaceSnapshotReportSchema,
 } from '@openkit/app-api-schemas';
+import { compareCodeUnits } from '@openkit/protocol';
 import {
   isScopeAdmitted,
   refuseScope,
@@ -128,8 +129,8 @@ function requestIdentity(input: TargetArgs) {
         input.targetOwnerId,
         [...input.memberMappings].sort(
           (a, b) =>
-            a.sourceAccountId.localeCompare(b.sourceAccountId) ||
-            a.targetAccountId.localeCompare(b.targetAccountId)
+            compareCodeUnits(a.sourceAccountId, b.sourceAccountId) ||
+            compareCodeUnits(a.targetAccountId, b.targetAccountId)
         ),
       ];
 }
