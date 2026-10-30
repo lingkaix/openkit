@@ -22,6 +22,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import {
   publishWorkspaceResourceCatalog,
@@ -54,7 +55,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { writeHotDataRootBackup } from './data-root-backup.js';
+import { inventoryRegularFiles, writeHotDataRootBackup } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
@@ -72,7 +73,7 @@ import {
   type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
-import { admitWorkspaceBackup } from './workspace-restore.js';
+import { admitWorkspaceBackup, admitWorkspaceBackupAtCore } from './workspace-restore.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) };
@@ -412,6 +413,86 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('prepares an admitted frozen target under the existing root lock without publishing it', async () => {
+    const f = await fixture();
+    const gate = new WorkspaceMutationAdmission();
+    const freeze = gate.tryFreeze(workspaceId, () => []);
+    if (freeze.status !== 'frozen') throw new Error('Expected an admitted target freeze.');
+    const core = openCoreDb(f.dataRoot);
+    const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
+    try {
+      getControlStoreWorkerClient(gate);
+      let preparedCapacityChecks = 0;
+      const owner = {
+        core,
+        fileAdmission: new FileStorageAdmission(
+          f.dataRoot,
+          () => 128n * 1024n * 1024n,
+          () => {
+            if (readRecoveryAdmission(core, f.requestId)?.state === 'prepared')
+              preparedCapacityChecks++;
+            return 512n * 1024n * 1024n;
+          }
+        ),
+        native: { gate, freeze },
+      };
+      const input = {
+        command: 'restore' as const,
+        dataRoot: f.dataRoot,
+        bundleRoot: f.bundleRoot,
+        workspaceId,
+        requestId: f.requestId,
+        acknowledgeLostSafety: false,
+        expectedRelease: f.manifest.release,
+      };
+      const path = workspaceDbPath(f.dataRoot, workspaceId);
+      const original = sha(readFileSync(path));
+      const registry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+      const wrongRoot = join(f.root, 'unrelated-target');
+      await expect(
+        admitWorkspaceBackupAtCore(owner, { ...input, dataRoot: wrongRoot })
+      ).rejects.toBeInstanceOf(WorkspaceRecoveryError);
+      expect(existsSync(wrongRoot)).toBe(false);
+      expect(readRecoveryAdmission(core, f.requestId)).toBeUndefined();
+      let reachedPlacement = false;
+      let capacityChecksBeforePlacement = 0;
+      let ordinary: Promise<unknown> | undefined;
+      await expect(
+        admitWorkspaceBackupAtCore(owner, input, {
+          atBoundary: (point) => {
+            if (point !== 'before-target-rename') return;
+            reachedPlacement = true;
+            capacityChecksBeforePlacement = preparedCapacityChecks;
+            ordinary = f.store
+              .createThread(workspaceId, 'Ordinary mutation remains frozen')
+              .catch((error: unknown) => error);
+            throw new Error('Stop admitted preparation before canonical placement.');
+          },
+        })
+      ).rejects.toBeInstanceOf(Error);
+      expect(reachedPlacement).toBe(true);
+      expect(capacityChecksBeforePlacement).toBeGreaterThan(0);
+      expect(await ordinary).toMatchObject({ code: 'workspace_frozen' });
+      expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
+      const owned = readRecoveryAdmission(core, f.requestId)!;
+      expect(owned).toMatchObject({ state: 'prepared', workspace_id: workspaceId });
+      expect(owned.proof.manifest).toEqual(f.manifest);
+      expect(owned.proof.result.disposition).toBe('quarantined');
+      expect(owned.proof.candidateDigest).toBe(
+        createHash('sha256')
+          .update(JSON.stringify(inventoryRegularFiles(owned.candidate_ref)))
+          .digest('hex')
+      );
+      expect(sha(readFileSync(path))).toBe(original);
+      expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
+      await expect(admitWorkspaceBackup(input)).rejects.toMatchObject({ code: 'root-locked' });
+    } finally {
+      freeze.release();
+      core.sqlite.close();
+      lock.release();
+    }
+  }, 120_000);
+
   it('keeps native recovery authority exact through freeze, rebinding and deferred posting', async () => {
     const f = await fixture();
     let reachedPlacement = false;
