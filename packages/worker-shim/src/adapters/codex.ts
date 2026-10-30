@@ -109,10 +109,16 @@ export function codexLaunchArguments(): readonly string[] {
 export function normalizeCodexAssistant(
   status: string,
   texts: readonly string[],
-  interruptRequested = false
+  interruptRequested = false,
+  codexErrorInfo?: string
 ): WorkerAdapterResult {
   if (status === 'process-exited' || status === 'identity-mismatch') {
     return { assistantText: null, status: 'failed', stopReason: status };
+  }
+  if (codexErrorInfo === 'contextWindowExceeded') {
+    if (status === 'failed') return { assistantText: null, status: 'length', stopReason: 'length' };
+    if (status === 'completed')
+      return { assistantText: null, status: 'failed', stopReason: 'malformed-result' };
   }
   if (status === 'interrupted' || status === 'failed') {
     return {
@@ -285,10 +291,17 @@ function assistantTexts(value: unknown): string[] {
   return texts;
 }
 
-/** Selects the correlated native explanation without additional details or provider payloads. */
-function codexTurnErrorMessage(value: unknown): string | undefined {
-  const message = (value as { error?: { message?: unknown } } | null)?.error?.message;
-  return typeof message === 'string' ? message : undefined;
+/** Reads only the correlated terminal explanation and native error discriminant. */
+function codexTurnError(value: unknown): {
+  errorMessage?: string | undefined;
+  codexErrorInfo?: string | undefined;
+} {
+  const error = (value as { error?: { message?: unknown; codexErrorInfo?: unknown } } | null)
+    ?.error;
+  return {
+    errorMessage: typeof error?.message === 'string' ? error.message : undefined,
+    codexErrorInfo: typeof error?.codexErrorInfo === 'string' ? error.codexErrorInfo : undefined,
+  };
 }
 
 const KNOWN_ITEM_TYPES = new Set(codexThreadItemTypes());
@@ -359,6 +372,7 @@ class CodexResidentSession implements WorkerResidentSession {
         texts: readonly string[];
         interruptRequested: boolean;
         errorMessage?: string | undefined;
+        codexErrorInfo?: string | undefined;
       }) => void;
       reject: (error: Error) => void;
     }
@@ -370,6 +384,7 @@ class CodexResidentSession implements WorkerResidentSession {
     texts: readonly string[];
     interruptRequested: boolean;
     errorMessage?: string | undefined;
+    codexErrorInfo?: string | undefined;
   } | null = null;
   private acceptingTurn = false;
   /** Per-Turn delivery evidence; no native effort selection is cached. */
@@ -998,6 +1013,7 @@ class CodexResidentSession implements WorkerResidentSession {
             texts: readonly string[];
             interruptRequested: boolean;
             errorMessage?: string | undefined;
+            codexErrorInfo?: string | undefined;
           }>((resolve, reject) => {
             this.turnWaiters.set(turnId, { resolve, reject });
           })
@@ -1006,7 +1022,7 @@ class CodexResidentSession implements WorkerResidentSession {
               status,
               texts: assistantTexts(turn),
               interruptRequested: this.interruptRequested,
-              errorMessage: codexTurnErrorMessage(turn),
+              ...codexTurnError(turn),
             }
           );
     this.earlyTerminal = null;
@@ -1051,8 +1067,15 @@ class CodexResidentSession implements WorkerResidentSession {
         let result = normalizeCodexAssistant(
           outcome.status,
           outcome.texts,
-          outcome.interruptRequested
+          outcome.interruptRequested,
+          outcome.codexErrorInfo
         );
+        // Contradictory terminal evidence cannot keep a reusable resident binding.
+        if (
+          result.stopReason === 'malformed-result' &&
+          outcome.codexErrorInfo === 'contextWindowExceeded'
+        )
+          void this.invalidateTurn('malformed-result').catch(() => undefined);
         if (result.status !== 'completed' && outcome.errorMessage) {
           result = {
             ...result,
@@ -1189,10 +1212,10 @@ class CodexResidentSession implements WorkerResidentSession {
     this.terminalSeen = true;
     // Snapshot at correlation, including terminals arriving before turn/start acknowledges.
     const interruptRequested = this.interruptRequested;
-    const errorMessage = codexTurnErrorMessage(turn);
-    if (waiter) waiter.resolve({ status, texts, interruptRequested, errorMessage });
+    const error = codexTurnError(turn);
+    if (waiter) waiter.resolve({ status, texts, interruptRequested, ...error });
     else if (this.acceptingTurn && !this.earlyTerminal)
-      this.earlyTerminal = { turnId: turn.id, status, texts, interruptRequested, errorMessage };
+      this.earlyTerminal = { turnId: turn.id, status, texts, interruptRequested, ...error };
     else void this.invalidateTurn('identity-mismatch').catch(() => undefined);
   }
 

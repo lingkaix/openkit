@@ -1472,6 +1472,59 @@ describe('Codex App Server adapter', () => {
     await expect.poll(() => broken.length).toBe(1);
   });
 
+  it.each([
+    'terminal-context-limit',
+    'terminal-context-limit-before',
+    'terminal-context-limit-same-chunk',
+  ] as const)('preserves only correlated terminal context limits as length: %s', async (mode) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const child = spawnScriptedCodex(mode);
+    trackChild(child);
+    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+    sessions.push(session);
+    const result = await (await session.startTurn(turnInput(roots, []))).settled;
+    expect(result).toMatchObject({ status: 'length', stopReason: 'length', assistantText: null });
+    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+    await expect(session.close()).rejects.toThrow(
+      'Codex close has no proved native drain/persistence flush boundary for this path.'
+    );
+    expect(session.childState()).toBe('absent');
+  });
+
+  it.each([
+    'terminal-retryable-context-error',
+    'terminal-unrelated-context-error',
+  ] as const)('does not infer a terminal limit from an error notification: %s', async (mode) => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const child = spawnScriptedCodex(mode);
+    trackChild(child);
+    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+    sessions.push(session);
+    expect(await (await session.startTurn(turnInput(roots, []))).settled).toMatchObject({
+      status: 'completed',
+      stopReason: 'completed',
+      assistantText: 'ok',
+    });
+  });
+
+  it('refuses contradictory completed terminal context-limit evidence', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const child = spawnScriptedCodex('terminal-context-contradiction');
+    trackChild(child);
+    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+    sessions.push(session);
+    expect(await (await session.startTurn(turnInput(roots, []))).settled).toMatchObject({
+      status: 'failed',
+      stopReason: 'malformed-result',
+      assistantText: null,
+    });
+    expect(session.childState()).toBe('absent');
+    expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+  });
+
   it('retains the correlated native failure cause without a rollout or ready handle', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
@@ -3969,6 +4022,12 @@ function spawnScriptedCodex(
     | 'tu_00000000-0000-7372-9cc2-2110ff1e46dc'
     | 'tu_00000000-0000-7eb4-95e8-3f9483ed62e1'
     | 'terminal-failed'
+    | 'terminal-context-limit'
+    | 'terminal-context-limit-before'
+    | 'terminal-context-limit-same-chunk'
+    | 'terminal-context-contradiction'
+    | 'terminal-retryable-context-error'
+    | 'terminal-unrelated-context-error'
     | 'terminal-same-chunk'
     | 'terminal-before'
     | 'terminal-missing-thread'
@@ -4038,15 +4097,24 @@ process.stdin.on('data', (chunk) => {
     if (msg.method === 'turn/start' && (mode.startsWith('terminal-') || mode === 'additive-before-terminal')) {
       const accepted = { id: msg.id, result: { turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: 'inProgress', items: [] } } };
       const item = mode === 'terminal-unknown-item' ? { type: 'futureCoreItem', text: 'bad' } : { type: 'agentMessage', text: mode === 'terminal-malformed-assistant' ? 7 : 'ok' };
+      const contextLimit = mode.startsWith('terminal-context-limit');
+      const contradictoryLimit = mode === 'terminal-context-contradiction';
+      const errorNotification = mode === 'terminal-retryable-context-error' || mode === 'terminal-unrelated-context-error';
+      if (errorNotification) send({ method: 'error', params: {
+        threadId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        turnId: mode === 'terminal-unrelated-context-error' ? 'another-native-turn' : 'tu_00000000-0000-7b0b-8bae-fd496e9bd143',
+        willRetry: mode === 'terminal-retryable-context-error',
+        error: { message: 'Notification only.', codexErrorInfo: 'contextWindowExceeded' }
+      }});
       const terminal = { method: 'turn/completed', params: {
         ...(mode === 'terminal-missing-thread' ? {} : { threadId: mode === 'terminal-wrong-thread' ? 7 : 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }),
-        turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: mode === 'terminal-failed' ? 'failed' : mode === 'terminal-unknown-status' ? 'futureStatus' : mode === 'terminal-in-progress' ? 'inProgress' : 'completed', items: [item], ...(mode === 'terminal-failed' ? { error: { message: 'Native policy refused the request: ${INFERENCE_SECRET}.', additionalDetails: 'private-provider-body' } } : {}) }
+        turn: { id: 'tu_00000000-0000-7b0b-8bae-fd496e9bd143', status: mode === 'terminal-failed' || contextLimit ? 'failed' : mode === 'terminal-unknown-status' ? 'futureStatus' : mode === 'terminal-in-progress' ? 'inProgress' : 'completed', items: [item], ...(contextLimit || contradictoryLimit ? { error: { message: 'Native context limit reached.', codexErrorInfo: 'contextWindowExceeded' } } : {}), ...(mode === 'terminal-failed' ? { error: { message: 'Native policy refused the request: ${INFERENCE_SECRET}.', additionalDetails: 'private-provider-body' } } : {}) }
       }};
       const a = JSON.stringify(accepted) + '\\n';
       const t = JSON.stringify(terminal) + '\\n';
       const additive = JSON.stringify({method:'future/additive',params:{threadId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'}}) + '\\n';
-      if (mode === 'terminal-before') process.stdout.write(t + a);
-      else if (mode === 'terminal-same-chunk') process.stdout.write(a + t);
+      if (mode === 'terminal-before' || mode === 'terminal-context-limit-before') process.stdout.write(t + a);
+      else if (mode === 'terminal-same-chunk' || mode === 'terminal-context-limit-same-chunk') process.stdout.write(a + t);
       else if (mode === 'additive-before-terminal') process.stdout.write(a + additive + t);
       else {
         process.stdout.write(a);
