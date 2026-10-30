@@ -45,7 +45,7 @@ Acceptance requires one configured id throughout, submit after all durability/ba
 
 ### NanoHost Adapter Liveness
 
-Liveness belongs to the NanoHost backend adapter and is additional to the generic absolute deadline and explicit revocation. Preserve today's heartbeat interval (current default 10 seconds), heartbeat deadline (current default 30 seconds after the last newly accepted heartbeat), and startup deadline before the first heartbeat (current default 25 minutes after attempt acquisition). These are current defaults, not fixed wire values. Exact duplicate replay is acknowledged under existing fingerprints and never renews liveness; only a new accepted sequence can advance the heartbeat deadline. A runtime cannot extend or pause any deadline to absorb an outage.
+Liveness belongs to the NanoHost backend adapter and is additional to the generic absolute deadline and explicit revocation. Preserve today's heartbeat interval (current default 1 second), heartbeat deadline (current default 30 seconds after the last newly accepted heartbeat), and startup deadline before the first heartbeat (current default 25 minutes after attempt acquisition). These are current defaults, not fixed wire values. Exact duplicate replay is acknowledged under existing fingerprints and never renews liveness; only a new accepted sequence can advance the heartbeat deadline. A runtime cannot extend or pause any deadline to absorb an outage.
 
 Before the first heartbeat the startup deadline applies; afterwards the heartbeat deadline applies. Stale classification refuses new worker-control, inference, and capability routes and holds the attempt's exclusion as needs-evidence until the existing cleanup/fence proof settles. It does not prove cessation, success, failure, or absence of prior effects. The generic absolute deadline remains a separate mandatory refusal predicate on every Core-mediated route.
 
@@ -380,7 +380,7 @@ packages/worker-protocol
   canonical worker-control, transcript, item, artifact, workspace-change, capability, sequence, lineage, and error schemas
 
 packages/worker-shim
-  shared worker harness plus Codex, OpenCode, and Pi runtime adapters
+  shared worker harness plus Codex, OpenCode, Pi, and DeepSeek runtime adapters
 ```
 
 NanoCore may depend on canonical schemas from `packages/worker-protocol`.
@@ -395,11 +395,12 @@ One authored `AgentManifest` supplies the opaque adapter id, image reference, ru
 
 One multi-runtime image replaces the three single-runtime deployment leaves. `worker-common` remains the public base. The image contains Codex, Pi, OpenCode V2, and DeepSeek, and the runtime is chosen per AgentSession. The image catalog and the image id are owned by the worker execution environment images specification. Images may share build mechanisms. The deployment image installs the four native runtimes, the generic worker shim, the statically registered adapter modules, and the declared smoke checks.
 
-The three concrete adapter contracts are owned by:
+The four concrete adapter contracts are owned by:
 
 - `docs/specs/20260716-codex_worker_adapter.md`
 - `docs/specs/20260716-opencode_worker_adapter.md`
 - `docs/specs/20260716-pi_worker_adapter.md`
+- `docs/specs/20260930-deepseek_worker_adapter.md`
 
 ## Current Implementation Projection
 
@@ -408,11 +409,11 @@ NanoCore implements Artifact and Review exact-value rejection and transcript Ite
 The current implementation is a partial projection of this broader communication model. The facts in this subsection describe code and completed local evidence only; they do not replace the owning acceptance predicates or refreshed real-host proof:
 
 - `packages/worker-protocol` exists and defines canonical worker lineage, schema version, worker event records, transcript records, workspace change manifests, capability call summaries, worker-control request and response envelopes, and worker error shapes.
-- `packages/worker-shim` provides one generic zero-argument `openkit-worker-shim` entrypoint, one static registry, and the one resident adapter contract: `openSession` returns a binding that starts Turns, reports its native handle and host liveness, and closes. Its shared Harness admits independent AgentSessions for distinct Threads, runs the six private operations, and runs at most one active Turn. `session.open` registers the two session loopback credentials, opens the resident binding with the session-static runtime environment, and resumes from the reference stored under the carried locator when its digest matches. A binding takes another Turn when its handle was ready at open or one of its Turns completed. The per-Turn launch contract, both adapter modes, and the durable command poll are deleted, and the production registry is empty until the resident Codex, Pi, OpenCode, and DeepSeek adapters land. The shared shim has no native config-artifact contract, generic capability client, sidecar binary, or runtime-name fallback.
+- `packages/worker-shim` provides one generic zero-argument `openkit-worker-shim` entrypoint, one static registry, and the one resident adapter contract: `openSession` returns a binding that starts Turns, reports its native handle and host liveness, and closes. Its shared Harness admits independent AgentSessions for distinct Threads, runs the six private operations, and runs at most one active Turn. `session.open` registers the two session loopback credentials, opens the resident binding with the session-static runtime environment, and resumes from the reference stored under the carried locator when its digest matches. A binding takes another Turn when its handle was ready at open or one of its Turns completed. The per-Turn launch contract, both adapter modes, and the durable command poll are deleted; the production registry holds the resident Codex, Pi, OpenCode, and DeepSeek adapters (`packages/worker-shim/src/adapter-registry.ts`). The shared shim has no native config-artifact contract, generic capability client, sidecar binary, or runtime-name fallback.
 - The resident adapter interface and generic Harness are implemented, and the production adapter registry registers the resident `codex`, `deepseek`, `opencode`, and `pi` adapters. Earlier Codex, Pi, OpenCode, image-smoke, and A1 results describe the removed implementation, not this candidate. Resident adapter, image-smoke, and exact-candidate runtime acceptance remain pending in their assigned slices.
 - NanoCore preserves the strict manifest-authored image, pull policy, runtime binaries, adapter id, logical-model admission, and Sandbox envelope through `ResolvedAgentSetup`, then projects the preferred and exact allowed logical-model IDs into the immutable AEP. `control.adapter.targetRuntime` alone selects the adapter; runtime kind, image name, environment, deployment, transport, and backend topology do not select or infer one.
 - The zero-argument Harness keeps one Integration client alive inside the bounded outage budget and may hold multiple resident AgentSession bindings; the production binary has no package-argument or one-shot compatibility path.
-- `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with the fixed sandbox-local Integration control binding and exact `worker-control` backend capability requirements. Current packages enable only the three selected MCP routes when MCP supply is non-empty and otherwise emit a disabled capability plane with no routes.
+- `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with the fixed sandbox-local Integration control binding and exact `worker-control` backend capability requirements. Current packages always append the built-in `openkit-generative` and `openkit-work` supply, so every package enables exactly the three selected MCP routes; the disabled capability-plane branch is not reached for a worker package.
 - `apps/nanocore/src/runtime/worker-control-gateway.ts`, `worker-control-records.ts`, `worker-control-sequences.ts`, `worker-control-rejected-evidence.ts`, and `worker-control-rebuild.ts` provide version-2 control envelopes, rejection evidence, and restart rebuilding for registered AEP snapshots; canonical worker records retain version 1. No worker command state exists.
 - `apps/nanocore/src/app.ts` exposes current worker-control routes for heartbeat, artifact notice, event append, final status, supply-refresh acknowledgement, and capability-call summary.
 - NanoCore exposes the private exact server-list route and per-selected-server MCP Streamable HTTP route under `/api/worker-capabilities/mcp/*`; its MCP Gateway owns bounded stdio and HTTP upstreams, schema snapshots, policy, approval, Vault resolution, usage, audit, health, and teardown. `WorkerCapabilityCallSummary` remains the bounded transcript/import projection of durable call state rather than route authority.
