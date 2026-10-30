@@ -8,6 +8,7 @@ import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   authorityRequestId,
+  candidatePage,
   createFixture,
   currentPage,
   decide,
@@ -17,6 +18,11 @@ import {
 } from '../test-support/knowledge-proposal-authority.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
+import {
+  KnowledgeProposalReviewFileSchema,
+  loadWorkspace,
+  readWorkspaceKnowledgeProposalInventory,
+} from './workspace-file-records.js';
 
 describe('knowledge proposal authority', () => {
   describe('annotated retained Reviews', () => {
@@ -115,6 +121,83 @@ describe('knowledge proposal authority', () => {
       ).toEqual(accepted);
       expect(await decide(f, 'accepted', 'review-annotated-accepted')).toEqual(accepted);
       expect(readFileSync(f.reviewPath, 'utf8')).toBe(annotatedBytes);
+    });
+
+    it('reads a fresh canonical Proposal and Review census and refuses contradictory or orphan Reviews', async () => {
+      const f = await reviewedFixture();
+      const proposalBytes = readFileSync(f.proposalPath, 'utf8');
+      const revision = f.notebook.publishedRevision();
+      const history = f.notebook.readRevision(revision);
+      const first = readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId);
+      expect(first.knowledgeProposals).toEqual([f.proposal]);
+      expect(first.knowledgeProposalReviews).toEqual([deferred.review, accepted.review]);
+
+      const later = f.store.createKnowledgeProposal({
+        workspaceId: f.workspaceId,
+        requestId: authorityRequestId('inventory-later-proposal'),
+        baseRevision: revision,
+        changes: ['review/inventory-a', 'review/inventory-b'].map((id) => ({
+          path: `${id}.md`,
+          content: candidatePage(f.workspaceId, id, f.sourceReference),
+        })),
+        summary: 'Retain a later multi-page candidate.',
+        sourceReferences: [f.sourceReference],
+        verifiedExternalReferences: [],
+        producer: f.proposal.producer,
+        createdAt: f.proposal.createdAt,
+      });
+      const laterDecision = await decide(
+        { ...f, proposal: later },
+        'deferred',
+        'inventory-later-review'
+      );
+      const laterProposalPath = join(f.workspaceRoot, 'knowledge', 'proposals', `${later.id}.md`);
+      const laterReviewPath = join(f.workspaceRoot, 'knowledge', 'reviews', `${later.id}.json`);
+      const laterProposalBytes = readFileSync(laterProposalPath, 'utf8');
+      const laterReviewBytes = readFileSync(laterReviewPath, 'utf8');
+      const fresh = readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId);
+      expect(fresh.knowledgeProposals.map(({ id }) => id).sort()).toEqual(
+        [f.proposal.id, later.id].sort()
+      );
+      expect(fresh.knowledgeProposals.find(({ id }) => id === later.id)).toEqual(later);
+      expect(fresh.knowledgeProposalReviews.map(({ reviewId }) => reviewId).sort()).toEqual(
+        [deferred.review.reviewId, accepted.review.reviewId, laterDecision.review.reviewId].sort()
+      );
+      expect(
+        fresh.knowledgeProposalReviews.find(({ proposalId }) => proposalId === later.id)
+      ).toEqual(laterDecision.review);
+      expect(loadWorkspace(f.workspaceRoot, f.workspaceId).knowledgeProposalReviews).toContainEqual(
+        laterDecision.review
+      );
+      expect(readFileSync(f.proposalPath, 'utf8')).toBe(proposalBytes);
+      expect(readFileSync(f.reviewPath, 'utf8')).toBe(annotatedBytes);
+      expect(f.notebook.publishedRevision()).toBe(revision);
+      expect(f.notebook.readRevision(revision)).toEqual(history);
+
+      const changed = JSON.parse(laterReviewBytes);
+      changed.decisions[0].changedPageIds = ['review/inventory-foreign'];
+      expect(KnowledgeProposalReviewFileSchema.safeParse(changed).success).toBe(true);
+      writeFileSync(laterReviewPath, `${JSON.stringify(changed, null, 2)}\n`);
+      try {
+        expect(() =>
+          readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId)
+        ).toThrow();
+        expect(() => loadWorkspace(f.workspaceRoot, f.workspaceId)).toThrow();
+      } finally {
+        writeFileSync(laterReviewPath, laterReviewBytes);
+      }
+
+      rmSync(laterProposalPath);
+      try {
+        expect(() =>
+          readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId)
+        ).toThrow();
+        expect(readFileSync(laterReviewPath, 'utf8')).toBe(laterReviewBytes);
+      } finally {
+        writeFileSync(laterProposalPath, laterProposalBytes);
+      }
+      expect(f.notebook.publishedRevision()).toBe(revision);
+      expect(f.notebook.readRevision(revision)).toEqual(history);
     });
 
     it.each([

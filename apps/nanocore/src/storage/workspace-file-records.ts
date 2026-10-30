@@ -585,22 +585,7 @@ export function parseCanonicalWorkspaceHistory(input: {
   for (const review of knowledgeProposalReviews) {
     claimGlobalId(proposalReviewIds, review.reviewId, 'knowledge proposal review');
     const proposal = proposalsById.get(review.proposalId);
-    const proposalDigest = proposal
-      ? `sha256:${createHash('sha256')
-          .update(serializeKnowledgeProposalRecord(proposal), 'utf8')
-          .digest('hex')}`
-      : null;
-    if (
-      !proposal ||
-      review.workspaceId !== workspace.id ||
-      review.knowledgePageId !== proposal.knowledgePageId ||
-      review.contentDigest !== proposal.contentDigest ||
-      !isDeepStrictEqual(
-        review.changedPageIds,
-        proposal.changes?.map(({ path }) => path.slice(0, -3))
-      ) ||
-      review.proposalDigest !== proposalDigest
-    ) {
+    if (!proposal || !knowledgeProposalReviewMatches(proposal, review)) {
       throw new Error(`Knowledge proposal review ${review.reviewId} has invalid lineage.`);
     }
     proposalReviewsById.set(review.proposalId, [
@@ -1530,11 +1515,9 @@ export function loadWorkspace(workspaceRoot: string, workspaceId: string): Works
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
   const knowledge = readWorkspaceKnowledgePages(workspaceRoot);
-  const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
-  const knowledgeProposalReviews = loadKnowledgeProposalReviews(
+  const { knowledgeProposals, knowledgeProposalReviews } = readWorkspaceKnowledgeProposalInventory(
     workspaceRoot,
-    workspaceId,
-    new Map(knowledgeProposals.map((proposal) => [proposal.id, proposal]))
+    workspaceId
   );
   const knowledgeSources = loadKnowledgeSources(workspaceRoot, workspaceId, threadIds, turnsById);
   const agentSessions = listNativeProducts(scope, 'agent-session').map(
@@ -1859,6 +1842,35 @@ export function serializeKnowledgeProposalRecord(
 }
 
 /**
+ * Reads the complete canonical Proposal and Review inventory without Store caches or writes.
+ *
+ * The existing loaders verify exact retained candidates, immutable bytes and ordered Review
+ * lineage. This read grants no audience access and is not an atomic snapshot across families;
+ * callers must admit disclosure and revalidate their own publication preconditions.
+ *
+ * @param workspaceRoot Published Workspace root selected by its owning lifecycle.
+ * @param workspaceId Owning Workspace id.
+ * @returns Canonical records in stable file-name and retained decision order.
+ */
+export function readWorkspaceKnowledgeProposalInventory(
+  workspaceRoot: string,
+  workspaceId: string
+): {
+  knowledgeProposals: KnowledgeProposalRecord[];
+  knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
+} {
+  const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
+  return {
+    knowledgeProposals,
+    knowledgeProposalReviews: loadKnowledgeProposalReviews(
+      workspaceRoot,
+      workspaceId,
+      new Map(knowledgeProposals.map((proposal) => [proposal.id, proposal]))
+    ),
+  };
+}
+
+/**
  * Loads knowledge proposal Markdown records.
  *
  * @param workspaceRoot Published workspace root.
@@ -2011,20 +2023,33 @@ function loadKnowledgeProposalReviews(
         throw new Error(`Knowledge proposal review ${fileName} has invalid lineage.`);
       }
 
-      const proposalDigest = `sha256:${createHash('sha256')
-        .update(serializeKnowledgeProposalRecord(proposal), 'utf8')
-        .digest('hex')}`;
       for (const review of reviewFile.decisions) {
-        if (
-          review.proposalDigest !== proposalDigest ||
-          review.knowledgePageId !== proposal.knowledgePageId ||
-          review.contentDigest !== proposal.contentDigest
-        ) {
+        if (!knowledgeProposalReviewMatches(proposal, review)) {
           throw new Error(`Knowledge proposal review ${review.reviewId} has invalid lineage.`);
         }
       }
       return reviewFile.decisions;
     });
+}
+
+/** Checks the same immutable Proposal tuple for canonical inventory and imported history. */
+function knowledgeProposalReviewMatches(
+  proposal: KnowledgeProposalRecord,
+  review: KnowledgeProposalReviewRecord
+): boolean {
+  return (
+    review.workspaceId === proposal.workspaceId &&
+    review.knowledgePageId === proposal.knowledgePageId &&
+    review.contentDigest === proposal.contentDigest &&
+    isDeepStrictEqual(
+      review.changedPageIds,
+      proposal.changes?.map(({ path }) => path.slice(0, -3))
+    ) &&
+    review.proposalDigest ===
+      `sha256:${createHash('sha256')
+        .update(serializeKnowledgeProposalRecord(proposal), 'utf8')
+        .digest('hex')}`
+  );
 }
 
 /**
