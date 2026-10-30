@@ -15,7 +15,11 @@ import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestSessionActor } from '../test-support/app.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseScopeKnowledgeSchema,
+} from './okf.js';
 import {
   initializeScopedNotebook,
   pinScopedNotebook,
@@ -98,7 +102,9 @@ function publish(notebook: KnowledgeNotebook, files: Record<string, string>): st
 describe('User Memory and Server Knowledge scope foundation', () => {
   it('initializes a self-owned empty notebook with scope-homed Audit and schema without touching another root', () => {
     const f = fixture();
+    const creationStarted = Date.now();
     const revision = f.initializeUser();
+    const creationFinished = Date.now();
     const input = { coreDb: f.coreDb, actor: f.actor, target: { kind: 'user' } as const };
     const owner = resolveScopedNotebookOwner(input);
     expect(owner).toEqual({
@@ -120,9 +126,23 @@ describe('User Memory and Server Knowledge scope foundation', () => {
       files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
       metadata: { producer: { kind: 'user', id: alice } },
     });
-    expect(readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8')).toBe(
-      DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT
-    );
+    const schemaPath = join(owner.notebookRoot, 'schema', 'scope-schema.yaml');
+    const schemaText = readFileSync(schemaPath, 'utf8');
+    const schema = parseScopeKnowledgeSchema(schemaText);
+    expect(schema).toMatchObject({
+      ok: true,
+      schema: {
+        ...DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+        status: 'active',
+        maintainer: 'OpenKit',
+      },
+    });
+    if (!schema.ok) throw new Error('Fresh User schema must parse.');
+    expect(schema.schema.createdAt).toBe(schema.schema.updatedAt);
+    expect(Date.parse(schema.schema.createdAt!)).toBeGreaterThanOrEqual(creationStarted);
+    expect(Date.parse(schema.schema.createdAt!)).toBeLessThanOrEqual(creationFinished);
+    pinned.read();
+    expect(readFileSync(schemaPath, 'utf8')).toBe(schemaText);
     const rows = f.userDb.sqlite
       .prepare(
         'SELECT action, notebook_admission_json AS evidence FROM audit_events ORDER BY rowid'
@@ -276,6 +296,7 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     const input = { coreDb: f.coreDb, actor: f.actor, target: { kind: 'server' } as const };
     expect(() => pinScopedNotebook(input)).toThrow('Scoped notebook access denied.');
     const actor = f.admin();
+    const creationStarted = Date.now();
     const revision = initializeScopedNotebook({
       ...input,
       actor,
@@ -286,6 +307,15 @@ describe('User Memory and Server Knowledge scope foundation', () => {
       ownerScope: { kind: 'server' },
       notebookRoot: join(f.dataRoot, 'server', 'knowledge'),
     });
+    const creationFinished = Date.now();
+    const schema = parseScopeKnowledgeSchema(
+      readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8')
+    );
+    expect(schema).toMatchObject({ ok: true, schema: { status: 'active', maintainer: 'OpenKit' } });
+    if (!schema.ok) throw new Error('Fresh Server schema must parse.');
+    expect(schema.schema.createdAt).toBe(schema.schema.updatedAt);
+    expect(Date.parse(schema.schema.createdAt!)).toBeGreaterThanOrEqual(creationStarted);
+    expect(Date.parse(schema.schema.createdAt!)).toBeLessThanOrEqual(creationFinished);
     const server = pinScopedNotebook({ ...input, actor });
     expect(server.read().revision).toBe(revision);
     expect(isKnowledgeBaseId(server.knowledgeBaseId)).toBe(true);

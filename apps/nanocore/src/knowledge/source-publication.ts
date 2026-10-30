@@ -27,7 +27,7 @@ import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './manage
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { initializeNotebook } from './notebook-initialization.js';
 import type { NotebookPublicationOwner } from './notebook-publication.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
+import { createDefaultScopeKnowledgeSchemaText } from './okf.js';
 import {
   readSourcePointers,
   SourceMetadataSchema,
@@ -199,6 +199,7 @@ export async function publishCapturedSource(
   const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
   if (!existsSync(join(notebookRoot, 'notebook.git'))) {
     if (existsSync(notebookRoot)) throw new NotebookError('recovery_required');
+    const scopeSchemaText = createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
     initializeNotebook({
       notebookRoot,
       owner: input.database,
@@ -212,7 +213,7 @@ export async function publishCapturedSource(
       revalidate: () => {
         admit();
         return {
-          scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+          scopeSchemaText,
           reviewRequiredPageIds: [],
           registeredSources: new Map(),
           resolvedReferences: new Map(),

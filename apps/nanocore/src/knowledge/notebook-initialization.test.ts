@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RequestIdSchema } from '@openkit/protocol';
@@ -12,7 +12,7 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { initializeWorkspaceNotebook } from './notebook-initialization.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './okf.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseScopeKnowledgeSchema } from './okf.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -63,12 +63,52 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
       return rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
+    const creationStarted = Date.now();
     const workspace = await store.createWorkspace('Empty service seed');
+    const creationFinished = Date.now();
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
     });
     const revision = notebook.publishedRevision();
     const retained = notebook.readRevision(revision);
+    const schemaPath = join(
+      dataRoot,
+      'workspaces',
+      workspace.id,
+      'knowledge',
+      'schema',
+      'scope-schema.yaml'
+    );
+    const schemaText = readFileSync(schemaPath, 'utf8');
+    const schema = parseScopeKnowledgeSchema(schemaText);
+    expect(schema).toMatchObject({
+      ok: true,
+      schema: {
+        status: 'active',
+        maintainer: 'OpenKit',
+        extensionPoints: [
+          'allowed_types',
+          'allowed_statuses',
+          'allowed_review_states',
+          'allowed_sensitivities',
+          'allowed_freshness',
+        ],
+        validationRules: ['openkit-knowledge-profile-v4'],
+        reviewRequirements: [
+          'active_retrieval',
+          'required_fields',
+          'sensitivity',
+          'source_reference_shape',
+          'review_rules',
+        ],
+      },
+    });
+    if (!schema.ok) throw new Error('Fresh Workspace schema must parse.');
+    expect(schema.schema.createdAt).toBe(schema.schema.updatedAt);
+    expect(Date.parse(schema.schema.createdAt!)).toBeGreaterThanOrEqual(creationStarted);
+    expect(Date.parse(schema.schema.createdAt!)).toBeLessThanOrEqual(creationFinished);
+    notebook.readRevision(revision);
+    expect(readFileSync(schemaPath, 'utf8')).toBe(schemaText);
     const systemProducer = {
       kind: 'system',
       id: 'notebook-initializer',
@@ -124,6 +164,16 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     expect(
       explicitNotebook.readRevision(explicitNotebook.publishedRevision()).metadata.producer
     ).toEqual(producer);
+  });
+
+  it('preserves supplied schema metadata and authored bytes during fresh initialization', () => {
+    const f = fixture();
+    const schemaText = `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}maintainer: Imported author\ncreated_at: "2020-01-01T00:00:00.000Z"\nupdated_at: "2021-01-01T00:00:00.000Z"\n# Exact imported schema annotation.\n`;
+    f.revalidate.mockReturnValue({ ...f.revalidate(), scopeSchemaText: schemaText });
+    f.initialize();
+    expect(
+      readFileSync(join(f.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')
+    ).toBe(schemaText);
   });
 
   it('creates initial root navigation from imported files and preserves valid reserved bytes', () => {

@@ -21,6 +21,73 @@ const workspace = KnowledgeOwnerScopeSchema.options[1].parse({
   workspaceId: allocateEntityId('ws'),
 });
 
+describe('Scope schema descriptive metadata', () => {
+  it('reads declared metadata without synthesizing absent retained fields', () => {
+    const legacy = parseScopeKnowledgeSchema(
+      DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(/^status:.*\n/m, '')
+    );
+    expect(legacy.ok).toBe(true);
+    for (const field of [
+      'status',
+      'maintainer',
+      'createdAt',
+      'updatedAt',
+      'extensionPoints',
+      'validationRules',
+      'reviewRequirements',
+    ])
+      expect(legacy.schema).not.toHaveProperty(field);
+    const parsed = parseScopeKnowledgeSchema(`${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}
+maintainer: OpenKit
+created_at: "2026-10-31T00:00:00.000Z"
+updated_at: "2026-10-31T00:00:00.000Z"
+extension_points: [allowed_types, allowed_statuses, allowed_review_states, allowed_sensitivities, allowed_freshness]
+validation_rules: [openkit-knowledge-profile-v4]
+review_requirements: [active_retrieval, required_fields, sensitivity, source_reference_shape, review_rules]
+future_description: {label: preserved authored annotation}
+`);
+    expect(parsed).toMatchObject({
+      ok: true,
+      schema: {
+        status: 'active',
+        maintainer: 'OpenKit',
+        createdAt: '2026-10-31T00:00:00.000Z',
+        updatedAt: '2026-10-31T00:00:00.000Z',
+        extensionPoints: [
+          'allowed_types',
+          'allowed_statuses',
+          'allowed_review_states',
+          'allowed_sensitivities',
+          'allowed_freshness',
+        ],
+        validationRules: ['openkit-knowledge-profile-v4'],
+        reviewRequirements: [
+          'active_retrieval',
+          'required_fields',
+          'sensitivity',
+          'source_reference_shape',
+          'review_rules',
+        ],
+      },
+    });
+    expect(parsed.schema).not.toHaveProperty('future_description');
+  });
+
+  it.each([
+    'status: 7',
+    'maintainer: 7',
+    'created_at: not-a-timestamp',
+    'updated_at: null',
+    'extension_points: [required_fields]',
+    'validation_rules: [unimplemented-rule]',
+    'review_requirements: [active_retrieval, required_fields, sensitivity, source_reference_shape]',
+    'review_requirements: []',
+  ])('refuses malformed or unsupported declared schema metadata: %s', (declaration) => {
+    const text = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(/^status:.*\n/m, '');
+    expect(parseScopeKnowledgeSchema(`${text}\n${declaration}\n`).ok).toBe(false);
+  });
+});
+
 describe('parseOkfDocument', () => {
   it('parses a concept document frontmatter block and body', () => {
     const parsed = parseOkfDocument({

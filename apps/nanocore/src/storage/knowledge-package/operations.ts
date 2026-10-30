@@ -30,6 +30,7 @@ import {
   remintPortableWorkspaceNotebookPages,
 } from '../../knowledge/notebook-workspace-portability.js';
 import {
+  createDefaultScopeKnowledgeSchemaText,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
@@ -245,6 +246,13 @@ function requireBootstrapOnly(input: {
 }) {
   const graph = input.notebook.validateRetainedGraph();
   const seed = input.notebook.readRevision(graph.publishedRevision);
+  const schemaText = readCanonicalTextFile(join(input.root, 'schema', 'scope-schema.yaml'));
+  const parsedSchema = parseScopeKnowledgeSchema(schemaText);
+  const defaultSchema =
+    schemaText === DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT ||
+    (parsedSchema.ok &&
+      parsedSchema.schema.createdAt !== undefined &&
+      schemaText === createDefaultScopeKnowledgeSchemaText(parsedSchema.schema.createdAt));
   if (
     graph.revisions.length !== 1 ||
     seed.parentRevision !== null ||
@@ -254,8 +262,7 @@ function requireBootstrapOnly(input: {
     seed.files['index.md'] !== DEFAULT_NOTEBOOK_INDEX ||
     Object.keys(input.notebook.readSourcePointers(seed.revision)).length ||
     input.store.listKnowledgeProposals(input.workspaceId).length ||
-    readCanonicalTextFile(join(input.root, 'schema', 'scope-schema.yaml')) !==
-      DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT ||
+    !defaultSchema ||
     (existsSync(join(input.root, 'raw')) && readdirSync(join(input.root, 'raw')).length)
   )
     throw new NotebookError('conflict', seed.revision);

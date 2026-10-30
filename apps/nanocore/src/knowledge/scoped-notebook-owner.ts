@@ -15,7 +15,7 @@ import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
 import { KnowledgeNotebook, NotebookError, type NotebookRevision } from './notebook.js';
 import { initializeNotebook } from './notebook-initialization.js';
 import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  createDefaultScopeKnowledgeSchemaText,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   validateScopeKnowledgeSchema,
@@ -182,6 +182,7 @@ export function initializeScopedNotebook(
     dataRoot: input.coreDb.dataRoot,
     scope: owner.ownerScope,
   });
+  const scopeSchemaText = createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
   return initializeNotebook({
     notebookRoot: owner.notebookRoot,
     owner: userDb ? { kind: 'user', userDb } : { kind: 'server', coreDb: input.coreDb },
@@ -197,7 +198,7 @@ export function initializeScopedNotebook(
           owner.ownerScope.kind === 'user'
             ? `page/user/${owner.ownerScope.userId}/${knowledgeBaseId}`
             : `page/server/${knowledgeBaseId}`,
-        scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+        scopeSchemaText,
         reviewRequiredPageIds: [],
         registeredSources: new Map(),
         resolvedReferences: new Map(),

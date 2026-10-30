@@ -13,7 +13,11 @@ import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowl
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { parseOkfDocument } from '../knowledge/okf.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseOkfDocument,
+  parseScopeKnowledgeSchema,
+} from '../knowledge/okf.js';
 import { readSourceByteRange } from '../knowledge/source-bytes.js';
 import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { FsStore } from '../lib/store.js';
@@ -627,6 +631,30 @@ describe('Knowledge package public operation round trip', () => {
 });
 
 describe('Independent package boundary probes', () => {
+  it('keeps bootstrap replacement exact while preserving the legacy default seed', async () => {
+    const f = await fixture();
+    const exported = await f.transfer('export', f.source.id);
+    expect(exported.status).toBe(200);
+    const archive = Buffer.from(await exported.arrayBuffer());
+    const schemaPath = join(f.target.root, 'schema', 'scope-schema.yaml');
+    const seedText = readFileSync(schemaPath, 'utf8');
+    const customized = `${seedText.replace(/^maintainer:.*\n/m, '')}maintainer: Another maintainer\n`;
+    expect(parseScopeKnowledgeSchema(customized).ok).toBe(true);
+    writeFileSync(schemaPath, customized);
+    const seed = f.target.notebook.publishedRevision();
+    const before = knowledgeFiles(f.target.root);
+    const refused = await f.transfer('import', f.target.id, archive);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(f.target.notebook.publishedRevision()).toBe(seed);
+    expect(knowledgeFiles(f.target.root)).toEqual(before);
+    writeFileSync(schemaPath, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
+    const legacy = await f.transfer('import', f.target.id, archive);
+    expect(legacy.status, await legacy.clone().text()).toBe(200);
+    expect(readFileSync(schemaPath, 'utf8')).toBe(
+      readFileSync(join(f.source.root, 'schema', 'scope-schema.yaml'), 'utf8')
+    );
+  });
+
   it('replays a completed import and preserves authored code literals', async () => {
     const f = await fixture();
     const registered = await f.call('knowledge.source.register', f.source.id, {

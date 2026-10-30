@@ -111,6 +111,35 @@ export const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT = [
   '',
 ].join('\n');
 
+const SCOPE_SCHEMA_EXTENSION_POINTS = [
+  'allowed_types',
+  'allowed_statuses',
+  'allowed_review_states',
+  'allowed_sensitivities',
+  'allowed_freshness',
+];
+const SCOPE_SCHEMA_REVIEW_REQUIREMENTS = [
+  'active_retrieval',
+  'required_fields',
+  'sensitivity',
+  'source_reference_shape',
+  'review_rules',
+];
+
+/** Builds the product-maintained default only for a genuinely fresh schema at its creation instant. */
+export function createDefaultScopeKnowledgeSchemaText(createdAt: string): string {
+  return [
+    DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.trimEnd(),
+    'maintainer: "OpenKit"',
+    `created_at: ${JSON.stringify(createdAt)}`,
+    `updated_at: ${JSON.stringify(createdAt)}`,
+    `extension_points: ${JSON.stringify(SCOPE_SCHEMA_EXTENSION_POINTS)}`,
+    `validation_rules: ${JSON.stringify([OPENKIT_KNOWLEDGE_PROFILE_VERSION])}`,
+    `review_requirements: ${JSON.stringify(SCOPE_SCHEMA_REVIEW_REQUIREMENTS)}`,
+    '',
+  ].join('\n');
+}
+
 /** Native YAML value retained from one OKF frontmatter mapping. */
 export type OkfFrontmatterValue = unknown;
 
@@ -180,6 +209,20 @@ export interface KnowledgePageReferenceProof {
 export interface ScopeKnowledgeSchema {
   /** Schema version expected by governed knowledge records. */
   schemaVersion: string;
+  /** Declared status of the selected active schema; absent in older retained files. */
+  status?: 'active';
+  /** Descriptive maintainer, never a permission or native principal binding. */
+  maintainer?: string;
+  /** Actual creation timestamp when recorded by the schema producer. */
+  createdAt?: string;
+  /** Actual last-change timestamp when recorded by the schema producer. */
+  updatedAt?: string;
+  /** Supported declarations that may narrow or extend the existing page constraints. */
+  extensionPoints?: readonly string[];
+  /** Existing implemented profile rules, not executable user-defined validators. */
+  validationRules?: readonly string[];
+  /** Required review triggers for schema changes; not a human authorization receipt. */
+  reviewRequirements?: readonly string[];
   /** Allowed knowledge page types. */
   allowedTypes: readonly string[];
   /** Allowed lifecycle statuses. */
@@ -425,6 +468,58 @@ export function parseScopeKnowledgeSchema(content: string): ParseScopeKnowledgeS
     allowedSensitivities: readStringList(fields, 'allowed_sensitivities', errors),
     allowedFreshness: readStringList(fields, 'allowed_freshness', errors),
   };
+
+  // Retained files may omit metadata. Present declarations must not claim unsupported governance.
+  if (Object.hasOwn(fields, 'status')) {
+    if (fields.status === 'active') schema.status = fields.status;
+    else
+      errors.push({
+        code: 'scope_schema.unsupported_governance_value',
+        field: 'status',
+        message: 'The selected Scope Schema must declare active status.',
+      });
+  }
+  if (Object.hasOwn(fields, 'maintainer')) {
+    if (nonEmptyString(fields.maintainer)) schema.maintainer = fields.maintainer;
+    else
+      errors.push({
+        code: 'scope_schema.invalid_metadata',
+        field: 'maintainer',
+        message: 'Scope Schema maintainer must be a nonempty string.',
+      });
+  }
+  for (const [field, key] of [
+    ['created_at', 'createdAt'],
+    ['updated_at', 'updatedAt'],
+  ] as const) {
+    if (!Object.hasOwn(fields, field)) continue;
+    const value = fields[field];
+    if (nonEmptyString(value) && isMachineReadableTimestamp(value)) schema[key] = value;
+    else
+      errors.push({
+        code: 'scope_schema.invalid_metadata',
+        field,
+        message: 'Scope Schema timestamps must be machine-readable date-times.',
+      });
+  }
+  for (const [field, key, supported, complete] of [
+    ['extension_points', 'extensionPoints', SCOPE_SCHEMA_EXTENSION_POINTS, false],
+    ['validation_rules', 'validationRules', [OPENKIT_KNOWLEDGE_PROFILE_VERSION], true],
+    ['review_requirements', 'reviewRequirements', SCOPE_SCHEMA_REVIEW_REQUIREMENTS, true],
+  ] as const) {
+    if (!Object.hasOwn(fields, field)) continue;
+    const values = readStringList(fields, field, errors);
+    if (
+      values.some((value) => !(supported as readonly string[]).includes(value)) ||
+      (complete && supported.some((value) => !values.includes(value)))
+    )
+      errors.push({
+        code: 'scope_schema.unsupported_governance_value',
+        field,
+        message: 'Scope Schema declarations must preserve the implemented governance requirements.',
+      });
+    schema[key] = values;
+  }
 
   if (schema.allowedTypes.includes('Procedure')) {
     errors.push({

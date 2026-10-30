@@ -17,3 +17,5 @@ Import verifies every inventory member before target effects, reuses Source and 
 The minimal public round trip is Workspace-to-Workspace and does not select historical content, activate remote mounts, export derivatives or import deployment authority. Those exclusions add no compatibility reader or converter.
 
 Run the complete module regression directory with `pnpm --filter @openkit/nanocore exec vitest run src/storage/knowledge-package`, then NanoCore typecheck and lint through the repository gate. Fixtures freeze page/schema bytes, binary originals and canonical manifest output independently of the implementation.
+
+Bootstrap import accepts only the exact historical built-in default or the exact fresh built-in default at its recorded creation instant, in addition to the existing untouched system-seed predicates. Merely valid or custom-maintained schema text is not an empty-default proof. Imported schema metadata and authored bytes remain unchanged; import does not replace their timestamps or implement a general reviewed schema migration (#508).

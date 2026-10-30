@@ -97,6 +97,7 @@ import {
 import { validateNotebookCandidate } from '../knowledge/notebook-validation.js';
 import { importedWorkspaceNotebookReferences } from '../knowledge/notebook-workspace-portability.js';
 import {
+  createDefaultScopeKnowledgeSchemaText,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
@@ -1769,6 +1770,9 @@ export class FsStore {
         });
         try {
           applyScopedMigrations(workspaceDb);
+          const scopeSchemaText =
+            initialNotebookSchemaText ??
+            createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
           // Initial history belongs to this actual creation/import, not to invented predecessor edits.
           initializeWorkspaceNotebook({
             workspaceRoot: stagingRoot,
@@ -1781,7 +1785,7 @@ export class FsStore {
               : { sourcePointers: initialNotebookSources }),
             revalidate: () => ({
               pageScopeId,
-              scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+              scopeSchemaText,
               reviewRequiredPageIds: [],
               registeredSources: new Map(
                 records.knowledgeSources.map((source) => [source.id, source.contentDigest])
