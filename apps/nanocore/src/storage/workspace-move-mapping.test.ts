@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { validateWorkspaceMoveMapping } from './workspace-move-mapping.js';
 
 // Owner: docs/specs/20260704-workspace_backup_export_import.md, Target Admission And Rebinding.
-// T1–T6: evidence/redesign/lane-d-next-piece-plan.md, with coordinator field/value corrections.
 // Fixed canonical identities and expected reports are independent of the implementation.
 const sourceOwner = 'usr_00000000-0000-7000-8000-000000000001';
 const sourceMember = 'usr_00000000-0000-7000-8000-000000000002';
 const otherMember = 'usr_00000000-0000-7000-8000-000000000003';
 const administrator = 'usr_00000000-0000-7000-8000-000000000101';
 const targetMember = 'usr_00000000-0000-7000-8000-000000000102';
+const otherTargetMember = 'usr_00000000-0000-7000-8000-000000000103';
 const absentAccount = 'usr_00000000-0000-7000-8000-000000000999';
 const wrongKind = 'ws_00000000-0000-7000-8000-000000000001';
 const provenance = {
@@ -34,6 +34,7 @@ const fixture = {
   targetAccounts: [
     { accountId: administrator, status: 'active' as const },
     { accountId: targetMember, status: 'active' as const },
+    { accountId: otherTargetMember, status: 'active' as const },
   ],
 };
 const unmapped = {
@@ -102,12 +103,12 @@ describe('Workspace MOVE account mapping (mapping readiness only)', () => {
         });
       }
     }
-    for (const targetAccountId of [administrator, targetMember]) {
+    for (const targetAccountId of [targetMember, otherTargetMember]) {
       expect(
         validateWorkspaceMoveMapping({
           ...structuredClone(fixture),
           memberMappings: [
-            { sourceAccountId: sourceMember, targetAccountId: administrator },
+            { sourceAccountId: sourceMember, targetAccountId: targetMember },
             { sourceAccountId: sourceMember, targetAccountId },
           ],
         })
@@ -180,7 +181,7 @@ describe('Workspace MOVE account mapping (mapping readiness only)', () => {
     };
     expect(validateWorkspaceMoveMapping(input)).toStrictEqual(unmapped);
     input.memberMappings = [
-      { sourceAccountId: otherMember, targetAccountId: targetMember },
+      { sourceAccountId: otherMember, targetAccountId: otherTargetMember },
       { sourceAccountId: sourceMember, targetAccountId: targetMember },
     ];
     expect(validateWorkspaceMoveMapping(input)).toStrictEqual({
@@ -190,7 +191,7 @@ describe('Workspace MOVE account mapping (mapping readiness only)', () => {
         resolvedTargetOwnerId: administrator,
         memberMappings: [
           { sourceAccountId: sourceMember, targetAccountId: targetMember },
-          { sourceAccountId: otherMember, targetAccountId: targetMember },
+          { sourceAccountId: otherMember, targetAccountId: otherTargetMember },
         ],
       },
       droppedSourceMemberIds: [sourceOwner],
@@ -234,8 +235,8 @@ describe('Workspace MOVE account mapping (mapping readiness only)', () => {
   it('T5 — "resolved target owner, and canonical source-account-sorted member map"; supplied facts need no live lookup', () => {
     const input = structuredClone(fixture);
     input.memberMappings = [
-      { sourceAccountId: otherMember, targetAccountId: targetMember },
-      { sourceAccountId: sourceMember, targetAccountId: administrator },
+      { sourceAccountId: otherMember, targetAccountId: otherTargetMember },
+      { sourceAccountId: sourceMember, targetAccountId: targetMember },
     ];
     const expected = {
       ...provenance,
@@ -243,8 +244,8 @@ describe('Workspace MOVE account mapping (mapping readiness only)', () => {
       accountMap: {
         resolvedTargetOwnerId: administrator,
         memberMappings: [
-          { sourceAccountId: sourceMember, targetAccountId: administrator },
-          { sourceAccountId: otherMember, targetAccountId: targetMember },
+          { sourceAccountId: sourceMember, targetAccountId: targetMember },
+          { sourceAccountId: otherMember, targetAccountId: otherTargetMember },
         ],
       },
       droppedSourceMemberIds: [sourceOwner],
@@ -343,5 +344,39 @@ describe('Workspace MOVE account mapping (mapping readiness only)', () => {
       accountMap: { resolvedTargetOwnerId: administrator, memberMappings: [] },
       droppedSourceMemberIds: [sourceOwner, sourceMember, otherMember],
     });
+  });
+
+  it.each([
+    {
+      scenario: 'two explicit source members share a target',
+      targetOwnerId: undefined,
+      memberMappings: [
+        { sourceAccountId: sourceMember, targetAccountId: targetMember },
+        { sourceAccountId: otherMember, targetAccountId: targetMember },
+      ],
+    },
+    {
+      scenario: 'an explicit member shares the default target owner',
+      targetOwnerId: undefined,
+      memberMappings: [{ sourceAccountId: sourceMember, targetAccountId: administrator }],
+    },
+    {
+      scenario: 'an explicit member shares the selected target owner',
+      targetOwnerId: targetMember,
+      memberMappings: [{ sourceAccountId: sourceMember, targetAccountId: targetMember }],
+    },
+  ])('T7 — the complete resolved map, including the owner, is injective: $scenario', (entry) => {
+    const input = {
+      ...structuredClone(fixture),
+      targetOwnerId: entry.targetOwnerId,
+      memberMappings: entry.memberMappings,
+    };
+    const original = structuredClone(input);
+    const report = validateWorkspaceMoveMapping(input);
+    expect(report.disposition).toBe('refused');
+    if (report.disposition === 'refused') expect(report.refusals.length).toBeGreaterThan(0);
+    expect(report).not.toHaveProperty('accountMap');
+    expect(report).not.toHaveProperty('droppedSourceMemberIds');
+    expect(input).toStrictEqual(original);
   });
 });

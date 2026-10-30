@@ -32,6 +32,7 @@ export interface WorkspaceMoveMappingInput {
 export type WorkspaceMoveMappingRefusalReason =
   | 'invalid-account-identity'
   | 'duplicate-source-account-mapping'
+  | 'non-injective-account-mapping'
   | 'unknown-source-account'
   | 'target-owner-unavailable'
   | 'target-member-unavailable';
@@ -89,8 +90,8 @@ function assertProvenance(input: WorkspaceMoveMappingInput): void {
 /**
  * Resolves only exact account mappings under supplied facts; no authority is granted.
  * The future MOVE owner must check committed request results first and revalidate current
- * authorization before effects. Owner selection never implicitly maps the source owner,
- * rewrites private audiences or transfers historical roles and credentials.
+ * authorization before effects. Owner selection counts for target uniqueness without
+ * adding a private audience mapping or transferring historical roles and credentials.
  * @param input Verified manifest provenance, explicit mappings and target account facts.
  * @returns A frozen known-field mapping report, with ordered position-only refusals.
  * @throws If supplied provenance values do not have the canonical core shape.
@@ -151,6 +152,18 @@ export function validateWorkspaceMoveMapping(
     const targetField = `memberMappings[${index}].targetAccountId`;
     if (checkIdentity(entry.targetAccountId, targetField) && !active.get(entry.targetAccountId)) {
       refuse('target-member-unavailable', targetField);
+    }
+  }
+  if (refusals.length === 0) {
+    // Reserve the owner target for collision checks only, never as an implicit private grant.
+    const targetSources = new Map([[resolvedTargetOwnerId, manifest.accounts.ownerId]]);
+    for (const [index, entry] of input.memberMappings.entries()) {
+      const source = targetSources.get(entry.targetAccountId);
+      if (source !== undefined && source !== entry.sourceAccountId) {
+        refuse('non-injective-account-mapping', `memberMappings[${index}].targetAccountId`);
+      } else {
+        targetSources.set(entry.targetAccountId, entry.sourceAccountId);
+      }
     }
   }
   if (refusals.length > 0) {
