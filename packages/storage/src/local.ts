@@ -840,3 +840,28 @@ export async function publishDurableFile(input: {
     await directory.close();
   }
 }
+
+/** Retires one caller-owned regular-file entry and synchronizes its pinned parent before acknowledging absence. */
+export async function removeDurableFile(input: {
+  readonly destinationPath: string;
+}): Promise<void> {
+  const parent = dirname(resolve(input.destinationPath));
+  const directory = await confined(parent, '', true);
+  try {
+    const before = await directory.stat({ bigint: true });
+    const destination = join(await descriptorPath(directory), basename(input.destinationPath));
+    const entry = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (entry && (!entry.isFile() || entry.isSymbolicLink()))
+      throw new Error('Durable removal requires a regular file.');
+    await verifyBinding(parent, '', `${before.dev}:${before.ino}`, true);
+    if (entry) await unlink(destination);
+    // An absent-entry retry still owes the directory sync lost by an earlier unlink.
+    await directory.sync();
+    await verifyBinding(parent, '', `${before.dev}:${before.ino}`, true);
+  } finally {
+    await directory.close();
+  }
+}

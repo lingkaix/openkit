@@ -2773,6 +2773,12 @@ export async function inspectWorkspaceSnapshot(
       candidateRoot: join(container.container, 'verified'),
     });
     assertOwner();
+    if (
+      freeze &&
+      result.manifest.purpose === 'move' &&
+      !readRecoveryAdmission(owned.coreDb, input.backupId)
+    )
+      assertWorkspaceBackupCut(owned.dataRoot, result.candidateRoot, result.manifest, owned.coreDb);
     return result;
   } finally {
     rmSync(container.container, { recursive: true, force: true });

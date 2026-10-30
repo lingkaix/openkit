@@ -1,16 +1,34 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { configureOwnedSqlite } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
 import { abandonCapture, inspectCapture } from '../storage/workspace-capture-protection.js';
+import { syncCanonicalDirectory } from '../storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './readiness.js';
 
-/** Only an absent seal under the owned local directory permits automatic crash abandonment. */
-function automaticCaptureIsUnsealed(dataRoot: string, workspaceId: string, captureId: string) {
+/** Only owned seal absence permits abandonment; a retired publication also owes durable absence. */
+function captureSealIsAbsent(
+  dataRoot: string,
+  workspaceId: string,
+  captureId: string,
+  synchronizeAbsence = false
+) {
+  const absent = (parent: string) => {
+    if (synchronizeAbsence) {
+      try {
+        syncCanonicalDirectory(parent);
+      } catch {
+        // Unproved absence stays pending so the normal census retains its exact retry origin.
+        refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
+        return false;
+      }
+    }
+    return true;
+  };
   if (!isEntityId('wsbak', captureId)) throw new Error('Invalid automatic capture identity.');
   let path = dataRoot;
   for (const part of ['server', 'backups', 'workspaces', workspaceId, captureId]) {
@@ -20,7 +38,7 @@ function automaticCaptureIsUnsealed(dataRoot: string, workspaceId: string, captu
       if (stat.isSymbolicLink() || !stat.isDirectory())
         throw new Error('Automatic capture directory is unavailable.');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return absent(dirname(path));
       throw error;
     }
   }
@@ -28,7 +46,7 @@ function automaticCaptureIsUnsealed(dataRoot: string, workspaceId: string, captu
     lstatSync(join(path, 'seal.json'));
     return false;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return absent(path);
     throw error;
   }
 }
@@ -99,7 +117,7 @@ export function restoreWorkspaceRecoveryAdmission(
             )
             .all() as { capture_id: string }[];
           const unsealed = automatic.filter((row) =>
-            automaticCaptureIsUnsealed(core.dataRoot, id, row.capture_id)
+            captureSealIsAbsent(core.dataRoot, id, row.capture_id)
           );
           if (unsealed.length) {
             db.close();
@@ -116,14 +134,22 @@ export function restoreWorkspaceRecoveryAdmission(
         const active = db
           .prepare("SELECT capture_id FROM workspace_capture_records WHERE state='active'")
           .all() as { capture_id: string }[];
-        if (active.length) {
-          if (active.length === 1) {
+        // Publication can close before retiring its original seal. That interrupted
+        // abandonment stays quarantined until exact recovery proves durable absence.
+        const retiring = (
+          db
+            .prepare("SELECT capture_id FROM workspace_capture_records WHERE state='abandoned'")
+            .all() as { capture_id: string }[]
+        ).filter((row) => !captureSealIsAbsent(core.dataRoot, id, row.capture_id, true));
+        const pending = [...active, ...retiring];
+        if (pending.length) {
+          if (pending.length === 1) {
             const capture = inspectCapture(
               bindWorkspaceSqlite(db, core.dataRoot, id),
               id,
-              active[0]!.capture_id
+              pending[0]!.capture_id
             );
-            if (capture?.state === 'active') captureOrigins.set(id, capture.captureId);
+            if (capture) captureOrigins.set(id, capture.captureId);
           }
           refuseScope(core.dataRoot, { scope: 'workspace', id, check: 'recovery' });
         }

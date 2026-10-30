@@ -1,12 +1,15 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
+  type FileHandle,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -22,10 +25,11 @@ import {
   type StorageLocator,
   type StorageResult,
 } from './contract.js';
-import { LocalStorage } from './local.js';
+import { LocalStorage, removeDurableFile } from './local.js';
 
 const mutation = vi.hoisted(() => ({
   afterPath: undefined as undefined | ((path: string) => Promise<void>),
+  opened: undefined as undefined | ((handle: FileHandle) => void),
 }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -39,6 +43,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     open: async (...args: unknown[]) => {
       const result = await Reflect.apply(actual.open, actual, args);
       try {
+        mutation.opened?.(result);
         await mutation.afterPath?.(String(args[0]));
         return result;
       } catch (error) {
@@ -112,6 +117,7 @@ async function capture(f: Awaited<ReturnType<typeof fixture>>): Promise<StorageC
 
 afterEach(async () => {
   mutation.afterPath = undefined;
+  mutation.opened = undefined;
   vi.useRealTimers();
   for (const f of fixtures.splice(0)) {
     try {
@@ -120,6 +126,68 @@ afterEach(async () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   }
+});
+
+/** Private metadata retirement acknowledges the exact parent directory's durable entry change. */
+describe('trusted durable file removal', () => {
+  it('refuses failed parent sync after unlink and synchronizes both missing-entry retry and present removal', async () => {
+    const f = await fixture();
+    const destinationPath = join(f.root, f.locator.path);
+    const parent = await stat(join(f.root, 'docs'));
+    const syncFailure = new Error('Injected removal parent synchronization failure.');
+    let failSync = true;
+    let synchronized = false;
+    mutation.opened = (handle) => {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const current = await handle.stat();
+        const selected = current.dev === parent.dev && current.ino === parent.ino;
+        if (selected && failSync) throw syncFailure;
+        await sync();
+        if (selected) synchronized = true;
+      };
+    };
+    await expect(removeDurableFile({ destinationPath })).rejects.toBe(syncFailure);
+    await expect(lstat(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    // An absent entry cannot acknowledge a prior uncertain unlink without syncing its parent.
+    await expect(removeDurableFile({ destinationPath })).rejects.toBe(syncFailure);
+    failSync = false;
+    await expect(removeDurableFile({ destinationPath })).resolves.toBeUndefined();
+    expect(synchronized).toBe(true);
+    await writeFile(destinationPath, f.bytes);
+    synchronized = false;
+    await expect(removeDurableFile({ destinationPath })).resolves.toBeUndefined();
+    expect(synchronized).toBe(true);
+    await expect(lstat(destinationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses final, parent and concurrently substituted symlinks without removing outside or parked bytes', async () => {
+    const f = await fixture();
+    const outside = join(f.directory, 'outside');
+    await mkdir(outside);
+    const outsideFile = join(outside, 'original.bin');
+    await writeFile(outsideFile, 'Unselected outside bytes.');
+    const finalLink = join(f.root, 'docs', 'link.bin');
+    await symlink(outsideFile, finalLink);
+    await expect(removeDurableFile({ destinationPath: finalLink })).rejects.toThrow();
+    await symlink(outside, join(f.root, 'alias'));
+    await expect(
+      removeDurableFile({ destinationPath: join(f.root, 'alias', 'original.bin') })
+    ).rejects.toThrow();
+    let replaced = false;
+    mutation.afterPath = async (path) => {
+      if (replaced || !path.endsWith('/docs')) return;
+      replaced = true;
+      await rename(join(f.root, 'docs'), join(f.root, 'parked-docs'));
+      await symlink(outside, join(f.root, 'docs'));
+    };
+    await expect(
+      removeDurableFile({ destinationPath: join(f.root, f.locator.path) })
+    ).rejects.toThrow();
+    expect(replaced).toBe(true);
+    expect(await readFile(outsideFile, 'utf8')).toBe('Unselected outside bytes.');
+    expect(await readFile(join(f.root, 'parked-docs', 'original.bin'))).toEqual(f.bytes);
+  });
 });
 
 describe('LocalStorage original identity and Protocol boundary', () => {

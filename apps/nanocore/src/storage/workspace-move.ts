@@ -1,24 +1,38 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { isEntityId } from '@openkit/protocol';
+import { publishDurableFile, removeDurableFile } from '@openkit/storage';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import type { WorkspaceFrozenAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { applyControlRecoveryMoveOut } from './control-store-recovery.js';
-import { bindWorkspaceSqlite, type CoreDb } from './db.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import { bindWorkspaceSqlite, type CoreDb, openWorkspaceReadDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
   assertWorkspaceBackupCut,
+  inspectWorkspaceSnapshot,
   readWorkspaceBackupManifest,
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
+  type workspaceSnapshotOperationPolicy,
 } from './workspace-backup.js';
+import { readWorkspaceSnapshotMetadata } from './workspace-backup-bundle.js';
 import {
   abandonCapture,
   completeCapture,
   inspectCapture,
   protectCapture,
 } from './workspace-capture-protection.js';
-import { syncCanonicalTree } from './workspace-file-records.js';
 import {
+  assertCanonicalDirectory,
+  nativeProductScope,
+  readNativeProduct,
+  syncCanonicalTree,
+} from './workspace-file-records.js';
+import {
+  bindWorkspaceCaptureNativeOwner,
   endRecoveryAdmission,
   openRecoveryDatabase,
   prepareRecoveryAdmission,
@@ -351,8 +365,7 @@ export async function reactivateWorkspace(
           "UPDATE workspace_recovery_admissions SET state='abandoned', revision=revision+1, updated_at=? WHERE admission_id=?"
         )
         .run(new Date().toISOString(), input.backupId);
-      rmSync(join(owned.candidate_ref, 'seal.json'), { force: true });
-      syncCanonicalTree(owned.candidate_ref);
+      await removeDurableFile({ destinationPath: join(owned.candidate_ref, 'seal.json') });
       current.db
         .transaction(() => {
           current.db
@@ -414,4 +427,309 @@ export async function abandonWorkspaceMove(
       current.db.close();
     }
   });
+}
+
+/** Reads exact retained source facts without creating a database or decoding away moved-out lineage. */
+export function readWorkspaceCaptureRecoveryAtCore(
+  core: CoreDb,
+  input: WorkspaceRecoverySelectedInput
+) {
+  if (resolve(core.dataRoot) !== resolve(input.dataRoot) || input.selection.kind !== 'capture')
+    refuseRecovery('recovery-required');
+  const db = openWorkspaceReadDb(core.dataRoot, input.workspaceId);
+  try {
+    const row = readNativeProduct(
+      nativeProductScope(core.dataRoot, { kind: 'workspace', workspaceId: input.workspaceId }),
+      'workspace',
+      input.workspaceId
+    );
+    const capture = inspectCapture(db, input.workspaceId, input.selection.backupId);
+    if (!row || !capture) refuseRecovery('recovery-required');
+    const movedOut = row.record.movedOut as
+      | {
+          backupId: string;
+          manifestDigest: string;
+        }
+      | undefined;
+    if (
+      movedOut !== undefined &&
+      (!movedOut ||
+        !isEntityId('wsbak', movedOut.backupId) ||
+        !/^sha256:[0-9a-f]{64}$/.test(movedOut.manifestDigest))
+    )
+      refuseRecovery('recovery-required');
+    return {
+      revision: row.revision,
+      movedOut,
+      capture,
+      owned: readRecoveryAdmission(core, input.selection.backupId),
+    };
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Binds the existing source lifecycle to its exact current freeze, native file and original Core proof. */
+function sourceCaptureOwner(
+  policy: ReturnType<typeof workspaceSnapshotOperationPolicy>,
+  input: WorkspaceRecoverySelectedInput,
+  freeze: WorkspaceFrozenAdmission
+) {
+  policy.currentAuthority();
+  if (input.selection.kind !== 'capture' || resolve(input.dataRoot) !== resolve(policy.dataRoot))
+    refuseRecovery('recovery-required');
+  const captureId = input.selection.backupId;
+  const generation = join(
+    policy.dataRoot,
+    'server/backups/workspaces',
+    input.workspaceId,
+    captureId
+  );
+  const call = bindWorkspaceCaptureNativeOwner(
+    policy.coreDb,
+    input.workspaceId,
+    captureId,
+    policy.mutationAdmission,
+    freeze
+  );
+  let proof = readRecoveryAdmission(policy.coreDb, captureId);
+  const current = () => {
+    policy.currentAuthority();
+    if (!policy.mutationAdmission.isRecoveryBinding(input.workspaceId, freeze, call.binding))
+      refuseRecovery('recovery-required');
+    const facts = readWorkspaceCaptureRecoveryAtCore(policy.coreDb, input);
+    if (
+      !isDeepStrictEqual(facts.owned, proof) ||
+      (proof && proof.candidate_ref !== resolve(generation))
+    )
+      refuseRecovery('recovery-required');
+    return facts;
+  };
+  return {
+    captureId,
+    generation,
+    call,
+    current,
+    client: getControlStoreWorkerClient(policy.mutationAdmission),
+    updateProof: () => {
+      proof = readRecoveryAdmission(policy.coreDb, captureId);
+    },
+  };
+}
+
+/** Completes the original verified source capture; a MOVE marker follows the native source tuple. */
+export async function finishWorkspaceCaptureAtCore(
+  policy: ReturnType<typeof workspaceSnapshotOperationPolicy>,
+  input: WorkspaceRecoverySelectedInput,
+  freeze: WorkspaceFrozenAdmission
+): Promise<WorkspaceRecoveryCliReport> {
+  const owner = sourceCaptureOwner(policy, input, freeze);
+  let facts = owner.current();
+  if (facts.capture.state === 'abandoned' || facts.owned?.state === 'abandoned')
+    refuseRecovery('request-conflict');
+  const verified = await inspectWorkspaceSnapshot(
+    { workspaceId: input.workspaceId, backupId: owner.captureId },
+    policy,
+    freeze
+  );
+  facts = owner.current();
+  const move = verified.manifest.purpose === 'move';
+  if (!move && (facts.movedOut || facts.owned)) refuseRecovery('recovery-required');
+  if (move && !facts.owned) {
+    // The full inspector compared this manifested, still-fenced source with its cut before
+    // cleanup. Retain the same original source admission used by the stopped path.
+    if (facts.movedOut || facts.capture.state !== 'active') refuseRecovery('recovery-required');
+    prepareRecoveryAdmission(policy.coreDb, owner.captureId, owner.generation, {
+      input: {
+        command: 'move-out',
+        dataRoot: input.dataRoot,
+        workspaceId: input.workspaceId,
+        backupId: owner.captureId,
+        bundleRoot: owner.generation,
+        expectedRevision: verified.manifest.capturedRevision,
+      },
+      manifest: verified.manifest,
+      capture: verified.report,
+      result: recoveryReport('capture', 'prepared', verified.report),
+    });
+    owner.updateProof();
+    facts = owner.current();
+  }
+  if (
+    move &&
+    (!facts.owned ||
+      facts.owned.proof.capture.manifestDigest !== verified.report.manifestDigest ||
+      !isDeepStrictEqual(facts.owned.proof.manifest, verified.manifest))
+  )
+    refuseRecovery('request-conflict');
+  if (facts.owned?.state === 'finished' && facts.capture.state !== 'finished')
+    refuseRecovery('recovery-required');
+  const assertSource = () => {
+    const current = owner.current();
+    if (
+      move
+        ? current.revision !== verified.manifest.capturedRevision + 1 ||
+          current.movedOut?.backupId !== owner.captureId ||
+          current.movedOut.manifestDigest !== verified.report.manifestDigest
+        : !!current.movedOut
+    )
+      refuseRecovery('recovery-required');
+    return current;
+  };
+  if (facts.capture.state === 'active') {
+    await owner.client.open(owner.call.binding.command, owner.call);
+    facts = owner.current();
+    if ((!move && facts.movedOut) || facts.capture.state !== 'active')
+      refuseRecovery('request-conflict');
+    if (move) {
+      await owner.client.recoveryMoveOut(
+        owner.call.binding.command.database,
+        {
+          workspaceId: input.workspaceId,
+          captureId: owner.captureId,
+          expectedRevision: verified.manifest.capturedRevision,
+          manifestDigest: verified.report.manifestDigest,
+        },
+        owner.call
+      );
+      facts = assertSource();
+      if (facts.capture.state !== 'active') refuseRecovery('request-conflict');
+      const seal = join(owner.generation, 'seal.json');
+      if (!existsSync(seal)) {
+        const bytes = JSON.stringify({
+          format: 'openkit-workspace-backup-seal',
+          version: 1,
+          backupId: owner.captureId,
+          purpose: 'move',
+          manifestDigest: verified.report.manifestDigest,
+        });
+        const reservation = policy.verification.admission.reserve({
+          stagingBytes: 0n,
+          extractionBytes: 0n,
+          derivativeBytes: 0n,
+          publicationBytes: BigInt(Buffer.byteLength(bytes)),
+        });
+        try {
+          reservation.assertAvailable();
+          assertSource();
+          await publishDurableFile({ destinationPath: seal, bytes });
+          reservation.recordWritten(Buffer.byteLength(bytes));
+        } finally {
+          reservation.release();
+        }
+        assertSource();
+      }
+    }
+    const metadata = await readWorkspaceSnapshotMetadata({
+      ...policy.verification,
+      dataRoot: policy.dataRoot,
+      workspaceId: input.workspaceId,
+      backupId: owner.captureId,
+    });
+    facts = assertSource();
+    if (
+      metadata.manifestDigest !== verified.report.manifestDigest ||
+      facts.capture.state !== 'active'
+    )
+      refuseRecovery('recovery-required');
+    // Retry may find a marker whose publication failed after link but before directory sync.
+    syncCanonicalTree(owner.generation);
+    assertSource();
+    await owner.client.recoveryCapture(
+      owner.call.binding.command.database,
+      {
+        workspaceId: input.workspaceId,
+        captureId: owner.captureId,
+        state: 'finished',
+      },
+      owner.call
+    );
+    facts = owner.current();
+  } else {
+    // A terminal retry inspects the existing seal; it never republishes a historical marker.
+    const metadata = await readWorkspaceSnapshotMetadata({
+      ...policy.verification,
+      dataRoot: policy.dataRoot,
+      workspaceId: input.workspaceId,
+      backupId: owner.captureId,
+    });
+    facts = assertSource();
+    if (metadata.manifestDigest !== verified.report.manifestDigest)
+      refuseRecovery('request-conflict');
+    syncCanonicalTree(owner.generation);
+  }
+  facts = assertSource();
+  if (facts.capture.state !== 'finished') refuseRecovery('recovery-required');
+  const report: WorkspaceRecoveryCliReport = {
+    ...recoveryReport('finish', move ? 'moved-out' : 'sealed', verified.report),
+    selection: input.selection,
+    currentRevision: facts.revision,
+    nextAction: move ? 'reactivate' : 'none',
+  };
+  if (facts.owned)
+    policy.coreDb.sqlite
+      .transaction(() => endRecoveryAdmission(policy.coreDb, owner.captureId, 'finished', report))
+      .immediate();
+  return report;
+}
+
+/** Closes the exact publication right before retiring its seal; source bytes and holds survive. */
+export async function abandonWorkspaceCaptureAtCore(
+  policy: ReturnType<typeof workspaceSnapshotOperationPolicy>,
+  input: WorkspaceRecoverySelectedInput,
+  freeze: WorkspaceFrozenAdmission
+): Promise<WorkspaceRecoveryCliReport> {
+  const owner = sourceCaptureOwner(policy, input, freeze);
+  let facts = owner.current();
+  if (facts.movedOut) refuseRecovery('workspace-moved-out');
+  if (facts.capture.state === 'finished' || facts.owned?.state === 'finished')
+    refuseRecovery('request-conflict');
+  await owner.client.open(owner.call.binding.command, owner.call);
+  facts = owner.current();
+  if (facts.movedOut || facts.capture.state === 'finished') refuseRecovery('request-conflict');
+  await owner.client.recoveryCapture(
+    owner.call.binding.command.database,
+    {
+      workspaceId: input.workspaceId,
+      captureId: owner.captureId,
+      state: 'abandoned',
+    },
+    owner.call
+  );
+  facts = owner.current();
+  if (facts.capture.state !== 'abandoned' || facts.movedOut) refuseRecovery('recovery-required');
+  const report: WorkspaceRecoveryCliReport = {
+    command: 'abandon',
+    disposition: 'abandoned',
+    workspaceId: input.workspaceId,
+    selection: input.selection,
+    currentRevision: facts.revision,
+    ...(facts.owned ? { capture: facts.owned.proof.capture } : {}),
+    droppedSourceMemberIds: [],
+    restrictedRecovery: false,
+    nextAction: 'none',
+  };
+  if (facts.owned) {
+    policy.coreDb.sqlite
+      .transaction(() =>
+        endRecoveryAdmission(policy.coreDb, owner.captureId, 'abandoned', {
+          ...report,
+          disposition: 'quarantined',
+          nextAction: 'abandon',
+        })
+      )
+      .immediate();
+    owner.updateProof();
+  }
+  if (existsSync(owner.generation)) {
+    assertCanonicalDirectory(owner.generation);
+    await removeDurableFile({ destinationPath: join(owner.generation, 'seal.json') });
+  }
+  facts = owner.current();
+  if (facts.capture.state !== 'abandoned' || facts.movedOut) refuseRecovery('recovery-required');
+  if (facts.owned)
+    policy.coreDb.sqlite
+      .transaction(() => endRecoveryAdmission(policy.coreDb, owner.captureId, 'abandoned', report))
+      .immediate();
+  return report;
 }

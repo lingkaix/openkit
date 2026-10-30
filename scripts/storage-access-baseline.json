@@ -328,7 +328,6 @@
     "apps/nanocore/src/storage/workspace-file-records.ts\tfs:writeFileSync\t641f7b77a6312c1cb375e63fa533aa7d113ff58f7f1c0e00999dc394953f7891": 1,
     "apps/nanocore/src/storage/workspace-file-records.ts\tfs:writeSync\td8dfd5f79660492eec1d233d6c7803d6f3cbc646955a184a33887bed2385e8c7": 1,
     "apps/nanocore/src/storage/workspace-move.ts\tfs:mkdtempSync\taaca859b3a746d209a6cc3349db45d031e241877e07b86f07ffaaedb18ebf00f": 1,
-    "apps/nanocore/src/storage/workspace-move.ts\tfs:rmSync\t8fdd2f9a337f4b4c6c24d4c71074aed353d8bf82097119a2fea877b1057945f7": 1,
     "apps/nanocore/src/storage/workspace-move.ts\tfs:rmSync\tf311a1459737794d826fedcc5dbf86de88b187a5f8de2d8c3d8df6bfb8e14e6c": 1,
     "apps/nanocore/src/storage/workspace-move.ts\tfs:writeFileSync\tb8fc2a05e5b865a48564617d4bb734670399e683bab4b1e9752337d4f9702f33": 1,
     "apps/nanocore/src/storage/workspace-portable-file-state.ts\tfs:mkdirSync\t333598b1eb4b2004235854c92bdaface8595c51ef0403447761075ea16e2dcc5": 1,

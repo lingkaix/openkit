@@ -30,3 +30,7 @@ Before scoped migrations, restart abandons only an explicitly automatic, active 
 Exact target recovery may settle only its current recovery diagnosis after the original Core result and target Store/config validation, under the same live freeze. Independent index, retirement and sibling failures remain; a finished result alone never opens serving admission.
 
 A single valid active SQL capture without a competing Core recovery restores its exact capture identity in the same recovery closure. Explicit recovery can rejoin that identity after fresh retained-state checks. Multiple active captures, unrelated authority failures and plain ownerless closures confer no native publication permission; release keeps the original exclusion.
+
+An abandoned capture whose original seal still exists remains recovery-quarantined. The existing SQL decision and seal presence identify interrupted retirement without a new durable state. Explicit recovery must retire that exposure before source readmission.
+
+An abandoned capture with no visible seal is admitted only after the existing startup owner synchronizes that absence in its canonical parent. A failed parent sync retains exact recovery quarantine; visible absence alone cannot discharge interrupted retirement.
