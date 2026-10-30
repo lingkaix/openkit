@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,7 @@ import {
   type ArtifactVersionRecord,
   allocateEntityId,
 } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import type { z } from 'zod';
 import { publishArtifactFileRecord } from '../workspace-file-records.js';
 import { FileStorageAdmission } from './file-admission.js';
@@ -168,9 +168,9 @@ describe('immutable Artifact payload files', () => {
     const path = artifactFilePayloadPath(state.workspaceRoot, state.artifactId, 1);
     await rm(path);
     expect(spawnSync('mkfifo', [path], { timeout: 2000 }).status).toBe(0);
-    // A separate process makes a blocking-open regression bounded and observable.
+    // Start the read watchdog after import so it measures FIFO refusal, not process startup.
     const source = fileURLToPath(new URL('./file-records.ts', import.meta.url));
-    const child = spawnSync(
+    const child = spawn(
       process.execPath,
       [
         '--import',
@@ -178,12 +178,38 @@ describe('immutable Artifact payload files', () => {
         '--input-type=module',
         '--eval',
         `import {readArtifactFilePayload} from ${JSON.stringify(source)};
-       try{readArtifactFilePayload(${JSON.stringify(state)});process.exit(1);}catch{process.exit(0);}`,
+       process.once('message', () => {
+         try{readArtifactFilePayload(${JSON.stringify(state)});process.exit(1);}catch{process.exit(0);}
+       });
+       process.send('ready');`,
       ],
-      { timeout: 5000, stdio: 'pipe' }
+      { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }
     );
-    expect(child.error).toBeUndefined();
-    expect(child.status).toBe(0);
+    onTestFinished(() => {
+      child.kill('SIGKILL');
+    });
+    const result = await new Promise<{ error: Error | undefined; status: number | null }>(
+      (resolve) => {
+        let error: Error | undefined;
+        let watchdog: ReturnType<typeof setTimeout> | undefined;
+        child.once('error', (value) => {
+          error = value;
+        });
+        child.once('message', () => {
+          watchdog = setTimeout(() => {
+            error = new Error('The FIFO read exceeded five seconds.');
+            child.kill('SIGKILL');
+          }, 5000);
+          child.send('read');
+        });
+        child.once('close', (status) => {
+          clearTimeout(watchdog);
+          resolve({ error, status });
+        });
+      }
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
   });
 
   it.each([

@@ -65,7 +65,11 @@ import {
   type ControlTerminalTransition,
   closeWorkspaceProductReadHandles,
 } from './control-store-products.js';
-import type { ControlRecoveryCleanupInput } from './control-store-recovery.js';
+import type {
+  ControlRecoveryCleanupInput,
+  ControlRecoverySafetyInput,
+  ControlRecoverySafetyResult,
+} from './control-store-recovery.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -213,6 +217,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'terminal':
     case 'project-cleanup':
     case 'recovery-cleanup':
+    case 'recovery-safety':
       return true;
     case 'item':
       return isControlCapacityItem(command.input.item);
@@ -783,6 +788,15 @@ class ControlStoreWorkerClient {
   ): Promise<readonly ControlSqlResult[]> {
     const reply = await this.request({ operation: 'write', database, statements });
     return (reply as Extract<Success, { operation: 'write' }>).results;
+  }
+
+  /** Copies proved current safety into an admitted private candidate, acknowledged only after FULL COMMIT. */
+  async recoverySafety(
+    database: string,
+    input: ControlRecoverySafetyInput
+  ): Promise<ControlRecoverySafetyResult> {
+    const reply = await this.request({ operation: 'recovery-safety', database, input });
+    return (reply as Extract<Success, { operation: 'recovery-safety' }>).result;
   }
 
   /** Cleans an admitted private recovery candidate through the existing native transaction and FULL ACK. */

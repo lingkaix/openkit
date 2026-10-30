@@ -353,7 +353,6 @@
     "apps/nanocore/src/storage/workspace-restore.ts\tfs:writeFileSync\t8cdd8f6e676b66ac1b1e7ebde09191be00550c971fffba3cf98c8393b0e0d12d": 1,
     "apps/nanocore/src/storage/workspace-restore.ts\tfs:writeFileSync\te8d7798a3cae3b800fcc24d6af7e2a439464a985d8bfa23bd980cd2acd0e2145": 1,
     "apps/nanocore/src/storage/workspace-restore.ts\tfs:writeFileSync\tf6f1db0c61ea75a9b501a2f3a5101d9cfe71be5236f47514200d7914b8752522": 1,
-    "apps/nanocore/src/storage/workspace-restore.ts\tsqlite\t48229e74a886faf07ab0c6321d95a2a054cecbaa75d79ddc46c6f7b1c914bdf0": 1,
     "apps/nanocore/src/storage/workspace-storage-migration.ts\tfs:copyFileSync\t5164d8a4694f2e64c7557cef6b925d407529b315be302334c8272072b0a400b8": 1,
     "apps/nanocore/src/storage/workspace-storage-migration.ts\tfs:cpSync\t3e43f133cb725a32d3dfbf7d1acf6743accd93933eeab9ca757978bfae270a39": 1,
     "apps/nanocore/src/storage/workspace-storage-migration.ts\tfs:mkdirSync\t393c38faa8a7d54da3372f4db08dcba1632f6f2888f68863d5c2fa42a980a193": 1,

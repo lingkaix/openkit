@@ -74,7 +74,11 @@ import {
   ControlTerminalTransitionSchema,
   controlProductMetadataJson,
 } from './control-store-products.js';
-import type { ControlRecoveryCleanupInput } from './control-store-recovery.js';
+import type {
+  ControlRecoveryCleanupInput,
+  ControlRecoverySafetyInput,
+  ControlRecoverySafetyResult,
+} from './control-store-recovery.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
   type ControlWorkObservationInput,
@@ -84,7 +88,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 17;
+export const CONTROL_WORKER_VERSION = 18;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -161,6 +165,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'recovery-cleanup'; readonly input: ControlRecoveryCleanupInput }
+      | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | { readonly operation: 'item'; readonly input: ControlItemAppend }
@@ -324,6 +329,11 @@ export type ControlWorkerReply = {
         | 'products'
         | 'publication'
         | 'recovery-cleanup';
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'recovery-safety';
+      readonly result: ControlRecoverySafetyResult;
     }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
@@ -520,6 +530,10 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   }
   if (reply.status !== 'ok') return false;
+  if (reply.operation === 'recovery-safety')
+    return (
+      reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
+    );
   if (reply.operation === 'event') return SseEventEnvelopeSchema.safeParse(reply.result).success;
   if (reply.operation === 'item') return ItemSchema.safeParse(reply.result).success;
   if (
@@ -738,6 +752,16 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'recovery-safety')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      isRecord(value.input) &&
+      exactFields(value.input, ['workspaceId', 'sourceDataRoot']) &&
+      WorkspaceIdSchema.safeParse(value.input.workspaceId).success &&
+      typeof value.input.sourceDataRoot === 'string' &&
+      isAbsolute(value.input.sourceDataRoot) &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'recovery-cleanup')
     return (
       exactFields(value, [...scoped, 'input']) &&

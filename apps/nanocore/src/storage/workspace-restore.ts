@@ -16,7 +16,6 @@ import {
   SEALED_TURN_TERMINALS,
   writeRetainedV1,
 } from '@openkit/protocol';
-import Database from 'better-sqlite3';
 import {
   publishWorkspaceResourceCatalog,
   readWorkspaceResourceCatalog,
@@ -39,7 +38,7 @@ import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import type { ControlSqlStatement } from './control-store-worker-protocol.js';
 import { inventoryRegularFiles } from './data-root-backup.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
-import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import {
   RECURRING_PORTABLE_PATHS,
@@ -417,41 +416,20 @@ async function bindTargetCandidate(
     });
     opened = true;
     if (input.command === 'restore') {
-      let current: Database.Database | undefined;
-      let currentSafetyRead = false;
-      try {
-        current = new Database(workspaceDbPath(core.dataRoot, workspaceId), {
-          readonly: true,
-          fileMustExist: true,
-        });
-        if (current.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error();
-        if (
-          current
-            .prepare(
-              "SELECT json_extract(record_json,'$.movedOut') FROM control_workspaces WHERE id=?"
-            )
-            .pluck()
-            .get(workspaceId)
-        )
-          refuseRecovery('workspace-moved-out');
-        const rows = current.prepare('SELECT * FROM evidence_bundles').all() as Record<
-          string,
-          unknown
-        >[];
-        currentSafetyRead = true;
-        sqlite
-          .transaction(() => {
-            sqlite.prepare('DELETE FROM evidence_bundles').run();
-            for (const row of rows) {
-              const columns = Object.keys(row);
-              sqlite
-                .prepare(
-                  `INSERT INTO evidence_bundles (${columns.map((key) => `"${key}"`).join(',')}) VALUES (${columns.map(() => '?').join(',')})`
-                )
-                .run(...Object.values(row));
-            }
-          })
-          .immediate();
+      const safety = await client.recoverySafety(database, {
+        workspaceId,
+        sourceDataRoot: resolve(core.dataRoot),
+      });
+      if (safety === 'moved-out') refuseRecovery('workspace-moved-out');
+      if (safety === 'unavailable') {
+        if (!input.acknowledgeLostSafety) refuseRecovery('safety-unproved');
+        restricted = {
+          backupId: manifest.backupId,
+          captureStartedAt: manifest.capture.startedAt,
+          lossDetectedAt: now,
+        };
+      } else {
+        // A failure after proved safety is a copy failure, never consent to discard current safety.
         writeFileSync(
           join(root, 'config/workspace.jsonc'),
           readFileSync(join(core.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc'))
@@ -461,18 +439,6 @@ async function bindTargetCandidate(
           join(root, 'catalog/catalog.json'),
           JSON.stringify(readWorkspaceResourceCatalog(core.dataRoot, workspaceId))
         );
-      } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'workspace-moved-out')
-          throw error;
-        if (currentSafetyRead) throw error;
-        if (!input.acknowledgeLostSafety) refuseRecovery('safety-unproved');
-        restricted = {
-          backupId: manifest.backupId,
-          captureStartedAt: manifest.capture.startedAt,
-          lossDetectedAt: now,
-        };
-      } finally {
-        current?.close();
       }
     }
     const records = loadWorkspaceFileRecords(dataRoot).find(

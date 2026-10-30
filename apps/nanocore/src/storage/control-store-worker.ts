@@ -102,7 +102,12 @@ import {
   prepareControlTerminal,
   readProduct,
 } from './control-store-products.js';
-import { applyControlRecoveryCleanup } from './control-store-recovery.js';
+import {
+  applyControlRecoveryCleanup,
+  applyControlRecoverySafety,
+  type PreparedControlRecoverySafety,
+  prepareControlRecoverySafety,
+} from './control-store-recovery.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -138,6 +143,7 @@ type WriteCommand = Extract<
     operation:
       | 'write'
       | 'recovery-cleanup'
+      | 'recovery-safety'
       | 'transition'
       | 'products'
       | 'item'
@@ -180,6 +186,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedCapability?: ControlCapabilityCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
+  readonly preparedRecoverySafety?: PreparedControlRecoverySafety | undefined;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
   readonly preparedPublications?: readonly string[];
@@ -607,6 +614,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'write':
     case 'recovery-cleanup':
+    case 'recovery-safety':
     case 'material':
       break;
   }
@@ -1328,6 +1336,21 @@ function flush(owner: OwnedDatabase): void {
               operation: 'capability',
               result,
             };
+          } else if (request.operation === 'recovery-safety') {
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedRecoverySafety)
+              throw new ControlProductPreconditionError();
+            const result = applyControlRecoverySafety(
+              owner.scopeDb,
+              request.input,
+              request.preparedRecoverySafety
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-safety',
+              result,
+            };
           } else if (request.operation === 'recovery-cleanup') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             applyControlRecoveryCleanup(owner.scopeDb, request.input);
@@ -1774,6 +1797,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     if (
       value.operation === 'write' ||
       value.operation === 'recovery-cleanup' ||
+      value.operation === 'recovery-safety' ||
       value.operation === 'transition' ||
       value.operation === 'products' ||
       value.operation === 'item' ||
@@ -1818,6 +1842,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           cohort,
           barrier:
             value.operation === 'recovery-cleanup' ||
+            value.operation === 'recovery-safety' ||
             archivedThreads(value).length > 0 ||
             (value.operation === 'write' && owner.scopeDb !== undefined),
           ready: false,
@@ -1844,6 +1869,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedCapability: ControlCapabilityCommandInput | undefined;
           let preparedReview: PreparedControlReviewCommand | undefined;
           let preparedTerminal: PreparedControlTerminal | undefined;
+          let preparedRecoverySafety: PreparedControlRecoverySafety | undefined;
           try {
             if (value.operation === 'pending' && !value.input.terminal) {
               if (!owner.productOwner) throw new ControlProductPreconditionError();
@@ -1862,6 +1888,15 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               )
             )
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'recovery-safety') {
+              await prepareAfterPredecessors(owner, queued, earlier);
+              if (
+                owner.scopeDb?.scope !== 'workspace' ||
+                owner.scopeDb.workspaceId !== value.input.workspaceId
+              )
+                throw new ControlProductPreconditionError();
+              preparedRecoverySafety = prepareControlRecoverySafety(value.input);
+            }
             if (value.operation === 'item' || value.operation === 'event') {
               if (owner.scopeDb?.scope !== 'workspace' || !owner.contentMount)
                 throw new ControlProductPreconditionError();
@@ -2025,6 +2060,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedEvent,
               itemPublication,
               preparedTerminal,
+              preparedRecoverySafety,
               preparedMaterial,
               preparedCapability,
               preparedDirectories: [...newDirectories.directories],

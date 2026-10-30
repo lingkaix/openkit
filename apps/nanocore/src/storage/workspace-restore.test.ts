@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -455,6 +455,37 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toEqual(originalMembers);
   });
 
+  it('WM restore step 3: a current-safety copy failure refuses even with lost-safety acknowledgement', async () => {
+    const f = await fixture();
+    const originalPath = workspaceDbPath(f.dataRoot, workspaceId);
+    const original = statSync(originalPath);
+    const before = sha(readFileSync(originalPath));
+    const safety = rows(originalPath, 'evidence_bundles');
+    const authority = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+    // Refuse only the private candidate's copy after valid current safety has been read.
+    const candidatePath = join(f.bundleRoot, 'db/workspace.sqlite');
+    const candidate = new Database(candidatePath, { fileMustExist: true });
+    try {
+      candidate.exec(`CREATE TRIGGER refuse_current_safety BEFORE INSERT ON evidence_bundles
+        BEGIN SELECT RAISE(ABORT, 'CURRENT_SAFETY_COPY_FAULT'); END`);
+    } finally {
+      candidate.close();
+    }
+    const bytes = readFileSync(candidatePath);
+    const inventory = f.manifest.inventory.map((entry) =>
+      entry.path === 'db/workspace.sqlite'
+        ? { ...entry, bytes: bytes.length, sha256: sha(bytes) }
+        : entry
+    );
+    f.writeManifest({ ...f.manifest, inventory, inventoryDigest: sha(JSON.stringify(inventory)) });
+    await refuses(f, 'recovery-required', [...f.argv, '--acknowledge-lost-safety']);
+    // Same-Deployment Restore step 3 preserves provable safety; acknowledgement covers loss only.
+    expect(statSync(originalPath).ino).toBe(original.ino);
+    expect(sha(readFileSync(originalPath))).toBe(before);
+    expect(rows(originalPath, 'evidence_bundles')).toEqual(safety);
+    expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(authority);
+  }, 120_000);
+
   it('WM restore preparation: a refused recovery Audit publishes no replacement or success', async () => {
     const f = await fixture(false, true);
     const originalPath = workspaceDbPath(f.dataRoot, workspaceId);
@@ -836,7 +867,10 @@ describe('D0-2 same-deployment restore', () => {
     );
     const safety = rows(workspaceDbPath(f.dataRoot, workspaceId), 'evidence_bundles');
     const output: string[] = [];
-    const promise = runCli(f.argv, (line) => output.push(line), f);
+    // The public CLI accepts a relative root with the same current-safety obligations.
+    const relativeRoot = relative(process.cwd(), f.dataRoot);
+    const argv = f.argv.map((value) => (value === f.dataRoot ? relativeRoot : value));
+    const promise = runCli(argv, (line) => output.push(line), f);
     await expect(promise).resolves.toMatchObject({
       command: 'restore',
       disposition: 'restored',
