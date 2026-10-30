@@ -104,6 +104,7 @@ import {
   readProduct,
 } from './control-store-products.js';
 import {
+  applyControlRecoveryCapture,
   applyControlRecoveryCleanup,
   applyControlRecoveryHistory,
   applyControlRecoverySafety,
@@ -150,6 +151,7 @@ type WriteCommand = Extract<
     operation:
       | 'write'
       | 'recovery-cleanup'
+      | 'recovery-capture'
       | 'recovery-history'
       | 'recovery-safety'
       | 'transition'
@@ -623,6 +625,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'write':
     case 'recovery-cleanup':
+    case 'recovery-capture':
     case 'recovery-history':
     case 'recovery-safety':
     case 'material':
@@ -1375,6 +1378,15 @@ function flush(owner: OwnedDatabase): void {
               operation: 'recovery-safety',
               result,
             };
+          } else if (request.operation === 'recovery-capture') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            applyControlRecoveryCapture(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-capture',
+            };
           } else if (request.operation === 'recovery-cleanup') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             applyControlRecoveryCleanup(owner.scopeDb, request.input);
@@ -1845,6 +1857,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     if (
       value.operation === 'write' ||
       value.operation === 'recovery-cleanup' ||
+      value.operation === 'recovery-capture' ||
       value.operation === 'recovery-history' ||
       value.operation === 'recovery-safety' ||
       value.operation === 'transition' ||
@@ -1891,6 +1904,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           cohort,
           barrier:
             value.operation === 'recovery-cleanup' ||
+            value.operation === 'recovery-capture' ||
             value.operation === 'recovery-history' ||
             value.operation === 'recovery-safety' ||
             archivedThreads(value).length > 0 ||

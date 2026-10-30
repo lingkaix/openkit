@@ -69,6 +69,7 @@ import {
   closeWorkspaceProductReadHandles,
 } from './control-store-products.js';
 import type {
+  ControlRecoveryCaptureInput,
   ControlRecoveryCleanupInput,
   ControlRecoverySafetyInput,
   ControlRecoverySafetyResult,
@@ -233,6 +234,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'terminal':
     case 'project-cleanup':
     case 'recovery-cleanup':
+    case 'recovery-capture':
     case 'recovery-history':
     case 'recovery-seal':
     case 'recovery-safety':
@@ -927,6 +929,21 @@ class ControlStoreWorkerClient {
       recovery
     );
     return (reply as Extract<Success, { operation: 'recovery-safety' }>).result;
+  }
+
+  /** Ends exactly one capture through its original SQL owner; acknowledgement follows covering FULL COMMIT. */
+  async recoveryCapture(
+    database: string,
+    input: ControlRecoveryCaptureInput,
+    recovery?: ControlRecoveryNativeCall
+  ): Promise<void> {
+    await this.request(
+      { operation: 'recovery-capture', database, input },
+      undefined,
+      undefined,
+      false,
+      recovery
+    );
   }
 
   /** Cleans an admitted private recovery candidate through the existing native transaction and FULL ACK. */

@@ -80,6 +80,7 @@ import {
   controlProductMetadataJson,
 } from './control-store-products.js';
 import type {
+  ControlRecoveryCaptureInput,
   ControlRecoveryCleanupInput,
   ControlRecoverySafetyInput,
   ControlRecoverySafetyResult,
@@ -171,6 +172,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'recovery-history'; readonly workspaceId: string }
       | { readonly operation: 'recovery-cleanup'; readonly input: ControlRecoveryCleanupInput }
+      | { readonly operation: 'recovery-capture'; readonly input: ControlRecoveryCaptureInput }
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
@@ -334,7 +336,8 @@ export type ControlWorkerReply = {
         | 'shutdown'
         | 'products'
         | 'publication'
-        | 'recovery-cleanup';
+        | 'recovery-cleanup'
+        | 'recovery-capture';
     }
   | {
       readonly status: 'ok';
@@ -556,6 +559,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     reply.operation === 'shutdown' ||
     reply.operation === 'products' ||
     reply.operation === 'recovery-cleanup' ||
+    reply.operation === 'recovery-capture' ||
     reply.operation === 'publication'
   )
     return true;
@@ -779,6 +783,17 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       WorkspaceIdSchema.safeParse(value.input.workspaceId).success &&
       typeof value.input.sourceDataRoot === 'string' &&
       isAbsolute(value.input.sourceDataRoot) &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'recovery-capture')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      isRecord(value.input) &&
+      exactFields(value.input, ['workspaceId', 'captureId', 'state']) &&
+      WorkspaceIdSchema.safeParse(value.input.workspaceId).success &&
+      typeof value.input.captureId === 'string' &&
+      value.input.captureId.trim().length > 0 &&
+      (value.input.state === 'finished' || value.input.state === 'abandoned') &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'recovery-cleanup')

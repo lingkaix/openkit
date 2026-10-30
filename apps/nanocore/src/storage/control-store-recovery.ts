@@ -52,6 +52,22 @@ import {
   readNativeTurnHistory,
 } from './workspace-file-records.js';
 
+/** One selected capture decision; closure verification and writer exclusion stay with its lifecycle. */
+export interface ControlRecoveryCaptureInput {
+  readonly workspaceId: string;
+  readonly captureId: string;
+  readonly state: 'finished' | 'abandoned';
+}
+
+/** Uses the original first-terminal owner inside the native covering transaction, never a new commit. */
+export function applyControlRecoveryCapture(
+  db: WorkspaceDb,
+  input: ControlRecoveryCaptureInput
+): void {
+  if (db.workspaceId !== input.workspaceId) throw new ControlProductPreconditionError();
+  endCaptureInDb(db, input.workspaceId, input.captureId, input.state);
+}
+
 /** Cleanup facts for an already admitted, unpublished restore or MOVE candidate. */
 export interface ControlRecoveryCleanupInput {
   readonly workspaceId: string;
