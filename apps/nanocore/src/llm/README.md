@@ -141,3 +141,5 @@ Prompt-cache keys use the Protocol canonical encoder and Node-only digest subpat
 Fresh system-prompt attribution applies its existing NFC string-value projection before the shared Protocol canonical encoder and raw SHA helper. Endpoint, presence, message order, role and optional name retain their domain meaning; recorded historical prompt digests remain opaque. Run `system-prompt-digest.test.ts` and the Gateway attribution cases for this boundary.
 
 The prompt-cache resolver hashes admitted caller hints with the existing Provider, model, full subscription-account pair and trusted scope. Hint priority and trusted attribution precedence remain unchanged. OpenKit metadata is consumed locally and removed from the provider request without mutating the caller; unrelated public metadata remains.
+
+Worker inference refuses a syntactically valid model outside its authenticated AEP with `worker_logical_model_not_allowed` before Provider or capability effects. Caller-supplied scope, Provider, state and other lineage authority retain `worker_inference_lineage_mismatch`; request-shape validation remains separate.

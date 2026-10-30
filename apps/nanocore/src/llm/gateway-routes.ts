@@ -1172,7 +1172,13 @@ function requireTrustedWorkerInferenceRoute(
   const route = environmentPackage.llm.routes.find(
     (candidate) => candidate.model === logicalModelId
   );
-  if (!route) throw workerInferenceLineageMismatch();
+  if (!route) {
+    throw new WorkerInferenceRouteError(
+      'worker_logical_model_not_allowed',
+      'Worker logical model is not allowed by its environment package.',
+      403
+    );
+  }
   return route;
 }
 

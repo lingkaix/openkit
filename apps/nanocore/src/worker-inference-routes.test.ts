@@ -1409,7 +1409,7 @@ describe('worker inference routes', () => {
       {
         body: {
           messages: [{ content: 'Hello', role: 'user' }],
-          model: WORKER_PROVIDER_MODEL,
+          model: WORKER_LOGICAL_MODEL_ID,
           tools: [
             { function: { name: 'read_file' }, type: 'function' },
             { function: { name: 'read_file' }, type: 'function' },
@@ -1972,10 +1972,23 @@ describe('worker inference routes', () => {
     expect(trusted.dispatcher.responseCalls).toEqual([]);
   });
 
+  it('refuses logical models outside the authenticated AEP before provider effects', async () => {
+    const fixture = await createWorkerInferenceRouteFixture();
+    for (const model of ['other-model', WORKER_PROVIDER_MODEL]) {
+      const response = await postWorkerResponses(fixture, { input: 'Hello', model });
+      expect(response.status).toBe(403);
+      await expect.soft(response.json()).resolves.toMatchObject({
+        error: { code: 'worker_logical_model_not_allowed' },
+      });
+    }
+    expect(fixture.dispatcher.chatCalls).toEqual([]);
+    expect(fixture.dispatcher.responseCalls).toEqual([]);
+    expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([]);
+  });
+
   it('rejects caller authority conflicts before provider dispatch', async () => {
     const fixture = await createWorkerInferenceRouteFixture();
     const conflicts = [
-      { model: 'other-model' },
       { model_id: 'other-model' },
       { providerId: 'public-default' },
       { provider_ref: 'public-default' },
