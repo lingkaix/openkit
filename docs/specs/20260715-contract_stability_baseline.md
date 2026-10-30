@@ -281,7 +281,7 @@ No code or data migration occurs merely because this classification is accepted.
 
 ## Testing Strategy
 
-- L0 documentation checks verify that active specs declare `Status` and `Implementation`, classify new supported surfaces, and do not reintroduce removed compatibility language.
+- L0 documentation checks validate active specification lifecycle metadata, including `status` and `implementation`. Review checks surface classification and compatibility claims against their owners.
 - L1 package tests verify strict schemas, version identities, required features, redaction, and private-boundary exclusions where those risks exist.
 - L2 contract tests verify durable fixtures and exact-release projection alignment that crosses package boundaries.
 - L3 NanoCore tests verify representative process-only risks such as restart, migration, fail-closed authority, and one same-release public path; they do not repeat every L1-L2 assertion.

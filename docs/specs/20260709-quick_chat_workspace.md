@@ -127,7 +127,7 @@ A personal home is ineligible for a new governed Workspace deletion. Refuse with
 - Quarantined-home sign-in and healthy-Workspace listing remain available without admitting or replacing the quarantined home.
 - An absent binding preserves the original identity. Actual terminal retirement selects one fresh owner-only successor, including after reopen; repeated calls reuse it and retired bytes/User Memory remain unchanged.
 - Quarantine, conflicting ownership and membership tombstones refuse succession. A failed successor publication retains its selected identity without false success.
-- Migration preserves existing identities, Threads, Knowledge, ownership, and tombstones; restart never creates a duplicate home or resets data.
+- No pre-`v0.1.0` `quick-chat` record is converted. Restart never creates a duplicate home or resets data.
 
 ### Web Behavior
 

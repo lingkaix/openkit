@@ -143,7 +143,7 @@ These deltas remain recorded here as the stack-owned source for the reconciled `
 ## Consequences
 
 - Positive: the Claude Design (Spectrum) → code (React Aria + Spectrum tokens) gap is minimized because both sides use Adobe's own behavior layer and tokens, which is what makes the automated design loop able to converge. Agent output reliability improves. A2UI and heavy-component ecosystems are first-class.
-- Negative: React has more runtime overhead than Solid; streaming item logs and large lists MUST use virtualization. The rebuild requires porting tests from `@solidjs/testing-library` to React Testing Library and re-expressing reactive logic. The team takes on A2UI standard-churn tracking.
+- Negative: React has more runtime overhead than Solid. Use virtualization when measurements identify list rendering as the cause of unacceptable interaction latency or memory use. The rebuild requires porting tests from `@solidjs/testing-library` to React Testing Library and re-expressing reactive logic. The team takes on A2UI standard-churn tracking.
 
 ## Rollout / Migration Plan
 
@@ -169,7 +169,7 @@ The Web UI ships with each release: no backward-compatibility layers are preserv
 
 - **A2UI standard churn (v0.9 → v1.0 RC).** Pin a version, isolate the renderer behind an OpenKit mapping layer, and treat renderer upgrades as scoped changes.
 - **Spectrum token/behavior availability and licensing.** The Spectrum token package, React Aria, and the A2UI renderer are direct dependencies; confirm their licenses are compatible before adoption and fall back to a vendored snapshot only if a licensing or stability issue arises (see `20260522-vendor_snapshot_packages.md`).
-- **React performance for streaming/large logs.** Mandate list virtualization and memoization on high-frequency surfaces.
+- **React performance for streaming/large logs.** Measure interaction latency and memory use on representative workloads; apply virtualization or memoization where the measured cause warrants it.
 - **`/design` autonomy is unverified.** The design loop must have a manual/browser fallback; the cookbook documents both paths.
 
 ## Open Questions

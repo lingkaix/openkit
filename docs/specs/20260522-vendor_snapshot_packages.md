@@ -20,6 +20,8 @@ This spec does not own OpenKit protocol schemas, NanoCore provider-template beha
 
 It does not decide which upstream release an application supports, what evidence that application keeps beside its code, or which integration checks qualify a dependency update. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns those decisions for NanoHost and OpenShell.
 
+Package-local build-supply archives are outside this boundary-snapshot contract. Their consuming specification owns their use and qualification; [Retrieval Kernel](20261014-retrieval_kernel.md) owns its embedded dictionary supply.
+
 ## Core References
 
 - `docs/core/protocol.md`
@@ -86,13 +88,19 @@ This requirement does not make every external library dependency a snapshot pack
 
 ### Snapshot Evidence Quality
 
-Snapshot refresh evidence MUST come from a complete non-shallow checkout of the exact immutable upstream tag, and the snapshot metadata MUST record the resolved tag and commit. A development branch, a floating reference, a shallow clone, a rendered release page, or an uncommitted working tree is not snapshot evidence, and a value read from one of those sources MUST NOT be recorded as observed at the pin.
+Snapshot refresh evidence MUST identify the exact upstream input and checksum the retained snapshot. The source determines the evidence:
 
-An upstream artifact set is complete for a pin only when every consumed component resolves to that same tag. A mixed, relabelled, or partially resolved set is invalid.
+- For a source-tag input, use a complete non-shallow checkout of the immutable tag and record its resolved tag and commit.
+- For a registry release, use the exact published package version and record its package identity, release source, and generator identity where applicable. Record an upstream commit only when the source supplies one; state its absence otherwise.
+- For a rolling API, record the source URL, capture date, and checksum of the captured bytes. A date identifies the capture, not an immutable upstream release.
+
+A development branch, floating reference, shallow clone, rendered release page, or uncommitted working tree cannot establish values at an immutable source pin.
+
+An upstream artifact set is complete only when every consumed component resolves to the recorded release or capture. A mixed, relabelled, or partially resolved set is invalid.
 
 ### Snapshot Refresh Obligation
 
-This subsection applies only to an external snapshot package governed by this specification. A refresh MUST resolve its committed inputs from the exact immutable upstream version and record their source identity and checksums under the package-local contract. Generated or vendored diffs receive separate review from any consuming OpenKit behavior change.
+This subsection applies only to an external snapshot package governed by this specification. A refresh MUST resolve its committed inputs from the exact recorded release or capture and retain source identity and checksums under the package-local contract. Generated or vendored diffs receive separate review from any consuming OpenKit behavior change.
 
 An upstream release creates no obligation to refresh a snapshot. An application dependency update is governed by that application's owner even when both changes happen in one repository slice.
 
@@ -100,7 +108,7 @@ NanoCore adapter logic and provider-template logic must remain in NanoCore-owned
 
 ## Accepted Design
 
-Codex schema refreshes use the pinned local Codex CLI command recorded in package metadata.
+Codex schema refreshes use the generator from the exact registry package version recorded in package metadata, not an arbitrary locally installed CLI.
 
 models.dev refreshes create a new dated snapshot directory and update checksum metadata.
 
@@ -158,7 +166,7 @@ Future snapshot refreshes should follow the package-local refresh procedures rat
 
 `@openkit/models-dev-catalog` validates metadata, checksum, snapshot parseability, and provider-template traceability.
 
-A snapshot that supplies machine-readable inputs validates that every consumed definition is present, individually checksummed, and resolved from the recorded immutable upstream version.
+A snapshot that supplies machine-readable inputs validates that every consumed definition is present, individually checksummed, and resolved from the recorded release or capture.
 
 NanoCore tests continue to validate runtime behavior against provider templates and Codex adapter code.
 

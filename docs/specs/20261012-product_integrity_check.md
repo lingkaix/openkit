@@ -146,7 +146,7 @@ Model-call fixtures:
 
 `terminal-turn-consistency` checks published terminal facts. Story 10 uses this name. The universe is each Turn whose canonical record has a terminal status and whose durable terminal event carries a `StopReason`. `pending` and `running` are not terminal. Every other canonical Turn status is terminal for this universe.
 
-The check reads each Turn's durable event log at the existing complete durable event-read seam. It turns final-fragment repair off, so the read never writes. It keeps that seam's sequence-one check and its lineage validation. With repair off, an incomplete final fragment throws. The name is then `unknown` with reason `unreadable`, unless a violation in that name is already established. The read honors the record bound and the time bound while it reads. It does not load the whole file and then apply the bound. This is a read option at the existing seam, not a new reader. The check does not read the rolling in-memory window.
+The check reads each Turn's complete durable event history through its existing reader without writes or repair. It preserves sequence-one and lineage validation. An unreadable retained row or missing immutable content yields `unknown` with reason `unreadable`, unless this invariant already has an established violation. The read honors the record and time bounds during reading, before accumulating the complete history. This is a read option at the existing seam, not a new reader. The check does not read the rolling in-memory window. The [control-store decision](../decisions/20261019-durable_execution_and_control_store.md) replaces mutable event files with control records and immutable content.
 
 The Turn record has no `StopReason` field and no worker flag. The identifying shape is that durable event. The closed mapping applies to every Turn that carries a `StopReason` on it, not only to a Turn that still retains a Worker Checkpoint. Current writers of that event are the worker completion publisher, the worker failure publisher, and the simulator publisher. The simulator publisher writes `completed` for a completed Turn and `aborted` for an interrupted Turn. A Turn with no such event is outside the predicate.
 
@@ -187,8 +187,8 @@ Terminal-turn fixtures:
 - Violating. The Turn record status is `completed`. The durable event carries `StopReason` `completed`. The retained checkpoint stage is `failed` and its `StopReason` is `error`, and the checkpoint is also preserved as `recovery_required`. The preservation does not make the contradiction lawful.
 - Insufficient. The complete durable event log cannot be read. The predicate is `unknown` with reason `unreadable`.
 - Insufficient. The stored row has event `turn.completed` but no readable Turn lineage. No other Turn in this name already violates. The result is `unknown` with reason `unreadable`.
-- Insufficient. The event log ends with an incomplete final fragment. Repair is off, so the read throws. No other Turn in this name already violates. The result is `unknown` with reason `unreadable`. The file bytes are unchanged after the check.
-- Positive. The event log's valid final row has no trailing newline. The Turn record status is `completed`. That row is a `turn.completed` event with `stopReason` `completed`. No other terminal event conflicts, and no terminal checkpoint remains. Repair is off, so the check reads the row and does not rewrite the file. The result is `pass`. The file bytes are unchanged after the check.
+- Insufficient. A retained event references missing immutable content. No other Turn in this invariant already violates. The result is `unknown` with reason `unreadable`. The check changes no retained row or content.
+- Positive. The Turn record status is `completed`. Its complete ordered history ends with a valid `turn.completed` event carrying `stopReason` `completed`. No other terminal event conflicts, and no terminal checkpoint remains. The result is `pass`. The check changes no retained row or content.
 - Outside the comparison. A checkpoint disappears between two reads. Absence is not a violation. When the Turn record status is `completed` and the durable event still carries `StopReason` `completed`, the Turn stays consistent.
 - Empty. No Turn has a terminal status and a durable `StopReason`. The predicate passes. The pass does not prove that story 10 ran.
 - Outside. The Turn record status is `running`. The Turn is not in the universe.
@@ -209,7 +209,7 @@ A non-administrator receives the existing denial and no `results` entry. An inva
 
 ## Proposed Design
 
-One family table declares `integrity.workspace.check` with binding JSON, success status 200, `mutating` false, and `returnsOneTimeSecret` false. One transport-free handler evaluates the selected names. The handler calls the existing record reads and stops when a bound is reached. The event log uses the existing complete read seam with final-fragment repair off. It does not copy a second closeout classifier or a second usage writer. The operation composition includes the family table once.
+One family table declares `integrity.workspace.check` with binding JSON, success status 200, `mutating` false, and `returnsOneTimeSecret` false. One transport-free handler evaluates the selected names. The handler calls the existing record reads and stops when a bound is reached. The durable event history uses the existing complete read seam without writes or repair. It does not copy a second closeout classifier or a second usage writer. The operation composition includes the family table once.
 
 ## Current Implementation Projection
 
