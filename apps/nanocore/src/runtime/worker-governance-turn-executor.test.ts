@@ -119,7 +119,7 @@ import {
   createAppWithLocalIdentity as createApp,
   createAppWithWorkspaceAuthority,
 } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
@@ -571,7 +571,10 @@ async function createWorkerContextExecutorFixture(
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-context-${name}-`));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const store = await createDemoStore({ dataRoot });
+  // These Context Package scenarios own Demo only; keep its real publisher, not Quick Chat.
+  ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  await seedDemoWorkspace(store);
   if (options.captureValue)
     store.setLiveCaptureCoverage({ scope: 'server', value: options.captureValue });
   recordWorkspaceOwnerMembership({

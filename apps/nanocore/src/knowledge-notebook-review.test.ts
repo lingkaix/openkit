@@ -9,7 +9,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -25,7 +25,9 @@ async function fixture() {
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    // Only the reviewed Workspace participates; do not publish an unrelated Quick Chat Workspace.
+    const store = new FsStore({ dataRoot });
+    await seedDemoWorkspace(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,

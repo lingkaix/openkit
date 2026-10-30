@@ -772,36 +772,41 @@ function removeKnowledgeFixtureBlob(store: FsStore, revision: string, pageId: st
 
 /**
  * Drafts one source-backed create-only Knowledge Proposal through its public route.
+ * One native Source is sufficient for these Review cases; later drafts reuse its real acknowledgement.
  *
  * @param app Test NanoCore app.
  * @param store Actual disk-backed Notebook owner.
  * @param suffix Safe unique suffix for the proposal fixture.
+ * @param registeredSource Earlier real Source acknowledgement from this same private fixture.
  * @returns Exact proposal and candidate page tuple used by decision and reversal tests.
  */
 async function draftKnowledgeProposalFixture(
   app: ReturnType<typeof createNanoCoreApp>,
   store: FsStore,
-  suffix: string
+  suffix: string,
+  registeredSource?: Response
 ) {
-  const sourceResponse = await app.request(
-    ...knowledgeOperationRequest(
-      'knowledge.source.register',
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: knowledgeProposalRequestId(`knowledge-source-${suffix}`),
-          kind: 'document',
-          title: `Proposal source ${suffix}`,
-          uri: `file://proposal-source-${suffix}.md`,
-          content: `Authoritative proposal source ${suffix}.`,
-        }),
-      }
-    )
-  );
+  const sourceResponse =
+    registeredSource ??
+    (await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.source.register',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: knowledgeProposalRequestId('knowledge-review-fixture-source'),
+            kind: 'document',
+            title: 'Proposal review fixture source',
+            uri: 'file://proposal-review-fixture-source.md',
+            content: 'Authoritative source shared by distinct reviewed proposals in this fixture.',
+          }),
+        }
+      )
+    ));
   expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(200);
-  const source = (await sourceResponse.json()) as {
+  const source = (await sourceResponse.clone().json()) as {
     source: { id: string; contentDigest: string };
   };
   const sourceReference = `source:${source.source.id}@${source.source.contentDigest}`;
@@ -856,6 +861,7 @@ async function draftKnowledgeProposalFixture(
     knowledgePageId,
     canonicalPageBytes,
     contentDigest,
+    sourceResponse,
   };
 }
 
@@ -10812,7 +10818,9 @@ describe('nanocore server', () => {
   });
   it('applies only accepted fixed proposals and refuses unavailable published evidence', async () => {
     const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    // Review admission uses Demo only, not an unrelated Quick Chat publication.
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    await seedDemoWorkspace(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: LOCAL_USER_ID,
@@ -10886,7 +10894,12 @@ describe('nanocore server', () => {
       });
 
       for (const decision of ['rejected', 'deferred'] as const) {
-        const fixture = await draftKnowledgeProposalFixture(app, store, decision);
+        const fixture = await draftKnowledgeProposalFixture(
+          app,
+          store,
+          decision,
+          accepted.sourceResponse
+        );
         const response = await submitKnowledgeProposalDecision(
           app,
           store,
@@ -10906,7 +10919,12 @@ describe('nanocore server', () => {
         expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBeUndefined();
       }
 
-      const interrupted = await draftKnowledgeProposalFixture(app, store, 'interrupted');
+      const interrupted = await draftKnowledgeProposalFixture(
+        app,
+        store,
+        'interrupted',
+        accepted.sourceResponse
+      );
       const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
       const completed = await submitKnowledgeProposalDecision(
         app,
@@ -11121,7 +11139,9 @@ describe('nanocore server', () => {
 
   it('reverses only the unchanged proposal-created page and replays without another effect', async () => {
     const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    // Reversal uses the real Demo Notebook; Quick Chat is outside this contract.
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    await seedDemoWorkspace(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: LOCAL_USER_ID,
@@ -11184,7 +11204,12 @@ describe('nanocore server', () => {
         code: 'idempotency_key_conflict',
       });
 
-      const changed = await draftKnowledgeProposalFixture(app, store, 'reverse-changed');
+      const changed = await draftKnowledgeProposalFixture(
+        app,
+        store,
+        'reverse-changed',
+        accepted.sourceResponse
+      );
       const changedDecision = await submitKnowledgeProposalDecision(
         app,
         store,
@@ -11224,7 +11249,12 @@ describe('nanocore server', () => {
       await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
       expect(fixtureKnowledgeBytes(store, changed.knowledgePageId)).toBe(publishedChangedBytes);
 
-      const missing = await draftKnowledgeProposalFixture(app, store, 'reverse-missing');
+      const missing = await draftKnowledgeProposalFixture(
+        app,
+        store,
+        'reverse-missing',
+        accepted.sourceResponse
+      );
       const missingDecision = await submitKnowledgeProposalDecision(
         app,
         store,

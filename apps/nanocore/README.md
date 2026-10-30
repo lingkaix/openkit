@@ -2,6 +2,8 @@
 
 The test-only `worker-mcp-lifecycle.fixture.ts` keeps the original captured-outcome scenarios and common assertions outside the production source root. Four focused test files run these scenarios in separate Vitest contexts with their original inputs, cleanup and bounds, so timed-out cleanup cannot close the next scenario's writer.
 
+Knowledge Review and S39 Context Package fixtures publish only their required Demo Workspace through the real snapshot owner. Server Review fixtures reuse one real native Source acknowledgement for distinct proposals instead of repeating unrelated Source registration. Native SQLite, Git, request replay and retained-lineage assertions keep their original boundaries and timeouts.
+
 Source `start` and `dev` set the child Node threadpool to 16 before startup, matching the App image. An explicit `UV_THREADPOOL_SIZE` overrides that default; direct Node invocations use Node's own default.
 
 The Core execution journal now persists administrative image-acquisition intent and atomic image receipt/outcome transitions. Its [runtime guide](src/runtime/README.md) describes the Core-only scope, original expiry/refusal and immutable unknown/linked late evidence; general Workspace execution, native deadline carriage and export remain separate work. Workspace0012 now provides owner-qualified execution-journal storage, typed readers and transaction primitives. Its two control tables are excluded from analytical export and retained only within Workspace database bytes for operational backup/MOVE; ordinary Workspace producers remain inactive. Native runtime evidence uses native-content-v1 and the named AEP's selected combined log bound; capture defaults remain OFF.
