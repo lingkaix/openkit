@@ -174,3 +174,22 @@ it.each([
   expect(screen.getByLabelText('Shared grant Agent')).toHaveValue('');
   expect(document.body.textContent).not.toContain(canary);
 });
+
+it('does not expose AgentSession input and sends no session value on grant create or narrow', async () => {
+  const { operations } = setup();
+  await screen.findByText(GRANT_ID);
+  expect(screen.queryByLabelText('Shared grant AgentSession')).not.toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText('Shared grant Agent'), 'agent_review');
+  await userEvent.click(
+    screen.getByRole('button', { name: `Create shared gateway grant ${REFERENCE_ID}` })
+  );
+  await waitFor(() => expect(operations['vault.server-mcp-grant-create']).toHaveBeenCalled());
+  expect(operations['vault.server-mcp-grant-create'].mock.calls[0][0]).not.toHaveProperty(
+    'targetAgentSessionId'
+  );
+  await userEvent.click(screen.getByRole('button', { name: `Narrow shared grant ${GRANT_ID}` }));
+  await waitFor(() => expect(operations['vault.server-mcp-grant-narrow']).toHaveBeenCalled());
+  expect(
+    operations['vault.server-mcp-grant-narrow'].mock.calls[0][0].constraints
+  ).not.toHaveProperty('targetAgentSessionId');
+});

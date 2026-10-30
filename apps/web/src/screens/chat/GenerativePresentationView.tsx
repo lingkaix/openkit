@@ -1,7 +1,7 @@
 import type { ReactComponentImplementation } from '@a2ui/react/v0_9';
 import { A2uiSurface } from '@a2ui/react/v0_9';
 import { MessageProcessor } from '@a2ui/web_core/v0_9';
-import { createRequestId } from '@openkit/core-client';
+import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -116,6 +116,9 @@ export function GenerativePresentationView({
       });
     },
     onError: (error) => {
+      if (error instanceof ApiCallError && error.code !== null) {
+        submitRequestId.current = null;
+      }
       setConflict(error instanceof Error ? error.message : 'The record could not be updated.');
     },
   });

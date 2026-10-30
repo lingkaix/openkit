@@ -132,6 +132,7 @@ describe('Vault secret administration', () => {
   it('shows retained constraints and narrows only through an explicit replacement action', async () => {
     const { operations } = setup();
     expect(await screen.findByText('Agent: agent_review')).toBeInTheDocument();
+    expect(screen.getByText('Session constraint: None')).toBeInTheDocument();
     expect(screen.getByText('Visibility: gateway-only')).toBeInTheDocument();
     expect(screen.getByText('Lifetime: workspace')).toBeInTheDocument();
     expect(screen.getByText('Expiry: 2099-01-01T00:00:00.000Z')).toBeInTheDocument();
@@ -248,13 +249,36 @@ describe('Vault secret administration', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
     expect(operations['vault.secret-create']).toHaveBeenCalledTimes(1);
   });
+  it('does not expose AgentSession input and sends no session value on grant create or narrow', async () => {
+    const { operations } = setup();
+    await screen.findByText('Agent: agent_review');
+    expect(screen.queryByLabelText('Grant target AgentSession')).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Grant target Agent'), 'agent_selected');
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Create gateway grant for vault_00000000-0000-7665-b682-3d8ade3ac72a',
+      })
+    );
+    await waitFor(() => expect(operations['vault.grant-create']).toHaveBeenCalled());
+    expect(operations['vault.grant-create'].mock.calls[0][0]).not.toHaveProperty(
+      'targetAgentSessionId'
+    );
+    await userEvent.type(screen.getByLabelText('Grant expiry (UTC)'), '2098-01-01T00:00:00.000Z');
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Narrow grant grant_00000000-0000-7304-a220-7c8803035355',
+      })
+    );
+    await waitFor(() => expect(operations['vault.grant-narrow']).toHaveBeenCalled());
+    expect(operations['vault.grant-narrow'].mock.calls[0][0].constraints).not.toHaveProperty(
+      'targetAgentSessionId'
+    );
+  });
 });
 
 it.each([
   ['create', 'Grant target Agent', 'targetAgentId'],
-  ['create', 'Grant target AgentSession', 'targetAgentSessionId'],
   ['narrow', 'Grant target Agent', 'targetAgentId'],
-  ['narrow', 'Grant target AgentSession', 'targetAgentSessionId'],
 ] as const)('rejects a pasted credential in %s %s before transport or mutation retention', async (action, label, field) => {
   const { operations, cache } = setup();
   const transport = vi.fn(async () => new Response('{}', { status: 500 }));
@@ -300,7 +324,6 @@ it.each([
   expect(cache.getMutationCache().getAll()).toHaveLength(0);
   expect(cacheBytes(cache)).not.toContain(SECRET);
   expect(screen.getByLabelText('Grant target Agent')).toHaveValue('');
-  expect(screen.getByLabelText('Grant target AgentSession')).toHaveValue('');
   expect(screen.getByLabelText('Secret value')).toHaveValue('');
   expect(document.body.textContent).not.toContain(SECRET);
 });

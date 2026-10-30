@@ -25,13 +25,11 @@ export function ServerVaultSecretsPanel() {
   const hold = useRef<string | null>(null);
   const [rotating, setRotating] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
-  const [sessionId, setSessionId] = useState('');
   const [capabilityId, setCapabilityId] = useState<'' | 'mcp.list-tools' | 'mcp.call-tool'>('');
   const [expiresAt, setExpiresAt] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const constraints: OperationInput<'vault.server-mcp-grant-narrow'>['constraints'] = {
     ...(agentId.trim() ? { targetAgentId: agentId.trim() } : {}),
-    ...(sessionId.trim() ? { targetAgentSessionId: sessionId.trim() } : {}),
     ...(capabilityId ? { targetCapabilityId: capabilityId } : {}),
     ...(expiresAt.trim() ? { expiresAt: expiresAt.trim() } : {}),
   };
@@ -226,7 +224,6 @@ export function ServerVaultSecretsPanel() {
       hold.current = null;
       setMaterial('');
       setAgentId('');
-      setSessionId('');
       setExpiresAt('');
       setNotice('Grant restriction fields are invalid. Enter exact supported bounds only.');
       return;
@@ -291,12 +288,6 @@ export function ServerVaultSecretsPanel() {
             label="Shared grant Agent"
             value={agentId}
             onChange={setAgentId}
-            isDisabled={disabled}
-          />
-          <TextField
-            label="Shared grant AgentSession"
-            value={sessionId}
-            onChange={setSessionId}
             isDisabled={disabled}
           />
           <Select
@@ -366,10 +357,12 @@ export function ServerVaultSecretsPanel() {
               <p>
                 {grant.vaultReferenceId} · {grant.status} · gateway-only · server
               </p>
+              <p>Agent: {grant.targetAgentId ?? 'Unrestricted'}</p>
               <p>
-                Agent: {grant.targetAgentId ?? 'Unrestricted'} · AgentSession:{' '}
-                {grant.targetAgentSessionId ?? 'Unrestricted'} · capability:{' '}
-                {grant.targetCapabilityId ?? 'Unrestricted'} · expiry:{' '}
+                Session constraint: {grant.targetAgentSessionId === null ? 'None' : 'Restricted'}
+              </p>
+              <p>
+                Capability: {grant.targetCapabilityId ?? 'Unrestricted'} · expiry:{' '}
                 {grant.expiresAt ?? 'No time bound'}
               </p>
               <p>

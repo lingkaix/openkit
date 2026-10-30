@@ -25,7 +25,6 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
   const [material, setMaterial] = useState('');
   const [rotating, setRotating] = useState<string | null>(null);
   const [targetAgentId, setTargetAgentId] = useState('');
-  const [targetAgentSessionId, setTargetAgentSessionId] = useState('');
   const [targetCapabilityId, setTargetCapabilityId] = useState<
     '' | 'mcp.list-tools' | 'mcp.call-tool'
   >('');
@@ -33,7 +32,6 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
   const [grantStatus, setGrantStatus] = useState<string | null>(null);
   const constraints: OperationInput<'vault.grant-narrow'>['constraints'] = {
     ...(targetAgentId.trim() ? { targetAgentId: targetAgentId.trim() } : {}),
-    ...(targetAgentSessionId.trim() ? { targetAgentSessionId: targetAgentSessionId.trim() } : {}),
     ...(targetCapabilityId ? { targetCapabilityId } : {}),
     ...(grantExpiry.trim() ? { expiresAt: grantExpiry.trim() } : {}),
   };
@@ -151,7 +149,6 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       setRotating(null);
       if (input.action === 'grant' || input.action === 'narrow-grant') {
         setTargetAgentId('');
-        setTargetAgentSessionId('');
         setTargetCapabilityId('');
         setGrantExpiry('');
         if (input.action === 'narrow-grant')
@@ -197,7 +194,6 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       hold.current = null;
       setMaterial('');
       setTargetAgentId('');
-      setTargetAgentSessionId('');
       setTargetCapabilityId('');
       setGrantExpiry('');
       setGrantStatus('Grant restriction fields are invalid. Enter exact supported bounds only.');
@@ -276,12 +272,6 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
         onChange={setTargetAgentId}
         isDisabled={disabled}
       />
-      <TextField
-        label="Grant target AgentSession"
-        value={targetAgentSessionId}
-        onChange={setTargetAgentSessionId}
-        isDisabled={disabled}
-      />
       <Select
         label="Grant capability"
         selectedKey={targetCapabilityId || 'unchanged'}
@@ -347,7 +337,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
             {grant.grantId} · {grant.vaultReferenceId} · {grant.status}
           </p>
           <p>Agent: {grant.targetAgentId ?? 'Unrestricted'}</p>
-          <p>AgentSession: {grant.targetAgentSessionId ?? 'Unrestricted'}</p>
+          <p>Session constraint: {grant.targetAgentSessionId === null ? 'None' : 'Restricted'}</p>
           <p>Capability: {grant.targetCapabilityId ?? 'Unrestricted'}</p>
           <p>Visibility: {grant.allowedInjectionPaths.join(', ')}</p>
           <p>Lifetime: {grant.lifetime}</p>

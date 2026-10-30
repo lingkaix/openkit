@@ -1,4 +1,4 @@
-import type { CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { GenerativeUiReferenceItemSchema, ToolCallItemSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -198,6 +198,170 @@ describe('GenerativePresentationView', () => {
     });
     expect(action.mock.calls[1][0].requestId).toBe(action.mock.calls[0][0].requestId);
     await waitFor(() => expect(screen.queryByText('Retry this write')).not.toBeInTheDocument());
+  });
+
+  it('allocates a fresh request id after a typed Core failure and a second submit', async () => {
+    const modelMessage = {
+      version: 'v0.9',
+      updateDataModel: {
+        surfaceId: 'surface',
+        path: '/',
+        value: { records: [{ revision: 1, data: { note: 'Saved' } }] },
+      },
+    };
+    const result = {
+      messages: [modelMessage],
+      observedAt: '2026-10-03T00:00:00.000Z',
+      refreshUnavailable: false,
+    };
+    const action = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ApiCallError(409, 'Revision conflict', { code: 'revision_conflict' })
+      )
+      .mockResolvedValue(result);
+    const client = {
+      operations: {
+        'generative-ui.get': vi.fn().mockResolvedValue({
+          messages: [
+            {
+              version: 'v0.9',
+              createSurface: {
+                surfaceId: 'surface',
+                catalogId: 'urn:openkit:a2ui:catalog:native:v1',
+                sendDataModel: false,
+              },
+            },
+            {
+              version: 'v0.9',
+              updateComponents: {
+                surfaceId: 'surface',
+                components: [
+                  { id: 'root', component: 'Column', children: ['note', 'save'] },
+                  {
+                    id: 'note',
+                    component: 'TextField',
+                    label: 'Draft note',
+                    value: { path: '/records/0/data/note' },
+                  },
+                  {
+                    id: 'save',
+                    component: 'Button',
+                    child: 'save-label',
+                    action: {
+                      event: {
+                        name: 'save',
+                        context: {
+                          expectedRecordRevision: { path: '/records/0/revision' },
+                          values: { path: '/records/0/data' },
+                        },
+                      },
+                    },
+                  },
+                  { id: 'save-label', component: 'Text', text: 'Save proof' },
+                ],
+              },
+            },
+            modelMessage,
+          ],
+          actions: [{ name: 'save', componentId: 'save', kind: 'kernel-record-update' }],
+        }),
+        'generative-ui.action': action,
+      },
+    } as unknown as CoreClient;
+    render(
+      <Providers client={client}>
+        <GenerativePresentationView item={ITEM} />
+      </Providers>
+    );
+    const note = await screen.findByRole('textbox', { name: 'Draft note' });
+    fireEvent.change(note, { target: { value: 'Corrected draft' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Save proof' }));
+    expect(await screen.findByText('Revision conflict')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save proof' }));
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
+    expect(action.mock.calls[0][0].requestId).toBeTruthy();
+    expect(action.mock.calls[1][0].requestId).toBeTruthy();
+    expect(action.mock.calls[1][0].requestId).not.toBe(action.mock.calls[0][0].requestId);
+  });
+
+  it('reuses the same request id after a network failure and a user retry', async () => {
+    const modelMessage = {
+      version: 'v0.9',
+      updateDataModel: {
+        surfaceId: 'surface',
+        path: '/',
+        value: { records: [{ revision: 1, data: { note: 'Saved' } }] },
+      },
+    };
+    const result = {
+      messages: [modelMessage],
+      observedAt: '2026-10-03T00:00:00.000Z',
+      refreshUnavailable: false,
+    };
+    const action = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue(result);
+    const client = {
+      operations: {
+        'generative-ui.get': vi.fn().mockResolvedValue({
+          messages: [
+            {
+              version: 'v0.9',
+              createSurface: {
+                surfaceId: 'surface',
+                catalogId: 'urn:openkit:a2ui:catalog:native:v1',
+                sendDataModel: false,
+              },
+            },
+            {
+              version: 'v0.9',
+              updateComponents: {
+                surfaceId: 'surface',
+                components: [
+                  { id: 'root', component: 'Column', children: ['note', 'save'] },
+                  {
+                    id: 'note',
+                    component: 'TextField',
+                    label: 'Draft note',
+                    value: { path: '/records/0/data/note' },
+                  },
+                  {
+                    id: 'save',
+                    component: 'Button',
+                    child: 'save-label',
+                    action: {
+                      event: {
+                        name: 'save',
+                        context: {
+                          expectedRecordRevision: { path: '/records/0/revision' },
+                          values: { path: '/records/0/data' },
+                        },
+                      },
+                    },
+                  },
+                  { id: 'save-label', component: 'Text', text: 'Save proof' },
+                ],
+              },
+            },
+            modelMessage,
+          ],
+          actions: [{ name: 'save', componentId: 'save', kind: 'kernel-record-update' }],
+        }),
+        'generative-ui.action': action,
+      },
+    } as unknown as CoreClient;
+    render(
+      <Providers client={client}>
+        <GenerativePresentationView item={ITEM} />
+      </Providers>
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Save proof' }));
+    expect(await screen.findByText('Failed to fetch')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save proof' }));
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
+    expect(action.mock.calls[1][0].requestId).toBe(action.mock.calls[0][0].requestId);
   });
 
   it('keeps exact grouped Tool text visible when native rendering fails', async () => {
