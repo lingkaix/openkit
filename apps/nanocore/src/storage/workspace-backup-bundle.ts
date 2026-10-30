@@ -361,7 +361,10 @@ function originalInventoryBytes(bytes: Buffer, metadata: DecodedMetadata): Buffe
 }
 
 /** Rejects unsupported required extensions even when they occur in otherwise descriptive content. */
-function assertRequiredFeatures(value: unknown, supported: ReadonlySet<string>): void {
+export function assertWorkspaceBackupRequiredFeatures(
+  value: unknown,
+  supported: ReadonlySet<string>
+): void {
   if (value === null || typeof value !== 'object') return;
   if (!Array.isArray(value) && Object.hasOwn(value, 'requiredFeatures')) {
     const features: unknown = (value as Record<string, unknown>).requiredFeatures;
@@ -372,7 +375,7 @@ function assertRequiredFeatures(value: unknown, supported: ReadonlySet<string>):
       throw new WorkspaceBackupBundleError('unsupported-format');
     }
   }
-  for (const child of Object.values(value)) assertRequiredFeatures(child, supported);
+  for (const child of Object.values(value)) assertWorkspaceBackupRequiredFeatures(child, supported);
 }
 
 /** One source tree's bounded regular-file inventory, collected without following links. */
@@ -656,8 +659,8 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
         const manifestMetadata = decodeMetadata(manifestBytes);
         const sealMetadata = prepared ? null : decodeMetadata(sealBytes);
         const features = new Set(input.supportedRequiredFeatures ?? []);
-        assertRequiredFeatures(manifestMetadata.value, features);
-        if (sealMetadata) assertRequiredFeatures(sealMetadata.value, features);
+        assertWorkspaceBackupRequiredFeatures(manifestMetadata.value, features);
+        if (sealMetadata) assertWorkspaceBackupRequiredFeatures(sealMetadata.value, features);
         const manifest = parseWorkspaceBackupManifest(manifestMetadata.value);
         const seal = sealMetadata ? parseWorkspaceBackupSeal(sealMetadata.value) : null;
         if (prepared && manifest.purpose !== 'move') throw new Error('Only MOVE may be prepared.');
@@ -799,6 +802,60 @@ export type SnapshotSource =
   | { readonly kind: 'local-snapshot'; readonly workspaceId: string; readonly backupId: string }
   | { readonly kind: 'standalone-bundle'; readonly bundleRoot: string };
 
+/** Reads bounded original metadata only; callers own acquisition exclusion, and this proves no body bytes. */
+export async function readWorkspaceSnapshotMetadata(input: {
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly backupId: string;
+  readonly supportedRequiredFeatures?: readonly string[];
+  readonly allowPreparedMove?: boolean;
+}) {
+  const { workspaceId, backupId } = input;
+  if (!isEntityId('ws', workspaceId) || !isEntityId('wsbak', backupId))
+    throw new WorkspaceBackupBundleError('invalid-bundle');
+  const pool = await existingRoot(join(input.dataRoot, 'server/backups/workspaces', workspaceId));
+  const generation = await existingRoot(join(pool, backupId));
+  const source = await openSourceDirectory(generation, await lstat(generation, { bigint: true }));
+  try {
+    const tree = await inspectTree(source);
+    if (
+      tree.directories.size !== 0 ||
+      [...tree.files.keys()].some((path) => !METADATA_FILES.has(path))
+    )
+      throw new WorkspaceBackupBundleError('invalid-bundle');
+    const manifestBytes = await readMetadata(source, WORKSPACE_BACKUP_MANIFEST_FILE, tree);
+    const decoded = decodeMetadata(manifestBytes);
+    const features = new Set(input.supportedRequiredFeatures ?? []);
+    assertWorkspaceBackupRequiredFeatures(decoded.value, features);
+    const manifest = parseWorkspaceBackupManifest(decoded.value);
+    if (manifest.workspaceId !== workspaceId || manifest.backupId !== backupId)
+      throw new WorkspaceBackupBundleError('invalid-bundle');
+    const sealBytes = tree.files.has(WORKSPACE_BACKUP_SEAL_FILE)
+      ? await readMetadata(source, WORKSPACE_BACKUP_SEAL_FILE, tree)
+      : null;
+    const sealMetadata = sealBytes ? decodeMetadata(sealBytes) : null;
+    if (sealMetadata) assertWorkspaceBackupRequiredFeatures(sealMetadata.value, features);
+    const seal = sealMetadata ? parseWorkspaceBackupSeal(sealMetadata.value) : null;
+    const manifestDigest = digest(manifestBytes);
+    if (
+      seal
+        ? seal.backupId !== backupId ||
+          seal.purpose !== manifest.purpose ||
+          seal.manifestDigest !== manifestDigest
+        : !(input.allowPreparedMove && manifest.purpose === 'move')
+    )
+      throw new WorkspaceBackupBundleError('invalid-bundle');
+    if (
+      workspaceBackupInventoryDigest(originalInventoryBytes(manifestBytes, decoded)) !==
+      manifest.inventoryDigest
+    )
+      throw new WorkspaceBackupBundleError('invalid-bundle');
+    return { pool, manifest, manifestBytes, sealBytes, seal, manifestDigest };
+  } finally {
+    await source.close();
+  }
+}
+
 /** Resolves a local generation into the same independently owned, bounded verified callback contract as a standalone bundle. */
 export async function withVerifiedWorkspaceSnapshotSource<T>(
   input: Omit<WorkspaceBackupVerificationInput, 'bundleRoot'> & {
@@ -824,33 +881,11 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
   let failure: unknown;
   let result!: T;
   try {
-    if (!isEntityId('ws', workspaceId) || !isEntityId('wsbak', backupId))
-      throw new Error('Invalid local snapshot selector.');
-    const pool = await existingRoot(join(input.dataRoot, 'server/backups/workspaces', workspaceId));
-    const generation = await existingRoot(join(pool, backupId));
-    const source = await openSourceDirectory(generation, await lstat(generation, { bigint: true }));
-    let manifestBytes: Buffer;
-    let sealBytes: Buffer | null;
-    let manifest: WorkspaceBackupManifest;
-    try {
-      const tree = await inspectTree(source);
-      if (
-        tree.directories.size !== 0 ||
-        [...tree.files.keys()].some((path) => !METADATA_FILES.has(path))
-      )
-        throw new Error('Local generation has an unexpected file.');
-      manifestBytes = await readMetadata(source, WORKSPACE_BACKUP_MANIFEST_FILE, tree);
-      manifest = parseWorkspaceBackupManifest(decodeMetadata(manifestBytes).value);
-      if (manifest.workspaceId !== workspaceId || manifest.backupId !== backupId)
-        throw new Error('Local generation scope changed.');
-      sealBytes = tree.files.has(WORKSPACE_BACKUP_SEAL_FILE)
-        ? await readMetadata(source, WORKSPACE_BACKUP_SEAL_FILE, tree)
-        : null;
-      if (!sealBytes && !(input.allowPreparedMove && manifest.purpose === 'move'))
-        throw new Error('Local generation is not sealed.');
-    } finally {
-      await source.close();
-    }
+    const { pool, manifest, manifestBytes, sealBytes } = await readWorkspaceSnapshotMetadata({
+      ...input,
+      workspaceId,
+      backupId,
+    });
     const total = manifest.inventory.reduce((n, entry) => n + entry.bytes, 0);
     if (total + manifestBytes.length + (sealBytes?.length ?? 0) > MAX_TOTAL_BYTES)
       throw new Error('Local generation exceeds its bound.');

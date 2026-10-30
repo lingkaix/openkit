@@ -12,6 +12,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -89,7 +90,12 @@ import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
-import { createWorkspaceBackup, readBlockers, stageWorkspaceBackup } from './workspace-backup.js';
+import {
+  createWorkspaceBackup,
+  readBlockers,
+  runWorkspaceSnapshotMaintenance,
+  stageWorkspaceBackup,
+} from './workspace-backup.js';
 import {
   type VerifiedWorkspaceBackupBundle,
   withVerifiedWorkspaceBackupBundle,
@@ -469,6 +475,19 @@ async function fixture() {
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/** Advances the real private producer's clock without constructing or rewriting a successful seal. */
+function captureDay(day: number): Date {
+  const iso = `2099-01-${String(day).padStart(2, '0')}T12:00:00.000Z`;
+  captureWorkerProbe.script = `
+    const OriginalDate = Date;
+    globalThis.Date = class extends OriginalDate {
+      constructor(...args) { super(...(args.length ? args : [${JSON.stringify(iso)}])); }
+      static now() { return ${Date.parse(iso)}; }
+    };
+  `;
+  return new Date(iso);
+}
 
 /** Each refusal must settle while its blocker remains unresolved, without elapsed-time polling. */
 async function refusal(f: Fixture, input = f.input()) {
@@ -2408,6 +2427,163 @@ describe('C-a capture and existing deletion ownership', () => {
       db.sqlite.close();
     }
     expect(mutationAdmission.isClosed(workspaceId)).toBe(false);
+  });
+});
+
+describe('C-b daily snapshot policy and retention', () => {
+  it('selects one healthy Workspace per pass and uses sealed UTC success instead of filesystem time', async () => {
+    const f = await fixture();
+    const sibling = await f.store.createWorkspace('Independent daily backup target');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: sibling.id,
+      ownerUserId: f.ownerId,
+    });
+    const policy = {
+      ...f.policy,
+      source: f.source,
+      expectedSourceDeploymentId: f.input().expectedSourceDeploymentId,
+    };
+    const first = await runWorkspaceSnapshotMaintenance({ ...policy, now: captureDay(1) });
+    expect(first?.disposition).toBe('sealed');
+    if (!first) throw new Error('No initial daily snapshot was produced.');
+    const sealed = () =>
+      [workspaceId, sibling.id].flatMap((id) => {
+        const pool = join(f.dataRoot, 'server/backups/workspaces', id);
+        return existsSync(pool)
+          ? readdirSync(pool).filter((name) => existsSync(join(pool, name, 'seal.json')))
+          : [];
+      });
+    expect(sealed()).toHaveLength(1);
+    const selected = first.manifest.workspaceId;
+    const blocked = selected === workspaceId ? sibling.id : workspaceId;
+    const releaseBlocked = f.mutationAdmission.enter(blocked);
+    if (!releaseBlocked) throw new Error('The other Workspace was not initially admitted.');
+    const blockedRoot = join(f.dataRoot, 'workspaces', blocked);
+    const beforeBlocked = tree(blockedRoot);
+    try {
+      const db = openWorkspaceDb(f.dataRoot, selected);
+      try {
+        expect(inspectCapture(db, selected, first.manifest.backupId)).toMatchObject({
+          origin: 'automatic',
+          state: 'finished',
+        });
+      } finally {
+        db.sqlite.close();
+      }
+      await withVerifiedWorkspaceSnapshotSource(
+        {
+          ...f.policy,
+          dataRoot: f.dataRoot,
+          source: {
+            kind: 'local-snapshot',
+            workspaceId: selected,
+            backupId: first.manifest.backupId,
+          },
+        },
+        async (bundle) =>
+          expect(bundle.manifest.capture.completedAt).toBe('2099-01-01T12:00:00.000Z')
+      );
+      utimesSync(join(first.bundleRoot, 'seal.json'), new Date(0), new Date(0));
+      expect(
+        await runWorkspaceSnapshotMaintenance({ ...policy, now: new Date('2099-01-01T23:59:59Z') })
+      ).toBeUndefined();
+      expect(sealed()).toHaveLength(1);
+      const next = await runWorkspaceSnapshotMaintenance({ ...policy, now: captureDay(2) });
+      expect(next?.manifest.workspaceId).toBe(selected);
+      expect(next?.manifest.capture.completedAt).toBe('2099-01-02T12:00:00.000Z');
+      expect(sealed()).toHaveLength(2);
+      expect(tree(blockedRoot)).toEqual(beforeBlocked);
+    } finally {
+      releaseBlocked();
+    }
+  });
+
+  it('retains seven automatic daily generations plus manual bytes and collects only unreachable objects', async () => {
+    const f = await fixture();
+    const files = join(f.workspaceRoot, 'files');
+    mkdirSync(files, { recursive: true });
+    writeFileSync(join(files, 'retention-shared.bin'), 'shared original');
+    writeFileSync(join(files, 'retention-changed.bin'), 'manual original');
+    const manual = await createWorkspaceBackup(f.input());
+    const generations: Awaited<ReturnType<typeof createWorkspaceBackup>>[] = [];
+    for (let day = 1; day <= 7; day += 1) {
+      captureDay(day);
+      writeFileSync(join(files, 'retention-changed.bin'), `day ${day}`);
+      generations.push(await createWorkspaceBackup({ ...f.input(), origin: 'automatic' }));
+    }
+    writeFileSync(join(files, 'retention-changed.bin'), 'day 8');
+    const oldestId = generations[0]!.manifest.backupId;
+    const oldObject = generations[0]!.manifest.inventory.find(
+      (entry) => entry.path === 'files/retention-changed.bin'
+    )!;
+    const eighth = await runWorkspaceSnapshotMaintenance({
+      ...f.policy,
+      source: f.source,
+      expectedSourceDeploymentId: f.input().expectedSourceDeploymentId,
+      now: captureDay(8),
+    });
+    expect(eighth?.disposition).toBe('sealed');
+    if (!eighth) throw new Error('The eighth daily snapshot was not produced.');
+    expect(
+      existsSync(
+        join(
+          f.dataRoot,
+          'server/backups/workspaces',
+          workspaceId,
+          'objects',
+          oldObject.sha256.slice(7)
+        )
+      )
+    ).toBe(false);
+    await expect(f.read(oldestId, async () => undefined)).rejects.toThrow();
+    await shutdownControlStoreWorkerClient();
+    rmSync(f.workspaceRoot, { recursive: true, force: true });
+    const retained = [manual, ...generations.slice(1), eighth];
+    expect(retained.slice(1)).toHaveLength(7);
+    for (const [index, generation] of retained.entries()) {
+      await f.read(generation.manifest.backupId, async (bundle) => {
+        expect(await bytes(bundle, 'files/retention-shared.bin')).toEqual(
+          Buffer.from('shared original')
+        );
+        expect(await bytes(bundle, 'files/retention-changed.bin')).toEqual(
+          Buffer.from(index === 0 ? 'manual original' : `day ${index + 1}`)
+        );
+        for (const entry of bundle.manifest.inventory)
+          expect(digest(await bytes(bundle, entry.path))).toBe(entry.sha256);
+      });
+    }
+  });
+
+  it('refuses corrupt sealed inventory before retiring exposure or collecting referenced objects', async () => {
+    const f = await fixture();
+    const generations: Awaited<ReturnType<typeof createWorkspaceBackup>>[] = [];
+    for (let day = 1; day <= 8; day += 1) {
+      captureDay(day);
+      generations.push(await createWorkspaceBackup({ ...f.input(), origin: 'automatic' }));
+    }
+    const corrupted = generations.at(-1)!;
+    const manifestPath = join(corrupted.bundleRoot, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.inventory[0].sha256 = `sha256:${'f'.repeat(64)}`;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const pool = join(f.dataRoot, 'server/backups/workspaces', workspaceId);
+    const before = tree(pool);
+    await expect(
+      runWorkspaceSnapshotMaintenance({
+        ...f.policy,
+        source: f.source,
+        expectedSourceDeploymentId: f.input().expectedSourceDeploymentId,
+        now: captureDay(9),
+      })
+    ).rejects.toThrow();
+    expect(tree(pool)).toEqual(before);
+    for (const generation of generations.slice(0, -1))
+      await f.read(generation.manifest.backupId, async (bundle) => {
+        expect(bundle.manifestDigest).toBe(generation.report.manifestDigest);
+        for (const entry of bundle.manifest.inventory)
+          expect(digest(await bytes(bundle, entry.path))).toBe(entry.sha256);
+      });
   });
 });
 

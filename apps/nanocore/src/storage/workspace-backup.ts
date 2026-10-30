@@ -38,6 +38,7 @@ import {
 import {
   AgentSessionSchema,
   AgentSessionStatusSchema,
+  allocateEntityId,
   isEntityId,
   readRetainedV1,
   SEALED_TURN_TERMINALS,
@@ -56,6 +57,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import {
@@ -86,6 +88,7 @@ import {
 } from '../runtime/workspace-apply-plans.js';
 import { listWorkspaceApplyResults } from '../runtime/workspace-apply-results.js';
 import { getWorkspaceSyncReview } from '../runtime/workspace-sync-records.js';
+import { listWorkspaceDeletionHoldRecordIds } from '../workspace-deletion-evidence.js';
 import {
   isTerminalWorkspaceDeletionRequest,
   listWorkspaceDeletionRequests,
@@ -127,7 +130,9 @@ import type {
   WorkspaceBackupVerificationInput,
 } from './workspace-backup-bundle.js';
 import {
+  assertWorkspaceBackupRequiredFeatures,
   parseWorkspaceBackupManifest,
+  readWorkspaceSnapshotMetadata,
   WorkspaceBackupBundleError,
   withVerifiedWorkspaceBackupBundle,
   withVerifiedWorkspaceSnapshotSource,
@@ -1249,6 +1254,7 @@ export type WorkspaceCapturePhase =
   | 'cleanup-end';
 /** Closed, request-private worker control; it carries no product body or authorization grant. */
 export type WorkspaceCaptureControl =
+  | { kind: 'candidate'; workspaceId: string }
   | { kind: 'phase'; phase: WorkspaceCapturePhase; at: number }
   | { kind: 'capacity'; action: 'reserve'; writes: FileWriteCapacity }
   | {
@@ -1269,13 +1275,172 @@ type CaptureInput = Omit<WorkspaceBackupCreateInput, 'source'> & {
 };
 let captureWorkerActive = false;
 
-/** Runs the same capture owner on the private thread, delegating only current authority/admission to Main. */
-export function runWorkspaceCaptureWorker(
-  input: WorkspaceCaptureWorkerInput,
-  control: (request: WorkspaceCaptureControl) => number | undefined
+/** Enumerates sealed generation metadata only; attempts and mutable filesystem times spend no UTC day. */
+async function snapshotGenerations(
+  dataRoot: string,
+  workspaceId: string,
+  policy: Pick<WorkspaceBackupVerificationInput, 'supportedRequiredFeatures'>
 ) {
-  const { dataRoot, ...parameters } = input;
-  return captureWorkspaceBackup(
+  const pool = join(dataRoot, 'server/backups/workspaces', workspaceId);
+  const found: Awaited<ReturnType<typeof readWorkspaceSnapshotMetadata>>[] = [];
+  if (!lstatSync(pool, { throwIfNoEntry: false })) return found;
+  realDirectory(pool);
+  for (const id of readdirSync(pool).sort()) {
+    if (!isEntityId('wsbak', id)) continue;
+    const generation = join(pool, id);
+    realDirectory(generation);
+    if (!lstatSync(join(generation, 'seal.json'), { throwIfNoEntry: false })) continue;
+    found.push(
+      await readWorkspaceSnapshotMetadata({ ...policy, dataRoot, workspaceId, backupId: id })
+    );
+  }
+  return found;
+}
+
+/** Retires only automatic successes under the caller's existing target freeze, then collects unreachable pool bytes. */
+async function retainWorkspaceSnapshots(input: WorkspaceCaptureWorkerInput): Promise<void> {
+  const { dataRoot, workspaceId } = input;
+  const pool = realDirectory(join(dataRoot, 'server/backups/workspaces', workspaceId));
+  const generations = await snapshotGenerations(dataRoot, workspaceId, input);
+  const reader = openControlStoreProductReadHandle(
+    join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'),
+    { kind: 'workspace', workspaceId }
+  );
+  const automatic = new Set<string>();
+  try {
+    const db = bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
+    // Workspace evidence holds are broader than a generation selector; preserve all of them.
+    if (listWorkspaceDeletionHoldRecordIds(db, workspaceId).length) return;
+    for (const id of reader.sqlite
+      .prepare('SELECT capture_id FROM workspace_capture_records WHERE workspace_id=?')
+      .pluck()
+      .all(workspaceId) as string[]) {
+      const capture = inspectCapture(db, workspaceId, id);
+      if (!capture || capture.state === 'active') refuse('recovery-required');
+      if (capture.origin === 'automatic' && capture.state === 'finished') automatic.add(id);
+    }
+  } finally {
+    reader.close();
+  }
+  const protectedIds = new Set<string>();
+  const protectedInventories: WorkspaceBackupManifest['inventory'][] = [];
+  const coreReader = openControlStoreProductReadHandle(join(dataRoot, 'server/db/core.sqlite'), {
+    kind: 'server',
+  });
+  try {
+    const core = bindCoreSqlite(coreReader.sqlite, dataRoot);
+    for (const row of coreReader.sqlite
+      .prepare(
+        'SELECT admission_id, proof_json FROM workspace_recovery_admissions WHERE workspace_id=?'
+      )
+      .all(workspaceId) as { admission_id: string; proof_json: string }[]) {
+      // Check required semantics on original proof content before its owner strips descriptive fields.
+      assertWorkspaceBackupRequiredFeatures(
+        JSON.parse(row.proof_json),
+        new Set(input.supportedRequiredFeatures ?? [])
+      );
+      const recovery = readRecoveryAdmission(core, row.admission_id);
+      if (!recovery) refuse('recovery-required');
+      protectedIds.add(recovery.backup_id);
+      protectedInventories.push(recovery.proof.manifest.inventory);
+    }
+  } finally {
+    coreReader.close();
+  }
+  const known = new Set<string>(generations.map((entry) => entry.manifest.backupId));
+  // Incomplete or unknown generations may still own bytes. Do not guess their inventory or retire them.
+  if (readdirSync(pool).some((id) => id !== 'objects' && !known.has(id))) return;
+  const expired = generations
+    .filter(
+      (entry) => entry.manifest.purpose === 'backup' && automatic.has(entry.manifest.backupId)
+    )
+    .sort((a, b) =>
+      b.manifest.capture.completedAt < a.manifest.capture.completedAt
+        ? -1
+        : b.manifest.capture.completedAt > a.manifest.capture.completedAt
+          ? 1
+          : a.manifest.backupId < b.manifest.backupId
+            ? -1
+            : 1
+    )
+    .slice(7)
+    .filter((entry) => !protectedIds.has(entry.manifest.backupId));
+  const retired = new Set(expired.map((entry) => entry.manifest.backupId));
+  const references = new Map<string, number>();
+  for (const inventory of [
+    ...generations.map((entry) => entry.manifest.inventory),
+    ...protectedInventories,
+  ]) {
+    for (const entry of inventory) {
+      const previous = references.get(entry.sha256);
+      if (previous !== undefined && previous !== entry.bytes) refuse('invalid-bundle');
+      references.set(entry.sha256, entry.bytes);
+    }
+  }
+  const objects = realDirectory(join(pool, 'objects'));
+  const names = readdirSync(objects);
+  const sizes = new Map<string, number>();
+  // Complete the protection and object census before retiring any exposure.
+  for (const name of names) {
+    const stat = lstatSync(join(objects, name));
+    if (!/^[0-9a-f]{64}$/.test(name) || !stat.isFile() || stat.nlink !== 1) refuse('unsafe-path');
+    sizes.set(`sha256:${name}`, stat.size);
+  }
+  for (const [sha256, bytes] of references)
+    if (sizes.get(sha256) !== bytes) refuse('invalid-bundle');
+  const keep = new Set(
+    [
+      ...generations
+        .filter((entry) => !retired.has(entry.manifest.backupId))
+        .map((entry) => entry.manifest.inventory),
+      ...protectedInventories,
+    ].flatMap((inventory) => inventory.map((entry) => entry.sha256))
+  );
+  for (const entry of expired) {
+    const generation = join(pool, entry.manifest.backupId);
+    rmSync(join(generation, 'seal.json'));
+    syncCanonicalDirectory(generation);
+    rmSync(generation, { recursive: true });
+  }
+  if (expired.length) syncCanonicalDirectory(pool);
+  for (const name of names) if (!keep.has(`sha256:${name}`)) rmSync(join(objects, name));
+  syncCanonicalDirectory(objects);
+}
+
+/** Runs the same capture owner on the private thread, delegating only current authority/admission to Main. */
+export async function runWorkspaceCaptureWorker(
+  input: WorkspaceCaptureWorkerInput,
+  control: (request: WorkspaceCaptureControl) => number | undefined,
+  automatic?: { readonly day: string; readonly workspaceIds: readonly string[] }
+) {
+  let selected = input;
+  if (automatic) {
+    let found = false;
+    for (const workspaceId of automatic.workspaceIds) {
+      const generations = await snapshotGenerations(input.dataRoot, workspaceId, input);
+      if (
+        generations.some(
+          (entry) =>
+            entry.seal &&
+            entry.manifest.purpose === 'backup' &&
+            entry.manifest.capture.completedAt.slice(0, 10) >= automatic.day
+        )
+      )
+        continue;
+      if (control({ kind: 'candidate', workspaceId }) !== 1) continue;
+      selected = {
+        ...input,
+        workspaceId,
+        bundleRoot: join(input.dataRoot, 'server/backups/workspaces', workspaceId, input.backupId),
+      };
+      if (existsSync(selected.bundleRoot)) refuse('candidate-conflict');
+      found = true;
+      break;
+    }
+    if (!found) return undefined;
+  }
+  const { dataRoot, ...parameters } = selected;
+  const captured = await captureWorkspaceBackup(
     {
       ...parameters,
       source: { kind: 'live-workspace', dataRoot },
@@ -1303,12 +1468,72 @@ export function runWorkspaceCaptureWorker(
       control({ kind: 'phase', phase, at: performance.timeOrigin + performance.now() });
     }
   );
+  if (automatic) {
+    // Reuse the same exclusion and posted-ACK drain; never collect over a new publisher.
+    control({ kind: 'phase', phase: 'freeze', at: performance.timeOrigin + performance.now() });
+    control({ kind: 'phase', phase: 'drain', at: performance.timeOrigin + performance.now() });
+    try {
+      await retainWorkspaceSnapshots(selected);
+    } finally {
+      control({ kind: 'phase', phase: 'cut', at: performance.timeOrigin + performance.now() });
+    }
+  }
+  return captured;
 }
 
 /** Owns one nonwaiting worker slot and the live target's original gate, hold and capacity leases. */
 export async function createWorkspaceBackup(
   input: WorkspaceBackupCreateInput
 ): Promise<WorkspaceBackupCreateResult> {
+  const captured = await runWorkspaceCapture(input);
+  if (!captured) refuse('recovery-required');
+  return captured;
+}
+
+/** Trusted daily policy on the existing maintenance pass; application composition activates it separately. */
+export async function runWorkspaceSnapshotMaintenance(
+  input: Omit<
+    WorkspaceBackupCreateInput,
+    'workspaceId' | 'backupId' | 'bundleRoot' | 'purpose' | 'origin' | 'source'
+  > & {
+    readonly source: Extract<WorkspaceBackupSource, { kind: 'live-workspace' }>;
+    readonly now?: Date;
+  }
+): Promise<WorkspaceBackupCreateResult | undefined> {
+  const day = (input.now ?? new Date()).toISOString().slice(0, 10);
+  const workspaceIds = (
+    input.source.coreDb.sqlite
+      .prepare(
+        "SELECT workspace_id FROM workspace_registry WHERE status='active' ORDER BY workspace_id"
+      )
+      .pluck()
+      .all() as string[]
+  ).filter((id) => isScopeAdmitted(input.source.dataRoot, 'workspace', id));
+  if (!workspaceIds.length) return undefined;
+  const backupId = allocateEntityId('wsbak');
+  return runWorkspaceCapture(
+    {
+      ...input,
+      workspaceId: workspaceIds[0]!,
+      backupId,
+      bundleRoot: join(
+        input.source.dataRoot,
+        'server/backups/workspaces',
+        workspaceIds[0]!,
+        backupId
+      ),
+      purpose: 'backup',
+      origin: 'automatic',
+    },
+    { day, workspaceIds }
+  );
+}
+
+/** One existing worker lifetime serves either explicit capture or the trusted daily policy. */
+async function runWorkspaceCapture(
+  input: WorkspaceBackupCreateInput,
+  automatic?: { readonly day: string; readonly workspaceIds: readonly string[] }
+): Promise<WorkspaceBackupCreateResult | undefined> {
   if (
     (input.origin !== undefined && input.origin !== 'manual' && input.origin !== 'automatic') ||
     (input.origin === 'automatic' &&
@@ -1319,13 +1544,14 @@ export async function createWorkspaceBackup(
   if (captureWorkerActive) refuse('capacity-exceeded');
   captureWorkerActive = true;
   const live = input.source;
+  let targetWorkspaceId = input.workspaceId;
   const reservations = new Map<number, FileStorageReservation>();
   let releaseFreeze: (() => void) | undefined;
   let releaseReplayRead: (() => void) | undefined;
   let resumeNative: (() => void) | undefined;
   let worker: Worker | undefined;
   let authorityError: unknown;
-  let result: Omit<WorkspaceBackupCreateResult, 'manifest'> | undefined;
+  let result: Omit<WorkspaceBackupCreateResult, 'manifest'> | null | undefined;
   let closing = false;
   let drained: Promise<void> | undefined;
   const signal = new Int32Array(new SharedArrayBuffer(4));
@@ -1333,7 +1559,7 @@ export async function createWorkspaceBackup(
     live.currentAuthority?.();
     // Presence selects acquisition only. The worker still proves finished capture and exact bytes.
     // The existing worker slot excludes another owned capture publishing this path meanwhile.
-    if (existsSync(input.bundleRoot)) {
+    if (!automatic && existsSync(input.bundleRoot)) {
       releaseReplayRead = live.mutationAdmission.enter(input.workspaceId) ?? undefined;
       if (!releaseReplayRead)
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
@@ -1355,7 +1581,7 @@ export async function createWorkspaceBackup(
         ? { supportedRequiredFeatures: input.supportedRequiredFeatures }
         : {}),
     };
-    const options = { workerData: { input: request, signal: signal.buffer } };
+    const options = { workerData: { input: request, signal: signal.buffer, automatic } };
     if (import.meta.url.endsWith('.ts') && process.env.VITEST === 'true') {
       worker = new Worker(
         pathToFileURL(join(tmpdir(), 'nanocore-worker/dist/storage/workspace-backup-worker.mjs')),
@@ -1370,7 +1596,7 @@ export async function createWorkspaceBackup(
       );
     } else worker = new Worker(new URL('./workspace-backup-worker.js', import.meta.url), options);
     const host = worker;
-    result = await new Promise<Omit<WorkspaceBackupCreateResult, 'manifest'>>(
+    result = await new Promise<Omit<WorkspaceBackupCreateResult, 'manifest'> | null>(
       (resolveResult, reject) => {
         const onWorkerFailure = () =>
           reject(
@@ -1387,7 +1613,7 @@ export async function createWorkspaceBackup(
           async (
             value:
               | WorkspaceCaptureControl
-              | { kind: 'done'; result: Omit<WorkspaceBackupCreateResult, 'manifest'> }
+              | { kind: 'done'; result: Omit<WorkspaceBackupCreateResult, 'manifest'> | null }
               | { kind: 'failed'; code: WorkspaceRecoveryErrorCode }
           ) => {
             if (value.kind === 'done') {
@@ -1405,7 +1631,21 @@ export async function createWorkspaceBackup(
             let reply: number | undefined;
             let ok = true;
             try {
-              if (value.kind === 'capacity') {
+              if (value.kind === 'candidate') {
+                if (!automatic?.workspaceIds.includes(value.workspaceId))
+                  refuse('invalid-arguments');
+                targetWorkspaceId = value.workspaceId;
+                reply = 0;
+                if (isScopeAdmitted(live.dataRoot, 'workspace', targetWorkspaceId)) {
+                  const candidate = live.mutationAdmission.tryFreeze(targetWorkspaceId, () =>
+                    readBlockers({ ...live, workspaceId: targetWorkspaceId, operation: 'capture' })
+                  );
+                  if (candidate.status === 'frozen') {
+                    candidate.release();
+                    reply = 1;
+                  }
+                }
+              } else if (value.kind === 'capacity') {
                 if (value.action === 'reserve') {
                   reply = reservations.size;
                   reservations.set(reply, input.admission.reserve(value.writes));
@@ -1423,16 +1663,16 @@ export async function createWorkspaceBackup(
                 if (value.phase === 'freeze') {
                   live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
                   let hold: Promise<() => void> | null = null;
-                  const wasClosed = live.mutationAdmission.isClosed(input.workspaceId);
-                  const admission = live.mutationAdmission.tryFreeze(input.workspaceId, () => {
+                  const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
+                  const admission = live.mutationAdmission.tryFreeze(targetWorkspaceId, () => {
                     const blockers = readBlockers({
                       ...live,
-                      workspaceId: input.workspaceId,
+                      workspaceId: targetWorkspaceId,
                       operation: 'capture',
                     });
                     if (blockers.length) return blockers;
                     hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-                      `workspace:${join(live.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`,
+                      `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
                       live.mutationAdmission
                     );
                     return hold
@@ -1441,7 +1681,7 @@ export async function createWorkspaceBackup(
                           {
                             kind: 'publication',
                             reason: 'pending-publication',
-                            reference: { workspaceId: input.workspaceId },
+                            reference: { workspaceId: targetWorkspaceId },
                             actions: [],
                           },
                         ];
@@ -1454,7 +1694,7 @@ export async function createWorkspaceBackup(
                       409,
                       {
                         details: {
-                          workspaceId: input.workspaceId,
+                          workspaceId: targetWorkspaceId,
                           operation: 'capture',
                           retryable: busy,
                           blockers:
@@ -1464,7 +1704,7 @@ export async function createWorkspaceBackup(
                                   {
                                     kind: 'publication',
                                     reason: busy ? 'frozen' : 'pending-publication',
-                                    reference: { workspaceId: input.workspaceId },
+                                    reference: { workspaceId: targetWorkspaceId },
                                     actions: [],
                                   },
                                 ],
@@ -1534,9 +1774,9 @@ export async function createWorkspaceBackup(
       if (input.purpose === 'move' && releaseFreeze) {
         // Before a pin a refused MOVE reopens; uncertain retained truth keeps its fence.
         try {
-          const retained = captureDatabase(live.dataRoot, input.workspaceId);
+          const retained = captureDatabase(live.dataRoot, targetWorkspaceId);
           try {
-            if (!inspectCapture(retained, input.workspaceId, input.backupId)) releaseFreeze();
+            if (!inspectCapture(retained, targetWorkspaceId, input.backupId)) releaseFreeze();
           } finally {
             retained.sqlite.close();
           }
@@ -1559,6 +1799,7 @@ export async function createWorkspaceBackup(
     authorityError ??= cleanupFailure;
   }
   if (authorityError) throw authorityError;
+  if (result === null) return undefined;
   if (!result) refuse('recovery-required');
   const captured = result;
   // Online handlers consume the report; explicit internal readers keep the existing

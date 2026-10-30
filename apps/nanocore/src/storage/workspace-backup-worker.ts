@@ -18,8 +18,11 @@ function control(request: WorkspaceCaptureControl): number | undefined {
   return reply.result;
 }
 try {
-  const { manifest: _, ...result } = await runWorkspaceCaptureWorker(workerData.input, control);
-  port.postMessage({ kind: 'done', result });
+  const captured = await runWorkspaceCaptureWorker(workerData.input, control, workerData.automatic);
+  if (captured) {
+    const { manifest: _, ...result } = captured;
+    port.postMessage({ kind: 'done', result });
+  } else port.postMessage({ kind: 'done', result: null });
 } catch (error) {
   port.postMessage({
     kind: 'failed',
