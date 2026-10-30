@@ -32,6 +32,7 @@ import {
 } from '../context/worker-context-package.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
@@ -971,6 +972,12 @@ export interface WorkerGovernanceRuntimeFileCredential {
 
 /** Backend-private runtime environment credential material used only during materialization. */
 export interface WorkerGovernanceRuntimeEnvCredential {
+  /** Original grant that authorized this environment value. */
+  grantId?: string;
+  /** Original immutable injection plan. */
+  planId?: string;
+  /** Original receipt identity, settled only after successful injection. */
+  receiptId?: string;
   /** Exact non-secret Vault reference and material version retained for restart collection. */
   vaultReferenceId?: string;
   /** Material version that produced this binding's environment value. */
@@ -1159,9 +1166,13 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
    * Prepares the materialized native Session and accepts its Workspace baseline before submit.
    *
    * @param materialization Materialization record to launch.
+   * @param workspaceDb Operation-scoped admitted Workspace owner for original credential evidence.
    * @returns Completion of existing supply and Workspace preparation.
    */
-  prepareLaunch(materialization: WorkerGovernanceMaterializationRecord): Promise<void>;
+  prepareLaunch(
+    materialization: WorkerGovernanceMaterializationRecord,
+    workspaceDb: WorkspaceDb
+  ): Promise<void>;
 
   /**
    * Interrupts one exact active Turn through a backend-owned continuity channel when supported.
@@ -1211,11 +1222,13 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
    *
    * @param packageSnapshotId Package snapshot id whose transcript should be collected.
    * @param terminalBarrierProved Exact accepted worker final-status proof.
+   * @param workspaceDb Operation-scoped admitted Workspace owner for original credential evidence.
    * @returns Worker transcript payload.
    */
   collectTranscript(
     packageSnapshotId: string,
-    terminalBarrierProved: true
+    terminalBarrierProved: true,
+    workspaceDb: WorkspaceDb
   ): Promise<WorkerTranscriptPayload>;
 
   /**
@@ -1589,6 +1602,8 @@ export function validateWorkerArtifactPath(
 
 /** One bounded live capture through the already configured backend, never model-selected lineage. */
 export type WorkerArtifactCapture = (input: {
+  /** Existing admitted owner, borrowed only for this operation. */
+  readonly workspaceDb: WorkspaceDb;
   readonly packageSnapshotId: string;
   readonly requestId: string;
   readonly path: string;

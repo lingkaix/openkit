@@ -117,6 +117,12 @@ export interface ResolvedAgentEnvironmentRuntimeFileCredential {
 
 /** Backend-private runtime environment credential material resolved for one sandbox launch. */
 export interface ResolvedAgentEnvironmentRuntimeEnvCredential {
+  /** Original grant that authorized this environment value. */
+  grantId?: string;
+  /** Original immutable injection plan. */
+  planId?: string;
+  /** Original receipt identity, settled only after successful injection. */
+  receiptId?: string;
   /** Exact non-secret Vault reference and material version retained for restart collection. */
   vaultReferenceId?: string;
   /** Material version that produced this binding's environment value. */
@@ -1382,6 +1388,8 @@ function resolveWorkerCredentialDeclarations(
         grant,
         input,
         material: null,
+        planId,
+        receiptId,
         reference,
       });
       continue;
@@ -1422,6 +1430,8 @@ function resolveWorkerCredentialDeclarations(
         grant,
         input,
         material: vaultSecretMaterialToString(material),
+        planId,
+        receiptId,
         reference,
       });
     } catch (cause) {
@@ -1554,22 +1564,39 @@ function assertCredentialGrantMatchesDeclaration(
 }
 
 /**
- * Rechecks the original package's current Vault authority after awaited preparation or delivery.
+ * Rechecks current Vault authority for the actual consuming package.
  *
  * @param coreDb Current grant, reference and execution authority.
- * @param environmentPackage Exact admitted package, never reconstructed material.
+ * @param environmentPackage Actual admitted consumer, never reconstructed material.
  * @param now Current clock at this effect boundary.
+ * @param originalDeclaration Exact original declaration when checking a retained binding.
+ * @returns The canonical grant and reference for a selected original declaration.
  * @throws When revoked, expired or changed authority cannot authorize this use or receipt.
  */
 export function assertCurrentWorkerCredentialAuthority(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage,
-  now: () => string = () => new Date().toISOString()
-): void {
-  const scope = environmentPackage.scope;
-  for (const declaration of environmentPackage.credentials.declarations) {
+  now: () => string,
+  originalDeclaration: AgentEnvironmentCredentialDeclaration
+): { grant: VaultGrantRecord; reference: VaultReferenceRecord };
+export function assertCurrentWorkerCredentialAuthority(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage,
+  now?: () => string
+): void;
+export function assertCurrentWorkerCredentialAuthority(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage,
+  now: () => string = () => new Date().toISOString(),
+  originalDeclaration?: AgentEnvironmentCredentialDeclaration
+): { grant: VaultGrantRecord; reference: VaultReferenceRecord } | undefined {
+  for (const declaration of originalDeclaration
+    ? [originalDeclaration]
+    : environmentPackage.credentials.declarations) {
+    const scope = environmentPackage.scope;
     const grant = requireDeclarationGrant(coreDb, declaration);
     const reference = requireDeclarationReference(coreDb, grant);
+    aepVaultGrantScope(grant);
     assertCredentialGrantMatchesDeclaration(
       {
         agentId: environmentPackage.agent.agentId,
@@ -1587,12 +1614,10 @@ export function assertCurrentWorkerCredentialAuthority(
       (grant.approvalId === null ||
         (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
     if (
+      !effectAuthority ||
       !currentWorkerLineageWorkspaceAuthority(
         coreDb,
-        {
-          ...scope,
-          packageSnapshotId: environmentPackage.snapshotId,
-        },
+        { ...scope, packageSnapshotId: environmentPackage.snapshotId },
         'vault.use',
         effectAuthority
       )
@@ -1603,6 +1628,7 @@ export function assertCurrentWorkerCredentialAuthority(
         403
       );
     }
+    if (originalDeclaration) return { grant, reference };
   }
 }
 
@@ -1709,6 +1735,10 @@ function declarationInjectionTarget(
 
 /** Input used to append resolved credential declaration artifacts. */
 interface AppendCredentialDeclarationArtifactsInput {
+  /** Original non-secret plan identity allocated by this materialization producer. */
+  readonly planId: string;
+  /** Original receipt identity, published only after the actual sink succeeds. */
+  readonly receiptId: string;
   /** Mutable artifact accumulator for this package. */
   readonly artifacts: ResolvedWorkerCredentialDeclarationArtifacts;
   /** Declaration that produced the credential material. */
@@ -1779,6 +1809,9 @@ function appendCredentialDeclarationArtifacts(
   }
 
   input.input.runtimeEnvCredentialSink?.({
+    grantId: grant.grantId,
+    planId: input.planId,
+    receiptId: input.receiptId,
     vaultReferenceId: reference.referenceId,
     materialVersion: reference.currentVersion,
     credentialValue: input.material,
@@ -1857,8 +1890,14 @@ function requireVaultBackend(input: { readonly vaultBackend?: () => VaultBackend
   return input.vaultBackend();
 }
 
-/** Fail before injection records or worker sinks when Core and Vault material disagree. */
-function assertCredentialBackendMatchesReference(
+/**
+ * Refuses material use when the existing Core and backend reference inventories disagree.
+ *
+ * @param backend Existing private Vault backend.
+ * @param reference Canonical current reference; an explicit older material version is resolved separately.
+ * @throws When locked, unavailable, revoked, or inconsistent with canonical metadata.
+ */
+export function assertCredentialBackendMatchesReference(
   backend: VaultBackend,
   reference: VaultReferenceRecord
 ): void {

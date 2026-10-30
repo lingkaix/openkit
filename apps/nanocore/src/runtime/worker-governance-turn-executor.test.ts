@@ -11662,6 +11662,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
       expect(backend.lastContext?.runtimeEnvCredentials).toEqual([
         {
+          grantId: 'grant_00000000-0000-72fc-8ecb-f139d907c974',
+          planId: listVaultInjectionReceipts(coreDb)[0]!.planId,
+          receiptId: listVaultInjectionReceipts(coreDb)[0]!.receiptId,
           credentialValue: 'runtime-env-receipt-canary',
           materialVersion: 1,
           vaultReferenceId: 'vault_00000000-0000-718f-ad48-e0181e23673d',

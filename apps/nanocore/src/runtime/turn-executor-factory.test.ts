@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
   createReadStream,
@@ -99,11 +99,20 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
-import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
-import { createVaultReference, getVaultReference } from '../vault/vault-references.js';
+import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
+import {
+  advanceActiveVaultReferenceVersion,
+  createVaultReference,
+  getVaultReference,
+} from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
-import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
+import {
+  type CreateVaultInjectionReceiptInput,
+  createVaultInjectionReceipt,
+  listVaultInjectionReceipts,
+} from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -189,6 +198,7 @@ import {
   type WorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
+  type WorkerGovernanceRuntimeEnvCredential,
   WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import {
@@ -441,11 +451,18 @@ async function submitTestNanoHostTurn(
   backend: WorkerGovernanceBackend,
   materialization: Parameters<WorkerGovernanceBackend['prepareLaunch']>[0]
 ) {
-  await backend.prepareLaunch(materialization);
   const attempt = coreDb.sqlite
-    .prepare('SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE input_ref = ?')
-    .get(materialization.packageSnapshotId) as { attemptId: string };
+    .prepare(
+      'SELECT attempt_id AS attemptId, workspace_id AS workspaceId FROM scheduler_execution_attempts WHERE input_ref = ?'
+    )
+    .get(materialization.packageSnapshotId) as { attemptId: string; workspaceId: string };
   expect(attempt, 'Native submission must name the prepared package owner.').toBeDefined();
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, attempt.workspaceId);
+  try {
+    await backend.prepareLaunch(materialization, workspaceDb);
+  } finally {
+    workspaceDb.sqlite.close();
+  }
   const submission = recordSchedulerExecutionOperation(coreDb, {
     attemptId: attempt.attemptId,
     operationId: commandInputHash({
@@ -3559,7 +3576,19 @@ describe('createConfiguredTurnExecutor', () => {
       });
       residents.push(resident);
       resident.backend.sessions.set(resident.environmentPackage.snapshotId, resident.session);
-      await resident.backend.collectTranscript(resident.environmentPackage.snapshotId, true);
+      const collectionDb = openWorkspaceDb(
+        resident.coreDb.dataRoot,
+        resident.environmentPackage.scope.workspaceId
+      );
+      try {
+        await resident.backend.collectTranscript(
+          resident.environmentPackage.snapshotId,
+          true,
+          collectionDb
+        );
+      } finally {
+        collectionDb.sqlite.close();
+      }
       await resident.backend.collectWorkspaceChanges(resident.environmentPackage.snapshotId, true);
       expect(resident.environmentPackage.policy.network?.rules).toContainEqual(
         expect.objectContaining({ id: 'scoped-package-read', allowEncodedSlash: true })
@@ -5349,51 +5378,248 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
   it('restores the exact injected Vault version and refuses unavailable or incomplete evidence', async () => {
-    const resolve = vi.fn((input: { referenceId: string; version?: number }) =>
-      input.version === 7 ? 'original-injected-value' : 'rotated-current-value'
-    );
+    const referenceId = testEntityId('vault', 'collection-versions');
+    const grantId = testEntityId('grant', 'collection-versions');
+    const originalMaterial = randomUUID();
+    const currentMaterial = randomUUID();
+    let currentVersion = 7;
+    let workspaceId = '';
+    const resolveMaterial = (input: { referenceId: string; version?: number }) =>
+      input.version === 7 ? originalMaterial : currentMaterial;
+    const resolve = vi.fn(resolveMaterial);
     const vault = {
+      kind: 'encrypted-file',
       health: vi.fn(() => ({
         kind: 'encrypted-file',
         state: 'available',
         diagnostic: 'available',
       })),
+      listReferences: () => [
+        {
+          referenceId,
+          backendKind: 'encrypted-file',
+          ownerScope: 'workspace',
+          workspaceId,
+          currentVersion,
+          versionCount: currentVersion,
+          revoked: false,
+        },
+      ],
       resolve,
     } as unknown as VaultBackend;
-    const f = await admitIdleSupplyResident('versions', { vaultBackend: () => vault });
+    const coreDb = createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    workspaceId = DEMO_WORKSPACE_ID;
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+    const agentSessionId = testEntityId('as', 'collection-versions');
+    const setup = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+      credentialDeclarations: [
+        {
+          id: 'collection-version',
+          requirementId: 'collection-version',
+          visibility: 'runtime-env',
+          targetEnvVarName: 'TOKEN',
+        },
+      ],
+    });
+    createVaultReference(coreDb, {
+      referenceId,
+      ownerScope: 'workspace',
+      workspaceId,
+      displayName: 'Collection version fixture',
+      secretKind: 'github-token',
+      backendKind: 'encrypted-file',
+      backendLocator: 'synthetic-collection-reference',
+    });
+    for (let version = 2; version <= 7; version++)
+      advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: version });
+    createVaultGrant(coreDb, {
+      grantId,
+      vaultReferenceId: referenceId,
+      ownerScope: 'workspace',
+      workspaceId,
+      targetAgentId: setup.manifest.id,
+      targetAgentSessionId: agentSessionId,
+      allowedInjectionPaths: ['runtime-env'],
+      lifetime: 'workspace',
+    });
+    const runtimeConfig = loadRuntimeConfig(coreDb.dataRoot);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...runtimeConfig,
+      agentManifests: [setup.manifest],
+      workspaceConfigs: [
+        ...runtimeConfig.workspaceConfigs.filter((entry) => entry.workspaceId !== workspaceId),
+        {
+          workspaceId,
+          path: join(coreDb.dataRoot, 'workspaces', workspaceId, 'workspace.yaml'),
+          config: WorkspaceConfigSchema.parse({
+            schemaVersion: 1,
+            workspace: {
+              name: 'Collection version fixture',
+              agents: [
+                {
+                  agentId: setup.manifest.id,
+                  credentialBindings: [
+                    { requirementId: 'collection-version', vaultGrantId: grantId },
+                  ],
+                },
+              ],
+            },
+          }),
+        },
+      ],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Collection version fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+      vaultBackend: () => vault,
+    });
+    const backend = native.executor.executionBackend as WorkerGovernanceBackend & {
+      readonly sessions: Map<string, unknown>;
+    };
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+    const admitted: Awaited<ReturnType<typeof native.admitTurn>>[] = [];
+    const admit = async (label: string) => {
+      const turnId = testEntityId('tu', `collection-versions-${label}`);
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:collection-versions-${label}`,
+        requestId: turnId.slice(3),
+        requestedAgentId: setup.manifest.id,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        turnId,
+        turnInput: 'Collect with original credential authority.',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const turn = await native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', `collection-versions-${label}`),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      admitted.push(turn);
+      await native.waitForStartup(turnId);
+      return turn;
+    };
+    const failures: unknown[] = [];
     try {
-      const collector = f.backend as unknown as {
-        restoreCollectionRuntimeEnvironment(session: unknown): Record<string, string>;
+      const original = await admit('original');
+      const f = { coreDb, backend, environmentPackage: original.pkg };
+      const collector = backend as unknown as {
+        restoreCollectionRuntimeEnvironment(
+          session: unknown,
+          workspaceDb: ReturnType<typeof openWorkspaceDb>
+        ): Promise<Record<string, string>>;
       };
-      const real = f.session as {
+      const real = backend.sessions.get(original.pkg.snapshotId) as {
         agentSessionRuntimeBindingId: string;
         environmentPackage: AgentEnvironmentPackage;
+        runtimeEnvironment: Record<string, string> | null;
       };
-      const session = {
-        ...real,
-        environmentPackage: {
-          ...real.environmentPackage,
-          credentials: {
-            ...real.environmentPackage.credentials,
-            declarations: [{ visibility: 'runtime-env', targetEnvVarName: 'TOKEN' }],
-          },
-        },
-      };
+      const originalPlan = listVaultInjectionPlans(f.coreDb).find(
+        (plan) =>
+          plan.packageSnapshotId === real.environmentPackage.snapshotId && plan.grantId === grantId
+      );
+      expect(originalPlan, 'Setup must retain the original producer plan.').toBeDefined();
+      expect(listVaultInjectionReceipts(f.coreDb)).toContainEqual(
+        expect.objectContaining({
+          planId: originalPlan!.planId,
+          grantId,
+          agentSessionId: real.environmentPackage.scope.agentSessionId,
+        })
+      );
+      // The shared native owner publishes the actual terminal tuple before another Turn is admitted.
+      await original.complete();
+      expect(store.getTurnById(original.pkg.scope.turnId)).toMatchObject({ status: 'completed' });
+      advanceActiveVaultReferenceVersion(f.coreDb, { referenceId, currentVersion: 8 });
+      currentVersion = 8;
+      // Losing live material requires an audited reread of the exact original version.
+      const originalUseDb = workspaceDb;
+      {
+        const previous = new Set(listVaultUseRecords(originalUseDb).map((use) => use.useId));
+        resolve.mockClear();
+        real.runtimeEnvironment = null;
+        expect(await collector.restoreCollectionRuntimeEnvironment(real, workspaceDb)).toEqual({
+          TOKEN: originalMaterial,
+        });
+        expect(resolve).toHaveBeenCalledExactlyOnceWith({ referenceId, version: 7 });
+        const uses = listVaultUseRecords(originalUseDb).filter((use) => !previous.has(use.useId));
+        expect(uses).toEqual([
+          expect.objectContaining({
+            grantId,
+            planId: originalPlan!.planId,
+            vaultReferenceId: referenceId,
+            materialVersion: 7,
+            outcome: 'succeeded',
+            agentSessionId: real.environmentPackage.scope.agentSessionId,
+          }),
+        ]);
+      }
+      const next = await admit('successor');
+      const successor = next.pkg;
+      expect(successor.snapshotId).not.toBe(real.environmentPackage.snapshotId);
+      expect(listVaultInjectionPlans(f.coreDb)).toContainEqual(
+        expect.objectContaining({ packageSnapshotId: successor.snapshotId, grantId })
+      );
+      const session = backend.sessions.get(successor.snapshotId) as typeof real;
+      await next.complete();
+      expect(store.getTurnById(successor.scope.turnId)).toMatchObject({ status: 'completed' });
+      expect(
+        session.agentSessionRuntimeBindingId,
+        'Setup must reuse the actual original binding.'
+      ).toBe(real.agentSessionRuntimeBindingId);
+      const validVersions = (
+        f.coreDb.sqlite
+          .prepare(
+            'SELECT runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+          )
+          .get(real.agentSessionRuntimeBindingId) as { versions: string }
+      ).versions;
       const write = (versions: string | null) =>
         f.coreDb.sqlite
           .prepare(
             'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
           )
           .run(versions, real.agentSessionRuntimeBindingId);
-      write(
-        JSON.stringify([
-          { targetEnvVarName: 'TOKEN', vaultReferenceId: 'version-ref', materialVersion: 7 },
-        ])
-      );
-      expect(collector.restoreCollectionRuntimeEnvironment(session)).toEqual({
-        TOKEN: 'original-injected-value',
-      });
-      expect(resolve).toHaveBeenCalledExactlyOnceWith({ referenceId: 'version-ref', version: 7 });
+      const useDb = workspaceDb;
+      {
+        const previous = new Set(listVaultUseRecords(useDb).map((use) => use.useId));
+        resolve.mockClear();
+        session.runtimeEnvironment = null;
+        expect(await collector.restoreCollectionRuntimeEnvironment(session, workspaceDb)).toEqual({
+          TOKEN: originalMaterial,
+        });
+        session.runtimeEnvironment = null;
+        expect(await collector.restoreCollectionRuntimeEnvironment(session, workspaceDb)).toEqual({
+          TOKEN: originalMaterial,
+        });
+        expect(resolve).toHaveBeenNthCalledWith(1, { referenceId, version: 7 });
+        expect(resolve).toHaveBeenNthCalledWith(2, { referenceId, version: 7 });
+        const uses = listVaultUseRecords(useDb).filter((use) => !previous.has(use.useId));
+        // Vault-Use Audit Emission requires evidence for each actual original-version resolution.
+        expect.soft(uses).toHaveLength(2);
+        for (const use of uses)
+          expect.soft(use).toMatchObject({
+            grantId,
+            planId: originalPlan!.planId,
+            vaultReferenceId: referenceId,
+            materialVersion: 7,
+            outcome: 'succeeded',
+            agentSessionId: real.environmentPackage.scope.agentSessionId,
+          });
+      }
       for (const versions of [
         null,
         'invalid',
@@ -5401,48 +5627,79 @@ describe('createConfiguredTurnExecutor', () => {
         '[null]',
         '[]',
         JSON.stringify([
-          { targetEnvVarName: 'TOKEN', vaultReferenceId: 'version-ref', materialVersion: 0 },
+          { targetEnvVarName: 'TOKEN', vaultReferenceId: referenceId, materialVersion: 0 },
         ]),
         JSON.stringify([
           {
             targetEnvVarName: 'TOKEN',
-            vaultReferenceId: 'version-ref',
+            vaultReferenceId: referenceId,
             materialVersion: Number.MAX_SAFE_INTEGER + 1,
           },
         ]),
         JSON.stringify([{ targetEnvVarName: 'TOKEN', vaultReferenceId: '', materialVersion: 7 }]),
       ]) {
         write(versions);
-        expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
-          'check_values_unavailable'
-        );
+        await expect(
+          collector.restoreCollectionRuntimeEnvironment(session, workspaceDb)
+        ).rejects.toThrow('check_values_unavailable');
       }
+      // Old env/ref/version-only evidence grants no original authority, even with a valid successor.
       write(
         JSON.stringify([
-          { targetEnvVarName: 'TOKEN', vaultReferenceId: 'version-ref', materialVersion: 7 },
+          { targetEnvVarName: 'TOKEN', vaultReferenceId: referenceId, materialVersion: 7 },
         ])
       );
+      const resolutionsBeforeMissingLineage = resolve.mock.calls.length;
+      await expect
+        .soft(collector.restoreCollectionRuntimeEnvironment(session, workspaceDb))
+        .rejects.toThrow('check_values_unavailable');
+      expect.soft(resolve).toHaveBeenCalledTimes(resolutionsBeforeMissingLineage);
+      write(validVersions);
       vi.mocked(vault.health).mockReturnValueOnce({
         kind: 'encrypted-file',
         state: 'unavailable',
         diagnostic: 'unavailable',
       } as ReturnType<VaultBackend['health']>);
-      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
-        'check_values_unavailable'
-      );
+      await expect(
+        collector.restoreCollectionRuntimeEnvironment(session, workspaceDb)
+      ).rejects.toThrow('check_values_unavailable');
       resolve.mockImplementation(() => {
         throw new Error('version expired');
       });
-      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
-        'check_values_unavailable'
-      );
+      await expect(
+        collector.restoreCollectionRuntimeEnvironment(session, workspaceDb)
+      ).rejects.toThrow('check_values_unavailable');
       expect(
         JSON.stringify(
           f.coreDb.sqlite
             .prepare('SELECT runtime_env_check_versions_json FROM agent_session_runtime_bindings')
             .all()
         )
-      ).not.toContain('original-injected-value');
+      ).not.toContain(originalMaterial);
+      resolve.mockImplementation(resolveMaterial);
+      // Only deliberate negative faults alter retained authority after its real owners created it.
+      f.coreDb.sqlite
+        .prepare("UPDATE vault_grants SET issuance = 'imported-history' WHERE grant_id = ?")
+        .run(grantId);
+      try {
+        const resolutions = resolve.mock.calls.length;
+        await expect
+          .soft(collector.restoreCollectionRuntimeEnvironment(session, workspaceDb))
+          .rejects.toThrow('check_values_unavailable');
+        expect.soft(resolve).toHaveBeenCalledTimes(resolutions);
+      } finally {
+        f.coreDb.sqlite
+          .prepare("UPDATE vault_grants SET issuance = 'target' WHERE grant_id = ?")
+          .run(grantId);
+      }
+      // Cached material still requires current original-grant authority before it can be used.
+      session.runtimeEnvironment = { TOKEN: originalMaterial };
+      revokeVaultGrant(f.coreDb, { grantId });
+      const resolutionsAfterRevocation = resolve.mock.calls.length;
+      await expect
+        .soft(collector.restoreCollectionRuntimeEnvironment(session, workspaceDb))
+        .rejects.toThrow('check_values_unavailable');
+      expect.soft(resolve).toHaveBeenCalledTimes(resolutionsAfterRevocation);
       f.coreDb.sqlite
         .prepare(
           "UPDATE agent_session_runtime_bindings SET schema_version = 2, runtime_env_check_versions_json = '{' WHERE agent_session_runtime_binding_id = ?"
@@ -5450,40 +5707,62 @@ describe('createConfiguredTurnExecutor', () => {
         .run(real.agentSessionRuntimeBindingId);
       const retained = f.coreDb.sqlite.serialize();
       const resolutions = resolve.mock.calls.length;
-      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
-        'Unsupported retained record format.'
-      );
+      await expect(
+        collector.restoreCollectionRuntimeEnvironment(session, workspaceDb)
+      ).rejects.toThrow('Unsupported retained record format.');
       expect(resolve).toHaveBeenCalledTimes(resolutions);
       expect(f.coreDb.sqlite.serialize().equals(retained)).toBe(true);
-    } finally {
-      f.coreDb.sqlite.close();
+    } catch (cause) {
+      failures.push(cause);
     }
+    for (const turn of admitted) {
+      try {
+        await turn.cleanup();
+      } catch (cause) {
+        failures.push(cause);
+      }
+    }
+    try {
+      await native.restore();
+    } catch (cause) {
+      failures.push(cause);
+    }
+    workspaceDb.sqlite.close();
+    coreDb.sqlite.close();
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, 'Vault version scenario and cleanup failed.');
   });
 
   it('retains original credential evidence after live-memory loss and lease expiry, refusing missing route hashes', async () => {
     const f = await admitIdleSupplyResident('credential_admission');
+    const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
     try {
       const collector = f.backend as unknown as {
         transcriptCredentialCheckValues(
-          session: unknown
-        ): import('./worker-credential-guard.js').WorkerCredentialCheckValues;
+          session: unknown,
+          workspaceDb: ReturnType<typeof openWorkspaceDb>
+        ): Promise<import('./worker-credential-guard.js').WorkerCredentialCheckValues>;
       };
       const session = f.session as {
         liveRouteTokens: [string, string, string] | null;
         runtimeEnvironment: Record<string, string> | null;
       };
-      const live = collector.transcriptCredentialCheckValues(session);
+      const live = await collector.transcriptCredentialCheckValues(session, workspaceDb);
       expect(session.liveRouteTokens).toHaveLength(3);
       for (const token of session.liveRouteTokens!) expect(live.sensitiveValues).toContain(token);
       expect(live.sensitiveValues).toContain('sandbox-binding:credential_admission');
       f.coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
         .run('2000-01-01T00:00:00.000Z', testEntityId('attempt', 'lease_credential_admission'));
-      const recovered = collector.transcriptCredentialCheckValues({
-        ...session,
-        liveRouteTokens: null,
-        runtimeEnvironment: null,
-      });
+      const recovered = await collector.transcriptCredentialCheckValues(
+        {
+          ...session,
+          liveRouteTokens: null,
+          runtimeEnvironment: null,
+        },
+        workspaceDb
+      );
       expect(recovered.routeTokenHashes).toEqual(live.routeTokenHashes);
       expect(recovered.loopbackDigests).toEqual(live.loopbackDigests);
       expect(recovered.sensitiveValues).toEqual(['sandbox-binding:credential_admission']);
@@ -5494,19 +5773,24 @@ describe('createConfiguredTurnExecutor', () => {
           'UPDATE scheduler_execution_attempts SET worker_control_token_hash = NULL WHERE attempt_id = ?'
         )
         .run(testEntityId('attempt', 'lease_credential_admission'));
-      expect(() =>
-        collector.transcriptCredentialCheckValues({
-          ...session,
-          liveRouteTokens: null,
-          runtimeEnvironment: null,
-        })
-      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      await expect(
+        collector.transcriptCredentialCheckValues(
+          {
+            ...session,
+            liveRouteTokens: null,
+            runtimeEnvironment: null,
+          },
+          workspaceDb
+        )
+      ).rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     } finally {
+      workspaceDb.sqlite.close();
       f.coreDb.sqlite.close();
     }
   });
   it('constructs collection from exact attachment proof and refuses oversized or incomplete check commands', async () => {
     const f = await admitIdleSupplyResident('association');
+    const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
     try {
       const collector = f.backend as unknown as {
         workspaceCollectionIdentity(
@@ -5517,8 +5801,9 @@ describe('createConfiguredTurnExecutor', () => {
           session: unknown,
           identity: unknown,
           mode: 'capture',
-          cursor: unknown
-        ): Record<string, unknown>;
+          cursor: unknown,
+          workspaceDb: ReturnType<typeof openWorkspaceDb>
+        ): Promise<Record<string, unknown>>;
       };
       const real = f.session as {
         environmentPackage: AgentEnvironmentPackage;
@@ -5535,26 +5820,26 @@ describe('createConfiguredTurnExecutor', () => {
         acceptedBase: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
         head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
       };
-      expect(collector.workspaceCollectionCommand(real, identity, 'capture', cursor)).toMatchObject(
-        {
-          storageRef: identity.storageRef,
-          scopeDigest: identity.scopeDigest,
-          attachmentGeneration: identity.attachmentGeneration,
-          sandboxId: identity.sandboxId,
-          workSlot: identity.workSlot,
-          collectionId: identity.collectionId,
-          mode: 'capture',
-          acceptedBase: cursor.acceptedBase,
-          previousHead: cursor.head,
-          checkValues: {
-            runtimeEnv: [],
-            loopbackDigests: [
-              expect.stringMatching(/^[0-9a-f]{64}$/),
-              expect.stringMatching(/^[0-9a-f]{64}$/),
-            ],
-          },
-        }
-      );
+      expect(
+        await collector.workspaceCollectionCommand(real, identity, 'capture', cursor, workspaceDb)
+      ).toMatchObject({
+        storageRef: identity.storageRef,
+        scopeDigest: identity.scopeDigest,
+        attachmentGeneration: identity.attachmentGeneration,
+        sandboxId: identity.sandboxId,
+        workSlot: identity.workSlot,
+        collectionId: identity.collectionId,
+        mode: 'capture',
+        acceptedBase: cursor.acceptedBase,
+        previousHead: cursor.head,
+        checkValues: {
+          runtimeEnv: [],
+          loopbackDigests: [
+            expect.stringMatching(/^[0-9a-f]{64}$/),
+            expect.stringMatching(/^[0-9a-f]{64}$/),
+          ],
+        },
+      });
       for (const changed of [
         {
           attachmentGeneration:
@@ -5604,7 +5889,7 @@ describe('createConfiguredTurnExecutor', () => {
           'capture'
         )
       ).toThrow('association');
-      expect(() =>
+      await expect(
         collector.workspaceCollectionCommand(
           {
             ...real,
@@ -5614,10 +5899,11 @@ describe('createConfiguredTurnExecutor', () => {
           },
           identity,
           'capture',
-          cursor
+          cursor,
+          workspaceDb
         )
-      ).toThrow('command_too_large');
-      expect(() =>
+      ).rejects.toThrow('command_too_large');
+      await expect(
         collector.workspaceCollectionCommand(
           {
             ...real,
@@ -5627,18 +5913,21 @@ describe('createConfiguredTurnExecutor', () => {
           },
           identity,
           'capture',
-          cursor
+          cursor,
+          workspaceDb
         )
-      ).toThrow('check_values_unavailable');
-      expect(() =>
+      ).rejects.toThrow('check_values_unavailable');
+      await expect(
         collector.workspaceCollectionCommand(
           { ...real, runtimeEnvironment: { VALUE: 'nul\0' } },
           identity,
           'capture',
-          cursor
+          cursor,
+          workspaceDb
         )
-      ).toThrow('check_values_unavailable');
+      ).rejects.toThrow('check_values_unavailable');
     } finally {
+      workspaceDb.sqlite.close();
       f.coreDb.sqlite.close();
     }
   });
@@ -9275,6 +9564,11 @@ describe('createConfiguredTurnExecutor', () => {
       purpose === 'failed-closeout-refused' ||
       purpose === 'completed';
     const coreDb = createFactoryCoreDb();
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(coreDb.dataRoot, 'server', 'vault'),
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 31) });
     const interruptReply = Promise.withResolvers<void>();
     let interruptResult: Promise<
       NonNullable<ReturnType<typeof dispatchNanoHostHarnessOperation>>
@@ -9473,12 +9767,102 @@ describe('createConfiguredTurnExecutor', () => {
         }
       }
 
+      // A directly authored manifest grant requires Server scope and real private sink lineage.
+      const referenceId = testEntityId('vault', 'dispatch-canary');
+      const grantId = testEntityId('grant', 'dispatch-canary');
+      const { workspaceId, threadId, turnId, agentSessionId, triggerActor } =
+        environmentPackage.scope;
+      vaultUnlockState.backend().store({
+        referenceId,
+        material: 'private-dispatch-env-canary',
+        metadata: { ownerScope: 'server' },
+      });
+      createVaultReference(coreDb, {
+        referenceId,
+        ownerScope: 'server',
+        displayName: 'Private dispatch credential fixture',
+        secretKind: 'github-token',
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://server/vault/${referenceId}`,
+      });
+      createVaultGrant(coreDb, {
+        grantId,
+        vaultReferenceId: referenceId,
+        ownerScope: 'server',
+        targetAgentId: environmentPackage.agent.agentId,
+        targetAgentSessionId: agentSessionId,
+        allowedInjectionPaths: ['runtime-env'],
+        lifetime: 'agent-session',
+      });
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      const turnInput = 'Private dispatch credential fixture';
+      const turn = await store.createTurn(workspaceId, threadId, turnInput, triggerActor, null, {
+        turnId,
+        agentId: environmentPackage.agent.agentId,
+        executorKind: 'worker',
+        captureCoverage: { scope: 'server', value: 'off' },
+      });
+      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${testEntityId('attempt', 'lease_human_gate')}`,
+        requestId: environmentPackage.scope.requestId,
+        requestedAgentId: environmentPackage.agent.agentId,
+        workspaceId,
+        threadId,
+        turnId,
+        triggerActor,
+        turnInput,
+      });
+      const runtimeEnvCredentials: WorkerGovernanceRuntimeEnvCredential[] = [];
+      const receipts: CreateVaultInjectionReceiptInput[] = [];
+      const resolution: Parameters<typeof resolveAgentEnvironmentPackage>[0] = {
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId,
+        agentSetup: createTestAgentSetup({
+          adapter: adapterId,
+          agentId: environmentPackage.agent.agentId,
+          credentialDeclarations: [
+            {
+              id: 'dispatch-token',
+              vaultGrantId: grantId,
+              visibility: 'runtime-env',
+              targetEnvVarName: 'GITHUB_TOKEN',
+            },
+          ],
+        }),
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: environmentPackage.createdAt,
+        now: () => new Date().toISOString(),
+        requestId: environmentPackage.scope.requestId,
+        triggerActor,
+        turn,
+        turnInput,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+        vaultBackend: () => vaultUnlockState.backend(),
+        runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
+        credentialReceiptSink: (receipt) => receipts.push(receipt),
+      };
+      const preview = resolveAgentEnvironmentPackageMetadata(resolution);
+      // Preserve the scenario's adapter/repository inputs under the producer's actual snapshot.
+      environmentPackage = {
+        ...environmentPackage,
+        snapshotId: preview.snapshotId,
+        scope: preview.scope,
+        credentials: preview.credentials,
+        vault: preview.vault,
+      };
       bindNanoHostWorkerLineage(coreDb, environmentPackage, {
         attemptId: testEntityId('attempt', 'lease_human_gate'),
         sandboxBindingRef: 'sandbox-binding:resident-session',
       });
+      const produced = resolveAgentEnvironmentPackage(resolution);
+      environmentPackage.credentials = produced.credentials;
+      environmentPackage.vault = produced.vault;
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
+        vaultBackend: () => vaultUnlockState.backend(),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
         workerControlGateway: new WorkerControlGateway(),
@@ -9518,9 +9902,7 @@ describe('createConfiguredTurnExecutor', () => {
       await anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       const materialization = await backend.materialize(environmentPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
-        runtimeEnvCredentials: [
-          { targetEnvVarName: 'GITHUB_TOKEN', credentialValue: 'private-dispatch-env-canary' },
-        ],
+        runtimeEnvCredentials,
         workspaceRoots: [],
       });
       const recordedDigests: string[] = [];
@@ -9674,26 +10056,34 @@ describe('createConfiguredTurnExecutor', () => {
       };
 
       const launch = submitTestNanoHostTurn(coreDb, backend, materialization);
-      await settleNext('session.open', {
-        ...(fixtureRepositoryPath
-          ? {
-              workspaceGitBaseline: {
-                commit: environmentPackage.workspace.inputs[0]!.source.commit,
-                tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-              },
-            }
-          : {}),
-        maxActiveTurns: 20,
-        nativeHandleDigest: null,
-        nativeHandleState: 'pending',
-        state: 'open',
-      });
-      await settleNext('turn.start', {
-        nativeHandleDigest: null,
-        nativeHandleState: 'pending',
-        state: 'started',
-      });
+      await Promise.race([
+        settleNext('session.open', {
+          ...(fixtureRepositoryPath
+            ? {
+                workspaceGitBaseline: {
+                  commit: environmentPackage.workspace.inputs[0]!.source.commit,
+                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                },
+              }
+            : {}),
+          maxActiveTurns: 20,
+          nativeHandleDigest: null,
+          nativeHandleState: 'pending',
+          state: 'open',
+        }),
+        launch,
+      ]);
+      await Promise.race([
+        settleNext('turn.start', {
+          nativeHandleDigest: null,
+          nativeHandleState: 'pending',
+          state: 'started',
+        }),
+        launch,
+      ]);
       await launch;
+      // Native turn.start acknowledgement proves the generated private sink completed.
+      for (const receipt of receipts) createVaultInjectionReceipt(coreDb, receipt);
       // This terminal-inspection subject begins with exact occupancy; Harness record regressions separately retain the leaseId-to-attemptId publication defect.
       coreDb.sqlite
         .prepare(`UPDATE agent_session_runtime_bindings
@@ -9971,6 +10361,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       interruptReply.resolve();
       await Promise.allSettled([interruptResult, stop]);
+      vaultUnlockState.lock();
       coreDb.sqlite.close();
     }
   });

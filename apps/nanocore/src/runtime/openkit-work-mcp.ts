@@ -770,6 +770,7 @@ async function submitArtifact(
   let response: ReturnType<typeof artifactResult> | undefined;
   try {
     captured = await input.captureArtifact({
+      workspaceDb,
       packageSnapshotId: environmentPackage.snapshotId,
       requestId: metadata.requestId,
       path: metadata.path,

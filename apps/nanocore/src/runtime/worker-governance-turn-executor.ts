@@ -2679,7 +2679,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
-      await this.backend.prepareLaunch(materialization);
+      if (!workspaceDb) throw new Error('Worker launch requires its admitted Workspace owner.');
+      await this.backend.prepareLaunch(materialization, workspaceDb);
       assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       preparedWorkerContext?.assertCurrentKnowledgeOverview();
       const submission = recordSchedulerExecutionOperation(this.coreDb!, {
@@ -3380,7 +3381,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           workerKind: environmentPackage.agent.runtimeKind,
           stage: 'collection',
         },
-        () => this.backend.collectTranscript(environmentPackage.snapshotId, true),
+        () => this.backend.collectTranscript(environmentPackage.snapshotId, true, workspaceDb),
         () => (environmentPackage.control.transcript ? 'success' : 'degraded')
       );
       const workerLineage = {

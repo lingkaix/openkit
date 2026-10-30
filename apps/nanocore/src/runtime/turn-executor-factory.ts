@@ -69,13 +69,19 @@ import {
 import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
+import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
+import { getVaultInjectionPlan } from '../vault-injection-plans.js';
+import { getVaultInjectionReceipt } from '../vault-injection-receipts.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   type AgentEnvironmentPackageSnapshotReadRecord,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
-import { assertCurrentWorkerCredentialAuthority } from './agent-environment.js';
+import {
+  assertCredentialBackendMatchesReference,
+  assertCurrentWorkerCredentialAuthority,
+} from './agent-environment.js';
 import {
   acceptSchedulerExecutionObservation,
   isSchedulerExecutionBusyRefusal,
@@ -579,6 +585,9 @@ interface NanoHostBackendTurnSession {
     targetEnvVarName: string;
     vaultReferenceId: string;
     materialVersion: number;
+    grantId: string;
+    planId: string;
+    receiptId: string;
   }> | null;
   /** Predecessor resume pair for a new binding; null starts a new native conversation. */
   readonly nativeResume: WorkerGovernanceNativeResume | null;
@@ -4064,6 +4073,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       liveRouteTokens: null,
       runtimeCheckVersions: (context.runtimeEnvCredentials ?? []).every(
         (item) =>
+          item.grantId &&
+          item.planId &&
+          item.receiptId &&
           item.vaultReferenceId &&
           Number.isSafeInteger(item.materialVersion) &&
           item.materialVersion! > 0
@@ -4072,6 +4084,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             targetEnvVarName: item.targetEnvVarName,
             vaultReferenceId: item.vaultReferenceId!,
             materialVersion: item.materialVersion!,
+            grantId: item.grantId!,
+            planId: item.planId!,
+            receiptId: item.receiptId!,
           }))
         : null,
       pendingHarnessOperation: null,
@@ -4229,7 +4244,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Opens or inspects the exact Session, imports its Turn inputs, and accepts its baseline before the submission port. */
   public async prepareLaunch(
-    materialization: WorkerGovernanceMaterializationRecord
+    materialization: WorkerGovernanceMaterializationRecord,
+    workspaceDb: WorkspaceDb
   ): Promise<void> {
     const session = this.requireSession(materialization.packageSnapshotId);
     const result = session.sharedHarness.sandbox.bridgeOpen
@@ -4367,8 +4383,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
       });
       // The resident host fixed its environment at open; resolve its recorded versions for collection.
-      session.runtimeEnvironment =
-        binding.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
+      session.runtimeEnvironment = binding.runtimeEnvironment ?? null;
+      session.runtimeEnvironment = await this.restoreCollectionRuntimeEnvironment(
+        session,
+        workspaceDb
+      );
       binding.runtimeEnvironment = session.runtimeEnvironment;
       await withLifecycleStageTelemetry(
         {
@@ -4795,7 +4814,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     input.signal?.throwIfAborted();
     let credentialCheckValues: WorkerCredentialCheckValues;
     try {
-      credentialCheckValues = this.transcriptCredentialCheckValues(session);
+      credentialCheckValues = await this.transcriptCredentialCheckValues(
+        session,
+        input.workspaceDb
+      );
     } catch (error) {
       try {
         await this.cleanupSession(session.identity, { failedCloseout: true });
@@ -4858,7 +4880,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Exports transcript and evidence files only after the accepted terminal barrier. */
   public async collectTranscript(
     packageSnapshotId: string,
-    terminalBarrierProved: true
+    terminalBarrierProved: true,
+    workspaceDb: WorkspaceDb
   ): Promise<WorkerTranscriptPayload> {
     const session = this.requireSession(packageSnapshotId);
     await this.inspectTerminalHarnessSession(session);
@@ -4999,7 +5022,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     return {
       credentialCheckValues: itemsBytes.toString('utf8').trim()
-        ? this.transcriptCredentialCheckValues(session)
+        ? await this.transcriptCredentialCheckValues(session, workspaceDb)
         : null,
       eventsJsonl: eventsBytes.toString('utf8'),
       itemsJsonl: itemsBytes.toString('utf8'),
@@ -5009,9 +5032,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Reconstructs complete private admission evidence without requiring the old serving lease to remain live. */
-  private transcriptCredentialCheckValues(
-    session: NanoHostBackendTurnSession
-  ): WorkerCredentialCheckValues {
+  private async transcriptCredentialCheckValues(
+    session: NanoHostBackendTurnSession,
+    workspaceDb: WorkspaceDb
+  ): Promise<WorkerCredentialCheckValues> {
     try {
       const scope = session.environmentPackage.scope;
       const leases = listSchedulerExecutionAttemptsForTurn(this.coreDb, scope)
@@ -5028,7 +5052,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           : null;
       if (!lease || !lease.bindingRef)
         throw new Error('Original lease association is unavailable.');
-      const runtime = this.collectionRuntimeCheckValues(session);
+      const runtime = await this.collectionRuntimeCheckValues(session, workspaceDb);
       const evidence = requireWorkerCredentialCheckValues({
         sensitiveValues: [
           ...runtime.runtimeEnv,
@@ -5070,25 +5094,40 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return await this.collectWorkspaceSnapshot(session, 'turn-end');
   }
 
-  /** Re-resolves the exact binding versions after restart; current Vault material is never substituted. */
-  private restoreCollectionRuntimeEnvironment(
-    session: NanoHostBackendTurnSession
-  ): Record<string, string> {
+  /** Validates original injection authority even for cached values; each reread audits its exact retained version. */
+  private async restoreCollectionRuntimeEnvironment(
+    session: NanoHostBackendTurnSession,
+    workspaceDb: WorkspaceDb
+  ): Promise<Record<string, string>> {
     const row = this.coreDb.sqlite
       .prepare(
-        'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?'
       )
-      .get(session.agentSessionRuntimeBindingId) as
-      | { schemaVersion: unknown; versions: string | null }
-      | undefined;
+      .get(
+        session.agentSessionRuntimeBindingId,
+        session.harnessInstanceId,
+        session.environmentPackage.scope.agentSessionId,
+        session.environmentPackage.scope.workspaceId,
+        session.environmentPackage.scope.threadId
+      ) as { schemaVersion: unknown; versions: string | null } | undefined;
     if (row) readRetainedV1(row, () => row);
+    let resume: (() => void) | undefined;
     try {
+      const consumer = session.environmentPackage;
+      if (
+        workspaceDb.workspaceId !== consumer.scope.workspaceId ||
+        workspaceDb.dataRoot !== this.coreDb.dataRoot
+      )
+        throw new Error('Credential evidence requires its admitted Workspace owner.');
       const versions = JSON.parse(row?.versions ?? 'null') as Array<{
         targetEnvVarName: string;
         vaultReferenceId: string;
         materialVersion: number;
+        grantId: string;
+        planId: string;
+        receiptId: string;
       }>;
-      const declared = session.environmentPackage.credentials.declarations
+      const declared = consumer.credentials.declarations
         .filter((item) => item.visibility === 'runtime-env')
         .map((item) => item.targetEnvVarName)
         .sort();
@@ -5100,22 +5139,119 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           outcome: 'recovery_required',
           cause: 'check_values_unavailable',
         });
+      const cached = session.runtimeEnvironment;
+      // Only actual material rereads write VaultUse/Audit. The existing native hold protects Main's
+      // Workspace writer; all original authority is rechecked after this await, before resolution.
+      if (versions.length && cached === null) {
+        resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
+          `workspace:${workspaceDb.sqlite.name}`
+        );
+      }
+      const timestamp = new Date().toISOString();
       return nanoHostRuntimeEnvironment(
         versions.map((item) => {
           if (
+            typeof item.vaultReferenceId !== 'string' ||
             !item.vaultReferenceId ||
+            typeof item.grantId !== 'string' ||
+            !item.grantId ||
+            typeof item.planId !== 'string' ||
+            !item.planId ||
+            typeof item.receiptId !== 'string' ||
+            !item.receiptId ||
             !Number.isSafeInteger(item.materialVersion) ||
             item.materialVersion <= 0 ||
             !this.collectionVaultBackend
           )
-            throw new Error('Unavailable Vault version.');
+            throw new Error('Original Vault injection evidence is unavailable.');
+          const plan = getVaultInjectionPlan(this.coreDb, item.planId);
+          if (
+            !plan ||
+            plan.grantId !== item.grantId ||
+            plan.status !== 'active' ||
+            plan.injectionVisibility !== 'runtime-env' ||
+            plan.targetEnvVarName !== item.targetEnvVarName ||
+            plan.targetPath !== null ||
+            plan.capabilityId !== null ||
+            plan.backendCapabilityRequirement !== 'runtime-env' ||
+            !plan.packageSnapshotId
+          )
+            throw new Error('Original Vault injection plan is unavailable.');
+          const original = requireAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            consumer.scope.workspaceId,
+            plan.packageSnapshotId
+          ).snapshot;
+          const declarations = original.credentials.declarations.filter(
+            (declaration) =>
+              declaration.visibility === 'runtime-env' &&
+              declaration.targetEnvVarName === item.targetEnvVarName &&
+              declaration.vaultGrantId === item.grantId
+          );
+          if (
+            declarations.length !== 1 ||
+            original.scope.workspaceId !== consumer.scope.workspaceId ||
+            original.scope.threadId !== consumer.scope.threadId ||
+            original.scope.agentSessionId !== consumer.scope.agentSessionId ||
+            original.agent.agentId !== consumer.agent.agentId
+          )
+            throw new Error('Original Vault injection package does not own this binding.');
+          const receipt = getVaultInjectionReceipt(this.coreDb, item.receiptId);
+          if (
+            !receipt ||
+            receipt.planId !== item.planId ||
+            receipt.grantId !== item.grantId ||
+            receipt.agentSessionId !== consumer.scope.agentSessionId ||
+            receipt.capabilityCallId !== null ||
+            receipt.revocationStatus !== 'active' ||
+            (receipt.expiresAt !== null && receipt.expiresAt <= timestamp)
+          )
+            throw new Error('Original successful Vault injection receipt is unavailable.');
+          const { grant, reference } = assertCurrentWorkerCredentialAuthority(
+            this.coreDb,
+            consumer,
+            () => timestamp,
+            declarations[0]!
+          );
+          if (reference.referenceId !== item.vaultReferenceId || grant.ownerScope === 'user')
+            throw new Error('Original Vault reference does not match its grant.');
+          const originalGrants = original.vault.grants.filter((entry) => entry.id === item.grantId);
+          if (
+            originalGrants.length !== 1 ||
+            originalGrants[0]!.vaultRefId !== item.vaultReferenceId ||
+            originalGrants[0]!.scope !== grant.lifetime ||
+            (originalGrants[0]!.expiresAt ?? null) !== grant.expiresAt ||
+            (grant.lifetime === 'turn' && original.scope.turnId !== consumer.scope.turnId) ||
+            (receipt && receipt.expiresAt !== grant.expiresAt)
+          )
+            throw new Error('Original Vault lifetime does not authorize this consumer.');
           const backend = this.collectionVaultBackend();
-          if (backend.health().state !== 'available') throw new Error('Unavailable Vault backend.');
+          assertCredentialBackendMatchesReference(backend, reference);
           return {
             targetEnvVarName: item.targetEnvVarName,
-            credentialValue: vaultSecretMaterialToString(
-              backend.resolve({ referenceId: item.vaultReferenceId, version: item.materialVersion })
-            ),
+            credentialValue:
+              cached !== null
+                ? cached[item.targetEnvVarName]!
+                : vaultSecretMaterialToString(
+                    createVaultUseAuditedBackend({
+                      backend,
+                      db: grant.ownerScope === 'workspace' ? workspaceDb : this.coreDb,
+                      ownerScope: grant.ownerScope,
+                      ...(grant.ownerScope === 'workspace'
+                        ? { workspaceId: consumer.scope.workspaceId }
+                        : { consumerWorkspaceId: consumer.scope.workspaceId }),
+                      actor: consumer.scope.triggerActor,
+                      agentSessionId: consumer.scope.agentSessionId,
+                      grantId: item.grantId,
+                      planId: item.planId,
+                      receiptId: item.receiptId,
+                      resolvingPath: 'grant',
+                      now: () => timestamp,
+                    }).resolve({
+                      referenceId: item.vaultReferenceId,
+                      version: item.materialVersion,
+                    })
+                  ),
           };
         })
       );
@@ -5124,6 +5260,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         outcome: 'recovery_required',
         cause: 'check_values_unavailable',
       });
+    } finally {
+      resume?.();
     }
   }
 
@@ -5165,7 +5303,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Loads the original session environment and loopback evidence for both collection consumers. */
-  private collectionRuntimeCheckValues(session: NanoHostBackendTurnSession) {
+  private async collectionRuntimeCheckValues(
+    session: NanoHostBackendTurnSession,
+    workspaceDb: WorkspaceDb
+  ) {
     const digests = this.coreDb.sqlite
       .prepare(
         `SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability
@@ -5179,7 +5320,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session.environmentPackage.scope.workspaceId,
         session.environmentPackage.scope.threadId
       ) as { inference: string | null; capability: string | null } | undefined;
-    const values = session.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
+    // Already-exposed values remain a confidentiality deny-list during revocation cleanup.
+    // Reuse admission and uncached resolution still validate current original authority.
+    const values =
+      session.runtimeEnvironment ??
+      (await this.restoreCollectionRuntimeEnvironment(session, workspaceDb));
     return {
       runtimeEnv: Object.values(values).filter((value) => value.length > 0),
       loopbackDigests: [digests?.inference, digests?.capability],
@@ -5187,13 +5332,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Constructs the complete bounded credential-check command; it never truncates the check set. */
-  private workspaceCollectionCommand(
+  private async workspaceCollectionCommand(
     session: NanoHostBackendTurnSession,
     identity: WorkspaceCollectionIdentity,
     mode: 'baseline' | 'capture',
-    cursor: ReturnType<typeof readWorkspaceSnapshotCursor>
+    cursor: ReturnType<typeof readWorkspaceSnapshotCursor>,
+    workspaceDb: WorkspaceDb
   ) {
-    const checkValues = this.collectionRuntimeCheckValues(session);
+    const checkValues = await this.collectionRuntimeCheckValues(session, workspaceDb);
     let command: ReturnType<typeof WorkspaceCollectCommandSchema.parse>;
     try {
       command = WorkspaceCollectCommandSchema.parse({
@@ -5239,6 +5385,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       applyScopedMigrations(db);
       if (readWorkspaceSnapshotCursor(db, identity)) {
+        // Only this actual fresh session.open may check its private values before receipt settlement.
         if (opensNewBinding) await this.collectWorkspaceSnapshot(session, 'successor');
         else {
           const previous = this.coreDb.sqlite
@@ -5300,7 +5447,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         expected = null;
       }
       const result = await this.effect(session.identity, session.attemptId, 'workspace.collect', {
-        ...this.workspaceCollectionCommand(session, identity, 'baseline', null),
+        ...(await this.workspaceCollectionCommand(session, identity, 'baseline', null, db)),
         attemptNonce: randomBytes(16).toString('hex'),
       });
       if (result.outcome !== 'baseline')
@@ -5355,7 +5502,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             outcome: 'recovery_required',
             cause: 'accepted_base_unknown',
           });
-        const command = this.workspaceCollectionCommand(session, identity, 'capture', cursor);
+        const command = await this.workspaceCollectionCommand(
+          session,
+          identity,
+          'capture',
+          cursor,
+          db
+        );
         const idleAnchor =
           requireSchedulerExecutionAttempt(this.coreDb, session.attemptId).phase === 'closed'
             ? getWorkerBackendSession(this.coreDb, session.attemptId)

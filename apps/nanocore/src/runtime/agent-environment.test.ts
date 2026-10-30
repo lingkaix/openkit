@@ -1739,6 +1739,9 @@ describe('agent environment package resolver', () => {
       expect(resolved.scope.triggerActor).toEqual(AUTOMATION_TRIGGER_ACTOR);
       expect(runtimeEnvCredentials).toEqual([
         {
+          grantId: declaration.vaultGrantId,
+          planId: listVaultInjectionPlans(coreDb)[0]!.planId,
+          receiptId: `receipt_${resolved.snapshotId}_${declaration.id}`,
           credentialValue: 'direct_secret_value',
           materialVersion: 1,
           vaultReferenceId: testEntityId('vault', 'vault_anthropic_api_key'),
