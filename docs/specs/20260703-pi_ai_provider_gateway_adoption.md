@@ -33,7 +33,7 @@ Related specs:
 
 NanoCore consumes one exact-pinned stock pi-ai release behind a strict internal boundary. OpenKit reuses pi-ai's provider adapters, native Responses support, provider-owned interactive login, automatic refresh, and custom `CredentialStore` integration without exposing the dependency as product, protocol, App API, Gateway, or authored configuration vocabulary.
 
-The historical pre-unification upgrade baseline was `0.80.3`, the subscription-unification baseline was `0.80.10`, and the current accepted and implemented repository pin is `0.84.2`. The current pin retains the unified provider-authentication surface, custom credential storage, xAI device-code subscription login, and native Responses behavior while adding stock semantic carriage for Responses namespaces and custom tool calls. The implementation selects and records an exact release after package API, release notes, model-catalog, and focused behavior review; this spec does not use a floating `latest` target.
+The historical pre-unification upgrade baseline was `0.80.3`, the subscription-unification baseline was `0.80.10`, and the current accepted and implemented repository pin is `0.99.2`. The current pin retains the unified provider-authentication surface, custom credential storage, xAI device-code subscription login, and native Responses behavior while adding stock semantic carriage for Responses namespaces and custom tool calls. The implementation selects and records an exact release after package API, release notes, model-catalog, and focused behavior review; this spec does not use a floating `latest` target.
 
 ## Goals / Non-goals
 
@@ -108,7 +108,7 @@ Pi-ai's documented support for a consumer subscription is evidence that the adap
 
 ## Current Implementation Projection
 
-NanoCore declares stock `@earendil-works/pi-ai` at exact version `0.84.2`, resolved from the registry with integrity `sha512-6MzsrYIYNVlE7SfpbL2yYb67Qo58p/7Q+xWG1RZvoX1P80aRCHSod2/13aFpxkow1lPO2LEh3c495J0Gwmyjig==` and upstream `gitHead` `914cf1472e715297caa30db4b9535d534a9eb718`. `packages/models-dev-catalog/scripts/validate.mjs` verifies the exact declaration and performs catalog reconciliation, and root `check:repo` runs that validator. The package is private to NanoCore and current public surfaces use OpenKit vocabulary.
+NanoCore declares stock `@earendil-works/pi-ai` at exact version `0.99.2`, resolved from the registry with integrity `sha512-9RFOEdY+ZTJ1AI+UuAFs4RM0tF2Tje/R/CEv9gWTJHt0iTu8XHZs64U/EIZxNSllFmec/4HfwsOxYj1qQek9bg==` (`pnpm-lock.yaml`). `packages/models-dev-catalog/scripts/validate.mjs` verifies the exact declaration and performs catalog reconciliation, and root `check:repo` runs that validator. The package is private to NanoCore and current public surfaces use OpenKit vocabulary.
 
 NanoCore now constructs one stock provider-only `Models` runtime with an injected Vault-backed `CredentialStore` per subscription pair. Provider-owned device-code login, cancellation signalling, refresh, logout, native Codex Responses, xAI inference, response metadata, streaming, usage, cache inputs, cancellation, and error interception are wired behind OpenKit-owned schemas and redaction. Default pi-ai auth files, ambient provider credentials, shell credential commands, patches, forks, and public pi-ai vocabulary remain absent.
 
@@ -116,7 +116,7 @@ The former Codex account and Responses implementations and their residual source
 
 ## Accepted Design
 
-NanoCore has one small pi-ai boundary module that constructs provider runtimes with explicit OpenKit configuration and credential inputs, then maps pi-ai events and errors into OpenKit-owned internal shapes. Account management supplies a slot-scoped custom credential store; inference supplies the selected model, stock Context and bounded options, plus the request-local native envelope only where admitted by the backend owner. The integration imports only stock public pi-ai APIs and contains no copied provider logic. Provider-specific reasoning conversion for common providers is permitted only inside the Gateway under that owner, preferring stock behavior; the exception does not authorize compatibility work outside the Gateway.
+NanoCore has one cohesive pi-ai Gateway client and small mapping modules, under the [unified backend owner](20260708-pi_ai_unified_llm_backend.md), that construct provider runtimes with explicit OpenKit configuration and credential inputs, then map pi-ai events and errors into OpenKit-owned internal shapes. Account management supplies a slot-scoped custom credential store; inference supplies the selected model, stock Context and bounded options, plus the request-local native envelope only where admitted by the backend owner. The integration imports only stock public pi-ai APIs and contains no copied provider logic. Provider-specific reasoning conversion for common providers is permitted only inside the Gateway under that owner, preferring stock behavior; the exception does not authorize compatibility work outside the Gateway.
 
 ## Testing Strategy / Acceptance Criteria
 
