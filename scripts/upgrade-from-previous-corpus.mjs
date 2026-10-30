@@ -633,7 +633,11 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
   mkdirSync(join(packageRoot, 'skills', 'continuity'), { recursive: true, mode: 0o700 });
   writeFileSync(
     join(packageRoot, 'plugin.json'),
-    JSON.stringify({ name: 'continuity-fixture', version: '1.0.0' })
+    JSON.stringify({
+      $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+      name: 'continuity-fixture',
+      version: '1.0.0',
+    })
   );
   writeFileSync(join(packageRoot, 'skills', 'continuity', 'SKILL.md'), FIXTURE.skill);
   const imported = o.catalog.importWorkspacePlugin({
