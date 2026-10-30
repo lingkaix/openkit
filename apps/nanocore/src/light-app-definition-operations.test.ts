@@ -180,6 +180,59 @@ it('imports, pins, activates and restores a reusable definition through public o
     });
     expect(reread.status, await reread.clone().text()).toBe(200);
     expect((await reread.json()).data.note).toBe('Keep this value in recovery.');
+    const { appId: _appId, schemaRevision: _schemaRevision, ...proposal } = recovered.schema;
+    const extendedResponse = await call('kernel.schema.update', {
+      requestId: randomUUID(),
+      appId: live.appId,
+      expectedAppRevision: recovered.appRevision,
+      expectedSchemaRevision: recovered.schemaRevision,
+      schema: {
+        ...proposal,
+        collections: [
+          ...proposal.collections,
+          {
+            name: 'local_notes',
+            type: 'base',
+            description: 'Locally admitted data absent from the catalog definition.',
+            fields: [{ name: 'body', type: 'text', required: false, description: 'Local note.' }],
+            indexes: [],
+          },
+        ],
+      },
+    });
+    expect(extendedResponse.status, await extendedResponse.clone().text()).toBe(200);
+    const extended = await extendedResponse.json();
+    const preservedResponse = await call('kernel.records.get', {
+      appId: live.appId,
+      collection: 'applications',
+      recordId: saved.id,
+      schemaRevision: extended.schemaRevision,
+    });
+    expect(preservedResponse.status).toBe(200);
+    const preservedRecord = await preservedResponse.json();
+    // Catalog provenance cannot authorize removing a collection from the current live schema.
+    const refused = await call('kernel.schema.activate', {
+      requestId: randomUUID(),
+      appId: live.appId,
+      entryId: 'admissions',
+      digest: original.version.digest,
+      expectedAppRevision: extended.appRevision,
+      expectedSchemaRevision: extended.schemaRevision,
+    });
+    expect.soft(refused.status).toBe(400);
+    expect.soft(await refused.json()).toMatchObject({ code: 'unsupported_operation' });
+    const currentResponse = await call('kernel.apps.get', { appId: live.appId });
+    expect(currentResponse.status).toBe(200);
+    const current = await currentResponse.json();
+    expect.soft(current).toEqual(extended);
+    const preservedAfter = await call('kernel.records.get', {
+      appId: live.appId,
+      collection: 'applications',
+      recordId: saved.id,
+      schemaRevision: current.schemaRevision,
+    });
+    expect(preservedAfter.status).toBe(200);
+    expect(await preservedAfter.json()).toEqual(preservedRecord);
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
