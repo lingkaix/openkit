@@ -144,7 +144,6 @@ export const VAULT_OPERATION_DEFINITIONS = {
     target: { kind: 'server' },
     policyOperation: 'api.call',
     mutating: true,
-    inputSensitivity: 'secret stdin',
   },
   'vault.lock': {
     description: 'Lock the configured vault backend.',

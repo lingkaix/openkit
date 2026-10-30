@@ -285,3 +285,5 @@ Same-deployment Workspace backup restore now joins the composed operation table.
 Workspace recovery inspection uses the existing path-free report and capture/admission selectors. Its complete composition reads current administrator-authorized facts; finish, abandonment and MOVE remain with their separate activation work.
 
 Workspace MCP management exposes `catalog.mcp-stage-version` and `catalog.mcp-remove` alongside create, select and binding. Select requires nullable `expectedCurrentDigest` from the observed entry; stage preserves current selection and removal retains history.
+
+`vault.unlock` accepts an empty request and reloads only the configured external key file through the native bounded loader. It accepts no request key material; the other secret-bearing Vault operations retain their secret-stdin metadata.

@@ -39,6 +39,7 @@ import {
   revokeVaultGrant,
   VaultGrantNarrowingError,
 } from './vault-grants.js';
+import { loadEncryptedFileVaultKeyFile } from './vault-key-file.js';
 import {
   advanceActiveVaultReferenceVersion,
   createVaultReference,
@@ -126,6 +127,7 @@ export function createVaultOperationImplementations(
     | 'turnExecutor'
     | 'vaultUnlockState'
     | 'pendingRequestServices'
+    | 'runtimeConfigManager'
   >
 ) {
   const { coreDb, dataRoot, repositoryWorkspaceDb, vaultUnlockState } = dependencies;
@@ -769,7 +771,7 @@ export function createVaultOperationImplementations(
         vaultReadFailure(error);
       }
     },
-    'vault.unlock': async (input, c) => {
+    'vault.unlock': async (_input, c) => {
       const unlockState = vaultUnlockState;
 
       if (!unlockState) {
@@ -787,12 +789,15 @@ export function createVaultOperationImplementations(
         return vaultFailure('Vault unlock rate limit exceeded.', 'vault_unlock_rate_limited', 429);
       }
 
-      const masterKey = Buffer.from(input.masterKeyBase64, 'base64');
+      let masterKey: Buffer | undefined;
 
       try {
-        unlockState.unlock({
-          masterKey,
-        });
+        const keyFilePath =
+          dependencies.runtimeConfigManager?.current().openKitConfig.vault?.encryptedFile
+            ?.keyFilePath;
+        if (!dataRoot || !keyFilePath) throw new Error('Vault unlock source is unavailable.');
+        masterKey = loadEncryptedFileVaultKeyFile({ dataRoot, keyFilePath });
+        unlockState.unlock({ masterKey });
         clearVaultUnlockFailures(c);
         recordVaultAdminAudit(c, {
           action: 'vault.unlock',
@@ -813,7 +818,7 @@ export function createVaultOperationImplementations(
 
         return vaultFailure('Vault unlock failed.', 'vault_unlock_failed', 400);
       } finally {
-        masterKey.fill(0);
+        masterKey?.fill(0);
       }
     },
     'vault.bootstrap-codex-auth': async (input, c) => {

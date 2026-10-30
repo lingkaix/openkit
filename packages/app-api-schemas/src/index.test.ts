@@ -1850,11 +1850,15 @@ describe('app api schemas', () => {
         diagnostic: 'Vault backend is locked.',
       }).state
     ).toBe('locked');
+    expect(VaultAdminUnlockRequestSchema.parse({})).toEqual({});
     expect(
-      VaultAdminUnlockRequestSchema.parse({
-        masterKeyBase64: Buffer.alloc(32, 7).toString('base64'),
-      }).masterKeyBase64
-    ).toHaveLength(44);
+      VaultAdminUnlockRequestSchema.safeParse({
+        masterKeyBase64: 'request supplied fixture',
+      }).success
+    ).toBe(false);
+    expect(
+      Object.hasOwn(appApiSchemas.OPERATION_DEFINITIONS['vault.unlock'], 'inputSensitivity')
+    ).toBe(false);
     expect(
       VaultAdminBootstrapCodexAuthJsonRequestSchema.parse({
         authJsonBase64: Buffer.from('{"tokens":{}}').toString('base64'),

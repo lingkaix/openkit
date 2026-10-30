@@ -4108,7 +4108,6 @@ describe('createCoreClient', () => {
 
   it('routes vault admin operations through app-owned schemas', async () => {
     const authJsonBase64 = Buffer.from('{"tokens":{"openai":"secret"}}').toString('base64');
-    const masterKeyBase64 = Buffer.alloc(32, 1).toString('base64');
     const { client, requests } = createFakeClient({
       'POST /api/app/operations/vault.status': { body: vaultAdminStatus('locked') },
       'POST /api/app/operations/vault.unlock': { body: vaultAdminStatus('available') },
@@ -4133,9 +4132,7 @@ describe('createCoreClient', () => {
       backendKind: 'encrypted-file',
       state: 'locked',
     });
-    await expect(
-      client.operations['vault.unlock']({ ...{ masterKeyBase64 } })
-    ).resolves.toMatchObject({
+    await expect(client.operations['vault.unlock']({})).resolves.toMatchObject({
       state: 'available',
     });
     await expect(client.operations['vault.lock']({})).resolves.toMatchObject({
@@ -4161,7 +4158,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/vault.bootstrap-codex-auth',
       'POST /api/app/operations/vault.provider-api-key-set',
     ]);
-    expect(requests[1]?.body).toEqual({ masterKeyBase64 });
+    expect(requests[1]?.body).toEqual({});
     expect(requests[3]?.body).toEqual({ authJsonBase64 });
     expect(requests[4]?.body).toEqual({ providerId: 'xai-api', apiKey: 'xai-secret' });
   });

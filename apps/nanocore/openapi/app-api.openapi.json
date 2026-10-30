@@ -28297,15 +28297,7 @@
       "vault.unlock.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {
-          "masterKeyBase64": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "masterKeyBase64"
-        ],
+        "properties": {},
         "additionalProperties": false
       },
       "vault.unlock.output": {
@@ -152807,15 +152799,7 @@
       "VaultAdminUnlockRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {
-          "masterKeyBase64": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "masterKeyBase64"
-        ],
+        "properties": {},
         "additionalProperties": false
       },
       "WorkspaceImportDryRunResponse": {
@@ -153451,5 +153435,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:61af405079bce7babe57723c4a824852903507192f9ae778b108b6b5db71f1b5"
+  "x-openkit-source-digest": "sha256:4ad028eb8b5782ba2cb6cdc4e525258a12a37fb3f3f498c38e9e5d0c0ef5f31a"
 }

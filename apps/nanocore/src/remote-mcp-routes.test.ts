@@ -487,7 +487,7 @@ describe('remote MCP App endpoint', () => {
     readiness = { ...readiness, acceptingProductWork: false };
     try {
       for (const [operation, input] of [
-        ['vault.unlock', { masterKeyBase64: Buffer.alloc(32, 9).toString('base64') }],
+        ['vault.unlock', {}],
         ['vault.lock', {}],
         ['vault.bootstrap-codex-auth', { authJsonBase64: 'e30=' }],
         ['vault.provider-api-key-set', { providerId: 'provider-b6', apiKey: 'synthetic-b6-key' }],

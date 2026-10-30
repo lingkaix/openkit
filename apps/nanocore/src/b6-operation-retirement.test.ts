@@ -7,6 +7,10 @@ import {
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -131,12 +135,7 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
 /** Concrete successful inputs, including request-only synthetic material. */
 const vaultCases = [
   ['vault.status', '/api/app/vault/status', {}, 'GET'],
-  [
-    'vault.unlock',
-    '/api/app/vault/unlock',
-    { masterKeyBase64: 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=' },
-    'POST',
-  ],
+  ['vault.unlock', '/api/app/vault/unlock', {}, 'POST'],
   ['vault.lock', '/api/app/vault/lock', {}, 'POST'],
   [
     'vault.bootstrap-codex-auth',
@@ -335,7 +334,28 @@ describe('B6 binding retirement', () => {
         db.sqlite.close();
       }
     }
-    const app = createApp({ coreDb, dataRoot, store, vaultUnlockState });
+    const keyDirectory =
+      id === 'vault.unlock' ? mkdtempSync(join(tmpdir(), 'openkit-b6-unlock-key-')) : null;
+    if (keyDirectory)
+      writeFileSync(join(keyDirectory, 'key.bin'), Buffer.alloc(32, 9), { mode: 0o600 });
+    const runtimeConfigManager = keyDirectory
+      ? createRuntimeConfigManager({
+          dataRoot,
+          initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+            dataRoot,
+            openKitConfig: {
+              vault: { encryptedFile: { keyFilePath: join(keyDirectory, 'key.bin') } },
+            },
+          }),
+        })
+      : undefined;
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      vaultUnlockState,
+      ...(runtimeConfigManager ? { runtimeConfigManager } : {}),
+    });
     try {
       const response = await app.request(`/api/app/operations/${id}`, {
         method: 'POST',
@@ -373,6 +393,7 @@ describe('B6 binding retirement', () => {
       vaultUnlockState.lock();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
+      if (keyDirectory) rmSync(keyDirectory, { recursive: true, force: true });
     }
   });
 });

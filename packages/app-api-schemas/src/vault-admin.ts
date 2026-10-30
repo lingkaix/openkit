@@ -28,11 +28,7 @@ export const VaultAdminStatusResponseSchema = z
   });
 
 /** Vault admin unlock request payload. */
-export const VaultAdminUnlockRequestSchema = z
-  .object({
-    masterKeyBase64: z.string().min(1),
-  })
-  .strict();
+export const VaultAdminUnlockRequestSchema = z.object({}).strict();
 
 /** Vault admin Codex auth JSON bootstrap request payload. */
 export const VaultAdminBootstrapCodexAuthJsonRequestSchema = z

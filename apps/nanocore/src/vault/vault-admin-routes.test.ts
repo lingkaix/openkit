@@ -13,10 +13,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -24,7 +28,7 @@ import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { initializeTestCore } from '../test-support/store.js';
+import { closeTestCoreDb, initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
 import {
@@ -43,6 +47,17 @@ function createVaultAdminApp() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-routes-'));
   const coreDb = openCoreDb(dataRoot);
   const masterKey = Buffer.alloc(32, 9);
+  const keyDirectory = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-key-'));
+  const keyFilePath = join(keyDirectory, 'key.bin');
+  writeFileSync(keyFilePath, masterKey, { mode: 0o600 });
+  onTestFinished(() => rmSync(keyDirectory, { recursive: true, force: true }));
+  const runtimeConfigManager = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      openKitConfig: { vault: { encryptedFile: { keyFilePath } } },
+    }),
+  });
   const vaultUnlockState = createVaultUnlockState({
     backendKind: 'encrypted-file',
     storeDir: join(dataRoot, 'server', 'vault'),
@@ -57,9 +72,10 @@ function createVaultAdminApp() {
   });
 
   return {
-    app: createApp({ coreDb, dataRoot, vaultUnlockState }),
+    app: createApp({ coreDb, dataRoot, runtimeConfigManager, vaultUnlockState }),
     coreDb,
     dataRoot,
+    keyFilePath,
     masterKey,
     vaultUnlockState,
   };
@@ -1052,9 +1068,56 @@ describe('vault admin app API', () => {
     }
   });
 
+  it('refuses request-supplied unlock material before creating a Vault header', async () => {
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
+    try {
+      const response = await app.request('/api/app/operations/vault.unlock', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+      });
+      expect(response.status).toBe(400);
+      expect(unlockSpy).not.toHaveBeenCalled();
+      expect(vaultUnlockState.backend().health().state).toBe('locked');
+      expect(existsSync(join(dataRoot, 'server', 'vault', 'header.json'))).toBe(false);
+    } finally {
+      closeTestCoreDb(coreDb);
+    }
+  });
+
+  it('keeps an empty Vault locked when the configured key file is missing', async () => {
+    const { app, coreDb, dataRoot, keyFilePath, vaultUnlockState } = createVaultAdminApp();
+    rmSync(keyFilePath);
+    const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
+    try {
+      const response = await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({}),
+          }
+        )
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ code: 'vault_unlock_failed' });
+      expect(unlockSpy).not.toHaveBeenCalled();
+      expect(vaultUnlockState.backend().health().state).toBe('locked');
+      expect(existsSync(join(dataRoot, 'server', 'vault', 'header.json'))).toBe(false);
+    } finally {
+      closeTestCoreDb(coreDb);
+    }
+  });
+
   it('reports, unlocks, and locks the encrypted-file backend without echoing key material', async () => {
-    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
     const masterKeyBase64 = masterKey.toString('base64');
+    vaultUnlockState.unlock({ masterKey });
+    vaultUnlockState.lock();
+    const headerPath = join(dataRoot, 'server', 'vault', 'header.json');
+    const header = readFileSync(headerPath);
     const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
 
     try {
@@ -1072,7 +1135,7 @@ describe('vault admin app API', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ masterKeyBase64 }),
+            body: JSON.stringify({}),
           }
         )
       );
@@ -1083,6 +1146,7 @@ describe('vault admin app API', () => {
         state: 'available',
       });
       expect(JSON.stringify(unlockBody)).not.toContain(masterKeyBase64);
+      expect(readFileSync(headerPath).equals(header)).toBe(true);
       expect(unlockSpy).toHaveBeenCalledOnce();
       expect(unlockSpy.mock.calls[0]?.[0].masterKey).toEqual(Buffer.alloc(32));
 
@@ -1104,9 +1168,17 @@ describe('vault admin app API', () => {
     }
   });
 
-  it('rejects invalid unlock keys without exposing submitted material', async () => {
-    const { app, coreDb, vaultUnlockState } = createVaultAdminApp();
-    const badKey = Buffer.alloc(4, 1).toString('base64');
+  it('rejects a wrong configured key without rewriting the retained header or exposing material', async () => {
+    const { app, coreDb, dataRoot, keyFilePath, masterKey, vaultUnlockState } =
+      createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    vaultUnlockState.lock();
+    const headerPath = join(dataRoot, 'server', 'vault', 'header.json');
+    const header = readFileSync(headerPath);
+    const badMaterial = Buffer.alloc(32, 1);
+    const badKey = badMaterial.toString('base64');
+    writeFileSync(keyFilePath, badMaterial);
+    badMaterial.fill(0);
     const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
 
     try {
@@ -1117,7 +1189,7 @@ describe('vault admin app API', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ masterKeyBase64: badKey }),
+            body: JSON.stringify({}),
           }
         )
       );
@@ -1130,8 +1202,10 @@ describe('vault admin app API', () => {
         code: 'vault_unlock_failed',
       });
       expect(JSON.stringify(body)).not.toContain(badKey);
+      expect(vaultUnlockState.backend().health().state).toBe('locked');
+      expect(readFileSync(headerPath).equals(header)).toBe(true);
       expect(unlockSpy).toHaveBeenCalledOnce();
-      expect(unlockSpy.mock.calls[0]?.[0].masterKey).toEqual(Buffer.alloc(4));
+      expect(unlockSpy.mock.calls[0]?.[0].masterKey).toEqual(Buffer.alloc(32));
       expect(row).toMatchObject({
         action: 'vault.unlock',
         error_code: 'vault_unlock_failed',
@@ -1155,8 +1229,11 @@ describe('vault admin app API', () => {
   });
 
   it('rate-limits repeated failed unlock attempts and audits the denial', async () => {
-    const { app, coreDb } = createVaultAdminApp();
-    const badKey = Buffer.alloc(4, 2).toString('base64');
+    const { app, coreDb, keyFilePath } = createVaultAdminApp();
+    const badMaterial = Buffer.alloc(4, 2);
+    const badKey = badMaterial.toString('base64');
+    writeFileSync(keyFilePath, badMaterial);
+    badMaterial.fill(0);
 
     try {
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -1167,7 +1244,7 @@ describe('vault admin app API', () => {
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ masterKeyBase64: badKey }),
+              body: JSON.stringify({}),
             }
           )
         );
@@ -1182,7 +1259,7 @@ describe('vault admin app API', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ masterKeyBase64: badKey }),
+            body: JSON.stringify({}),
           }
         )
       );
@@ -1205,7 +1282,7 @@ describe('vault admin app API', () => {
   });
 
   it('bootstraps Codex auth JSON into the unlocked vault without echoing secret material', async () => {
-    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, vaultUnlockState } = createVaultAdminApp();
     const authJson = '{"tokens":{"openai":"codex_bootstrap_secret"}}';
     const authJsonBase64 = Buffer.from(authJson, 'utf8').toString('base64');
 
@@ -1217,7 +1294,7 @@ describe('vault admin app API', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+            body: JSON.stringify({}),
           }
         )
       );
@@ -1306,7 +1383,7 @@ describe('vault admin app API', () => {
   });
 
   it('rebinds imported workspace vault references without echoing secret material', async () => {
-    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, vaultUnlockState } = createVaultAdminApp();
     const material = 'workspace-rebound-secret';
     const materialBase64 = Buffer.from(material, 'utf8').toString('base64');
 
@@ -1325,7 +1402,7 @@ describe('vault admin app API', () => {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+            body: JSON.stringify({}),
           }
         )
       );
@@ -1377,7 +1454,7 @@ describe('vault admin app API', () => {
   });
 
   it('denies a foreign vault reference but preserves a missing reference result', async () => {
-    const { app, coreDb, masterKey } = createVaultAdminApp();
+    const { app, coreDb } = createVaultAdminApp();
     const materialBase64 = Buffer.from('foreign-workspace-secret', 'utf8').toString('base64');
 
     try {
@@ -1393,7 +1470,7 @@ describe('vault admin app API', () => {
           'vault.unlock',
           {},
           {
-            body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+            body: JSON.stringify({}),
             headers: { 'content-type': 'application/json' },
             method: 'POST',
           }
@@ -1521,7 +1598,7 @@ describe('vault admin app API', () => {
             {},
             {
               method: 'POST',
-              body: JSON.stringify({ masterKeyBase64: Buffer.alloc(32, 9).toString('base64') }),
+              body: JSON.stringify({}),
             }
           )
         ),
