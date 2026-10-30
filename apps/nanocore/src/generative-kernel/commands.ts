@@ -401,7 +401,11 @@ export async function updateLightAppSchema(
           context,
           'kernel.schema.update',
           `light-app:${appId}`,
-          admitted.schemaRevision
+          admitted.schemaRevision,
+          {
+            schemaRevision: admitted.schemaRevision,
+            collectionIds: admitted.collections.map((collection) => collection.id),
+          }
         );
         return projectApp(appDb);
       },
@@ -482,7 +486,8 @@ export async function upgradeLightAppFormat(
           context,
           'kernel.format.upgrade',
           `light-app:${appId}`,
-          expectedAppRevision + 1
+          expectedAppRevision + 1,
+          { schemaRevision: metadata.schemaRevision }
         );
         return projectApp(appDb);
       },
@@ -583,7 +588,8 @@ export async function rollbackLightAppSnapshot(
           context,
           'kernel.snapshots.rollback',
           `light-app:${appId}`,
-          expectedAppRevision + 1
+          expectedAppRevision + 1,
+          { schemaRevision: selected.metadata.schemaRevision }
         );
         return projectRestoredApp(candidateDb);
       },
@@ -720,7 +726,8 @@ export async function retireLightApp(
           context,
           'kernel.apps.retire',
           `light-app:${appId}`,
-          metadata.appRevision + 1
+          metadata.appRevision + 1,
+          { schemaRevision: metadata.schemaRevision }
         );
         return projectApp(appDb);
       },
@@ -867,14 +874,16 @@ export async function createRecord(
           context.actor,
           context.requestId
         );
+        const record = readProjectedRecord(appDb, collection, schema.schemaRevision, recordId);
         recordKernelAudit(
           appDb,
           context,
           'kernel.records.create',
           `light-app:${appId}:record:${recordId}`,
-          1
+          1,
+          { schemaRevision: schema.schemaRevision, records: [record] }
         );
-        return readProjectedRecord(appDb, collection, schema.schemaRevision, recordId);
+        return record;
       },
       replay: () => replayNamedRecord(appDb, recordId),
       responseId: (result) => result.id,
@@ -1105,19 +1114,9 @@ function commitNewApp(
       context.requestId,
       context.requestId
     );
-  recordAppAuditEvent({
-    sqlite: appDb.sqlite,
-    workspaceId: appDb.workspaceId,
-    actor: context.actor,
-    requestId: context.requestId,
-    threadId: context.execution?.threadId ?? null,
-    turnId: context.execution?.turnId ?? null,
-    category: 'system',
-    action: 'kernel.apps.create',
-    resource: `light-app:${input.admitted.appId}`,
-    resourceRevision: 1,
-    outcome: 'succeeded',
-    summary: 'Created Light App.',
+  recordKernelAudit(appDb, context, 'kernel.apps.create', `light-app:${input.admitted.appId}`, 1, {
+    schemaRevision: input.admitted.schemaRevision,
+    collectionIds: input.admitted.collections.map((collection) => collection.id),
   });
   return projectApp(appDb);
 }
@@ -1182,17 +1181,16 @@ function executeBatch(
     );
     resultIds.push(entry.recordId);
   });
+  const items = resultIds.map((recordId) => replayNamedRecord(appDb, recordId));
   recordKernelAudit(
     appDb,
     context,
     'kernel.records.batch',
     `light-app:${appDb.appId}`,
-    schema.schemaRevision
+    schema.schemaRevision,
+    { schemaRevision: schema.schemaRevision, records: items }
   );
-  return {
-    app: catalogItemFromMetadata(readMetadata(appDb)),
-    items: resultIds.map((recordId) => replayNamedRecord(appDb, recordId)),
-  };
+  return { app: catalogItemFromMetadata(readMetadata(appDb)), items };
 }
 
 /**
@@ -1374,6 +1372,12 @@ function applyRecordUpdate(
       'kernel.records.update',
       `light-app:${appDb.appId}:record:${recordId}`,
       Number(current.revision) + 1,
+      {
+        schemaRevision: schema.schemaRevision,
+        records: [
+          { id: recordId, collectionId: collection.id, revision: Number(current.revision) + 1 },
+        ],
+      },
       lineage?.itemId
     );
   }
@@ -2072,6 +2076,7 @@ function persistDefinition(appRoot: string, schemaJson: string): string {
  * @param action Audit action.
  * @param resource Resource reference.
  * @param resourceRevision Resource revision.
+ * @param evidence Admitted identities and revisions, without business values.
  * @param itemId Optional presentation Item, separate from the executing Turn.
  */
 function recordKernelAudit(
@@ -2080,8 +2085,23 @@ function recordKernelAudit(
   action: string,
   resource: string,
   resourceRevision: number,
+  evidence: {
+    schemaRevision: number;
+    collectionIds?: readonly string[];
+    records?: readonly Pick<LightAppRecord, 'id' | 'collectionId' | 'revision'>[];
+  },
   itemId?: string
 ): void {
+  // Human evidence uses the existing summary, not a new retained payload format.
+  // Existing admission bounds collections to 16 and affected batch records to 50.
+  const facts = [`Schema revision ${evidence.schemaRevision}`];
+  if (evidence.collectionIds?.length)
+    facts.push(`collections ${evidence.collectionIds.join(', ')}`);
+  for (const record of evidence.records ?? []) {
+    facts.push(
+      `collection ${record.collectionId}, record ${record.id}, record revision ${record.revision}`
+    );
+  }
   recordAppAuditEvent({
     sqlite: appDb.sqlite,
     workspaceId: appDb.workspaceId,
@@ -2095,7 +2115,7 @@ function recordKernelAudit(
     resource,
     resourceRevision,
     outcome: 'succeeded',
-    summary: action,
+    summary: `${action}. ${facts.join('; ')}.`,
   });
 }
 

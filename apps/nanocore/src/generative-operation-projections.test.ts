@@ -345,6 +345,94 @@ it('keeps native revisions, replay and atomic batch outcomes through the typed c
   }
 });
 
+it('names the affected records in mixed-batch audit evidence without duplicating replay effects', async () => {
+  const f = await fixture();
+  const { createCoreClient } = await import('../../../packages/core-client/src/index.js');
+  const client = createCoreClient({
+    baseUrl: 'http://nanocore.test',
+    fetch: createLoopbackAppFetch(f.app),
+  });
+  try {
+    const created = await client.operations['kernel.apps.create']({
+      ...schema,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId: randomUUID(),
+    } as never);
+    const scope = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', appId: created.appId };
+    const selectors = { ...scope, collection: 'entries', schemaRevision: 1 };
+    const record = await client.operations['kernel.records.create']({
+      ...selectors,
+      data: { note: '514 private initial value' },
+    });
+    await client.operations['kernel.records.update']({
+      ...selectors,
+      recordId: record.id,
+      expectedRecordRevision: 1,
+      data: { note: '514 private updated value' },
+    });
+    const batch = {
+      ...scope,
+      requestId: randomUUID(),
+      schemaRevision: 1,
+      requests: [
+        {
+          method: 'POST' as const,
+          url: '/api/collections/entries/records',
+          body: { data: { note: '514 private created value' } },
+        },
+        {
+          method: 'PATCH' as const,
+          url: `/api/collections/entries/records/${record.id}`,
+          body: { expectedRecordRevision: 2, data: { note: '514 private batch value' } },
+        },
+      ],
+    };
+    const result = await client.operations['kernel.records.batch'](batch);
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toMatchObject({
+      revision: 1,
+      data: { note: '514 private created value' },
+    });
+    expect(result.items[1]).toMatchObject({
+      id: record.id,
+      revision: 3,
+      data: { note: '514 private batch value' },
+    });
+    const appDb = openExistingAppDb(f.store.getDataRoot()!, scope.workspaceId, scope.appId);
+    try {
+      const beforeReplay = listSqliteAuditEvents(appDb.sqlite);
+      const events = beforeReplay.filter((audit) => audit.action === 'kernel.records.batch');
+      expect(events).toHaveLength(1);
+      const audit = events[0]!;
+      expect(audit).toMatchObject({
+        resource: `light-app:${created.appId}`,
+        resourceRevision: 1,
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        requestId: batch.requestId,
+        threadId: null,
+        turnId: null,
+        itemId: null,
+        capabilityCallId: null,
+        outcome: 'succeeded',
+      });
+      // Audit owner155 permits direct stable IDs; no summary wording or encoding is specified.
+      // Record/schema revision association also requires independent review of the actual summary.
+      expect.soft(audit.summary).toContain(created.schema!.collections[0]!.id);
+      for (const item of result.items) expect.soft(audit.summary).toContain(item.id);
+      expect(audit.summary).not.toContain('514 private');
+      expect(await client.operations['kernel.records.batch'](batch)).toEqual(result);
+      expect(listSqliteAuditEvents(appDb.sqlite)).toEqual(beforeReplay);
+      const listed = await client.operations['kernel.records.list'](selectors);
+      expect(listed.items).toHaveLength(2);
+      expect(listed.items.find((item) => item.id === record.id)).toEqual(result.items[1]);
+    } finally {
+      appDb.sqlite.close();
+    }
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});
+
 it('preserves publication, JSON resources, refresh and conditional action receipts across HTTP and remote MCP', async () => {
   let acceptingProductWork = true;
   const f = await fixture(() => ({
