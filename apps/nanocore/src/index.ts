@@ -108,7 +108,10 @@ import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import {
   type CoreDb,
   isFreshCoreInitializationScope,
@@ -168,6 +171,7 @@ const workspaceMutationAdmission = new WorkspaceMutationAdmission();
 let readFileReserveBytes = () =>
   runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
 const fileAdmission = new FileStorageAdmission(dataRoot, () => BigInt(readFileReserveBytes()));
+getControlStoreWorkerClient().setFileStorageAdmission(dataRoot, fileAdmission);
 const nanoHostSessionDispatch = createNanoHostSessionDispatch({
   fileAdmission,
   get coreDb() {

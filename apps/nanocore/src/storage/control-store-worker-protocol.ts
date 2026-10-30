@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { GoalViewSchema } from '@openkit/app-api-schemas';
-import { ItemSchema } from '@openkit/protocol';
+import { ItemSchema, SseEventEnvelopeSchema } from '@openkit/protocol';
 import {
   type ControlReviewCommandInput,
   ControlReviewCommandInputSchema,
@@ -57,6 +57,9 @@ import {
 } from './control-store-pending.js';
 import {
   CONTROL_PRODUCT_LIMITS,
+  type ControlEventAppend,
+  type ControlEventAppendResult,
+  ControlEventAppendSchema,
   type ControlItemAppend,
   ControlItemAppendSchema,
   type ControlProductContentMount,
@@ -80,7 +83,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 15;
+export const CONTROL_WORKER_VERSION = 16;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -159,6 +162,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | { readonly operation: 'item'; readonly input: ControlItemAppend }
+      | { readonly operation: 'event'; readonly input: ControlEventAppend }
       | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
@@ -269,6 +273,7 @@ export const CONTROL_WORKER_FAILURE_CODES = [
   'precondition',
   'constraint',
   'sql-failed',
+  'no-space',
   'unavailable',
   'commit-unknown',
   'migration_missing',
@@ -290,7 +295,8 @@ export interface ControlWorkerDomainRefusal {
     | 'pending'
     | 'products'
     | 'transition'
-    | 'item';
+    | 'item'
+    | 'event';
   readonly code: string;
   readonly message: string;
   readonly status: number;
@@ -316,6 +322,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'item';
       readonly result: ControlItemAppend['item'];
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'event';
+      readonly result: ControlEventAppendResult;
     }
   | {
       readonly status: 'ok';
@@ -441,7 +452,9 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'goal' || value.operation === 'capability') &&
         value.message === 'Unsupported retained record format.' &&
         value.status === 409)) &&
-    ((value.operation === 'item' && value.code === 'conflict' && value.status === 409) ||
+    (((value.operation === 'item' || value.operation === 'event') &&
+      value.code === 'conflict' &&
+      value.status === 409) ||
       value.operation === 'goal' ||
       value.operation === 'capability' ||
       value.operation === 'pending' ||
@@ -499,6 +512,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   }
   if (reply.status !== 'ok') return false;
+  if (reply.operation === 'event') return SseEventEnvelopeSchema.safeParse(reply.result).success;
   if (reply.operation === 'item') return ItemSchema.safeParse(reply.result).success;
   if (
     reply.operation === 'open' ||
@@ -715,6 +729,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'event')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlEventAppendSchema.safeParse(value.input).success
+    );
   if (value.operation === 'item')
     return (
       exactFields(value, [...scoped, 'input']) &&

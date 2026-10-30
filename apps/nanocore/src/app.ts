@@ -250,6 +250,7 @@ import {
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -991,6 +992,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     new FileStorageAdmission(dataRoot ?? '.', () =>
       BigInt(runtimeConfig().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000)
     );
+  if (dataRoot) getControlStoreWorkerClient().setFileStorageAdmission(dataRoot, fileAdmission);
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
     createNanoHostSessionDispatch({

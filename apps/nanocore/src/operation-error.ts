@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type { PiAiFailure } from './llm/pi-ai-failure.js';
+import { ControlStoreNoSpaceError } from './storage/control-store.js';
 import type { ControlCapabilityAdmissionFailure } from './storage/control-store-capability.js';
 import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
 
@@ -34,15 +35,27 @@ export function projectOperationError(error: unknown) {
   const storageBusy =
     (error instanceof ControlStoreWorkerError && error.code === 'busy') ||
     (error instanceof Database.SqliteError && /^(SQLITE_BUSY|SQLITE_LOCKED)(_|$)/.test(error.code));
+  const noSpace =
+    error instanceof ControlStoreNoSpaceError ||
+    (error instanceof ControlStoreWorkerError &&
+      error.code === 'no-space' &&
+      error.commit === 'not-committed');
   // A lock refusal does not establish rollback across COMMIT or the worker reply gap.
-  const failure = storageBusy
+  const failure = noSpace
     ? new OperationError(
-        'operation_storage_unavailable',
-        'Storage is busy. Inspect the original request outcome before retrying.',
-        503,
+        'operation_storage_no_space',
+        'Storage capacity is unavailable. Free storage space before submitting new work.',
+        507,
         { cause: error }
       )
-    : error;
+    : storageBusy
+      ? new OperationError(
+          'operation_storage_unavailable',
+          'Storage is busy. Inspect the original request outcome before retrying.',
+          503,
+          { cause: error }
+        )
+      : error;
   if (!(failure instanceof OperationError)) return undefined;
   return {
     code: failure.code,

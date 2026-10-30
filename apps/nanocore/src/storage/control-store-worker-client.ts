@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
@@ -38,7 +38,12 @@ import {
   prepareControlMaterialTransfer,
 } from '../workspace-materials.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import type { ControlCheckpoint } from './control-store.js';
+import {
+  FileAdmissionError,
+  FileStorageAdmission,
+  type FileStorageReservation,
+} from './artifacts/file-admission.js';
+import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import {
   type ControlCapabilityCommandInput,
@@ -49,7 +54,11 @@ import {
 } from './control-store-capability.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import {
+  type ControlEventAppend,
+  type ControlEventAppendResult,
+  ControlEventAppendSchema,
   type ControlItemAppend,
+  type ControlProductEntry,
   type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalResult,
@@ -113,6 +122,8 @@ interface WriterHost {
   materialBytes: number;
   inputBytes: number;
   pending: number;
+  /** Disk forecasts survive failed transport until the worker actually exits. */
+  readonly capacity: Set<FileStorageReservation>;
 }
 
 /** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
@@ -160,6 +171,7 @@ interface Pending {
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly inputBytes: number;
+  readonly capacity: readonly FileStorageReservation[];
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
@@ -173,6 +185,83 @@ interface ControlPublicationIdentity {
   readonly dataRoot: string;
   readonly workspaceId: string;
   readonly turnId: string;
+}
+
+/** Recognizes current decision Items and bounded terminal control projections. */
+function isControlCapacityItem(item: ControlItemAppend['item']): boolean {
+  return (
+    item.type === 'approval-decision' ||
+    item.type === 'user-input-response' ||
+    (item.type === 'tool-call' && item.status !== 'in_progress') ||
+    (item.type === 'status' && item.status !== 'in_progress')
+  );
+}
+
+/** Only existing decision and terminal intents may consume the protected physical margin. */
+function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
+  switch (command.operation) {
+    case 'open':
+      // Existing scopes must reopen for recovery and control closeout below the ordinary watermark.
+      return !command.create;
+    case 'terminal':
+    case 'project-cleanup':
+      return true;
+    case 'item':
+      return isControlCapacityItem(command.input.item);
+    case 'event': {
+      const data = command.input.event.data;
+      return (
+        data.type === 'turn-completed' ||
+        data.type === 'approval-resolved' ||
+        (data.type === 'turn-updated' &&
+          data.turn.status !== 'pending' &&
+          data.turn.status !== 'running') ||
+        ((data.type === 'item-created' || data.type === 'item-completed') &&
+          isControlCapacityItem(data.item))
+      );
+    }
+    case 'publication':
+      return command.input.category === 'already-decided-publication';
+    case 'pending':
+      return (
+        command.input.admission === undefined &&
+        [
+          'deny',
+          'answer',
+          'withdraw',
+          'invalidate',
+          'grant-command',
+          'claim',
+          'claim-command',
+          'refuse-command',
+          'finish',
+          'settle-unfinished',
+          'delivery-prove',
+          'delivery-release',
+          'delivery-unknown',
+          'freeze',
+          'closeout',
+          'associate-invalidation',
+        ].includes(command.input.input.action)
+      );
+    case 'capability':
+      return ['permission', 'usage-finish', 'finish', 'raw-settle', 'raw-invalidate'].includes(
+        command.input.kind
+      );
+    case 'review':
+      return ['judgement', 'select', 'decide', 'decision-receipt'].includes(command.input.mode);
+    case 'goal':
+      return [
+        'goal.card.cancel',
+        'goal.plan.approve',
+        'goal.cancel',
+        'goal.completion.accept',
+      ].includes(command.input.command.operation);
+    case 'journal':
+      return command.input.kind === 'settle';
+    default:
+      return false;
+  }
 }
 
 let singleton: ControlStoreWorkerClient | undefined;
@@ -203,7 +292,14 @@ export async function shutdownControlStoreWorkerClient(): Promise<void> {
 class ControlStoreWorkerClient {
   private readonly hosts: WriterHost[] = Array.from(
     { length: CONTROL_WORKER_LIMITS.workspaceWorkers + 1 },
-    () => ({ worker: undefined, failed: false, materialBytes: 0, inputBytes: 0, pending: 0 })
+    () => ({
+      worker: undefined,
+      failed: false,
+      materialBytes: 0,
+      inputBytes: 0,
+      pending: 0,
+      capacity: new Set(),
+    })
   );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
   private readonly turnTails = new Map<string, { tail: Promise<unknown>; pending: number }>();
@@ -226,6 +322,95 @@ class ControlStoreWorkerClient {
   private readonly databaseHolds = new Map<string, PostingHold>();
   /** The application's one gate survives cold scope close/open for this native client lifetime. */
   private workspaceMutationAdmission: WorkspaceMutationAdmission | undefined;
+  private readonly fileAdmissions = new Map<string, FileStorageAdmission>();
+
+  /** Binds the existing live file policy before native admission, including cold scope opens. */
+  setFileStorageAdmission(dataRoot: string, admission: FileStorageAdmission): void {
+    this.fileAdmissions.set(resolve(dataRoot), admission);
+  }
+
+  /** Holds actual filesystem capacity for native staging and its conservative bounded WAL growth. */
+  private reserveCapacity(
+    command: ControlWorkerCommand,
+    opening: Opening | undefined,
+    inputBytes: number,
+    materialBytes: number,
+    creditedCloseout: boolean
+  ): readonly FileStorageReservation[] {
+    if (['shutdown', 'close', 'checkpoint', 'reclaim'].includes(command.operation)) return [];
+    const path = command.operation === 'open' ? command.path : opening?.path;
+    if (!path) return [];
+    const root =
+      command.operation === 'open'
+        ? (command.dataRoot ?? dirname(path))
+        : (opening?.command.dataRoot ?? dirname(path));
+    let admission = this.fileAdmissions.get(resolve(root));
+    if (!admission) {
+      admission = new FileStorageAdmission(root, () => 1_000_000_000n);
+      this.fileAdmissions.set(resolve(root), admission);
+    }
+    const entries: ControlProductEntry[] = [];
+    switch (command.operation) {
+      case 'products':
+      case 'transition':
+        entries.push(...command.transition.entries);
+        break;
+      case 'publication':
+      case 'terminal':
+        entries.push(...command.input.entries);
+        break;
+      case 'pending':
+        entries.push(
+          ...command.input.entries,
+          ...(command.input.terminal?.entries ?? []),
+          ...(command.input.admission?.entries ?? [])
+        );
+        break;
+      case 'goal':
+        entries.push(...(command.input.pendingAdmission?.entries ?? []));
+        if (command.input.pendingItem) entries.push(command.input.pendingItem.entry);
+        break;
+      case 'review':
+        if (command.input.mode === 'submit') entries.push(...command.input.transition.entries);
+        break;
+    }
+    const stagingBytes = entries.reduce((sum, entry) => sum + BigInt(entry.content.byteLength), 0n);
+    const priority = creditedCloseout || isControlCapacityCommand(command) ? 'control' : 'ordinary';
+    const reservations: FileStorageReservation[] = [];
+    try {
+      reservations.push(
+        admission.forPath(path).reserve(
+          {
+            stagingBytes: 0n,
+            extractionBytes: 0n,
+            derivativeBytes: 0n,
+            publicationBytes: BigInt(CONTROL_STORE_BUDGET.maxWalBytes),
+          },
+          priority
+        )
+      );
+      const contentRoot =
+        command.operation === 'open'
+          ? command.contentMount?.root
+          : opening?.command.contentMount?.root;
+      // Content may be a separate mount. Same-device forecasts still join the same pool.
+      reservations.push(
+        admission.forPath(contentRoot ?? path).reserve(
+          {
+            stagingBytes: stagingBytes + BigInt(inputBytes) + BigInt(materialBytes),
+            extractionBytes: 0n,
+            derivativeBytes: 0n,
+            publicationBytes: 0n,
+          },
+          priority
+        )
+      );
+      return reservations;
+    } catch (error) {
+      for (const reservation of reservations) reservation.release();
+      throw error;
+    }
+  }
 
   /** Starts the native host on first command; retaining a shutdown owner alone needs no thread. */
   private startWorker(host: WriterHost): Worker {
@@ -260,6 +445,8 @@ class ControlStoreWorkerClient {
       host.inputBytes = 0;
       this.materialBytes -= host.materialBytes;
       host.materialBytes = 0;
+      for (const reservation of host.capacity) reservation.release();
+      host.capacity.clear();
     });
     host.worker.unref();
     return host.worker;
@@ -568,6 +755,29 @@ class ControlStoreWorkerClient {
         error instanceof ControlStoreWorkerError &&
         error.commit === 'not-committed' &&
         error.domain?.operation === 'item'
+      )
+        throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Publishes one event intent after native sequence allocation and its covering FULL commit. */
+  async appendEvent(
+    database: string,
+    input: ControlEventAppend
+  ): Promise<ControlEventAppendResult> {
+    try {
+      const reply = await this.request({
+        operation: 'event',
+        database,
+        input: ControlEventAppendSchema.parse(input),
+      });
+      return (reply as Extract<Success, { operation: 'event' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'event'
       )
         throw new Error(error.domain.message);
       throw error;
@@ -1043,7 +1253,11 @@ class ControlStoreWorkerClient {
         } finally {
           closeWorkspaceProductReadHandles();
         }
-        for (const host of this.hosts) this.fail(host);
+        for (const host of this.hosts) {
+          this.fail(host);
+          for (const reservation of host.capacity) reservation.release();
+          host.capacity.clear();
+        }
         this.materialBytes = 0;
         this.inputBytes = 0;
         this.closed = true;
@@ -1188,10 +1402,27 @@ class ControlStoreWorkerClient {
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       }
     }
+    let capacity: readonly FileStorageReservation[];
+    try {
+      capacity = this.reserveCapacity(
+        command,
+        opening,
+        inputBytes,
+        materialBytes,
+        closeout !== undefined || !!creditedPublication
+      );
+    } catch (error) {
+      return Promise.reject(
+        error instanceof FileAdmissionError
+          ? new ControlStoreWorkerError('no-space', 'not-committed')
+          : error
+      );
+    }
     let worker: Worker;
     try {
       worker = this.startWorker(host);
     } catch {
+      for (const reservation of capacity) reservation.release();
       this.fail(host);
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
@@ -1202,6 +1433,7 @@ class ControlStoreWorkerClient {
       this.materialBytes += materialBytes;
       host.materialBytes += materialBytes;
       host.pending += 1;
+      for (const reservation of capacity) host.capacity.add(reservation);
       if (closeout) closeout.borrowing = true;
       const entry: Pending = {
         counted: !borrowed,
@@ -1212,6 +1444,7 @@ class ControlStoreWorkerClient {
         ready: ready === undefined,
         materialBytes,
         inputBytes,
+        capacity,
         closeout,
         resolve,
         reject,
@@ -1362,6 +1595,10 @@ class ControlStoreWorkerClient {
       entry.host.inputBytes -= releasedInputBytes;
       this.materialBytes -= entry.materialBytes;
       entry.host.materialBytes -= entry.materialBytes;
+      for (const reservation of entry.capacity) {
+        reservation.release();
+        entry.host.capacity.delete(reservation);
+      }
     }
     entry.host.pending -= 1;
     if (entry.counted && 'database' in entry.command)

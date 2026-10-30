@@ -28,6 +28,24 @@ export class ControlStoreBusyError extends Error {
   }
 }
 
+/** A physical-capacity refusal with proved rollback; the original failure remains private. */
+export class ControlStoreNoSpaceError extends Error {
+  /** Only the owning transaction can establish this definite non-commit classification. */
+  constructor(cause: unknown) {
+    super('Control database storage capacity is unavailable.', { cause });
+    this.name = 'ControlStoreNoSpaceError';
+  }
+}
+
+/** Recognizes only actual filesystem or SQLite capacity failures, without causal inference. */
+function isNoSpace(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error.code === 'ENOSPC' || error.code === 'SQLITE_FULL')
+  );
+}
+
 /** Current physical WAL size and conservative age since its last complete checkpoint. */
 export interface ControlStorePressure {
   readonly walBytes: number;
@@ -159,16 +177,27 @@ class ControlStore {
       throw new ControlStoreBusyError();
     }
     this.active = true;
+    let committing = false;
     try {
       this.sqlite.exec('BEGIN IMMEDIATE');
       const result = apply(this.sqlite);
       this.assertSynchronous(result);
       // COMMIT can apply even when acknowledgement fails; retain conservative age first.
       this.uncheckpointedSince ??= performance.now();
+      committing = true;
       this.sqlite.exec('COMMIT');
       return result;
     } catch (error) {
-      if (this.sqlite.inTransaction) this.sqlite.exec('ROLLBACK');
+      let rolledBack = !committing && !this.sqlite.inTransaction;
+      if (this.sqlite.inTransaction) {
+        try {
+          this.sqlite.exec('ROLLBACK');
+          rolledBack = !this.sqlite.inTransaction;
+        } catch {
+          // Cleanup cannot replace the primary failure or establish non-commit.
+        }
+      }
+      if (isNoSpace(error) && rolledBack) throw new ControlStoreNoSpaceError(error);
       throw error;
     } finally {
       this.active = false;

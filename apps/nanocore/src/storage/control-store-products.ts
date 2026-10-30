@@ -9,9 +9,12 @@ import {
   ContentReferenceSchema,
   ItemSchema,
   KnowledgeBaseIdSchema,
+  PROTOCOL_VERSION,
   RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
+  SseEventEnvelopeSchema,
+  WorkOwnerSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { StorageContent } from '@openkit/storage';
@@ -1214,6 +1217,83 @@ export function checkControlItemAppend(
   return false;
 }
 
+/** Verifies the existing Item revision log before a sealed replay can use its history. */
+async function readControlItemHistory(
+  db: WorkspaceDb,
+  mount: ControlProductContentMount | undefined,
+  turn: z.infer<typeof StoredTurnV1Schema>,
+  rows: {
+    id: string;
+    turn_id: string;
+    sequence: number;
+    revision: number;
+    schema_version: number;
+    content_json: string;
+  }[],
+  fullHistory: boolean
+) {
+  const owner: ControlProductOwner = { kind: 'workspace', workspaceId: db.workspaceId };
+  const items = new Map<string, z.infer<typeof ItemSchema>>();
+  const revisions = new Map<string, number>();
+  let previousSequence = 0;
+  for (const row of rows) {
+    if (row.schema_version !== 1 || (fullHistory && row.sequence !== previousSequence + 1))
+      throw new ControlProductPreconditionError();
+    previousSequence = row.sequence;
+    const [entry] = await prepareRetainedControlEntries(db, mount, [
+      {
+        kind: 'item',
+        turnId: row.turn_id,
+        sequence: row.sequence,
+        expectedRevision: row.revision - 1,
+        content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+      },
+    ]);
+    if (!entry) throw new ControlProductPreconditionError();
+    const { schemaVersion: _version, ...raw } = preparedOriginals.get(entry) as Record<
+      string,
+      unknown
+    >;
+    if (
+      raw.requiredFeatures !== undefined &&
+      (!Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
+    )
+      throw new ControlProductPreconditionError();
+    const parsed = StoredItemPayloadV1Schema.parse(raw);
+    if (
+      parsed.turnId !== turn.id ||
+      parsed.threadId !== turn.threadId ||
+      parsed.id !== row.id ||
+      entry.id !== row.id ||
+      (fullHistory && row.revision !== (revisions.get(row.id) ?? 0) + 1) ||
+      !isDeepStrictEqual(parsed.owner, owner)
+    )
+      throw new ControlProductPreconditionError();
+    const preceding = items.get(row.id);
+    if (preceding && (preceding.type !== parsed.type || preceding.createdAt !== parsed.createdAt))
+      throw new ControlProductPreconditionError();
+    if (preceding) assertImmutableItemAttribution(preceding, parsed);
+    if (
+      fullHistory &&
+      parsed.type === 'user-input-request' &&
+      parsed.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
+    )
+      throw new ControlProductPreconditionError();
+    if (fullHistory && parsed.type === 'user-input-response') {
+      const request = [...items.values()].find(
+        (value) =>
+          value.type === 'user-input-request' &&
+          value.userInputRequestId === parsed.userInputRequestId
+      );
+      if (request?.type === 'user-input-request' && request.responsibleUserId !== parsed.actor.id)
+        throw new ControlProductPreconditionError();
+    }
+    items.set(row.id, preserveDescriptiveRecord(raw, parsed, parsed) as z.infer<typeof ItemSchema>);
+    revisions.set(row.id, row.revision);
+  }
+  return [...items.values()];
+}
+
 /** Resolves current native heads and original Item bytes before preparation, without a Main read round trip. */
 export async function prepareControlItemAppend(
   db: WorkspaceDb,
@@ -1254,66 +1334,13 @@ export async function prepareControlItemAppend(
       : prior
         ? [prior]
         : [];
-  const items = new Map<string, z.infer<typeof ItemSchema>>();
-  const revisions = new Map<string, number>();
-  const fullHistory = item.type === 'user-input-response' || (sealed && prior !== undefined);
-  let previousSequence = 0;
-  for (const row of rows) {
-    if (row.schema_version !== 1 || (fullHistory && row.sequence !== previousSequence + 1))
-      throw new ControlProductPreconditionError();
-    previousSequence = row.sequence;
-    const [entry] = await prepareRetainedControlEntries(db, mount, [
-      {
-        kind: 'item',
-        turnId: row.turn_id,
-        sequence: row.sequence,
-        expectedRevision: row.revision - 1,
-        content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
-      },
-    ]);
-    if (!entry) throw new ControlProductPreconditionError();
-    const { schemaVersion: _version, ...raw } = preparedOriginals.get(entry) as Record<
-      string,
-      unknown
-    >;
-    if (
-      raw.requiredFeatures !== undefined &&
-      (!Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
-    )
-      throw new ControlProductPreconditionError();
-    const parsed = StoredItemPayloadV1Schema.parse(raw);
-    if (
-      parsed.turnId !== item.turnId ||
-      parsed.threadId !== item.threadId ||
-      parsed.id !== row.id ||
-      entry.id !== row.id ||
-      (fullHistory && row.revision !== (revisions.get(row.id) ?? 0) + 1) ||
-      !isDeepStrictEqual(parsed.owner, owner)
-    )
-      throw new ControlProductPreconditionError();
-    const preceding = items.get(row.id);
-    if (preceding && (preceding.type !== parsed.type || preceding.createdAt !== parsed.createdAt))
-      throw new ControlProductPreconditionError();
-    if (preceding) assertImmutableItemAttribution(preceding, parsed);
-    if (
-      fullHistory &&
-      parsed.type === 'user-input-request' &&
-      parsed.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
-    )
-      throw new ControlProductPreconditionError();
-    if (fullHistory && parsed.type === 'user-input-response') {
-      const request = [...items.values()].find(
-        (value) =>
-          value.type === 'user-input-request' &&
-          value.userInputRequestId === parsed.userInputRequestId
-      );
-      if (request?.type === 'user-input-request' && request.responsibleUserId !== parsed.actor.id)
-        throw new ControlProductPreconditionError();
-    }
-    items.set(row.id, preserveDescriptiveRecord(raw, parsed, parsed) as z.infer<typeof ItemSchema>);
-    revisions.set(row.id, row.revision);
-  }
-  const stored = [...items.values()];
+  const stored = await readControlItemHistory(
+    db,
+    mount,
+    turn,
+    rows,
+    item.type === 'user-input-response' || (sealed && prior !== undefined)
+  );
   const previous = stored.find((value) => value.id === item.id);
   if (checkControlItemAppend(item, turn, previous, stored, input.category))
     return { item: previous!, head, sequence: 0, revision: prior!.revision, replay: true };
@@ -1338,6 +1365,233 @@ export async function prepareControlItemAppend(
     revision: prior?.revision ?? 0,
     replay: false,
   };
+}
+/** Complete event intent; native preparation owns its sequence and retained dependencies. */
+export const ControlEventAppendSchema = z
+  .object({
+    turnId: z.string().min(1),
+    event: SseEventEnvelopeSchema.omit({ protocolVersion: true, sequence: true, timestamp: true }),
+    timestamp: SseEventEnvelopeSchema.shape.timestamp,
+    category: ControlPublicationInputSchema.shape.category.optional(),
+  })
+  .strict();
+export type ControlEventAppend = z.infer<typeof ControlEventAppendSchema>;
+/** Acknowledged event envelope, including its native allocated sequence. */
+export type ControlEventAppendResult = z.infer<typeof SseEventEnvelopeSchema>;
+type EventTurn = Pick<
+  z.infer<typeof StoredTurnV1Schema>,
+  'id' | 'owner' | 'threadId' | 'status' | 'error'
+>;
+
+/**
+ * Returns whether an event payload is the sealed Turn's missing terminal publication.
+ *
+ * @param turn Sealed Turn.
+ * @param event Candidate event input.
+ * @returns True when the event publishes that Turn's sealed outcome, not merely names it.
+ */
+export function eventAgreesWithSealedTurnOutcome(
+  turn: EventTurn,
+  event: Pick<ControlEventAppend['event'], 'data'>
+): boolean {
+  const data = event.data as {
+    type?: unknown;
+    stopReason?: unknown;
+    turn?: {
+      id?: unknown;
+      owner?: unknown;
+      threadId?: unknown;
+      status?: unknown;
+      error?: unknown;
+    };
+  };
+  if (data.type !== 'turn-completed' && data.type !== 'turn-updated') {
+    return false;
+  }
+  const carried = data.turn;
+  if (!carried || typeof carried !== 'object') {
+    return false;
+  }
+  const owner = WorkOwnerSchema.safeParse(carried.owner);
+  if (
+    !owner.success ||
+    !isDeepStrictEqual(owner.data, turn.owner) ||
+    carried.id !== turn.id ||
+    carried.threadId !== turn.threadId ||
+    carried.status !== turn.status
+  ) {
+    return false;
+  }
+  if (
+    carried.error !== undefined &&
+    !isDeepStrictEqual(carried.error ?? null, turn.error ?? null)
+  ) {
+    return false;
+  }
+  if (data.stopReason !== undefined && !terminalStopReasonMatches(data.stopReason, turn.status)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Returns whether an event payload names this Turn but disagrees with its decided outcome.
+ *
+ * @param turn Sealed Turn.
+ * @param event Candidate event input.
+ * @returns True when the event identifies this Turn and contradicts its sealed status, error, or stopReason.
+ */
+export function eventConflictsWithSealedTurnOutcome(
+  turn: EventTurn,
+  event: Pick<ControlEventAppend['event'], 'data'>
+): boolean {
+  const data = event.data as {
+    stopReason?: unknown;
+    turn?: { id?: unknown; status?: unknown; error?: unknown };
+  };
+  const carried = data.turn;
+  if (!carried || typeof carried !== 'object' || carried.id !== turn.id) {
+    return false;
+  }
+  if (carried.status !== undefined && carried.status !== turn.status) {
+    return true;
+  }
+  if (
+    carried.error !== undefined &&
+    !isDeepStrictEqual(carried.error ?? null, turn.error ?? null)
+  ) {
+    return true;
+  }
+  if (data.stopReason !== undefined && !terminalStopReasonMatches(data.stopReason, turn.status)) {
+    return true;
+  }
+  return false;
+}
+
+/** Resolves event replay, current lineage and sequence from the owning database before SQL. */
+export async function prepareControlEventAppend(
+  db: WorkspaceDb,
+  input: ControlEventAppend,
+  mount: ControlProductContentMount | undefined
+) {
+  if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  const owner: ControlProductOwner = { kind: 'workspace', workspaceId: db.workspaceId };
+  const head = readProduct(db.sqlite, owner, 'turn', input.turnId);
+  if (!head) throw new ControlProductPreconditionError();
+  const turn = StoredTurnV1Schema.parse(head.record);
+  const sealed = !['pending', 'running'].includes(turn.status);
+  const census = db.sqlite
+    .prepare(
+      "SELECT count(*) AS count,max(sequence) AS sequence FROM control_product_entries WHERE kind='event' AND turn_id=?"
+    )
+    .get(input.turnId) as { count: number; sequence: number | null };
+  if (sealed) {
+    const items = await readControlItemHistory(
+      db,
+      mount,
+      turn,
+      db.sqlite
+        .prepare(
+          "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND turn_id=? ORDER BY sequence"
+        )
+        .all(input.turnId) as Parameters<typeof readControlItemHistory>[3],
+      true
+    );
+    const itemIds = new Set(items.map((item) => item.id));
+    let replay: z.infer<typeof SseEventEnvelopeSchema> | undefined;
+    let sequence = 0;
+    while (sequence < (census.sequence ?? 0)) {
+      const rows = db.sqlite
+        .prepare(
+          "SELECT sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? AND sequence>? ORDER BY sequence LIMIT ?"
+        )
+        .all(input.turnId, sequence, CONTROL_PRODUCT_LIMITS.pageRows) as {
+        sequence: number;
+        revision: number;
+        schema_version: number;
+        content_json: string;
+      }[];
+      if (!rows.length) throw new ControlProductPreconditionError();
+      for (const row of rows) {
+        if (row.sequence !== sequence + 1 || row.revision !== 1 || row.schema_version !== 1)
+          throw new ControlProductPreconditionError();
+        sequence = row.sequence;
+        const [entry] = await prepareRetainedControlEntries(
+          db,
+          mount,
+          [
+            {
+              kind: 'event',
+              turnId: input.turnId,
+              sequence,
+              expectedRevision: 0,
+              content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+            },
+          ],
+          turn,
+          turn
+        );
+        if (!entry) throw new ControlProductPreconditionError();
+        const { schemaVersion: _version, ...raw } = preparedOriginals.get(entry) as Record<
+          string,
+          unknown
+        >;
+        const recorded = StoredEventV1Schema.parse({ schemaVersion: 1, ...raw });
+        if (recorded.threadId !== turn.threadId) throw new ControlProductPreconditionError();
+        const { schemaVersion: _recordVersion, ...event } = recorded;
+        assertTurnEventPayloadLineage(event, db.workspaceId, turn.threadId, turn.id, itemIds);
+        if (
+          event.event === input.event.event &&
+          event.workspaceId === input.event.workspaceId &&
+          event.threadId === input.event.threadId &&
+          event.turnId === input.event.turnId &&
+          event.requestId === input.event.requestId &&
+          isDeepStrictEqual(event.data, input.event.data)
+        )
+          replay = preserveDescriptiveRecord(raw, event, event) as z.infer<
+            typeof SseEventEnvelopeSchema
+          >;
+      }
+    }
+    if (census.count !== sequence) throw new ControlProductPreconditionError();
+    if (replay) return { event: replay, head, replay: true };
+    if (eventConflictsWithSealedTurnOutcome(turn, input.event))
+      throw new ControlItemAppendError(
+        `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
+      );
+    if (
+      input.category !== 'already-decided-publication' &&
+      !eventAgreesWithSealedTurnOutcome(turn, input.event)
+    )
+      throw new ControlItemAppendError(
+        `Turn ${turn.id} is terminal and does not admit this write.`
+      );
+  }
+  const event = SseEventEnvelopeSchema.parse({
+    ...input.event,
+    protocolVersion: PROTOCOL_VERSION,
+    sequence: (census.sequence ?? 0) + 1,
+    timestamp: input.timestamp,
+  });
+  if (
+    event.workspaceId !== db.workspaceId ||
+    event.threadId !== turn.threadId ||
+    event.turnId !== turn.id
+  )
+    throw new ControlItemAppendError(
+      `Turn event ${event.event} has invalid lineage for ${input.turnId}.`
+    );
+  const ids = db.sqlite
+    .prepare("SELECT DISTINCT id FROM control_product_entries WHERE kind='item' AND turn_id=?")
+    .all(input.turnId) as { id: string }[];
+  assertTurnEventPayloadLineage(
+    event,
+    db.workspaceId,
+    turn.threadId,
+    turn.id,
+    new Set(ids.map((row) => row.id))
+  );
+  return { event, head, replay: false };
 }
 /** Native-local proof; immutable preparation cannot be supplied over the wire. */
 export interface PreparedControlPublication {

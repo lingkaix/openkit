@@ -56,7 +56,6 @@ import {
   ThreadSchema,
   TurnSchema,
   type TurnStatus,
-  WorkOwnerSchema,
   WorkspaceIdSchema,
   workspaceIdForOwner,
   writeRetainedV1,
@@ -164,6 +163,8 @@ import {
   checkControlItemAppend,
   closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
+  eventAgreesWithSealedTurnOutcome,
+  eventConflictsWithSealedTurnOutcome,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-products.js';
@@ -904,91 +905,6 @@ function stopReasonMatchesSealedStatus(stopReason: unknown, status: TurnStatus):
   }
   if (status === 'cancelled' || status === 'interrupted') {
     return stopReason === 'aborted';
-  }
-  return false;
-}
-
-/**
- * Returns whether an event payload is the sealed Turn's missing terminal publication.
- *
- * @param turn Sealed Turn.
- * @param event Candidate event input.
- * @returns True when the event publishes that Turn's sealed outcome, not merely names it.
- */
-function eventAgreesWithSealedTurnOutcome(turn: Turn, event: TurnEventInput): boolean {
-  const data = event.data as {
-    type?: unknown;
-    stopReason?: unknown;
-    turn?: {
-      id?: unknown;
-      owner?: unknown;
-      threadId?: unknown;
-      status?: unknown;
-      error?: unknown;
-    };
-  };
-  if (data.type !== 'turn-completed' && data.type !== 'turn-updated') {
-    return false;
-  }
-  const carried = data.turn;
-  if (!carried || typeof carried !== 'object') {
-    return false;
-  }
-  const owner = WorkOwnerSchema.safeParse(carried.owner);
-  if (
-    !owner.success ||
-    !alreadyDecidedPublicationBytesEqual(owner.data, turn.owner) ||
-    carried.id !== turn.id ||
-    carried.threadId !== turn.threadId ||
-    carried.status !== turn.status
-  ) {
-    return false;
-  }
-  if (
-    carried.error !== undefined &&
-    !alreadyDecidedPublicationBytesEqual(carried.error ?? null, turn.error ?? null)
-  ) {
-    return false;
-  }
-  if (
-    data.stopReason !== undefined &&
-    !stopReasonMatchesSealedStatus(data.stopReason, turn.status)
-  ) {
-    return false;
-  }
-  return true;
-}
-
-/**
- * Returns whether an event payload names this Turn but disagrees with its decided outcome.
- *
- * @param turn Sealed Turn.
- * @param event Candidate event input.
- * @returns True when the event identifies this Turn and contradicts its sealed status, error, or stopReason.
- */
-function eventConflictsWithSealedTurnOutcome(turn: Turn, event: TurnEventInput): boolean {
-  const data = event.data as {
-    stopReason?: unknown;
-    turn?: { id?: unknown; status?: unknown; error?: unknown };
-  };
-  const carried = data.turn;
-  if (!carried || typeof carried !== 'object' || carried.id !== turn.id) {
-    return false;
-  }
-  if (carried.status !== undefined && carried.status !== turn.status) {
-    return true;
-  }
-  if (
-    carried.error !== undefined &&
-    !alreadyDecidedPublicationBytesEqual(carried.error ?? null, turn.error ?? null)
-  ) {
-    return true;
-  }
-  if (
-    data.stopReason !== undefined &&
-    !stopReasonMatchesSealedStatus(data.stopReason, turn.status)
-  ) {
-    return true;
   }
   return false;
 }
@@ -7308,23 +7224,34 @@ export class FsStore {
     event: TurnEventInput,
     admission?: TerminalTurnWriteAdmission
   ): Promise<SseEventEnvelope> {
-    const itemId =
-      'item' in event.data
-        ? event.data.item.id
-        : 'itemId' in event.data
-          ? event.data.itemId
-          : undefined;
-    const native = this.dataRoot
-      ? readNativeTurnWriteHead(
-          this.nativeScope({ kind: 'workspace', workspaceId: event.workspaceId }),
-          turnId,
-          itemId
-        )
-      : undefined;
-    const turn = native?.turn ?? this.getTurnById(turnId);
-    const events =
-      native && !isSealedTurnTerminal(turn.status) ? [] : this.getTurnEventsForExport(turnId);
-    const stream = { sequence: native?.eventSequence ?? events.at(-1)?.sequence ?? 0, events };
+    if (this.dataRoot) {
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId: event.workspaceId });
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      const envelope = await client.appendEvent(database, {
+        turnId,
+        event: {
+          ...event,
+          requestId: projectTurnEventRequestId(event.requestId, event.workspaceId, event.threadId),
+        },
+        timestamp: now(),
+        ...(admission ? { category: admission.category } : {}),
+      });
+      this.acknowledgedTurnEvents.set(envelope, structuredClone(envelope));
+      return envelope;
+    }
+    const turn = this.getTurnById(turnId);
+    const events = this.getTurnEventsForExport(turnId);
+    const stream = { sequence: events.at(-1)?.sequence ?? 0, events };
     const projectedRequestId = projectTurnEventRequestId(
       event.requestId,
       event.workspaceId,
@@ -7377,32 +7304,10 @@ export class FsStore {
       turn.id,
       new Set(turn.items.map((item) => item.id))
     );
-    if (this.dataRoot) {
-      const scope = this.nativeScope(turn.owner);
-      const previous = { revision: native!.revision, record: native!.metadata };
-      const content = await prepareRetainedProductJson(
-        scope.contentMount,
-        scope.owner,
-        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
-        writeRetainedV1(envelope)
-      );
-      const entries: ControlProductEntry[] = [
-        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, ...content },
-      ];
-      if (isSealedTurnTerminal(turn.status))
-        await this.writeNativePublication(scope, native!, entries, 'already-decided-publication');
-      else
-        await this.writeNativeProducts(
-          scope,
-          [{ kind: 'turn', expectedRevision: previous.revision, record: previous.record }],
-          entries
-        );
-    } else {
-      const state = this.turnStream(turnId);
-      state.sequence = envelope.sequence;
-      state.events.push(envelope);
-      if (state.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) state.events.shift();
-    }
+    const state = this.turnStream(turnId);
+    state.sequence = envelope.sequence;
+    state.events.push(envelope);
+    if (state.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) state.events.shift();
     this.acknowledgedTurnEvents.set(envelope, structuredClone(envelope));
     return envelope;
   }

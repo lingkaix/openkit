@@ -1,8 +1,10 @@
 # Storage
 
-File-backed Workspace `createItem` sends the complete addressed Item intent to the existing native writer. That owner resolves the Turn and Item heads, checks identity and human attribution, prepares exact retained bytes, and applies the sequence/revision CAS in its existing savepoint and grouped FULL commit before ACK. In-memory Stores share the same pure validation; Server Items, event publication and other producer migrations remain separate slices.
+File-backed Workspace `createItem` and `persistTurnEvent` send complete addressed intents to the existing native writer. That owner resolves the Turn and Item heads, checks identity and human attribution, prepares exact retained bytes, and applies the sequence/revision CAS in its existing savepoint and grouped FULL commit before ACK. In-memory Stores share the same pure validation; Server Items and other producer migrations remain separate slices.
 
 The native load instrument runs only with `pnpm exec vitest run --config vitest.load.config.ts` from `apps/nanocore`, using an explicit `OPENKIT_R2_ATTR_OUTPUT_DIR`. Missing output custody refuses execution. `load-controls.test.ts` stays in the default CI suite; the measurement file is excluded from its collection.
+
+Native requests reserve affected-filesystem bytes through the existing `FileStorageAdmission` before posting. Ordinary writes preserve the current configured physical reserve; decision and terminal closeout may consume that reserve but must still fit available bytes. Same-filesystem file producers share outstanding forecasts. Native reservations survive a lost reply until the actual Worker exits. `no-space` establishes non-commit only at admission or after proved rollback; a lost COMMIT acknowledgement remains unknown.
 
 Worker physical-result settlement carries the linked journal consumption intent through the existing native journal request. The outcome and that intent share the supplied connection and savepoint; receipt acknowledgement follows the covering FULL commit. Idle Core cleanup retains its separate owning transaction and existing journal tables. No worker protocol extension or second product writer is required for this join.
 

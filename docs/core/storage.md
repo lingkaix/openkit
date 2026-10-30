@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-10-27
+updated: 2026-10-30
 ---
 # Storage Model
 
@@ -69,6 +69,8 @@ A server-level database belongs to one Core server installation and may hold glo
 A user-level database belongs to one user and may hold user-level metadata, preferences, workspace list or order, and user-level indexes.
 
 A Workspace control database belongs to one Workspace and owns its mutable control and product-record state. Derived indexes, vector or embedding metadata and read models retain their distinct projection role.
+
+The physical storage owner MUST admit new work against free bytes on each affected filesystem, including outstanding write forecasts. Ordinary admission MUST preserve the configured control reserve for decisions and terminal closeout; bulk copies and immutable-byte publication MUST NOT consume that margin. Control work may use the margin but MUST still fit physical capacity. Queue count credits are not a disk reserve. A no-space refusal may state non-commit only before effects or after proved rollback; missing acknowledgement preserves the existing unknown outcome. Group commit may share a synchronization boundary, but each acknowledgement MUST follow its covering durable commit.
 
 Workspace-local control authority MUST NOT depend on a server-global database to reconstruct local history. Cross-scope physical ownership remains an explicit dependency, not duplicated Workspace authority. Per-Workspace databases support independent backup, movement, deletion and failure isolation.
 

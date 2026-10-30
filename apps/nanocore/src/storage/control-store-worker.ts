@@ -62,7 +62,11 @@ import {
   prepareControlMaterialCommand,
   WorkspaceMaterialError,
 } from '../workspace-materials.js';
-import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
+import {
+  ControlStoreBusyError,
+  ControlStoreNoSpaceError,
+  controlStoreFor,
+} from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
   applyControlCapabilityCommand,
@@ -92,6 +96,7 @@ import {
   type PreparedControlPublication,
   type PreparedControlTerminal,
   prepareControlEntries,
+  prepareControlEventAppend,
   prepareControlItemAppend,
   prepareControlPublication,
   prepareControlTerminal,
@@ -134,6 +139,7 @@ type WriteCommand = Extract<
       | 'transition'
       | 'products'
       | 'item'
+      | 'event'
       | 'publication'
       | 'project-cleanup'
       | 'observation'
@@ -162,6 +168,7 @@ type WriteRequest = WriteCommand & {
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
   readonly preparedPublication?: PreparedControlPublication | undefined;
+  readonly preparedEvent?: Awaited<ReturnType<typeof prepareControlEventAppend>> | undefined;
   readonly preparedItem?: Awaited<ReturnType<typeof prepareControlItemAppend>> | undefined;
   readonly itemPublication?: ControlPublicationInput | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
@@ -242,7 +249,7 @@ function failure(
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   let domain: ControlWorkerDomainRefusal | undefined;
-  if (operation === 'item' && error instanceof ControlItemAppendError)
+  if ((operation === 'item' || operation === 'event') && error instanceof ControlItemAppendError)
     return { operation, code: 'conflict', message: error.message, status: 409 };
   if (
     (operation === 'pending' ||
@@ -363,6 +370,7 @@ function failureCode(
   )
     return 'precondition';
   if (error instanceof ControlStoreBusyError) return 'busy';
+  if (error instanceof ControlStoreNoSpaceError) return 'no-space';
   // The usage owner preserves its original SQLite cause; corruption still poisons this handle.
   const failure =
     error instanceof OperationError &&
@@ -372,6 +380,7 @@ function failureCode(
       : error;
   const code =
     failure !== null && typeof failure === 'object' && 'code' in failure ? failure.code : null;
+  if (code === 'ENOSPC' || code === 'SQLITE_FULL') return 'no-space';
   if (code === 'migration_missing' || code === 'migration_failed') return code;
   if (code === 'SQLITE_NOTADB' || (typeof code === 'string' && code.startsWith('SQLITE_CORRUPT')))
     return 'integrity';
@@ -496,10 +505,13 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     lanes.add(workId);
   };
   switch (request.operation) {
-    case 'item': {
-      lanes.add(request.input.item.turnId);
+    case 'item':
+    case 'event': {
+      const turnId =
+        request.operation === 'item' ? request.input.item.turnId : request.input.turnId;
+      lanes.add(turnId);
       if (!owner.productOwner) throw new ControlProductPreconditionError();
-      const turn = readProduct(owner.sqlite, owner.productOwner, 'turn', request.input.item.turnId);
+      const turn = readProduct(owner.sqlite, owner.productOwner, 'turn', turnId);
       if (typeof turn?.record.agentSessionId === 'string')
         lanes.add(`session:${turn.record.agentSessionId}`);
       break;
@@ -1144,12 +1156,15 @@ function flush(owner: OwnedDatabase): void {
               operation: 'transition',
               result,
             };
-          } else if (request.operation === 'item') {
-            if (!owner.productOwner || !request.preparedItem || !owner.scopeDb)
+          } else if (request.operation === 'item' || request.operation === 'event') {
+            const plan =
+              request.operation === 'item' ? request.preparedItem : request.preparedEvent;
+            if (!owner.productOwner || !plan || !owner.scopeDb)
               throw new ControlProductPreconditionError();
-            const plan = request.preparedItem;
+            const turnId =
+              request.operation === 'item' ? request.input.item.turnId : request.input.turnId;
             if (
-              readProduct(sqlite, owner.productOwner, 'turn', plan.item.turnId)?.revision !==
+              readProduct(sqlite, owner.productOwner, 'turn', turnId)?.revision !==
               plan.head.revision
             )
               throw new ControlProductPreconditionError();
@@ -1170,8 +1185,9 @@ function flush(owner: OwnedDatabase): void {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
               status: 'ok',
-              operation: 'item',
-              result: plan.item,
+              ...(request.operation === 'item'
+                ? { operation: 'item' as const, result: request.preparedItem!.item }
+                : { operation: 'event' as const, result: request.preparedEvent!.event }),
             };
           } else if (request.operation === 'products') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
@@ -1361,6 +1377,8 @@ function flush(owner: OwnedDatabase): void {
           sqlite.exec('RELEASE control_transition');
           outcomes.push(outcome);
         } catch (error) {
+          // SQLite FULL can automatically roll back the outer transaction. Preserve that cause.
+          if (!sqlite.inTransaction) throw error;
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
           if (failureCode(error) === 'integrity') throw error;
@@ -1377,7 +1395,8 @@ function flush(owner: OwnedDatabase): void {
       return outcomes;
     });
   } catch (error) {
-    const unknown = bodyFinished || owner.sqlite.inTransaction;
+    const unknown =
+      !(error instanceof ControlStoreNoSpaceError) && (bodyFinished || owner.sqlite.inTransaction);
     const code = failureCode(
       error,
       batch.map((request) => request.id),
@@ -1745,6 +1764,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'transition' ||
       value.operation === 'products' ||
       value.operation === 'item' ||
+      value.operation === 'event' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
@@ -1801,6 +1821,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
         const prepare = async () => {
           let preparedPublication: PreparedControlPublication | undefined;
           let preparedItem: WriteRequest['preparedItem'];
+          let preparedEvent: WriteRequest['preparedEvent'];
           let itemPublication: ControlPublicationInput | undefined;
           let preparedEntries: WriteRequest['preparedEntries'];
           let preparedPending: PreparedControlPendingCommand | undefined;
@@ -1821,33 +1842,50 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               Object.assign(queued, { preparedEntries });
             }
             // Canonical-dependent preparation observes its admitted predecessor's committed state.
-            if (['terminal', 'publication', 'pending', 'goal', 'item'].includes(value.operation))
+            if (
+              ['terminal', 'publication', 'pending', 'goal', 'item', 'event'].includes(
+                value.operation
+              )
+            )
               await prepareAfterPredecessors(owner, queued, earlier);
-            if (value.operation === 'item') {
+            if (value.operation === 'item' || value.operation === 'event') {
               if (owner.scopeDb?.scope !== 'workspace' || !owner.contentMount)
                 throw new ControlProductPreconditionError();
-              preparedItem = await prepareControlItemAppend(
-                owner.scopeDb,
-                value.input,
-                owner.contentMount
-              );
-              if (!preparedItem.replay) {
+              if (value.operation === 'item')
+                preparedItem = await prepareControlItemAppend(
+                  owner.scopeDb,
+                  value.input,
+                  owner.contentMount
+                );
+              else
+                preparedEvent = await prepareControlEventAppend(
+                  owner.scopeDb,
+                  value.input,
+                  owner.contentMount
+                );
+              const plan = (preparedItem ?? preparedEvent)!;
+              const body = value.operation === 'item' ? preparedItem!.item : preparedEvent!.event;
+              const turnId = body.turnId!;
+              if (!plan.replay) {
                 const content = await prepareRetainedProductJson(
                   owner.contentMount,
                   { kind: 'workspace', workspaceId: owner.scopeDb.workspaceId },
                   join(dirname(dirname(owner.path)), 'runtime', 'staging'),
-                  writeRetainedV1(preparedItem.item)
+                  writeRetainedV1(body)
                 );
                 const entries = [
                   {
-                    kind: 'item' as const,
-                    turnId: preparedItem.item.turnId,
-                    sequence: preparedItem.sequence,
-                    expectedRevision: preparedItem.revision,
+                    kind: value.operation as 'item' | 'event',
+                    turnId,
+                    sequence:
+                      value.operation === 'item'
+                        ? preparedItem!.sequence
+                        : preparedEvent!.event.sequence,
+                    expectedRevision: value.operation === 'item' ? preparedItem!.revision : 0,
                     ...content,
                   },
                 ];
-                if (['pending', 'running'].includes(String(preparedItem.head.record.status)))
+                if (['pending', 'running'].includes(String(plan.head.record.status)))
                   preparedEntries = await prepareControlEntries(
                     owner.productOwner!,
                     owner.contentMount,
@@ -1856,9 +1894,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                   );
                 else {
                   itemPublication = {
-                    category: value.input.category!,
-                    turnId: preparedItem.item.turnId,
-                    expectedRevision: preparedItem.head.revision,
+                    category:
+                      value.operation === 'event'
+                        ? 'already-decided-publication'
+                        : value.input.category!,
+                    turnId,
+                    expectedRevision: plan.head.revision,
                     entries,
                   };
                   preparedPublication = await prepareControlPublication(
@@ -1967,6 +2008,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedPending,
               preparedPublication,
               preparedItem,
+              preparedEvent,
               itemPublication,
               preparedTerminal,
               preparedMaterial,
