@@ -322,13 +322,15 @@ describe('app api schema package boundary', () => {
     }
   });
 
-  it('reuses the config-schema account-slot identity across public account schemas', () => {
-    expect
-      .soft(
-        appApiSchemas.CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId,
-        'create request'
-      )
-      .toBe(ProviderSubscriptionAccountSlotIdSchema);
+  it('preserves response slot identity while delegating create slot syntax to the account owner', () => {
+    const create = appApiSchemas.CreateProviderSubscriptionAccountRequestSchema;
+    // Provider Subscription Accounts480: supplied strings reach native slot-error classification.
+    for (const accountSlotId of ['work', '', 'Bad Slot', 'x'.repeat(65)]) {
+      expect.soft(create.parse({ accountSlotId })).toEqual({ accountSlotId });
+    }
+    for (const accountSlotId of [undefined, null, 42, false, [], {}]) {
+      expect.soft(create.safeParse({ accountSlotId }).success).toBe(false);
+    }
     for (const branch of appApiSchemas.ProviderSubscriptionAccountSchema.options) {
       expect
         .soft(branch.shape.accountSlotId, `account status ${branch.shape.status.value}`)
@@ -4191,7 +4193,7 @@ describe('app api schemas', () => {
     ]) {
       expect(cancelLoginSchema.safeParse(request).success).toBe(false);
     }
-    expect(createSchema.safeParse({ accountSlotId: '../work' }).success).toBe(false);
+    expect(createSchema.parse({ accountSlotId: '../work' })).toEqual({ accountSlotId: '../work' });
     expect(createSchema.safeParse({ accountSlotId: 'work', accessToken: 'secret' }).success).toBe(
       false
     );
@@ -4327,10 +4329,17 @@ describe('app api schemas', () => {
       accountSlotId: 'work',
       availability: 'available',
       observedAt: timestamp,
+      activeUntil: timestamp,
       windows: [{ id: 'primary', limitWindowSeconds: 18_000 }],
     };
     const schema = appApiSchemas.ProviderSubscriptionQuotaSchema;
     expect(schema.parse(quota)).toEqual(quota);
+    expect(
+      schema.safeParse({
+        ...quota,
+        windows: [{ id: 'primary', limitWindowSeconds: 18_000, label: '5 hours' }],
+      }).success
+    ).toBe(false);
     expect(schema.parse({ ...quota, windows: [{ id: 'secondary' }] })).toEqual({
       ...quota,
       windows: [{ id: 'secondary' }],

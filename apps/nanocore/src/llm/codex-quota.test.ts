@@ -16,7 +16,7 @@ function credentials(): CredentialStore {
   } as unknown as CredentialStore;
 }
 
-/** Gives the primary position a weekly duration to catch fixed-position labels. */
+/** Supplies a weekly duration independently of the primary window position. */
 function usage() {
   return {
     plan_type: 'pro',
@@ -44,11 +44,22 @@ describe('Codex subscription quota management', () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json(usage()));
     vi.stubGlobal('fetch', fetchMock);
 
-    expect(await readCodexQuota(store)).toMatchObject({
+    const quota = await readCodexQuota(store);
+    expect(quota).toMatchObject({
       availability: 'available',
       planType: 'pro',
-      windows: [{ id: 'primary', limitWindowSeconds: 604800, usedPercent: 25 }],
+      windows: [
+        {
+          id: 'primary',
+          limitWindowSeconds: 604800,
+          remainingPercent: 75,
+          resetsAt: '2026-10-20T00:00:00.000Z',
+          usedPercent: 25,
+        },
+      ],
     });
+    if (quota.availability !== 'available') throw new Error('Expected available quota.');
+    expect(quota.windows[0]).not.toHaveProperty('label');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(usageUrl);
     expect(store.read).toHaveBeenCalledWith('openai-codex');

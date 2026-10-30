@@ -33,8 +33,6 @@ const MAX_SIGNED_INT32 = 2_147_483_647;
 interface CodexQuotaWindow {
   /** Stable OpenKit window identifier. */
   readonly id: 'primary' | 'secondary';
-  /** Duration-derived display label, never inferred from the window position. */
-  readonly label?: string;
   /** Positive provider-reported window duration; absent for a non-positive value. */
   readonly limitWindowSeconds?: number;
   /** Percentage of the window that remains. */
@@ -490,8 +488,6 @@ function parseWindow(value: unknown, id: CodexQuotaWindow['id']): CodexQuotaWind
   const resetsAt = new Date(value.reset_at * 1_000).toISOString();
   return {
     id,
-    ...(value.limit_window_seconds === 18_000 ? { label: '5 hours' } : {}),
-    ...(value.limit_window_seconds === 604_800 ? { label: '7 days' } : {}),
     ...(value.limit_window_seconds > 0 ? { limitWindowSeconds: value.limit_window_seconds } : {}),
     remainingPercent: Math.min(100, Math.max(0, 100 - value.used_percent)),
     resetsAt,

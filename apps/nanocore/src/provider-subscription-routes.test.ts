@@ -139,7 +139,6 @@ const CODEX_USAGE = {
 } as const;
 const PRIMARY_QUOTA_WINDOW = {
   id: 'primary',
-  label: '5 hours',
   limitWindowSeconds: 18_000,
   remainingPercent: 69,
   resetsAt: '2026-08-01T00:00:00.000Z',
@@ -147,7 +146,6 @@ const PRIMARY_QUOTA_WINDOW = {
 } as const;
 const SECONDARY_QUOTA_WINDOW = {
   id: 'secondary',
-  label: '7 days',
   limitWindowSeconds: 604_800,
   remainingPercent: 0,
   resetsAt: '2026-08-08T00:00:00.000Z',
@@ -1633,12 +1631,12 @@ describe('provider-subscription app API', () => {
   });
 
   it.each([
-    [900, undefined],
-    [18_000, '5 hours'],
-    [604_800, '7 days'],
-    [0, undefined],
-    [-1, undefined],
-  ] as const)('projects only a positive reported Codex window duration (%s)', async (seconds, label) => {
+    [900],
+    [18_000],
+    [604_800],
+    [0],
+    [-1],
+  ] as const)('projects only a positive reported Codex window duration (%s)', async (seconds) => {
     const fixture = createFixture();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
@@ -1665,16 +1663,11 @@ describe('provider-subscription app API', () => {
       expect(response.status).toBe(200);
       expect(quota).toMatchObject({ availability: 'available' });
       if (quota.availability !== 'available') throw new Error('Expected available quota.');
-      const {
-        limitWindowSeconds: _defaultDuration,
-        label: _defaultLabel,
-        ...primary
-      } = PRIMARY_QUOTA_WINDOW;
+      const { limitWindowSeconds: _defaultDuration, ...primary } = PRIMARY_QUOTA_WINDOW;
       expect(quota.windows).toEqual([
         {
           ...primary,
           ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}),
-          ...(label ? { label } : {}),
         },
         SECONDARY_QUOTA_WINDOW,
       ]);

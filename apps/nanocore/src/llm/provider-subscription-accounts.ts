@@ -644,9 +644,14 @@ export class ProviderSubscriptionAccountManager {
     signal?: AbortSignal
   ): Promise<boolean> {
     if (pair.subscriptionProviderId !== 'openai-codex') return true;
-    const account = await this.getStatus(pair);
-    if (account.codexUseCredits === true) return true;
-    const { quota } = await this.getCodexQuota(pair, signal);
+    const exactPair = this.requirePair(pair);
+    const useCredits = await this.withPairFence(
+      exactPair,
+      async () =>
+        this.requireExistingOrdinaryInspection(this.inspectPair(exactPair)).record.codexUseCredits
+    );
+    if (useCredits === true) return true;
+    const { quota } = await this.getCodexQuota(exactPair, signal);
     return (
       quota?.availability !== 'available' ||
       !quota.windows.some((window) => window.usedPercent >= 100)

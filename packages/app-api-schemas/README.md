@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+Provider-subscription create accepts a supplied slot string so the existing account owner returns its stable slot-syntax error. Non-string slots and unknown request fields retain common strict-input refusal; response slot syntax is unchanged.
+
 `workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. The complete capture, verify, download, same-deployment backup-restore and selected recovery inspect/finish/abandon definitions are composed; MOVE remains uncomposed until its owners activate it. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.
 
 Knowledge retrieval exclusion reasons distinguish `selector_mismatch` for exact metadata filters from `policy_excluded` for current authorization or Source-policy refusal. The response shape and native admission boundary are unchanged.
@@ -289,3 +291,5 @@ Workspace MCP management exposes `catalog.mcp-stage-version` and `catalog.mcp-re
 `vault.unlock` accepts an empty request and reloads only the configured external key file through the native bounded loader. It accepts no request key material; the other secret-bearing Vault operations retain their secret-stdin metadata.
 
 Light App catalog and get projections permit null app/schema revisions and schema digest when retained authority is unreadable. Null means unknown; clients must inspect it before sending numeric command preconditions. Existing successful mutation and Batch response schemas retain required numeric revisions and digest. These projections grant no authority and change no retained format.
+
+Subscription quota windows carry reported durations for client display labels. Quota responses retain the optional `activeUntil` display field.

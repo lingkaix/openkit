@@ -88,10 +88,10 @@ const LoginInteractionSchema = z
   })
   .strict();
 
-/** Strict request body for creating one provider-subscription account slot. */
+/** Strict create body; the account owner classifies supplied slot-string syntax. */
 export const CreateProviderSubscriptionAccountRequestSchema = z
   .object({
-    accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
+    accountSlotId: z.string(),
     displayName: DisplayNameSchema.optional(),
   })
   .strict();
@@ -216,7 +216,6 @@ const SubscriptionAccountObservationShape = {
 const QuotaWindowSchema = z
   .object({
     id: z.string().min(1),
-    label: z.string().min(1).optional(),
     limitWindowSeconds: z.number().int().positive().optional(),
     usedPercent: z.number().finite().min(0).max(100).optional(),
     remainingPercent: z.number().finite().min(0).max(100).optional(),
