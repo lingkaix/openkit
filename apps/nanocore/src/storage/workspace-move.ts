@@ -258,7 +258,32 @@ function incompleteCapture(
     current.db.close();
   }
 }
-/** Reports existing source or target ownership without opening or changing candidate bytes. */
+/** Projects an exact Core-owned recovery without opening or changing candidate bytes. */
+export function inspectWorkspaceRecoveryAtCore(
+  core: CoreDb,
+  input: WorkspaceRecoverySelectedInput,
+  current?: { readonly revision: number; readonly movedOut: boolean }
+): WorkspaceRecoveryCliReport {
+  if (resolve(core.dataRoot) !== resolve(input.dataRoot)) refuseRecovery('recovery-required');
+  const row = selectRecoveryAdmission(core, input);
+  return {
+    ...row.proof.result,
+    command: 'inspect',
+    disposition: current?.movedOut
+      ? 'moved-out'
+      : row.state === 'abandoned'
+        ? 'abandoned'
+        : row.state === 'finished'
+          ? row.proof.result.disposition
+          : input.selection.kind === 'capture'
+            ? 'prepared'
+            : 'quarantined',
+    selection: input.selection,
+    ...(current ? { currentRevision: current.revision } : {}),
+    nextAction: row.state === 'prepared' ? 'finish' : 'none',
+  };
+}
+/** Offline inspection keeps its root lock and delegates retained Core report selection. */
 export async function inspectWorkspaceRecovery(
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -266,33 +291,16 @@ export async function inspectWorkspaceRecovery(
     const id =
       input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
     if (!readRecoveryAdmission(core, id)) return incompleteCapture(input, 'inspect');
-    const row = selectRecoveryAdmission(core, input);
-    let currentRevision: number | undefined;
-    let disposition: WorkspaceRecoveryCliReport['disposition'] =
-      row.state === 'abandoned'
-        ? 'abandoned'
-        : row.state === 'finished'
-          ? row.proof.result.disposition
-          : input.selection.kind === 'capture'
-            ? 'prepared'
-            : 'quarantined';
-    if (input.selection.kind === 'capture') {
-      const current = source(input.dataRoot, input.workspaceId);
-      try {
-        currentRevision = current.row.revision;
-        if (current.record.movedOut) disposition = 'moved-out';
-      } finally {
-        current.db.close();
-      }
+    if (input.selection.kind !== 'capture') return inspectWorkspaceRecoveryAtCore(core, input);
+    const current = source(input.dataRoot, input.workspaceId);
+    try {
+      return inspectWorkspaceRecoveryAtCore(core, input, {
+        revision: current.row.revision,
+        movedOut: !!current.record.movedOut,
+      });
+    } finally {
+      current.db.close();
     }
-    return {
-      ...row.proof.result,
-      command: 'inspect',
-      disposition,
-      selection: input.selection,
-      ...(currentRevision === undefined ? {} : { currentRevision }),
-      nextAction: row.state === 'prepared' ? 'finish' : 'none',
-    };
   });
 }
 /** Finishes only an existing source capture; target admission has its own placement owner. */

@@ -9,8 +9,8 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 341;
-const EXPECTED_SERVER_SIZE = 90;
+const EXPECTED_CATALOG_SIZE = 342;
+const EXPECTED_SERVER_SIZE = 91;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 248;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
@@ -22,6 +22,7 @@ const SERVER_WEB_OPERATIONS = {
   'workspace.backup-verify': { disposition: 'roadmap', roadmap: 'R048' },
   'workspace.backup-download': { disposition: 'roadmap', roadmap: 'R048' },
   'workspace.backup-restore': { disposition: 'roadmap', roadmap: 'R048' },
+  'workspace.recovery-inspect': { disposition: 'roadmap', roadmap: 'R048' },
 };
 
 /** Operations whose current Web projection is explicitly deferred to a Roadmap owner. */
@@ -30,6 +31,7 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.backup-verify', 'R048'],
   ['workspace.backup-download', 'R048'],
   ['workspace.backup-restore', 'R048'],
+  ['workspace.recovery-inspect', 'R048'],
   ['workspace.delete', 'R049'],
   ['workspace.resource-access-request', 'R033'],
   ['workspace.resource-access-apply', 'R033'],

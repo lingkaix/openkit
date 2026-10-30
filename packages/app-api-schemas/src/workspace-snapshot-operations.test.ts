@@ -19,14 +19,15 @@ const operationIds = [
   'workspace.move-reactivate',
 ] as const;
 
-/** C-a and restore are active; six recovery verbs retain their per-verb W preparation. */
+/** Capture, restore and inspection are active; five recovery verbs retain their per-verb W preparation. */
 describe('Workspace snapshot operation contract', () => {
-  it('composes exactly four snapshot handlers and leaves six recovery definitions uncomposed', () => {
+  it('composes exactly five snapshot handlers and leaves five recovery definitions uncomposed', () => {
     const composed = new Set<string>([
       'workspace.backup-capture',
       'workspace.backup-verify',
       'workspace.backup-download',
       'workspace.backup-restore',
+      'workspace.recovery-inspect',
     ]);
     const definitions = schemas.WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS;
     expect(Object.keys(definitions).sort()).toEqual([...operationIds].sort());

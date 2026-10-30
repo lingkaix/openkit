@@ -2675,20 +2675,12 @@ export function workspaceSnapshotOperationPolicy(
   };
 }
 
-/** Complete online operator joins; existing backup, bundle and Kernel owners retain their decisions. */
-export function createWorkspaceSnapshotOperationImplementations(
-  dependencies: OperationInvocationDependencies
+// Online readers acquire here; Main already holds acquisition admission for sealed replay.
+function workspaceSnapshotLocalSource(
+  input: { readonly workspaceId: string; readonly backupId: string },
+  owned: ReturnType<typeof workspaceSnapshotOperationPolicy>
 ) {
-  type Definitions = typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS;
-  type Input<K extends keyof Definitions> = import('zod').infer<Definitions[K]['inputSchema']>;
-  const invoke = invokeWorkspaceRecoveryOperation;
-  const policy = (context: AdmittedOperationContext) =>
-    workspaceSnapshotOperationPolicy(dependencies, context);
-  // Online readers acquire here; Main already holds acquisition admission for sealed replay.
-  const localSource = (
-    input: Input<'workspace.backup-verify'>,
-    owned: ReturnType<typeof policy>
-  ) => ({
+  return {
     dataRoot: owned.dataRoot,
     source: { kind: 'local-snapshot' as const, ...input },
     acquireSource: () => {
@@ -2699,33 +2691,45 @@ export function createWorkspaceSnapshotOperationImplementations(
         });
       return release;
     },
-  });
-  const inspect = async (
-    input: Input<'workspace.backup-verify'>,
-    owned: ReturnType<typeof policy>
-  ) => {
-    const container = privateRoot(owned.verification.stagingParent, input.workspaceId);
-    try {
-      const result = await stageWorkspaceBackup({
-        ...owned.verification,
-        bundleRoot: join(
-          owned.dataRoot,
-          'server/backups/workspaces',
-          input.workspaceId,
-          input.backupId
-        ),
-        snapshotSource: localSource(input, owned),
-        expectedWorkspaceId: input.workspaceId,
-        expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
-        purpose: 'backup',
-        candidateRoot: join(container.container, 'verified'),
-      });
-      owned.currentAuthority();
-      return result;
-    } finally {
-      rmSync(container.container, { recursive: true, force: true });
-    }
   };
+}
+/** Verifies one local generation through the same bounded staging and graph owner as backup-verify. */
+export async function inspectWorkspaceSnapshot(
+  input: { readonly workspaceId: string; readonly backupId: string },
+  owned: ReturnType<typeof workspaceSnapshotOperationPolicy>
+) {
+  const container = privateRoot(owned.verification.stagingParent, input.workspaceId);
+  try {
+    const result = await stageWorkspaceBackup({
+      ...owned.verification,
+      bundleRoot: join(
+        owned.dataRoot,
+        'server/backups/workspaces',
+        input.workspaceId,
+        input.backupId
+      ),
+      snapshotSource: workspaceSnapshotLocalSource(input, owned),
+      expectedWorkspaceId: input.workspaceId,
+      expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
+      purpose: 'backup',
+      candidateRoot: join(container.container, 'verified'),
+    });
+    owned.currentAuthority();
+    return result;
+  } finally {
+    rmSync(container.container, { recursive: true, force: true });
+  }
+}
+
+/** Complete online operator joins; existing backup, bundle and Kernel owners retain their decisions. */
+export function createWorkspaceSnapshotOperationImplementations(
+  dependencies: OperationInvocationDependencies
+) {
+  type Definitions = typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS;
+  type Input<K extends keyof Definitions> = import('zod').infer<Definitions[K]['inputSchema']>;
+  const invoke = invokeWorkspaceRecoveryOperation;
+  const policy = (context: AdmittedOperationContext) =>
+    workspaceSnapshotOperationPolicy(dependencies, context);
   return {
     'workspace.backup-capture': (
       input: Input<'workspace.backup-capture'>,
@@ -2768,7 +2772,7 @@ export function createWorkspaceSnapshotOperationImplementations(
       context: AdmittedOperationContext
     ) =>
       invoke(async () => {
-        const result = await inspect(input, policy(context));
+        const result = await inspectWorkspaceSnapshot(input, policy(context));
         return WorkspaceSnapshotReportSchema.parse(
           recoveryReport('verify', 'verified', result.report)
         );
@@ -2785,7 +2789,7 @@ export function createWorkspaceSnapshotOperationImplementations(
             {
               ...owned.verification,
               includeMetadata: true,
-              ...localSource(input, owned),
+              ...workspaceSnapshotLocalSource(input, owned),
             },
             async (bundle) => {
               owned.currentAuthority();

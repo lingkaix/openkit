@@ -281,3 +281,5 @@ Plugin import responses include component `diagnostics` with package keys and fi
 Plugin import accepts optional `pluginId` and `memberIds` to name explicit scoped catalog targets while retaining original package names. The existing native owner checks collisions and preserves prior member mappings; these inputs grant no permission or publisher trust.
 
 Same-deployment Workspace backup restore now joins the composed operation table. Its existing selectors, safety acknowledgement and report are unchanged; capture-selected recovery and MOVE activation remain separate.
+
+Workspace recovery inspection uses the existing path-free report and capture/admission selectors. Its complete composition reads current administrator-authorized facts; finish, abandonment and MOVE remain with their separate activation work.

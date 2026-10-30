@@ -21,6 +21,8 @@ import * as durableBytes from '@openkit/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import * as accessTokens from './auth/access-token-store.js';
+import { isScopeAdmitted } from './bootstrap/readiness.js';
+import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
@@ -28,8 +30,10 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
+import { openWorkspaceReadDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import * as captureProtection from './storage/workspace-capture-protection.js';
+import { readRecoveryAdmission } from './storage/workspace-recovery-admissions.js';
 import { type CreateAppOptions, createAppWithLocalIdentity } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -889,6 +893,204 @@ describe('C-a composed snapshot App API', () => {
       });
     }
     expect(f.admission.isClosed(workspaceId)).toBe(false);
+  }, 120_000);
+
+  it('inspects one sealed capture through its exact owner and keeps administrator and identity refusals', async () => {
+    const f = await fixture();
+    try {
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      const original = WorkspaceSnapshotReportSchema.parse(await captured.json());
+      const expectedCapture = { ...original.capture! };
+      delete expectedCapture.source; // Optional source provenance is not a retained manifest fact.
+      const selection = { kind: 'capture', backupId };
+      const response = await request(f.app, 'workspace.recovery-inspect', {
+        workspaceId,
+        selection,
+      });
+      const text = await response.text();
+      expect(response.status, text).toBe(200);
+      expect(text).not.toContain(f.dataRoot);
+      expect(WorkspaceSnapshotReportSchema.parse(JSON.parse(text))).toMatchObject({
+        command: 'inspect',
+        disposition: 'sealed',
+        workspaceId,
+        selection,
+        capture: expectedCapture,
+        nextAction: 'none',
+      });
+      const db = openWorkspaceReadDb(f.dataRoot, workspaceId);
+      try {
+        expect(captureProtection.inspectCapture(db, workspaceId, backupId)?.state).toBe('finished');
+      } finally {
+        closeTestCoreDb(db);
+      }
+      for (const input of [
+        { workspaceId: allocateEntityId('ws'), selection },
+        { workspaceId, selection: { kind: 'capture', backupId: allocateEntityId('wsbak') } },
+      ]) {
+        const refused = await request(f.app, 'workspace.recovery-inspect', input);
+        const body = await refused.text();
+        expect(refused.status, body).toBe(409);
+        expect(ApiErrorSchema.parse(JSON.parse(body))).toMatchObject({ code: 'recovery-required' });
+        expect(body).not.toContain(f.dataRoot);
+      }
+      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const denied = await request(server, 'workspace.recovery-inspect', {
+        workspaceId,
+        selection,
+      });
+      expect([401, 403]).toContain(denied.status);
+      ApiErrorSchema.parse(await denied.json());
+    } finally {
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it('inspects a real crashed SQL-only capture without inventing purpose or sealed facts', async () => {
+    const f = await fixture();
+    const backupId = allocateEntityId('wsbak');
+    const emit = Worker.prototype.emit;
+    let stopping: Promise<number> | undefined;
+    const intercept = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event,
+      ...args
+    ) {
+      const message = args[0];
+      if (
+        !stopping &&
+        event === 'message' &&
+        message !== null &&
+        typeof message === 'object' &&
+        message.kind === 'phase' &&
+        message.phase === 'pin-end'
+      ) {
+        // Stop after the real SQL pin commits, before any complete generation metadata exists.
+        stopping = this.terminate();
+        return true;
+      }
+      return Reflect.apply(emit, this, [event, ...args]);
+    });
+    try {
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(stopping).toBeDefined();
+      await stopping;
+      expect(captured.ok).toBe(false);
+      intercept.mockRestore();
+      expect(readRecoveryAdmission(f.coreDb, backupId)).toBeUndefined();
+      const generation = join(f.dataRoot, 'server/backups/workspaces', workspaceId, backupId);
+      expect(existsSync(join(generation, 'manifest.json'))).toBe(false);
+      expect(existsSync(join(generation, 'seal.json'))).toBe(false);
+      const db = openWorkspaceReadDb(f.dataRoot, workspaceId);
+      try {
+        expect(captureProtection.inspectCapture(db, workspaceId, backupId)).toMatchObject({
+          captureId: backupId,
+          workspaceId,
+          state: 'active',
+          origin: 'manual',
+        });
+      } finally {
+        closeTestCoreDb(db);
+      }
+      restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      const selection = { kind: 'capture', backupId };
+      const response = await request(f.app, 'workspace.recovery-inspect', {
+        workspaceId,
+        selection,
+      });
+      const text = await response.text();
+      expect(response.status, text).toBe(200);
+      expect(text).not.toContain(f.dataRoot);
+      const report = WorkspaceSnapshotReportSchema.parse(JSON.parse(text));
+      expect(report).toMatchObject({
+        command: 'inspect',
+        disposition: 'pending',
+        workspaceId,
+        selection,
+      });
+      expect(report.capture).toBeUndefined();
+      const after = openWorkspaceReadDb(f.dataRoot, workspaceId);
+      try {
+        expect(captureProtection.inspectCapture(after, workspaceId, backupId)).toMatchObject({
+          captureId: backupId,
+          workspaceId,
+          state: 'active',
+          origin: 'manual',
+        });
+      } finally {
+        closeTestCoreDb(after);
+      }
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(f.admission.isClosed(workspaceId)).toBe(true);
+    } finally {
+      intercept.mockRestore();
+      await stopping;
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it('inspects the original target admission created by real public restore and refuses an unknown request', async () => {
+    const f = await fixture();
+    try {
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      const requestId = randomUUID();
+      const restored = await request(f.app, 'workspace.backup-restore', {
+        workspaceId,
+        backupId,
+        requestId,
+        acknowledgeLostSafety: false,
+      });
+      expect(restored.status, await restored.clone().text()).toBe(200);
+      const original = WorkspaceSnapshotReportSchema.parse(await restored.json());
+      const owned = readRecoveryAdmission(f.coreDb, requestId);
+      expect(owned).toMatchObject({
+        admission_id: requestId,
+        workspace_id: workspaceId,
+        state: 'finished',
+      });
+      const selection = { kind: 'admission', requestId };
+      const response = await request(f.app, 'workspace.recovery-inspect', {
+        workspaceId,
+        selection,
+      });
+      const text = await response.text();
+      expect(response.status, text).toBe(200);
+      expect(text).not.toContain(f.dataRoot);
+      expect(WorkspaceSnapshotReportSchema.parse(JSON.parse(text))).toMatchObject({
+        ...original,
+        command: 'inspect',
+        selection,
+        nextAction: 'none',
+      });
+      expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(owned);
+      const refused = await request(f.app, 'workspace.recovery-inspect', {
+        workspaceId,
+        selection: { kind: 'admission', requestId: randomUUID() },
+      });
+      expect(refused.status, await refused.clone().text()).toBe(409);
+      expect(ApiErrorSchema.parse(await refused.json())).toMatchObject({
+        code: 'recovery-required',
+      });
+    } finally {
+      closeTestCoreDb(f.coreDb);
+    }
   }, 120_000);
 
   it('restores complete retained history and authored configuration under the original identity, then replays without replacement', async () => {

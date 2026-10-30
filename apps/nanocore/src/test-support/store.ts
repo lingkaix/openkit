@@ -49,7 +49,7 @@ export function createTestCoreDb(dataRoot: string): CoreDb {
 }
 
 /** Closes the exact caller-owned fixture handle after native work has drained. */
-export function closeTestCoreDb(coreDb: CoreDb): void {
+export function closeTestCoreDb(coreDb: CoreDb | WorkspaceDb): void {
   if (coreDb.sqlite.open) coreDb.sqlite.close();
 }
 

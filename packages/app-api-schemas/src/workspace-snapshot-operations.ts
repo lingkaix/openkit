@@ -128,7 +128,7 @@ const administration = {
 } as const;
 
 /**
- * Closed online snapshot contracts; complete capture, verify, download and restore are composed.
+ * Closed online snapshot contracts; capture, verify, download, restore and recovery inspection are composed.
  * Remaining verbs stay uncomposed until their complete scoped recovery implementation.
  * Server admission supplies current administrator authority; the lifecycle owner performs try-freeze.
  */

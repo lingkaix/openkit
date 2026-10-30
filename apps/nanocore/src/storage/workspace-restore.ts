@@ -25,12 +25,14 @@ import {
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { readProduct } from './control-store-products.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
-import type { CoreDb } from './db.js';
+import { type CoreDb, openWorkspaceReadDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
 import {
+  inspectWorkspaceSnapshot,
   invokeWorkspaceRecoveryOperation,
   readBlockers,
   readWorkspaceBackupManifest,
@@ -44,6 +46,7 @@ import {
   WORKSPACE_BACKUP_MANIFEST_FILE,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
+import { inspectCapture } from './workspace-capture-protection.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -51,6 +54,7 @@ import {
   syncCanonicalDirectory,
 } from './workspace-file-records.js';
 import {
+  inspectWorkspaceRecoveryAtCore,
   selectRecoveryAdmission,
   type WorkspaceRecoveryDependencies,
   type WorkspaceRecoverySelectedInput,
@@ -697,6 +701,72 @@ export function createWorkspaceRestoreOperationImplementations(
     (typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS)['workspace.backup-restore']['inputSchema']
   >;
   return {
+    'workspace.recovery-inspect': (
+      input: import('zod').infer<
+        (typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS)['workspace.recovery-inspect']['inputSchema']
+      >,
+      context: AdmittedOperationContext
+    ) =>
+      invokeWorkspaceRecoveryOperation(async () => {
+        const owned = workspaceSnapshotOperationPolicy(dependencies, context);
+        const selected = { ...input, dataRoot: owned.dataRoot };
+        if (input.selection.kind === 'admission')
+          return WorkspaceSnapshotReportSchema.parse(
+            inspectWorkspaceRecoveryAtCore(owned.coreDb, selected)
+          );
+        let state: ReturnType<typeof inspectCapture>;
+        let current: NonNullable<ReturnType<typeof readProduct>>;
+        try {
+          const db = openWorkspaceReadDb(owned.dataRoot, input.workspaceId);
+          try {
+            const product = readProduct(
+              db.sqlite,
+              { kind: 'workspace', workspaceId: input.workspaceId },
+              'workspace',
+              input.workspaceId
+            );
+            state = inspectCapture(db, input.workspaceId, input.selection.backupId);
+            if (!product || !state) refuseRecovery('recovery-required');
+            current = product;
+          } finally {
+            db.sqlite.close();
+          }
+        } catch {
+          refuseRecovery('recovery-required');
+        }
+        const retained = readRecoveryAdmission(owned.coreDb, input.selection.backupId);
+        if (retained)
+          return WorkspaceSnapshotReportSchema.parse(
+            inspectWorkspaceRecoveryAtCore(owned.coreDb, selected, {
+              revision: current.revision,
+              movedOut: !!current.record.movedOut,
+            })
+          );
+        // SQL lifecycle alone proves neither capture purpose nor a transferable seal.
+        const basic = {
+          command: 'inspect' as const,
+          workspaceId: input.workspaceId,
+          selection: input.selection,
+          currentRevision: current.revision,
+          droppedSourceMemberIds: [],
+          restrictedRecovery: false as const,
+        };
+        if (state.state !== 'finished')
+          return WorkspaceSnapshotReportSchema.parse({
+            ...basic,
+            disposition: state.state === 'abandoned' ? 'abandoned' : 'pending',
+            nextAction: state.state === 'active' ? 'abandon' : 'none',
+          });
+        const verified = await inspectWorkspaceSnapshot(
+          { workspaceId: input.workspaceId, backupId: input.selection.backupId },
+          owned
+        );
+        owned.currentAuthority();
+        return WorkspaceSnapshotReportSchema.parse({
+          ...recoveryReport('inspect', 'sealed', verified.report),
+          ...basic,
+        });
+      }),
     'workspace.backup-restore': (input: Input, context: AdmittedOperationContext) =>
       invokeWorkspaceRecoveryOperation(async () => {
         const owned = workspaceSnapshotOperationPolicy(dependencies, context);
