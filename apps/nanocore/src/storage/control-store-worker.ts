@@ -106,6 +106,7 @@ import {
   applyControlRecoveryCleanup,
   applyControlRecoverySafety,
   type PreparedControlRecoverySafety,
+  prepareControlRecoveryCleanup,
   prepareControlRecoverySafety,
 } from './control-store-recovery.js';
 import {
@@ -1888,6 +1889,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               )
             )
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'recovery-cleanup') {
+              await prepareAfterPredecessors(owner, queued, earlier);
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              const root = dirname(dirname(owner.path));
+              await prepareControlRecoveryCleanup(owner.scopeDb, value.input, root);
+            }
             if (value.operation === 'recovery-safety') {
               await prepareAfterPredecessors(owner, queued, earlier);
               if (

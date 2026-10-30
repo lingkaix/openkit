@@ -1,26 +1,13 @@
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import {
   allocateEntityId,
   PROTOCOL_VERSION,
   SEALED_TURN_TERMINALS,
   writeRetainedV1,
 } from '@openkit/protocol';
-import {
-  publishWorkspaceResourceCatalog,
-  readWorkspaceResourceCatalog,
-} from '../catalog/resource-catalog.js';
-import { parseJsoncObject } from '../config/jsonc.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
@@ -35,15 +22,11 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import type { ControlProductEntry } from './control-store-products.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
-import type { ControlSqlStatement } from './control-store-worker-protocol.js';
 import { inventoryRegularFiles } from './data-root-backup.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
-import {
-  RECURRING_PORTABLE_PATHS,
-  readRecurringPortableFiles,
-} from './recurring-portable-history.js';
+import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
 import {
   readWorkspaceBackupManifest,
   stageWorkspaceBackup,
@@ -434,110 +417,6 @@ async function bindTargetCandidate(
       (record) => record.workspace.id === workspaceId
     );
     if (!records) refuseRecovery('invalid-database');
-    if (manifest.requiredFeatures.includes('workspace.recurring-triggers.v1')) {
-      const history = readRecurringPortableFiles(
-        new Map(
-          Object.values(RECURRING_PORTABLE_PATHS).map((path) => [
-            path,
-            readFileSync(join(root, path), 'utf8'),
-          ])
-        ),
-        {
-          workspaceId,
-          threadIds: new Set(records.threads.map((thread) => thread.id)),
-          turns: new Map(records.turns.map((turn) => [turn.id, turn.threadId])),
-        }
-      );
-      mkdirSync(join(root, 'imports'), { recursive: true, mode: 0o700 });
-      writeFileSync(join(root, 'imports/recurrence-history.json'), JSON.stringify(history), {
-        mode: 0o600,
-      });
-      for (const path of Object.values(RECURRING_PORTABLE_PATHS)) unlinkSync(join(root, path));
-    }
-    if (input.command === 'move-in' || restricted) {
-      const configPath = join(root, 'config/workspace.jsonc');
-      const config = parseJsoncObject(readFileSync(configPath, 'utf8')) as {
-        workspace: { policy?: { mediation?: unknown } };
-        requiredFeatures?: string[];
-      };
-      config.requiredFeatures = [
-        ...new Set([...(config.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE]),
-      ];
-      // Source Policy grants do not become target grants. Unmapped private audiences receive no allow.
-      const pairs = new Map(
-        map?.accountMap.memberMappings.map((pair) => [
-          pair.sourceAccountId,
-          pair.targetAccountId,
-        ]) ?? []
-      );
-      const unavailable =
-        input.command === 'move-in'
-          ? records.threads.filter(
-              (thread) => thread.visibility === 'private' && !pairs.has(thread.privateOwnerUserId!)
-            )
-          : records.threads;
-      const author = input.command === 'move-in' ? input.targetOwnerId : manifest.accounts.ownerId;
-      const anchor = {
-        owner: { kind: 'workspace', workspaceId },
-        kind: 'workspace',
-        id: workspaceId,
-      };
-      config.workspace.policy = {
-        mediation: {
-          schemaVersion: 1,
-          statements: unavailable.map((thread) => ({
-            id: `recovery-${thread.id}`,
-            kind: 'managed-boundary',
-            state: 'active',
-            author: { kind: 'human', id: author },
-            authority: { kind: 'human', userId: author },
-            authoredAt: now,
-            lifetime: { anchor },
-            scope: {
-              subjects: [],
-              actions: [],
-              resources: [
-                {
-                  kind: 'container',
-                  container: { ...anchor, kind: 'thread', id: thread.id },
-                },
-              ],
-            },
-          })),
-        },
-      };
-      writeFileSync(configPath, JSON.stringify(config));
-      const catalog = readWorkspaceResourceCatalog(dataRoot, workspaceId);
-      publishWorkspaceResourceCatalog({
-        dataRoot,
-        workspaceId,
-        expectedRevision: catalog.revision,
-        catalog: {
-          ...catalog,
-          mcp: {
-            ...catalog.mcp,
-            bindings: catalog.mcp.bindings.map((binding) => ({
-              ...binding,
-              enabled: false,
-              credentialBindings: [],
-            })),
-          },
-          plugins: { ...catalog.plugins, installations: [] },
-          skills: { ...catalog.skills, pins: [] },
-        },
-      });
-      const statements: ControlSqlStatement[] = [];
-      for (const thread of records.threads) {
-        const target = pairs.get(thread.privateOwnerUserId!);
-        if (target)
-          statements.push({
-            mode: 'run',
-            sql: "UPDATE control_threads SET revision=revision+1,record_json=json_set(record_json,'$.privateOwnerUserId',?) WHERE id=?",
-            parameters: [target, thread.id],
-          });
-      }
-      if (statements.length) await client.write(database, statements);
-    }
     await client.write(database, [
       {
         mode: 'run',
@@ -556,12 +435,23 @@ async function bindTargetCandidate(
     await client.recoveryCleanup(database, {
       workspaceId,
       action: input.command === 'restore' ? 'workspace.restore' : 'workspace.move-in',
+      preparation: {
+        now,
+        requiredFeatures: manifest.requiredFeatures,
+        restricted: !!restricted,
+        ownerId: input.command === 'move-in' ? input.targetOwnerId : manifest.accounts.ownerId,
+        memberMappings: map?.accountMap.memberMappings ?? [],
+      },
       summary: JSON.stringify({
         backupId: manifest.backupId,
         manifestDigest: owned.proof.capture.manifestDigest,
         restrictedRecovery: restricted,
       }),
     });
+    if (manifest.requiredFeatures.includes('workspace.recurring-triggers.v1')) {
+      // The root-locked coordinator retires transfer inputs only after durable native preparation.
+      for (const path of Object.values(RECURRING_PORTABLE_PATHS)) unlinkSync(join(root, path));
+    }
     await interruptImportedHistory(db, root, records);
     owned.proof.result = { ...owned.proof.result, restrictedRecovery: restricted };
   } finally {

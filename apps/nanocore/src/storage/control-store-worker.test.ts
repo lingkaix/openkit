@@ -139,6 +139,13 @@ describe('native control database worker', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           action: ['workspace.restore'],
           summary: '{}',
+          preparation: {
+            now: '2026-10-30T00:00:00.000Z',
+            requiredFeatures: [],
+            restricted: false,
+            ownerId: 'usr_00000000-0000-7000-8000-000000000001',
+            memberMappings: [],
+          },
         },
       })
     ).toBe(false);

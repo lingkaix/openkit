@@ -1,6 +1,11 @@
 import { isAbsolute } from 'node:path';
 import { GoalViewSchema } from '@openkit/app-api-schemas';
-import { ItemSchema, SseEventEnvelopeSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  ItemSchema,
+  SseEventEnvelopeSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import {
   type ControlReviewCommandInput,
   ControlReviewCommandInputSchema,
@@ -88,7 +93,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 18;
+export const CONTROL_WORKER_VERSION = 19;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -766,10 +771,32 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       isRecord(value.input) &&
-      exactFields(value.input, ['workspaceId', 'action', 'summary']) &&
+      exactFields(value.input, ['workspaceId', 'action', 'summary', 'preparation']) &&
       WorkspaceIdSchema.safeParse(value.input.workspaceId).success &&
       (value.input.action === 'workspace.restore' || value.input.action === 'workspace.move-in') &&
       typeof value.input.summary === 'string' &&
+      isRecord(value.input.preparation) &&
+      exactFields(value.input.preparation, [
+        'now',
+        'requiredFeatures',
+        'restricted',
+        'ownerId',
+        'memberMappings',
+      ]) &&
+      typeof value.input.preparation.now === 'string' &&
+      Number.isFinite(Date.parse(value.input.preparation.now)) &&
+      Array.isArray(value.input.preparation.requiredFeatures) &&
+      value.input.preparation.requiredFeatures.every((feature) => typeof feature === 'string') &&
+      typeof value.input.preparation.restricted === 'boolean' &&
+      UserIdSchema.safeParse(value.input.preparation.ownerId).success &&
+      Array.isArray(value.input.preparation.memberMappings) &&
+      value.input.preparation.memberMappings.every(
+        (pair) =>
+          isRecord(pair) &&
+          exactFields(pair, ['sourceAccountId', 'targetAccountId']) &&
+          UserIdSchema.safeParse(pair.sourceAccountId).success &&
+          UserIdSchema.safeParse(pair.targetAccountId).success
+      ) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'event')
