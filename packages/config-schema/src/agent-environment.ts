@@ -978,11 +978,11 @@ export const AgentEnvironmentPolicySchema = z
  */
 export const AgentEnvironmentLlmEndpointSchema = z
   .object({
-    kind: z.enum(['openai-compatible', 'provider-compatible', 'backend-local']),
+    kind: z.literal('openai-compatible'),
     workerBaseUrl: z.string().url().optional(),
     upstream: z
       .object({
-        kind: z.enum(['nanocore-gateway', 'backend-local', 'direct-provider']),
+        kind: z.literal('nanocore-gateway'),
         baseUrlRef: z.string().min(1).optional(),
       })
       .strict()
@@ -1014,7 +1014,7 @@ export const AgentEnvironmentLlmRouteSchema = z
     providerInstanceId: z.string().min(1),
     model: z.string().min(1),
     endpoint: AgentEnvironmentLlmEndpointSchema,
-    credentialVisibility: z.enum(['none', 'placeholder', 'environment']).default('none'),
+    credentialVisibility: z.literal('placeholder'),
     modelParameters: AgentEnvironmentLlmModelParametersSchema.optional(),
     /** Resolver-advertised controls; empty and absent have distinct meaning. */
     reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
@@ -1026,7 +1026,7 @@ export const AgentEnvironmentLlmRouteSchema = z
  */
 export const AgentEnvironmentLlmSchema = z
   .object({
-    mode: z.enum(['gateway', 'backend-local', 'direct-external']),
+    mode: z.literal('gateway'),
     /** Exact admitted Turn preference, never a live Agent default. */
     reasoningEffort: ReasoningEffortSchema.optional(),
     preferredLogicalModelId: z.string().min(1),
@@ -1034,12 +1034,7 @@ export const AgentEnvironmentLlmSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    const expected =
-      value.mode === 'gateway'
-        ? (['placeholder', 'openai-compatible', 'nanocore-gateway', false] as const)
-        : value.mode === 'direct-external'
-          ? (['environment', 'provider-compatible', 'direct-provider', false] as const)
-          : (['none', 'backend-local', 'backend-local', false] as const);
+    const expected = ['placeholder', 'openai-compatible', 'nanocore-gateway', false] as const;
 
     for (const [index, route] of value.routes.entries()) {
       if (
@@ -1054,13 +1049,6 @@ export const AgentEnvironmentLlmSchema = z
           path: ['routes', index],
         });
       }
-    }
-    if (value.mode !== 'gateway' && value.routes.length !== 1) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `${value.mode} permits exactly one LLM route.`,
-        path: ['routes'],
-      });
     }
     if (!value.routes.some((route) => route.model === value.preferredLogicalModelId)) {
       ctx.addIssue({
@@ -1284,13 +1272,6 @@ export const AgentEnvironmentPackageSchema = z
       return;
     }
 
-    if (value.llm.mode !== 'gateway') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference requires gateway mode.',
-        path: ['llm', 'mode'],
-      });
-    }
     for (const [index, route] of value.llm.routes.entries()) {
       if (route.endpoint.kind !== 'openai-compatible') {
         ctx.addIssue({

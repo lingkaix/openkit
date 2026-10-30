@@ -1269,6 +1269,36 @@ describe('agent environment package schema', () => {
     }
   });
 
+  it.each([
+    {
+      mode: 'direct-external',
+      credentialVisibility: 'environment',
+      endpoint: { kind: 'provider-compatible', upstream: { kind: 'direct-provider' } },
+    },
+    {
+      mode: 'backend-local',
+      credentialVisibility: 'none',
+      endpoint: { kind: 'backend-local', upstream: { kind: 'backend-local' } },
+    },
+  ])('rejects coherent $mode inference outside the governed Gateway binding', (alternative) => {
+    // AEP section154 and manifest resolution384 admit no direct-provider exception.
+    expect(
+      AgentEnvironmentLlmSchema.safeParse({
+        mode: alternative.mode,
+        preferredLogicalModelId: 'gpt-5',
+        routes: [
+          {
+            id: 'default',
+            providerInstanceId: 'provider',
+            model: 'gpt-5',
+            credentialVisibility: alternative.credentialVisibility,
+            endpoint: alternative.endpoint,
+          },
+        ],
+      }).success
+    ).toBe(false);
+  });
+
   it('rejects runtime binary and native argv authority in supply', () => {
     for (const supply of [
       {

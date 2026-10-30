@@ -150,3 +150,5 @@ MCP binding, effective-server and AEP supply shapes retain only allowedTools. Cu
 MCP declaration and configuration digests reuse Protocol canonical JSON while retaining their domain prefix and NUL separator. This replaces the private code-unit serializer without changing valid retained JSON declaration bytes. Catalog consumers import the encoder directly from Protocol; locale-dependent Source and Session compatibility digest correction stays with #532.
 
 The Session workspace planner keeps every Turn-cleared slot beneath the disposable `/openkit/sessions/<agentSessionId>/` tree. Layout admission rejects automatic cleanup inside the retained workspace root. Each planned input must match the selected slot's source kind, access and materialization mode before launch; the planner never widens a slot to fit an input.
+
+Version-four Agent Environment Package LLM sections admit only Gateway inference with placeholder visibility, an OpenAI-compatible endpoint and a NanoCore Gateway upstream. Coherent direct-provider and backend-local alternatives are refused rather than supplied through a fallback.

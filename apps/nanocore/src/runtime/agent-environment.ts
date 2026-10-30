@@ -451,14 +451,10 @@ function resolveOpenShellAgentEnvironmentPackage(
   const { packagePath: workerPackagePath, contextRoot } = workerSessionInputPaths(
     input.agentSessionId
   );
-  const trustedInferenceRequired = true;
   const runtimeProvenanceRequired = requiredCapabilities.includes(
     WORKER_RUNTIME_PROVENANCE_FEATURE
   );
 
-  if (runtimeProvenanceRequired && !trustedInferenceRequired) {
-    throw new Error('Runtime provenance requires the trusted worker inference relay.');
-  }
   const llmMode = 'gateway' as const;
 
   const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';

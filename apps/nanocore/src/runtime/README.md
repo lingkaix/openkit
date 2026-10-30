@@ -454,3 +454,5 @@ Worker-control route rejection handling retains quarantine evidence only from li
 Worker MCP sessions copy their admitted non-secret Vault grant identities into the existing session input map. Revocation fences every matching cached or initializing session and awaits the existing transport and process-group teardown; a failed closure retains its fence. Discovery repeats the existing current-binding check immediately before synchronous Gateway registration.
 
 Pending Request admission counts raw outstanding and unknown lifecycle rows toward the existing per-Thread bound, including unreadable payloads. Archive requires a complete decoded census of its exact Thread before effects; inspection still omits malformed individual records and unrelated Threads remain usable. See [Pending Requests](../../../../docs/specs/20260930-pending_requests.md).
+
+Version-four Agent Environment Package inference uses only the governed Gateway mode and its local Integration binding. The producer has no direct-provider or backend-local inference branch; runtime provenance keeps its existing capability and path requirements.
