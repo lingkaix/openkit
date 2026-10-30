@@ -121,11 +121,20 @@ export function kernelOperationFailure(error: unknown): never {
     throw new OperationError(error.code, error.message, error.status, {
       cause: error,
       ...(error.path === undefined ? {} : { path: [error.path] }),
-      ...(error.limit !== undefined || error.maximum !== undefined
+      ...(error.limit !== undefined ||
+      error.maximum !== undefined ||
+      error.expectedRevision !== undefined ||
+      error.currentRevision !== undefined
         ? {
             details: {
               ...(error.limit === undefined ? {} : { limit: error.limit }),
               ...(error.maximum === undefined ? {} : { maximum: error.maximum }),
+              ...(error.expectedRevision === undefined
+                ? {}
+                : { expectedRevision: error.expectedRevision }),
+              ...(error.currentRevision === undefined
+                ? {}
+                : { currentRevision: error.currentRevision }),
             },
           }
         : {}),

@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   type CreateLightAppResponse,
   type GetLightAppResponse,
+  LIGHT_APP_CAPABILITIES,
   LIGHT_APP_KERNEL_FORMAT_VERSION,
   type LightAppAdmittedCollection,
   type LightAppAdmittedSchema,
@@ -75,11 +76,11 @@ import {
 import { allocateAppId, allocateRecordId } from './uuid.js';
 import { encodeSqlValue, normalizeLightAppFieldValue } from './values.js';
 
-const APP_DIRECTORY_LIMIT = 128;
-const RECORD_LIMIT = 10_000;
-const DATA_OBJECT_BYTE_LIMIT = 16 * 1024;
-const MUTATION_REQUEST_BYTE_LIMIT = 1024 * 1024;
-const READ_RESPONSE_BYTE_LIMIT = 2 * 1024 * 1024;
+const APP_DIRECTORY_LIMIT = LIGHT_APP_CAPABILITIES.maxAppDirectories;
+const RECORD_LIMIT = LIGHT_APP_CAPABILITIES.maxRecords;
+const DATA_OBJECT_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxDataObjectBytes;
+const MUTATION_REQUEST_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxMutationRequestBytes;
+const READ_RESPONSE_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxReadResponseBytes;
 const BATCH_POST = /^\/api\/collections\/([^/]+)\/records$/;
 const BATCH_PATCH = /^\/api\/collections\/([^/]+)\/records\/([^/]+)$/;
 
@@ -110,23 +111,6 @@ export function boundedKernelResponse<T>(response: T): T {
     });
   return response;
 }
-
-/** Discoverable Kernel vocabulary returned by app get. */
-export const LIGHT_APP_CAPABILITIES = {
-  fieldTypes: ['text', 'number', 'bool', 'date', 'select', 'relation'],
-  filterOperators: ['=', '!=', '>', '>=', '<', '<=', '&&', '||'],
-  maxPerPage: 100,
-  maxRecords: 10_000,
-  maxBatchEntries: 50,
-  maxFilterBytes: 2048,
-} as const satisfies {
-  fieldTypes: Array<'text' | 'number' | 'bool' | 'date' | 'select' | 'relation'>;
-  filterOperators: Array<'=' | '!=' | '>' | '>=' | '<' | '<=' | '&&' | '||'>;
-  maxPerPage: 100;
-  maxRecords: 10_000;
-  maxBatchEntries: 50;
-  maxFilterBytes: 2048;
-};
 
 /** Shared Kernel command execution context. */
 export interface KernelCommandContext {
@@ -351,11 +335,19 @@ export async function updateLightAppSchema(
       execute: () => {
         const current = readMetadata(appDb);
         assertWritable(current);
-        if (
-          current.appRevision !== expectedAppRevision ||
-          current.schemaRevision !== expectedSchemaRevision
-        ) {
-          throw new KernelCommandError('conflict', 'App or schema revision is stale.');
+        if (current.appRevision !== expectedAppRevision) {
+          throw new KernelCommandError('conflict', 'App revision is stale.', {
+            path: 'expectedAppRevision',
+            expectedRevision: expectedAppRevision,
+            currentRevision: current.appRevision,
+          });
+        }
+        if (current.schemaRevision !== expectedSchemaRevision) {
+          throw new KernelCommandError('conflict', 'Schema revision is stale.', {
+            path: 'expectedSchemaRevision',
+            expectedRevision: expectedSchemaRevision,
+            currentRevision: current.schemaRevision,
+          });
         }
         const schemaRevision = nextSchemaRevision(appDb, current.schemaRevision);
         const admitted = sourceSelection
@@ -456,7 +448,11 @@ export async function upgradeLightAppFormat(
       .get(appId) as Pick<AppMetadataRow, 'appRevision' | 'lifecycle'>;
     assertWritable(current);
     if (current.appRevision !== expectedAppRevision)
-      throw new KernelCommandError('conflict', 'App revision is stale.');
+      throw new KernelCommandError('conflict', 'App revision is stale.', {
+        path: 'expectedAppRevision',
+        expectedRevision: expectedAppRevision,
+        currentRevision: current.appRevision,
+      });
     applyAppMigrations(appDb.sqlite, () => {
       appDb.sqlite
         .transaction(() => snapshotLightApp(appDb, 'kernel-format-migration'))
@@ -538,7 +534,11 @@ export async function rollbackLightAppSnapshot(
       .get(appId) as Pick<AppMetadataRow, 'appRevision' | 'lifecycle'>;
     assertWritable(current);
     if (current.appRevision !== expectedAppRevision)
-      throw new KernelCommandError('conflict', 'App revision is stale.');
+      throw new KernelCommandError('conflict', 'App revision is stale.', {
+        path: 'expectedAppRevision',
+        expectedRevision: expectedAppRevision,
+        currentRevision: current.appRevision,
+      });
     const selected = readLightAppSnapshot(context.dataRoot, context.workspaceId, appId, snapshotId);
     candidatePath = join(
       lightAppRoot(context.dataRoot, context.workspaceId, appId),
@@ -705,7 +705,11 @@ export async function retireLightApp(
         const metadata = readMetadata(appDb);
         assertWritable(metadata);
         if (metadata.appRevision !== expectedAppRevision) {
-          throw new KernelCommandError('conflict', 'App revision is stale.');
+          throw new KernelCommandError('conflict', 'App revision is stale.', {
+            path: 'expectedAppRevision',
+            expectedRevision: expectedAppRevision,
+            currentRevision: metadata.appRevision,
+          });
         }
         const now = new Date().toISOString();
         appDb.sqlite
@@ -1161,7 +1165,8 @@ function executeBatch(
     if (updateTargets.has(entry.recordId) || createdIds.has(entry.recordId)) {
       throw new KernelCommandError(
         'validation_failed',
-        'Batch update targets must be unique existing records.'
+        'Batch update targets must be unique existing records.',
+        { path: 'requests' }
       );
     }
     updateTargets.add(entry.recordId);
@@ -1300,7 +1305,11 @@ function applyRecordUpdate(
   const collection = resolveCollection(schema, collectionSelector);
   const current = readRecordRow(appDb, collection, recordId);
   if (Number(current.revision) !== body.expectedRecordRevision) {
-    throw new KernelCommandError('conflict', 'Record revision is stale.');
+    throw new KernelCommandError('conflict', 'Record revision is stale.', {
+      path: 'expectedRecordRevision',
+      expectedRevision: body.expectedRecordRevision,
+      currentRevision: Number(current.revision),
+    });
   }
   if (lineage?.sourceFilter) {
     const compiled = compileRecordFilter(lineage.sourceFilter, (operand) =>
@@ -1315,7 +1324,8 @@ function applyRecordUpdate(
       if (!match) {
         throw new KernelCommandError(
           'validation_failed',
-          'Record is no longer a member of the bound source query.'
+          'Record is no longer a member of the bound source query.',
+          { path: 'filter' }
         );
       }
     }
@@ -1464,7 +1474,8 @@ function coerceFieldValue(
   if (pendingCreatedIds.has(recordId)) {
     throw new KernelCommandError(
       'validation_failed',
-      'Batch relations cannot target records created in the same batch.'
+      'Batch relations cannot target records created in the same batch.',
+      { path: 'requests' }
     );
   }
   const targetId = (field.options as { collection: string }).collection;
@@ -1472,7 +1483,8 @@ function coerceFieldValue(
   if (!target) {
     throw new KernelCommandError(
       'validation_failed',
-      `Field ${field.name} has an unknown relation target.`
+      `Field ${field.name} has an unknown relation target.`,
+      { path: 'data' }
     );
   }
   const exists = appDb.sqlite
@@ -1621,11 +1633,15 @@ function parseBatchEntries(
     if (entry.method === 'POST') {
       const match = BATCH_POST.exec(entry.url);
       if (!match) {
-        throw new KernelCommandError('validation_failed', 'Unsupported batch create URL.');
+        throw new KernelCommandError('validation_failed', 'Unsupported batch create URL.', {
+          path: 'requests',
+        });
       }
       const parsedBody = entry.body as { data?: Record<string, unknown> };
       if (!parsedBody || typeof parsedBody !== 'object' || parsedBody.data === undefined) {
-        throw new KernelCommandError('validation_failed', 'Batch create bodies require data.');
+        throw new KernelCommandError('validation_failed', 'Batch create bodies require data.', {
+          path: 'requests',
+        });
       }
       return {
         method: 'POST' as const,
@@ -1635,7 +1651,9 @@ function parseBatchEntries(
     }
     const match = BATCH_PATCH.exec(entry.url);
     if (!match) {
-      throw new KernelCommandError('validation_failed', 'Unsupported batch update URL.');
+      throw new KernelCommandError('validation_failed', 'Unsupported batch update URL.', {
+        path: 'requests',
+      });
     }
     const parsedBody = entry.body as {
       expectedRecordRevision?: number;
@@ -1649,7 +1667,8 @@ function parseBatchEntries(
     ) {
       throw new KernelCommandError(
         'validation_failed',
-        'Batch update bodies require data and expectedRecordRevision.'
+        'Batch update bodies require data and expectedRecordRevision.',
+        { path: 'requests' }
       );
     }
     return {
@@ -1729,7 +1748,11 @@ function requireCurrentSchema(
   schemaRevision: number
 ): LightAppAdmittedSchema {
   if (metadata.schemaRevision !== schemaRevision) {
-    throw new KernelCommandError('schema_stale', 'Schema revision is stale.');
+    throw new KernelCommandError('schema_stale', 'Schema revision is stale.', {
+      path: 'schemaRevision',
+      expectedRevision: schemaRevision,
+      currentRevision: metadata.schemaRevision,
+    });
   }
   return parseSchema(metadata);
 }
@@ -1779,14 +1802,16 @@ function compileSort(collection: LightAppAdmittedCollection, sort: string | unde
       .split(',')
       .map((part) => part.trim())
       .filter(Boolean);
-    if (parts.length > 3) {
-      throw new KernelCommandError('validation_failed', 'Sort accepts at most three fields.');
+    if (parts.length > LIGHT_APP_CAPABILITIES.maxSortFields) {
+      throw new KernelCommandError('validation_failed', 'Sort accepts at most three fields.', {
+        path: 'sort',
+      });
     }
     for (const part of parts) {
       const descending = part.startsWith('-');
       const ascending = part.startsWith('+');
       const name = descending || ascending ? part.slice(1) : part;
-      const column = columnFor(collection, name);
+      const column = columnFor(collection, name, 'sort');
       clauses.push(`${column.sql} ${descending ? 'DESC' : 'ASC'}`);
     }
   }
@@ -1803,7 +1828,8 @@ function compileSort(collection: LightAppAdmittedCollection, sort: string | unde
  */
 function columnFor(
   collection: LightAppAdmittedCollection,
-  operand: string
+  operand: string,
+  path: 'filter' | 'sort' = 'filter'
 ): { sql: string; type: string } {
   if (
     operand === 'id' ||
@@ -1815,7 +1841,7 @@ function columnFor(
   }
   const field = collection.fields.find((candidate) => candidate.name === operand);
   if (!field) {
-    throw new KernelCommandError('validation_failed', `Unknown field: ${operand}.`);
+    throw new KernelCommandError('validation_failed', `Unknown field: ${operand}.`, { path });
   }
   return { sql: quoteIdent(fieldColumnName(field.id)), type: field.type };
 }
@@ -1841,7 +1867,9 @@ function parseFields(
   const known = new Set(collection.fields.map((field) => field.name));
   for (const name of names) {
     if (!known.has(name)) {
-      throw new KernelCommandError('validation_failed', `Unknown field: ${name}.`);
+      throw new KernelCommandError('validation_failed', `Unknown field: ${name}.`, {
+        path: 'fields',
+      });
     }
   }
   return new Set(names);
@@ -1859,17 +1887,18 @@ function assertPage(page: number, perPage: number): void {
     page < 1 ||
     !Number.isInteger(perPage) ||
     perPage < 1 ||
-    perPage > 100
+    perPage > LIGHT_APP_CAPABILITIES.maxPerPage
   ) {
     throw new KernelCommandError(
       'validation_failed',
-      'Page and perPage must be positive integers.'
+      'Page and perPage must be positive integers.',
+      { path: 'page' }
     );
   }
-  if ((page - 1) * perPage > 10_000) {
+  if ((page - 1) * perPage > LIGHT_APP_CAPABILITIES.maxOffset) {
     throw new KernelCommandError('limit_exceeded', 'List offset exceeds 10,000.', {
       limit: 'offset',
-      maximum: 10_000,
+      maximum: LIGHT_APP_CAPABILITIES.maxOffset,
     });
   }
 }
@@ -2138,7 +2167,9 @@ function mapSqliteError(error: unknown): unknown {
     return new KernelCommandError('conflict', 'Record uniqueness conflict.');
   }
   if (code.startsWith('SQLITE_CONSTRAINT')) {
-    return new KernelCommandError('validation_failed', 'Record failed a native constraint.');
+    return new KernelCommandError('validation_failed', 'Record failed a native constraint.', {
+      path: 'data',
+    });
   }
   return error;
 }

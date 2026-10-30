@@ -1,8 +1,9 @@
 import type { LightAppAdmittedCollection } from '@openkit/app-api-schemas';
+import { LIGHT_APP_CAPABILITIES } from '@openkit/app-api-schemas';
 
 import { KernelCommandError } from './errors.js';
 
-const TEXT_BYTE_LIMIT = 4096;
+const TEXT_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxTextBytes;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /**
@@ -117,7 +118,8 @@ export function normalizeLightAppFieldValue(
     default:
       throw new KernelCommandError(
         'validation_failed',
-        `Unsupported field type for ${field.name}.`
+        `Unsupported field type for ${field.name}.`,
+        { path: field.name }
       );
   }
 }
@@ -135,7 +137,9 @@ export function encodeSqlValue(type: string, value: unknown): unknown {
   }
   if (type === 'bool') {
     if (typeof value !== 'boolean') {
-      throw new KernelCommandError('validation_failed', 'Boolean fields require a boolean value.');
+      throw new KernelCommandError('validation_failed', 'Boolean fields require a boolean value.', {
+        path: 'data',
+      });
     }
     return value === true ? 1 : 0;
   }

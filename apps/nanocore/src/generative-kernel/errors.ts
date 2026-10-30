@@ -15,6 +15,10 @@ export type KernelErrorCode =
 export class KernelCommandError extends Error {
   /** Stable protocol API error code. */
   public readonly code: KernelErrorCode;
+  /** Caller revision that failed the app, schema or record precondition. */
+  public readonly expectedRevision?: number;
+  /** Actual current revision observed by the owning command. */
+  public readonly currentRevision?: number;
   /** HTTP status used by the App API projection. */
   public readonly status: number;
   /** Optional field or JSON path for validation failures. */
@@ -29,16 +33,25 @@ export class KernelCommandError extends Error {
    *
    * @param code Stable protocol error code.
    * @param message Product-safe error message.
-   * @param details Optional validation or limit metadata.
+   * @param details Optional validation, limit or actual revision metadata.
    */
   public constructor(
     code: KernelErrorCode,
     message: string,
-    details: { path?: string; limit?: string; maximum?: number; status?: number } = {}
+    details: {
+      path?: string;
+      limit?: string;
+      maximum?: number;
+      status?: number;
+      expectedRevision?: number;
+      currentRevision?: number;
+    } = {}
   ) {
     super(message);
     this.name = 'KernelCommandError';
     this.code = code;
+    if (details.expectedRevision !== undefined) this.expectedRevision = details.expectedRevision;
+    if (details.currentRevision !== undefined) this.currentRevision = details.currentRevision;
     if (details.path !== undefined) {
       this.path = details.path;
     }

@@ -15,12 +15,18 @@ export function parseStrictJsonObject(text: string): Record<string, unknown> {
     disallowComments: true,
   });
   if (!tree || errors.length > 0 || tree.type !== 'object') {
-    throw new KernelCommandError('validation_failed', 'Schema input must be a strict JSON object.');
+    throw new KernelCommandError(
+      'validation_failed',
+      'Schema input must be a strict JSON object.',
+      { path: 'schema' }
+    );
   }
   assertNoDuplicateKeys(tree);
   const parsed: unknown = JSON.parse(text);
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new KernelCommandError('validation_failed', 'Schema input must be a JSON object.');
+    throw new KernelCommandError('validation_failed', 'Schema input must be a JSON object.', {
+      path: 'schema',
+    });
   }
   return parsed as Record<string, unknown>;
 }
@@ -37,7 +43,9 @@ function assertNoDuplicateKeys(node: Node): void {
       const name = child.children?.[0]?.value;
       if (typeof name === 'string') {
         if (seen.has(name)) {
-          throw new KernelCommandError('validation_failed', `Duplicate JSON key: ${name}.`);
+          throw new KernelCommandError('validation_failed', `Duplicate JSON key: ${name}.`, {
+            path: 'schema',
+          });
         }
         seen.add(name);
       }

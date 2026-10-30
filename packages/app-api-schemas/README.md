@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+`LIGHT_APP_CAPABILITIES` in `src/light-apps.ts` owns the existing fixed Kernel admission values and descriptive operation vocabulary. Schema and native admission reuse those values; app-get capability projections require the complete vocabulary. This descriptive response grants no operation or authority.
+
 Provider-subscription create accepts a supplied slot string so the existing account owner returns its stable slot-syntax error. Non-string slots and unknown request fields retain common strict-input refusal; response slot syntax is unchanged.
 
 `workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. The complete capture, verify, download, same-deployment backup-restore and selected recovery inspect/finish/abandon definitions are composed; MOVE remains uncomposed until its owners activate it. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.

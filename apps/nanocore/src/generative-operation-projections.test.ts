@@ -900,3 +900,147 @@ it('refuses an oversized mutation before records, Audit or receipts change', asy
     f.coreDb.sqlite.close();
   }
 });
+
+it('discovers the fixed Kernel vocabulary and returns precise revision and query failures', async () => {
+  const f = await fixture();
+  const { createCoreClient } = await import('@openkit/core-client');
+  const client = createCoreClient({
+    baseUrl: 'http://nanocore.test',
+    fetch: createLoopbackAppFetch(f.app),
+  });
+  try {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const app = await client.operations['kernel.apps.create']({
+      ...schema,
+      workspaceId,
+      requestId: randomUUID(),
+    } as never);
+    const scope = { workspaceId, appId: app.appId };
+    const current = await client.operations['kernel.apps.get'](scope);
+    // Data Operations217/223 and Semantic Discovery require the complete inspected vocabulary.
+    expect.soft(current.capabilities).toMatchObject({
+      maxAppDirectories: 128,
+      maxSchemaBytes: 256 * 1024,
+      maxCollections: 16,
+      maxFields: 64,
+      maxIndexes: 8,
+      maxIndexFields: 4,
+      maxRecords: 10_000,
+      maxDataObjectBytes: 16 * 1024,
+      maxTextBytes: 4096,
+      maxMutationRequestBytes: 1024 * 1024,
+      maxReadResponseBytes: 2 * 1024 * 1024,
+      maxBatchEntries: 50,
+      maxFilterBytes: 2048,
+      maxPredicates: 32,
+      maxGroupingDepth: 4,
+      maxPerPage: 100,
+      maxOffset: 10_000,
+      maxSortFields: 3,
+      maxSelectValues: 100,
+      maxNameLength: 63,
+    });
+    expect
+      .soft(new Set((current.capabilities as unknown as { operations?: string[] }).operations))
+      .toEqual(
+        new Set([
+          'kernel.apps.list',
+          'kernel.apps.create',
+          'kernel.apps.get',
+          'kernel.schema.update',
+          'kernel.apps.retire',
+          'kernel.records.list',
+          'kernel.records.get',
+          'kernel.records.create',
+          'kernel.records.update',
+          'kernel.records.batch',
+          'kernel.apps.instantiate',
+          'kernel.schema.activate',
+          'kernel.snapshots.list',
+          'kernel.snapshots.rollback',
+          'kernel.format.upgrade',
+        ])
+      );
+    const record = await client.operations['kernel.records.create']({
+      ...scope,
+      collection: 'entries',
+      schemaRevision: 1,
+      data: { note: 'Retain the original value.' },
+    });
+    const selector = { ...scope, collection: 'entries', recordId: record.id };
+    await expect
+      .soft(
+        client.operations['kernel.records.update']({
+          ...selector,
+          requestId: randomUUID(),
+          schemaRevision: 1,
+          expectedRecordRevision: 2,
+          data: { note: 'Must not commit.' },
+        })
+      )
+      .rejects.toMatchObject({
+        code: 'conflict',
+        details: { expectedRevision: 2, currentRevision: 1 },
+      });
+    await expect
+      .soft(
+        client.operations['kernel.apps.retire']({
+          ...scope,
+          requestId: randomUUID(),
+          expectedAppRevision: 2,
+        })
+      )
+      .rejects.toMatchObject({
+        code: 'conflict',
+        details: { expectedRevision: 2, currentRevision: 1 },
+      });
+    const { appId: _appId, schemaRevision: _schemaRevision, ...proposal } = app.schema!;
+    await expect
+      .soft(
+        client.operations['kernel.schema.update']({
+          ...scope,
+          requestId: randomUUID(),
+          expectedAppRevision: 1,
+          expectedSchemaRevision: 2,
+          schema: proposal,
+        })
+      )
+      .rejects.toMatchObject({
+        code: 'conflict',
+        details: { expectedRevision: 2, currentRevision: 1 },
+      });
+    await expect
+      .soft(client.operations['kernel.records.get']({ ...selector, schemaRevision: 2 }))
+      .rejects.toMatchObject({
+        code: 'schema_stale',
+        details: { expectedRevision: 2, currentRevision: 1 },
+      });
+    for (const query of [
+      { filter: 'missing = true' },
+      { sort: 'missing' },
+      { fields: 'missing' },
+    ]) {
+      const path = Object.keys(query)[0]!;
+      await expect
+        .soft(
+          client.operations['kernel.records.list']({
+            ...scope,
+            collection: 'entries',
+            schemaRevision: 1,
+            ...query,
+          })
+        )
+        .rejects.toMatchObject({ code: 'validation_failed', path: [path] });
+    }
+    expect(
+      await client.operations['kernel.records.get']({ ...selector, schemaRevision: 1 })
+    ).toEqual(record);
+    expect(await client.operations['kernel.apps.get'](scope)).toMatchObject({
+      appRevision: 1,
+      schemaRevision: 1,
+      lifecycle: 'active',
+    });
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});

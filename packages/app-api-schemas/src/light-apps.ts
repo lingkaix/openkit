@@ -13,11 +13,6 @@ import { z } from 'zod';
 /** Current Light App kernel format supported by this release. */
 export const LIGHT_APP_KERNEL_FORMAT_VERSION = 2;
 
-/** User-authored Light App collection and field names. */
-export const LightAppNameSchema = z
-  .string()
-  .regex(/^[a-z][a-z0-9_]{0,62}$/, 'Name must match [a-z][a-z0-9_]{0,62}.');
-
 /** Reserved record metadata names that callers cannot declare as fields. */
 export const LIGHT_APP_RESERVED_FIELD_NAMES = ['id', 'created', 'updated', 'revision'] as const;
 
@@ -31,13 +26,66 @@ export const LightAppFieldTypeSchema = z.enum([
   'relation',
 ]);
 
+/** Fixed Kernel admission limits and descriptive operation vocabulary; these grant no authority. */
+export const LIGHT_APP_CAPABILITIES = {
+  fieldTypes: ['text', 'number', 'bool', 'date', 'select', 'relation'] as Array<
+    z.infer<typeof LightAppFieldTypeSchema>
+  >,
+  filterOperators: ['=', '!=', '>', '>=', '<', '<=', '&&', '||'] as Array<
+    '=' | '!=' | '>' | '>=' | '<' | '<=' | '&&' | '||'
+  >,
+  operations: [
+    'kernel.apps.list',
+    'kernel.apps.create',
+    'kernel.apps.get',
+    'kernel.schema.update',
+    'kernel.apps.retire',
+    'kernel.records.list',
+    'kernel.records.get',
+    'kernel.records.create',
+    'kernel.records.update',
+    'kernel.records.batch',
+    'kernel.apps.instantiate',
+    'kernel.schema.activate',
+    'kernel.snapshots.list',
+    'kernel.snapshots.rollback',
+    'kernel.format.upgrade',
+  ] as string[],
+  maxAppDirectories: 128,
+  maxSchemaBytes: 262144,
+  maxCollections: 16,
+  maxFields: 64,
+  maxIndexes: 8,
+  maxIndexFields: 4,
+  maxRecords: 10000,
+  maxDataObjectBytes: 16384,
+  maxTextBytes: 4096,
+  maxMutationRequestBytes: 1048576,
+  maxReadResponseBytes: 2097152,
+  maxBatchEntries: 50,
+  maxFilterBytes: 2048,
+  maxPredicates: 32,
+  maxGroupingDepth: 4,
+  maxPerPage: 100,
+  maxOffset: 10000,
+  maxSortFields: 3,
+  maxSelectValues: 100,
+  maxNameLength: 63,
+} as const;
+
+/** User-authored Light App collection and field names. */
+export const LightAppNameSchema = z
+  .string()
+  .max(LIGHT_APP_CAPABILITIES.maxNameLength)
+  .regex(/^[a-z][a-z0-9_]*$/, 'Name must match [a-z][a-z0-9_]{0,62}.');
+
 /** JSON object that forbids unknown keys after schema validation. */
 const unknownRecordSchema = z.record(z.string(), z.unknown());
 
 /** Text field options. */
 export const LightAppTextFieldOptionsSchema = z
   .object({
-    max: z.number().int().min(1).max(4096).optional(),
+    max: z.number().int().min(1).max(LIGHT_APP_CAPABILITIES.maxTextBytes).optional(),
   })
   .strict();
 
@@ -53,7 +101,7 @@ export const LightAppNumberFieldOptionsSchema = z
 /** Select field options. */
 export const LightAppSelectFieldOptionsSchema = z
   .object({
-    values: z.array(z.string().min(1)).min(1).max(100),
+    values: z.array(z.string().min(1)).min(1).max(LIGHT_APP_CAPABILITIES.maxSelectValues),
   })
   .strict()
   .superRefine((value, context) => {
@@ -157,7 +205,7 @@ export const LightAppFieldInputSchema = z
 /** One authored index over current names or stable field IDs. */
 export const LightAppIndexInputSchema = z
   .object({
-    fields: z.array(z.string().min(1)).min(1).max(4),
+    fields: z.array(z.string().min(1)).min(1).max(LIGHT_APP_CAPABILITIES.maxIndexFields),
     unique: z.boolean(),
   })
   .strict();
@@ -169,8 +217,8 @@ export const LightAppCollectionInputSchema = z
     name: LightAppNameSchema,
     type: z.literal('base'),
     description: z.string(),
-    fields: z.array(LightAppFieldInputSchema).min(1).max(64),
-    indexes: z.array(LightAppIndexInputSchema).max(8),
+    fields: z.array(LightAppFieldInputSchema).min(1).max(LIGHT_APP_CAPABILITIES.maxFields),
+    indexes: z.array(LightAppIndexInputSchema).max(LIGHT_APP_CAPABILITIES.maxIndexes),
   })
   .strict()
   .superRefine((collection, context) => {
@@ -214,7 +262,10 @@ export const LightAppSchemaInputSchema = z
     purpose: z.string(),
     /** Exact reusable meaning targets; omission is normalized only by definition admission. */
     references: z.array(meaningReferenceSchema).optional(),
-    collections: z.array(LightAppCollectionInputSchema).min(1).max(16),
+    collections: z
+      .array(LightAppCollectionInputSchema)
+      .min(1)
+      .max(LIGHT_APP_CAPABILITIES.maxCollections),
   })
   .strict()
   .superRefine((schema, context) => {
@@ -259,11 +310,11 @@ export const LightAppAdmittedCollectionSchema = z
     name: LightAppNameSchema,
     type: z.literal('base'),
     description: z.string(),
-    fields: z.array(LightAppAdmittedFieldSchema).min(1).max(64),
+    fields: z.array(LightAppAdmittedFieldSchema).min(1).max(LIGHT_APP_CAPABILITIES.maxFields),
     indexes: z.array(
       z
         .object({
-          fields: z.array(FieldIdSchema).min(1).max(4),
+          fields: z.array(FieldIdSchema).min(1).max(LIGHT_APP_CAPABILITIES.maxIndexFields),
           unique: z.boolean(),
         })
         .strict()
@@ -282,19 +333,39 @@ export const LightAppAdmittedSchemaSchema = z
     purpose: z.string(),
     /** Explicit exact reusable meaning targets retained in the immutable definition. */
     references: z.array(meaningReferenceSchema),
-    collections: z.array(LightAppAdmittedCollectionSchema).min(1).max(16),
+    collections: z
+      .array(LightAppAdmittedCollectionSchema)
+      .min(1)
+      .max(LIGHT_APP_CAPABILITIES.maxCollections),
   })
   .strict();
 
-/** Discoverable Kernel type, operator, and limit vocabulary. */
+/** Discoverable Kernel type, operator, operation and fixed limit vocabulary. */
 export const LightAppCapabilitiesSchema = z
   .object({
     fieldTypes: z.array(LightAppFieldTypeSchema),
     filterOperators: z.array(z.enum(['=', '!=', '>', '>=', '<', '<=', '&&', '||'])),
-    maxPerPage: z.literal(100),
-    maxRecords: z.literal(10_000),
-    maxBatchEntries: z.literal(50),
-    maxFilterBytes: z.literal(2048),
+    operations: z.array(z.string().min(1)),
+    maxAppDirectories: z.literal(LIGHT_APP_CAPABILITIES.maxAppDirectories),
+    maxSchemaBytes: z.literal(LIGHT_APP_CAPABILITIES.maxSchemaBytes),
+    maxCollections: z.literal(LIGHT_APP_CAPABILITIES.maxCollections),
+    maxFields: z.literal(LIGHT_APP_CAPABILITIES.maxFields),
+    maxIndexes: z.literal(LIGHT_APP_CAPABILITIES.maxIndexes),
+    maxIndexFields: z.literal(LIGHT_APP_CAPABILITIES.maxIndexFields),
+    maxRecords: z.literal(LIGHT_APP_CAPABILITIES.maxRecords),
+    maxDataObjectBytes: z.literal(LIGHT_APP_CAPABILITIES.maxDataObjectBytes),
+    maxTextBytes: z.literal(LIGHT_APP_CAPABILITIES.maxTextBytes),
+    maxMutationRequestBytes: z.literal(LIGHT_APP_CAPABILITIES.maxMutationRequestBytes),
+    maxReadResponseBytes: z.literal(LIGHT_APP_CAPABILITIES.maxReadResponseBytes),
+    maxBatchEntries: z.literal(LIGHT_APP_CAPABILITIES.maxBatchEntries),
+    maxFilterBytes: z.literal(LIGHT_APP_CAPABILITIES.maxFilterBytes),
+    maxPredicates: z.literal(LIGHT_APP_CAPABILITIES.maxPredicates),
+    maxGroupingDepth: z.literal(LIGHT_APP_CAPABILITIES.maxGroupingDepth),
+    maxPerPage: z.literal(LIGHT_APP_CAPABILITIES.maxPerPage),
+    maxOffset: z.literal(LIGHT_APP_CAPABILITIES.maxOffset),
+    maxSortFields: z.literal(LIGHT_APP_CAPABILITIES.maxSortFields),
+    maxSelectValues: z.literal(LIGHT_APP_CAPABILITIES.maxSelectValues),
+    maxNameLength: z.literal(LIGHT_APP_CAPABILITIES.maxNameLength),
   })
   .strict();
 
@@ -370,7 +441,7 @@ export const LightAppCatalogItemSchema = z
 export const ListLightAppsResponseSchema = z
   .object({
     page: z.number().int().positive(),
-    perPage: z.number().int().positive().max(100),
+    perPage: z.number().int().positive().max(LIGHT_APP_CAPABILITIES.maxSelectValues),
     totalItems: z.number().int().nonnegative(),
     totalPages: z.number().int().nonnegative(),
     items: z.array(LightAppCatalogItemSchema),
@@ -460,7 +531,7 @@ export const LightAppRecordSchema = z
 export const ListLightAppRecordsResponseSchema = z
   .object({
     page: z.number().int().positive(),
-    perPage: z.number().int().positive().max(100),
+    perPage: z.number().int().positive().max(LIGHT_APP_CAPABILITIES.maxSelectValues),
     totalItems: z.number().int().nonnegative(),
     totalPages: z.number().int().nonnegative(),
     schemaRevision: z.number().int().positive(),
@@ -508,7 +579,10 @@ export const LightAppBatchRequestEntrySchema = z
 export const LightAppBatchRequestSchema = z
   .object({
     schemaRevision: z.number().int().positive(),
-    requests: z.array(LightAppBatchRequestEntrySchema).min(1).max(50),
+    requests: z
+      .array(LightAppBatchRequestEntrySchema)
+      .min(1)
+      .max(LIGHT_APP_CAPABILITIES.maxBatchEntries),
   })
   .strict();
 

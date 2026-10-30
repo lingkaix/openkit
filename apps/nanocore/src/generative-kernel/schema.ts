@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  LIGHT_APP_CAPABILITIES,
   type LightAppAdmittedSchema,
   LightAppAdmittedSchemaSchema,
   type LightAppSchemaInput,
@@ -10,7 +11,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { KernelCommandError } from './errors.js';
 import { parseStrictJsonObject } from './json.js';
 
-const SCHEMA_BYTE_LIMIT = 256 * 1024;
+const SCHEMA_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxSchemaBytes;
 
 /**
  * Parses and admits one Light App schema proposal, assigning IDs and resolving selectors.
@@ -55,7 +56,8 @@ export function admitLightAppDefinition(
   if (!parsed.success) {
     throw new KernelCommandError(
       'validation_failed',
-      parsed.error.issues[0]?.message ?? 'Invalid Light App schema.'
+      parsed.error.issues[0]?.message ?? 'Invalid Light App schema.',
+      { path: parsed.error.issues[0]?.path.map(String).join('.') || 'schema' }
     );
   }
   const collectionIds = new Map<string, string>();
@@ -221,7 +223,9 @@ function resolveFieldId(
 function resolveSelector(selector: string, ids: Map<string, string>, label: string): string {
   const resolved = ids.get(selector);
   if (!resolved) {
-    throw new KernelCommandError('validation_failed', `Unknown ${label} selector: ${selector}.`);
+    throw new KernelCommandError('validation_failed', `Unknown ${label} selector: ${selector}.`, {
+      path: 'schema',
+    });
   }
   return resolved;
 }

@@ -33082,7 +33082,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -33104,7 +33105,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -33237,13 +33239,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -33252,15 +33297,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -33387,7 +33477,8 @@
           },
           "collectionName": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+            "maxLength": 63,
+            "pattern": "^[a-z][a-z0-9_]*$"
           },
           "revision": {
             "type": "integer",
@@ -33654,7 +33745,8 @@
                 },
                 "name": {
                   "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                  "maxLength": 63,
+                  "pattern": "^[a-z][a-z0-9_]*$"
                 },
                 "type": {
                   "type": "string",
@@ -33676,7 +33768,8 @@
                       },
                       "name": {
                         "type": "string",
-                        "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                        "maxLength": 63,
+                        "pattern": "^[a-z][a-z0-9_]*$"
                       },
                       "type": {
                         "type": "string",
@@ -33907,7 +34000,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -33929,7 +34023,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -34062,13 +34157,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -34077,15 +34215,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -34202,7 +34385,8 @@
                     },
                     "name": {
                       "type": "string",
-                      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]*$"
                     },
                     "type": {
                       "type": "string",
@@ -34224,7 +34408,8 @@
                           },
                           "name": {
                             "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                            "maxLength": 63,
+                            "pattern": "^[a-z][a-z0-9_]*$"
                           },
                           "type": {
                             "type": "string",
@@ -34469,7 +34654,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -34491,7 +34677,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -34624,13 +34811,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -34639,15 +34869,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -34874,7 +35149,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -34896,7 +35172,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -35029,13 +35306,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -35044,15 +35364,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -35216,7 +35581,8 @@
                 },
                 "collectionName": {
                   "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                  "maxLength": 63,
+                  "pattern": "^[a-z][a-z0-9_]*$"
                 },
                 "revision": {
                   "type": "integer",
@@ -35331,7 +35697,8 @@
           },
           "collectionName": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+            "maxLength": 63,
+            "pattern": "^[a-z][a-z0-9_]*$"
           },
           "revision": {
             "type": "integer",
@@ -35451,7 +35818,8 @@
           },
           "collectionName": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+            "maxLength": 63,
+            "pattern": "^[a-z][a-z0-9_]*$"
           },
           "revision": {
             "type": "integer",
@@ -35673,7 +36041,8 @@
                 },
                 "collectionName": {
                   "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                  "maxLength": 63,
+                  "pattern": "^[a-z][a-z0-9_]*$"
                 },
                 "revision": {
                   "type": "integer",
@@ -114471,7 +114840,8 @@
                     },
                     "name": {
                       "type": "string",
-                      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]*$"
                     },
                     "type": {
                       "type": "string",
@@ -114493,7 +114863,8 @@
                           },
                           "name": {
                             "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                            "maxLength": 63,
+                            "pattern": "^[a-z][a-z0-9_]*$"
                           },
                           "type": {
                             "type": "string",
@@ -115357,7 +115728,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -115379,7 +115751,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -115512,13 +115885,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -115527,15 +115943,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -115777,7 +116238,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -115799,7 +116261,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -115932,13 +116395,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -115947,15 +116453,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -116276,7 +116827,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -116298,7 +116850,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -116431,13 +116984,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -116446,15 +117042,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -116681,7 +117322,8 @@
                         },
                         "name": {
                           "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                          "maxLength": 63,
+                          "pattern": "^[a-z][a-z0-9_]*$"
                         },
                         "type": {
                           "type": "string",
@@ -116703,7 +117345,8 @@
                               },
                               "name": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                                "maxLength": 63,
+                                "pattern": "^[a-z][a-z0-9_]*$"
                               },
                               "type": {
                                 "type": "string",
@@ -116836,13 +117479,56 @@
                   ]
                 }
               },
-              "maxPerPage": {
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxAppDirectories": {
                 "type": "number",
-                "const": 100
+                "const": 128
+              },
+              "maxSchemaBytes": {
+                "type": "number",
+                "const": 262144
+              },
+              "maxCollections": {
+                "type": "number",
+                "const": 16
+              },
+              "maxFields": {
+                "type": "number",
+                "const": 64
+              },
+              "maxIndexes": {
+                "type": "number",
+                "const": 8
+              },
+              "maxIndexFields": {
+                "type": "number",
+                "const": 4
               },
               "maxRecords": {
                 "type": "number",
                 "const": 10000
+              },
+              "maxDataObjectBytes": {
+                "type": "number",
+                "const": 16384
+              },
+              "maxTextBytes": {
+                "type": "number",
+                "const": 4096
+              },
+              "maxMutationRequestBytes": {
+                "type": "number",
+                "const": 1048576
+              },
+              "maxReadResponseBytes": {
+                "type": "number",
+                "const": 2097152
               },
               "maxBatchEntries": {
                 "type": "number",
@@ -116851,15 +117537,60 @@
               "maxFilterBytes": {
                 "type": "number",
                 "const": 2048
+              },
+              "maxPredicates": {
+                "type": "number",
+                "const": 32
+              },
+              "maxGroupingDepth": {
+                "type": "number",
+                "const": 4
+              },
+              "maxPerPage": {
+                "type": "number",
+                "const": 100
+              },
+              "maxOffset": {
+                "type": "number",
+                "const": 10000
+              },
+              "maxSortFields": {
+                "type": "number",
+                "const": 3
+              },
+              "maxSelectValues": {
+                "type": "number",
+                "const": 100
+              },
+              "maxNameLength": {
+                "type": "number",
+                "const": 63
               }
             },
             "required": [
               "fieldTypes",
               "filterOperators",
-              "maxPerPage",
+              "operations",
+              "maxAppDirectories",
+              "maxSchemaBytes",
+              "maxCollections",
+              "maxFields",
+              "maxIndexes",
+              "maxIndexFields",
               "maxRecords",
+              "maxDataObjectBytes",
+              "maxTextBytes",
+              "maxMutationRequestBytes",
+              "maxReadResponseBytes",
               "maxBatchEntries",
-              "maxFilterBytes"
+              "maxFilterBytes",
+              "maxPredicates",
+              "maxGroupingDepth",
+              "maxPerPage",
+              "maxOffset",
+              "maxSortFields",
+              "maxSelectValues",
+              "maxNameLength"
             ],
             "additionalProperties": false
           },
@@ -154568,5 +155299,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:af8a73a2c3ec4322841c8234ed24dc014b2b57b300e0e5f73c519212c2b87428"
+  "x-openkit-source-digest": "sha256:985a595b35d6cf912cb1a0e9a05da258a4e5b2fa3302f7aa9981aaad8fc1609a"
 }

@@ -1,5 +1,7 @@
 # NanoCore Source
 
+Kernel discovery exposes the shared fixed admission limits and supported operations. Native revision refusals carry expected and current revisions, and validation refusals identify the relevant input path. These metadata fields add no operation or authority.
+
 Kernel record count and rows share one SQLite read transaction. The Kernel owner checks complete logical mutation input and projected responses against its fixed byte ceilings; mutation projections are checked inside the existing transaction, and expanded meaning responses reuse that same response check.
 
 A fresh authenticated User can list empty Memory through the existing first-query Notebook initialization. Retained Notebook, Source, config or initialization evidence still makes missing established storage a recovery refusal; list never repairs lost Memory.
