@@ -136,19 +136,11 @@ export function createAuthMiddleware(
           .some((address) => !isLoopbackHost(address.trim()))
       )
         return unauthorized(c);
-      if (!options.localUserId) return unauthorized(c);
-      const actor = actorFromRequest(c.req.raw, mode, options.localUserId);
-      if (options.canonicalUserActive && !(await options.canonicalUserActive(actor.userId))) {
-        return unauthorized(c);
-      }
-
-      c.set('actor', actor);
-      await next();
-      return;
     }
 
     const bearerToken = readBearerToken(c.req.raw);
-    if (bearerToken) {
+    if (c.req.raw.headers.has('authorization')) {
+      if (!bearerToken) return unauthorized(c);
       if (!acceptsSecretTransport(c)) {
         return insecureTransport(c);
       }
@@ -171,6 +163,19 @@ export function createAuthMiddleware(
     }
 
     if (c.req.path === '/mcp') return unauthorized(c);
+
+    // Only credential-free local requests may use the implicit identity.
+    if (mode === 'local') {
+      if (!options.localUserId) return unauthorized(c);
+      const actor = actorFromRequest(c.req.raw, mode, options.localUserId);
+      if (options.canonicalUserActive && !(await options.canonicalUserActive(actor.userId))) {
+        return unauthorized(c);
+      }
+
+      c.set('actor', actor);
+      await next();
+      return;
+    }
 
     const session = await auth?.api.getSession({ headers: c.req.raw.headers });
 

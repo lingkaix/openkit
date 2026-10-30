@@ -1,9 +1,98 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 
+import { createOpenKitAccessTokenSecret } from './access-token.js';
 import { type BetterAuthServer, createAuthMiddleware } from './middleware.js';
 
 describe('createAuthMiddleware', () => {
+  // Local identity contract: a presented bearer retains its owner and coarse bounds;
+  // authentication refusal cannot become implicit-local administrator admission.
+  it.each([
+    'workspace',
+    'workspace-readonly',
+  ] as const)('preserves a presented local-mode %s bearer instead of installing the local actor', async (tokenScope) => {
+    const secret = createOpenKitAccessTokenSecret();
+    const tokenId = 'tok_00000000-0000-71d2-a336-a862021357ff';
+    const actor = {
+      kind: 'token' as const,
+      tokenScope,
+      tokenWorkspaceIds: ['ws_00000000-0000-7f29-bd5e-f9ef21ea57f9'],
+      userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b',
+    };
+    let verifierCalls = 0;
+    const app = new Hono();
+    app.use(
+      '*',
+      createAuthMiddleware('local', undefined, {
+        accessTokenVerifier: (presented) => {
+          verifierCalls += 1;
+          return presented === secret ? { actor, tokenId } : null;
+        },
+        localUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    app.get('/api/private', (c) => c.json(c.get('actor')));
+    app.post('/mcp', (c) => c.json(c.get('actor')));
+    const response = await app.request('/api/private', {
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ...actor, tokenId });
+    expect(verifierCalls).toBe(1);
+
+    // Credential-free local admission remains distinct from bearer-only MCP.
+    const local = await app.request('/api/private');
+    expect(local.status).toBe(200);
+    await expect(local.json()).resolves.toEqual({
+      kind: 'local',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
+    expect((await app.request('/mcp', { method: 'POST' })).status).toBe(401);
+    const mcp = await app.request('/mcp', {
+      headers: { authorization: `Bearer ${secret}` },
+      method: 'POST',
+    });
+    expect(mcp.status).toBe(200);
+    await expect(mcp.json()).resolves.toEqual({ ...actor, tokenId });
+    expect(verifierCalls).toBe(2);
+  });
+
+  it.each([
+    'unusable',
+    'malformed',
+  ] as const)('refuses a %s local-mode bearer without reaching the protected handler', async (credentialState) => {
+    let verifierCalls = 0;
+    let handlerReached = false;
+    const app = new Hono();
+    app.use(
+      '/api/*',
+      createAuthMiddleware('local', undefined, {
+        accessTokenVerifier: () => {
+          verifierCalls += 1;
+          return null;
+        },
+        localUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    app.get('/api/private', (c) => {
+      handlerReached = true;
+      return c.json(c.get('actor'));
+    });
+    const response = await app.request('/api/private', {
+      headers: {
+        authorization:
+          credentialState === 'malformed' ? 'Bearer' : `Bearer ${createOpenKitAccessTokenSecret()}`,
+      },
+    });
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'core.auth.unauthenticated',
+      message: 'Authentication required.',
+    });
+    expect(handlerReached).toBe(false);
+    expect(verifierCalls).toBe(credentialState === 'malformed' ? 0 : 1);
+  });
+
   it('fails closed for disabled implicit local and session users', async () => {
     const localApp = new Hono();
     localApp.use(
