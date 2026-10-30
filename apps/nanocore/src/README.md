@@ -170,3 +170,5 @@ Skill candidate Artifact admission reads the exact retained version and digest u
 Application and boot assembly forward Vault revocation to their existing shared Worker MCP Gateway as well as the runtime binding owner. Public JSON and MCP operation paths share this physical cleanup join; failed cleanup cannot report successful revocation completion.
 
 A selected Worker handoff to another Thread first completes the request-derived origin Chat Turn with one status Item naming that exact Thread and receiving Turn. The existing Worker admission receipt still names the actual receiving execution. Exact replay checks the origin reference and reads existing work without adding history or launching again; missing or contradictory lineage uses the existing recovery refusal.
+
+MCP list-tools verifies retained schema attribution before replay admission and defers a failed read into the existing admitted failure closeout. A fresh request records its failed Call and Audit without Usage or upstream discovery; an earlier terminal Call remains immutable.

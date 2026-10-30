@@ -869,11 +869,17 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             mcpRequestName(environmentPackage, serverId, 'mcp.list-tools', ctx.mcpReq.id)
           );
           return await runMcpOperation(workspaceDb, callId, async () => {
-            const current = readTurnMcpToolSchemaSnapshot({
-              environmentPackage,
-              selected,
-              workspaceDb,
-            });
+            let current: ReturnType<typeof readTurnMcpToolSchemaSnapshot> = null;
+            let snapshotFailure: { error: unknown } | undefined;
+            try {
+              current = readTurnMcpToolSchemaSnapshot({
+                environmentPackage,
+                selected,
+                workspaceDb,
+              });
+            } catch (error) {
+              snapshotFailure = { error };
+            }
             const call = await startMcpCapabilityCall({
               callId,
               capabilityId: 'mcp.list-tools',
@@ -888,6 +894,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             try {
               requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
               requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+              if (snapshotFailure) throw snapshotFailure.error;
+              if (!current) {
+                current = readTurnMcpToolSchemaSnapshot({
+                  environmentPackage,
+                  selected,
+                  workspaceDb,
+                });
+              }
               if (current) {
                 await stampCapabilityCallSchemaSnapshot({
                   callId: call.id,

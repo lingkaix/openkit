@@ -30,7 +30,6 @@ import {
 } from './statements.js';
 
 const GateOutput = z.object({ decision: z.enum(['allow', 'deny', 'escalate']) }).strict();
-const AdviceOutput = z.object({ attributes: z.record(z.string(), z.json()) }).strict();
 const ObservationOutput = z.object({ observed: z.literal(true) }).strict();
 type InvocationReference = PolicyDecisionV1['invocations'][number];
 
@@ -165,29 +164,22 @@ export class PolicyInterception {
     const prepared = this.prepareDecision(input);
     const { bindings, advice, invocations, results, used, humanApproved } = prepared;
     const { policyRevision, proposalDigest } = prepared;
-    for (const mode of ['transform', 'advise', 'gate'] as const) {
-      for (const binding of bindings.filter((value) => value.mode === mode)) {
-        if (
-          binding.lifetime.uses !== undefined &&
-          readPolicyStatementUseCount(input.workspaceDb, {
-            id: binding.id,
-            digest: policyDigest(binding),
-          }) >= binding.lifetime.uses
-        )
-          continue;
-        const evaluated = await this.invoke(input, binding, advice, policyRevision, proposalDigest);
-        invocations.push(evaluated.reference);
-        if (binding.state === 'shadow') continue;
-        used.push(binding);
-        results.push(
-          evaluated.result === 'require_escalation' && humanApproved ? 'allow' : evaluated.result
-        );
-        if (evaluated.advice)
-          advice.push({
-            binding: { id: binding.id, digest: policyDigest(binding) },
-            ...evaluated.advice,
-          });
-      }
+    for (const binding of bindings.filter((value) => value.mode === 'gate')) {
+      if (
+        binding.lifetime.uses !== undefined &&
+        readPolicyStatementUseCount(input.workspaceDb, {
+          id: binding.id,
+          digest: policyDigest(binding),
+        }) >= binding.lifetime.uses
+      )
+        continue;
+      const evaluated = await this.invoke(input, binding, advice, policyRevision, proposalDigest);
+      invocations.push(evaluated.reference);
+      if (binding.state === 'shadow') continue;
+      used.push(binding);
+      results.push(
+        evaluated.result === 'require_escalation' && humanApproved ? 'allow' : evaluated.result
+      );
     }
     const preparedDecision = this.prepareFinalDecision(input, prepared);
     await recordProductPermissionDecision(preparedDecision.record);
@@ -366,7 +358,6 @@ export class PolicyInterception {
   ): Promise<{
     reference: InvocationReference;
     result: PermissionDecisionResult;
-    advice?: z.infer<typeof AdviceOutput>;
   }> {
     const startedAt = new Date().toISOString();
     const bindingRef = { id: binding.id, digest: policyDigest(binding) };
@@ -374,7 +365,6 @@ export class PolicyInterception {
     const circuit = this.circuits.get(key) ?? { failures: 0, retryAt: 0, probing: false };
     let outcome: PolicyInvocationV1['outcome'] = 'unavailable';
     let output: unknown = null;
-    let parsedAdvice: z.infer<typeof AdviceOutput> | undefined;
     let result: PermissionDecisionResult =
       binding.failure === 'continue'
         ? 'not_applicable'
@@ -409,11 +399,7 @@ export class PolicyInterception {
       result = 'error';
     } else if (!participantAuthorized) outcome = 'unavailable';
     else if (circuit.probing || circuit.retryAt > Date.now()) outcome = 'open-circuit';
-    else if (binding.mode === 'transform') {
-      // No current I16 content owner can retain a replacement. Activation rejects
-      // this mode rather than inventing a completed transform from a digest.
-      outcome = 'unavailable';
-    } else if (
+    else if (
       participant &&
       (binding.participant.kind === 'agent' ||
         (participant.id === binding.participant.id &&
@@ -447,9 +433,7 @@ export class PolicyInterception {
                 ? PolicyAgentGateOutputV1Schema
                 : GateOutput
               ).safeParse(output)
-            : binding.mode === 'advise'
-              ? AdviceOutput.safeParse(output)
-              : ObservationOutput.safeParse(output);
+            : ObservationOutput.safeParse(output);
         if (!parsed.success) outcome = 'malformed';
         else if (!input.stillCurrent()) outcome = 'stale';
         else {
@@ -473,7 +457,6 @@ export class PolicyInterception {
             result = gate === 'escalate' ? 'require_escalation' : gate;
           } else {
             result = 'not_applicable';
-            if (binding.mode === 'advise') parsedAdvice = AdviceOutput.parse(parsed.data);
           }
         }
       } catch (error) {
@@ -588,7 +571,6 @@ export class PolicyInterception {
     return {
       reference: { kind: 'audit', id: auditEventId },
       result,
-      ...(parsedAdvice ? { advice: parsedAdvice } : {}),
     };
   }
 }
