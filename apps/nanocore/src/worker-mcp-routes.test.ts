@@ -3522,6 +3522,7 @@ describe('worker MCP routes', () => {
     );
     const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const client = new Client({ name: 'pending-echo', version: '1' });
+    let originalPendingNativeRequest: Request | undefined;
     try {
       const started = await captureApp.request(...taskRequest);
       expect(started.status, await started.clone().text()).toBe(202);
@@ -3537,7 +3538,18 @@ describe('worker MCP routes', () => {
         new StreamableHTTPClientTransport(
           new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
           {
-            fetch: (input, init) => captureApp.fetch(new Request(input, init)),
+            fetch: async (input, init) => {
+              const request = new Request(input, init);
+              if (
+                change === 'unchanged' &&
+                request.method === 'POST' &&
+                !originalPendingNativeRequest
+              ) {
+                const message = await request.clone().json();
+                if (message.method === 'tools/call') originalPendingNativeRequest = request.clone();
+              }
+              return captureApp.fetch(request);
+            },
             requestInit: {
               headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
             },
@@ -3555,13 +3567,42 @@ describe('worker MCP routes', () => {
       if (change === 'unchanged') {
         const boundDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         const countCalls = () => listWorkspaceCapabilityCalls(boundDb, workspaceId).length;
-        const beforeDuplicate = countCalls();
-        const duplicate = await client.callTool({
-          name: 'echo',
-          arguments: { message: 'captured effect' },
-        });
-        expect(duplicate.structuredContent).toEqual(pending.structuredContent);
-        expect(countCalls()).toBe(beforeDuplicate);
+        const originalCalls = listWorkspaceCapabilityCalls(boundDb, workspaceId);
+        const originalUsage = listWorkspaceUsageRecords(boundDb, workspaceId);
+        const originalPending = listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId);
+        expect(originalCalls.filter((call) => call.operation === 'mcp.call-tool')).toEqual([
+          expect.objectContaining({ status: 'denied' }),
+        ]);
+        if (!originalPendingNativeRequest)
+          throw new Error('Expected the original native Tool request.');
+        const replay = await captureApp.fetch(originalPendingNativeRequest.clone());
+        expect(replay.status).toBe(200);
+        expect((await replay.json()).result).toEqual(pending);
+        expect(listWorkspaceCapabilityCalls(boundDb, workspaceId)).toEqual(originalCalls);
+        expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(originalUsage);
+        expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
+          originalPending
+        );
+        for (let repeat = 0; repeat < 2; repeat++) {
+          const beforeDuplicate = listWorkspaceCapabilityCalls(boundDb, workspaceId);
+          const duplicate = await client.callTool({
+            name: 'echo',
+            arguments: { message: 'captured effect' },
+          });
+          expect(duplicate.structuredContent).toEqual(pending.structuredContent);
+          // Supply202/215 accounts for each distinct native request, even without Tool contact.
+          const added = listWorkspaceCapabilityCalls(boundDb, workspaceId).filter(
+            (call) => !beforeDuplicate.some((prior) => prior.id === call.id)
+          );
+          expect
+            .soft(added)
+            .toEqual([expect.objectContaining({ operation: 'mcp.call-tool', status: 'denied' })]);
+          expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(originalUsage);
+          expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
+            originalPending
+          );
+          expect(upstream).not.toHaveBeenCalled();
+        }
         for (let index = 1; index < 16; index += 1)
           expect(
             (
@@ -3572,10 +3613,16 @@ describe('worker MCP routes', () => {
             ).isError
           ).toBe(true);
         const beforeLimit = countCalls();
+        const usageBeforeLimit = listWorkspaceUsageRecords(boundDb, workspaceId);
+        const pendingBeforeLimit = listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId);
         await expect(
           client.callTool({ name: 'echo', arguments: { message: 'seventeenth captured' } })
         ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
-        expect(countCalls()).toBe(beforeLimit);
+        expect.soft(countCalls()).toBe(beforeLimit + 1);
+        expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(usageBeforeLimit);
+        expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
+          pendingBeforeLimit
+        );
         boundDb.sqlite.close();
       }
       if (change === 'unchanged') {
