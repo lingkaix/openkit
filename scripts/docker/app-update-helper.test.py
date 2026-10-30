@@ -1152,6 +1152,10 @@ class DoctorReadinessTests(unittest.TestCase):
     """Packaged administrator diagnostics retain unknown evidence and independent state dimensions."""
 
     def test_doctor_distinguishes_availability_readiness_and_maintenance(self) -> None:
+        protocol_version = subprocess.check_output(
+            ["node", "--input-type=module", "-e", "import { PROTOCOL_VERSION } from './packages/protocol/dist/index.js'; process.stdout.write(PROTOCOL_VERSION);"],
+            cwd=REPO_ROOT, text=True, timeout=30,
+        )
         observation = idle_preflight()
         observation["state"] = "busy"
         observation["counts"]["runningTurns"] = 1
@@ -1182,11 +1186,11 @@ class DoctorReadinessTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(encoded)
             def do_GET(self):
-                self.respond({"protocolVersion": "0.6.0", "capabilities": [], "eventFamilies": []})
+                self.respond({"protocolVersion": protocol_version, "capabilities": [], "eventFamilies": []})
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 if self.reject_reads:
-                    encoded = json.dumps({"protocolVersion": "0.6.0", "code": "deployment_admin_required", "message": "Administrator authority required."}).encode()
+                    encoded = json.dumps({"protocolVersion": protocol_version, "code": "deployment_admin_required", "message": "Administrator authority required."}).encode()
                     self.send_response(403)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(encoded)))
