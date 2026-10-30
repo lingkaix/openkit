@@ -3127,6 +3127,111 @@ describe('worker control routes', () => {
     });
   });
 
+  it('retains Artifact notice digest and collection hint across the real client route and durable restart replay', async () => {
+    const fixture = await createWorkerControlRouteFixture();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-notice-carriage-'));
+    let coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: fixture.lineage.workspaceId,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        fixture.environmentPackage,
+        fixture.lineage,
+        'artifact_notice_carriage'
+      );
+      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        fixture.environmentPackage,
+        binding
+      );
+      let app = createApp({
+        coreDb,
+        mode: 'server',
+        store: fixture.store,
+        workerControlGateway: gateway,
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+      });
+      const client = new WorkerControlClient({
+        baseUrl: 'http://core/api/worker-control',
+        token: registration.token,
+        lineage: fixture.lineage,
+        fetch: (url, init) => app.request(url, init),
+      });
+      const artifact = {
+        path: 'reports/result.md',
+        title: 'Worker report',
+        mediaType: 'text/markdown',
+        digest: `sha256:${'ab'.repeat(32)}`,
+        collectionHint: 'Collect reports/re\u0301sume\u0301.md; preserve  two spaces.\n',
+      };
+      const notice = { sequence: 2, artifact };
+      const canonicalArtifacts = fixture.store.listArtifacts(fixture.lineage.workspaceId);
+      const first = await client.recordArtifactNotice(notice);
+      // S03 artifact_notice metadata is descriptive carriage, not canonical Artifact admission.
+      expect.soft(first).toMatchObject({ artifact });
+      expect
+        .soft(gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)?.artifacts)
+        .toEqual([expect.objectContaining(artifact)]);
+      const records = () =>
+        coreDb.sqlite
+          .prepare(
+            "SELECT record_json AS recordJson FROM worker_control_records WHERE operation='artifact_notice' AND package_snapshot_id=?"
+          )
+          .all(fixture.lineage.packageSnapshotId) as { recordJson: string }[];
+      const acceptedRows = records();
+      expect(acceptedRows).toHaveLength(1);
+      expect.soft(JSON.parse(acceptedRows[0]!.recordJson)).toMatchObject(artifact);
+
+      closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      app = createApp({
+        coreDb,
+        mode: 'server',
+        store: fixture.store,
+        workerControlGateway: restartedGateway,
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+      });
+      expect
+        .soft(restartedGateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)?.artifacts)
+        .toEqual([expect.objectContaining(artifact)]);
+      expect(await client.recordArtifactNotice(notice)).toEqual(first);
+      // Both descriptive values remain part of the original same-sequence request fingerprint.
+      for (const changed of [
+        { digest: `sha256:${'cd'.repeat(32)}` },
+        { collectionHint: `${artifact.collectionHint}changed` },
+      ]) {
+        const result = await client
+          .recordArtifactNotice({ ...notice, artifact: { ...artifact, ...changed } })
+          .then(
+            () => null,
+            (error: unknown) => error
+          );
+        expect
+          .soft(result)
+          .toMatchObject({ status: 409, code: 'worker_control_sequence_conflict' });
+      }
+      expect(records()).toEqual(acceptedRows);
+      expect(
+        restartedGateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)?.artifacts
+      ).toHaveLength(1);
+      expect(fixture.store.listArtifacts(fixture.lineage.workspaceId)).toEqual(canonicalArtifacts);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rebuilds live worker-control sessions from durable gateway rows', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-')));
     const store = await createDemoStore();

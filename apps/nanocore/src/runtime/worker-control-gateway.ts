@@ -132,6 +132,10 @@ export interface WorkerControlArtifactNotice {
   path: string;
   /** Optional artifact media type. */
   mediaType: string | null;
+  /** Optional worker-announced digest, not proof of collected byte identity. */
+  digest?: string | null | undefined;
+  /** Optional descriptive hint, not authority to collect a path. */
+  collectionHint?: string | null | undefined;
   /** Timestamp recorded by NanoCore when the notice arrived. */
   noticedAt: string;
 }
@@ -847,6 +851,10 @@ export class WorkerControlGateway {
         path: string;
         /** Optional media type. */
         mediaType?: string | null | undefined;
+        /** Optional worker-announced digest. */
+        digest?: string | null | undefined;
+        /** Optional descriptive collection hint. */
+        collectionHint?: string | null | undefined;
       };
     }
   ): WorkerControlArtifactNotice {
@@ -881,6 +889,10 @@ export class WorkerControlGateway {
       path: input.artifact.path,
       sequence: input.sequence,
       title: input.artifact.title,
+      ...(input.artifact.digest !== undefined ? { digest: input.artifact.digest } : {}),
+      ...(input.artifact.collectionHint !== undefined
+        ? { collectionHint: input.artifact.collectionHint }
+        : {}),
     };
 
     state.snapshot.artifacts.push(artifact);

@@ -37,6 +37,8 @@ const WorkerControlArtifactNoticeRequestSchema = z.object({
     title: z.string().min(1),
     path: z.string().min(1),
     mediaType: z.string().min(1).nullable().optional(),
+    digest: z.string().min(1).nullable().optional(),
+    collectionHint: z.string().min(1).nullable().optional(),
   }),
 });
 const WorkerControlEventAppendRequestSchema = z.object({

@@ -89,6 +89,10 @@ export interface WorkerControlArtifactInput {
     path: string;
     /** Optional media type. */
     mediaType?: string | null | undefined;
+    /** Optional worker-announced digest; Core verifies collected bytes separately. */
+    digest?: string | null | undefined;
+    /** Optional descriptive collection hint; it grants no collection authority. */
+    collectionHint?: string | null | undefined;
   };
 }
 
