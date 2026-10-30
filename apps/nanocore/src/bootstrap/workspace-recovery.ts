@@ -1,9 +1,37 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import { configureOwnedSqlite } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
+import { bindWorkspaceSqlite } from '../storage/db.js';
+import { abandonCapture } from '../storage/workspace-capture-protection.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './readiness.js';
+
+/** Only an absent seal under the owned local directory permits automatic crash abandonment. */
+function automaticCaptureIsUnsealed(dataRoot: string, workspaceId: string, captureId: string) {
+  if (!isEntityId('wsbak', captureId)) throw new Error('Invalid automatic capture identity.');
+  let path = dataRoot;
+  for (const part of ['server', 'backups', 'workspaces', workspaceId, captureId]) {
+    path = join(path, part);
+    try {
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || !stat.isDirectory())
+        throw new Error('Automatic capture directory is unavailable.');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      throw error;
+    }
+  }
+  try {
+    lstatSync(join(path, 'seal.json'));
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+}
 
 /** Rebuilds quarantine and the same mutation fence from retained recovery before scoped opens or scanners. */
 export function restoreWorkspaceRecoveryAdmission(
@@ -45,11 +73,35 @@ export function restoreWorkspaceRecoveryAdmission(
         readonly: true,
         fileMustExist: true,
       });
-      if (
-        db.prepare("SELECT 1 FROM sqlite_master WHERE name='workspace_capture_records'").get() &&
-        db.prepare("SELECT 1 FROM workspace_capture_records WHERE state='active' LIMIT 1").get()
-      )
-        refuseScope(core.dataRoot, { scope: 'workspace', id, check: 'recovery' });
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='workspace_capture_records'").get()) {
+        // This scan precedes scoped migrations: old rows cannot prove automatic origin.
+        const columns = db.pragma('table_info(workspace_capture_records)') as { name: string }[];
+        if (columns.some((column) => column.name === 'origin')) {
+          const automatic = db
+            .prepare(
+              "SELECT capture_id FROM workspace_capture_records WHERE state='active' AND origin='automatic'"
+            )
+            .all() as { capture_id: string }[];
+          const unsealed = automatic.filter((row) =>
+            automaticCaptureIsUnsealed(core.dataRoot, id, row.capture_id)
+          );
+          if (unsealed.length) {
+            db.close();
+            // Startup still owns the data-root lock; native and request producers have not started.
+            db = new Database(join(workspaces, id, 'db/workspace.sqlite'), {
+              fileMustExist: true,
+              timeout: 5,
+            });
+            configureOwnedSqlite(db);
+            const writer = bindWorkspaceSqlite(db, core.dataRoot, id);
+            for (const row of unsealed) abandonCapture(writer, id, row.capture_id);
+          }
+        }
+        if (
+          db.prepare("SELECT 1 FROM workspace_capture_records WHERE state='active' LIMIT 1").get()
+        )
+          refuseScope(core.dataRoot, { scope: 'workspace', id, check: 'recovery' });
+      }
     } catch {
       refuseScope(core.dataRoot, { scope: 'workspace', id, check: 'database' });
     } finally {

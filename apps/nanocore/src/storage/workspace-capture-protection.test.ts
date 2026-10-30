@@ -66,6 +66,7 @@ describe('DX5 Workspace capture-record lifecycle', () => {
       'capture_id',
       'created_at',
       'ended_at',
+      'origin',
       'state',
       'workspace_id',
     ]);
@@ -90,6 +91,7 @@ describe('DX5 Workspace capture-record lifecycle', () => {
       captureId,
       workspaceId,
       state: 'active',
+      origin: 'manual',
       createdAt: expect.any(String),
       endedAt: null,
     });
@@ -176,6 +178,8 @@ describe('DX5 Workspace capture-record lifecycle', () => {
     }
     for (const invalidUpdate of [
       "state = 'unknown'",
+      "origin = 'unknown'",
+      'origin = NULL',
       "ended_at = '2031-01-01T00:00:00.000Z'",
       "state = 'finished', ended_at = NULL",
       "state = 'abandoned', ended_at = NULL",
@@ -240,8 +244,8 @@ describe('DX5 Workspace capture-record lifecycle', () => {
     const columns = db.sqlite.pragma('table_info(workspace_capture_records)') as Array<{
       name: string;
     }>;
-    expect(Object.keys(snapshot.tables.workspace_capture_records.columns).sort()).toEqual(
-      columns.map((column) => column.name).sort()
+    expect(columns.map((column) => column.name).sort()).toEqual(
+      [...Object.keys(snapshot.tables.workspace_capture_records.columns), 'origin'].sort()
     );
 
     // Replay the actual committed predecessor SQL, never a substitute schema.
@@ -314,5 +318,110 @@ describe('DX5 Workspace capture-record lifecycle', () => {
       }),
     ];
     expect(classifications).toHaveLength(1);
+  });
+});
+
+// Online Snapshot Policy requires positive automatic origin; default and predecessor data stay manual.
+describe('C-b capture origin authority', () => {
+  it('retains original origin on replay and refuses a different origin without mutation', () => {
+    const manualId = randomUUID();
+    const automaticId = randomUUID();
+    const manual = protectCapture(db, workspaceId, manualId);
+    const automatic = protectCapture(db, workspaceId, automaticId, { origin: 'automatic' });
+    expect(manual).toMatchObject({ origin: 'manual', state: 'active' });
+    expect(automatic).toMatchObject({ origin: 'automatic', state: 'active' });
+    const rows = retainedRows();
+    expect(protectCapture(db, workspaceId, automaticId, { origin: 'automatic' })).toEqual(
+      automatic
+    );
+    expect(() => protectCapture(db, workspaceId, manualId, { origin: 'automatic' })).toThrow();
+    expect(() => protectCapture(db, workspaceId, automaticId)).toThrow();
+    expect(retainedRows()).toEqual(rows);
+    expect(inspectCapture(db, workspaceId, manualId)).toEqual(manual);
+    expect(inspectCapture(db, workspaceId, automaticId)).toEqual(automatic);
+  });
+
+  it('fails closed on an unsupported retained origin and preserves its exact record', () => {
+    const captureId = randomUUID();
+    protectCapture(db, workspaceId, captureId);
+    // Damage an owner-created record; do not manufacture automatic publication authority.
+    db.sqlite.pragma('ignore_check_constraints = ON');
+    db.sqlite.prepare('UPDATE workspace_capture_records SET origin = ?').run('unknown');
+    db.sqlite.pragma('ignore_check_constraints = OFF');
+    const rows = retainedRows();
+    for (const operation of [inspectCapture, protectCapture, completeCapture, abandonCapture]) {
+      expect(() => operation(db, workspaceId, captureId)).toThrow();
+      expect(retainedRows()).toEqual(rows);
+    }
+  });
+
+  it('keeps predecessor captures inspectable through explicit abandonment and migration', () => {
+    const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8'));
+    const previousRoot = join(root, 'pre-origin-migrations');
+    mkdirSync(join(previousRoot, 'meta'), { recursive: true });
+    const entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 16);
+    writeFileSync(
+      join(previousRoot, 'meta/_journal.json'),
+      JSON.stringify({ ...journal, entries })
+    );
+    for (const entry of entries)
+      copyFileSync(
+        new URL(`${entry.tag}.sql`, migrationRoot),
+        join(previousRoot, `${entry.tag}.sql`)
+      );
+    const previous = openWorkspace(otherWorkspaceId);
+    applyNativeScopeMigrations(previous.sqlite, 'workspace', previousRoot);
+    const captureId = randomUUID();
+    const createdAt = '2030-01-01T00:00:00.000Z';
+    // This owner's migration test writes its committed predecessor shape, which has no origin.
+    previous.sqlite
+      .prepare(
+        `INSERT INTO workspace_capture_records
+       (capture_id, workspace_id, state, created_at, ended_at) VALUES (?, ?, 'active', ?, NULL)`
+      )
+      .run(captureId, otherWorkspaceId, createdAt);
+    const priorRows = retainedRows(previous) as Record<string, unknown>[];
+    const priorHistory = previous.sqlite
+      .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+      .all();
+    const previousColumns = previous.sqlite.pragma('table_info(workspace_capture_records)');
+    expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual({
+      captureId,
+      workspaceId: otherWorkspaceId,
+      state: 'active',
+      origin: 'manual',
+      createdAt,
+      endedAt: null,
+    });
+    expect(retainedRows(previous)).toEqual(priorRows);
+    const abandoned = abandonCapture(previous, otherWorkspaceId, captureId);
+    expect(abandoned).toMatchObject({
+      state: 'abandoned',
+      origin: 'manual',
+      endedAt: expect.any(String),
+    });
+    expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual(abandoned);
+    // Explicit recovery cannot depend on a migration that scoped quarantine prevents.
+    expect(previous.sqlite.pragma('table_info(workspace_capture_records)')).toEqual(
+      previousColumns
+    );
+    expect(previous.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+      priorHistory
+    );
+    const beforeMigration = retainedRows(previous) as Record<string, unknown>[];
+    applyScopedMigrations(previous);
+    expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual(abandoned);
+    expect(retainedRows(previous)).toEqual(
+      beforeMigration.map((row) => ({ ...row, origin: 'manual' }))
+    );
+    const history = previous.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
+    expect(history.slice(0, priorHistory.length)).toEqual(priorHistory);
+    applyScopedMigrations(previous);
+    expect(previous.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+      history
+    );
+    expect(retainedRows(previous)).toEqual(
+      beforeMigration.map((row) => ({ ...row, origin: 'manual' }))
+    );
   });
 });

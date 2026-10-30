@@ -37,9 +37,15 @@ export function inspectCapture(
   captureId: string
 ): WorkspaceCaptureRecord | null {
   assertCaptureScope(db, workspaceId, captureId);
+  // Quarantine can defer migration. The additive column's manual default still permits explicit
+  // inspection/abandonment of predecessor records without granting automatic recovery authority.
+  const hasOrigin = (
+    db.sqlite.pragma('table_info(workspace_capture_records)') as { name: string }[]
+  ).some((column) => column.name === 'origin');
   const row = db.sqlite
     .prepare(
       `SELECT capture_id AS captureId, workspace_id AS workspaceId, state,
+              ${hasOrigin ? 'origin' : "'manual' AS origin"},
               created_at AS createdAt, ended_at AS endedAt
        FROM workspace_capture_records WHERE capture_id = ?`
     )
@@ -49,6 +55,7 @@ export function inspectCapture(
     row.captureId !== captureId ||
     row.workspaceId !== workspaceId ||
     (row.state !== 'active' && row.state !== 'finished' && row.state !== 'abandoned') ||
+    (row.origin !== 'manual' && row.origin !== 'automatic') ||
     !isTimestamp(row.createdAt) ||
     (row.state === 'active' ? row.endedAt !== null : !isTimestamp(row.endedAt))
   ) {
@@ -58,6 +65,7 @@ export function inspectCapture(
     captureId,
     workspaceId,
     state: row.state,
+    origin: row.origin,
     createdAt: row.createdAt,
     endedAt: row.endedAt as string | null,
   };
@@ -68,15 +76,19 @@ export function inspectCapture(
  * @param db Physical Workspace authority.
  * @param workspaceId Expected owning Workspace.
  * @param captureId Exact identity reused for retries.
+ * @param options Trusted origin; ordinary callers and predecessor records remain manual.
  * @returns The active record with its original creation time.
  * @throws On terminal identity reuse, unsupported core, scope conflict, enclosing transaction or SQL failure.
  */
 export function protectCapture(
   db: WorkspaceDb,
   workspaceId: string,
-  captureId: string
+  captureId: string,
+  options: { readonly origin: 'manual' | 'automatic' } = { origin: 'manual' }
 ): WorkspaceCaptureRecord {
   assertCaptureScope(db, workspaceId, captureId);
+  if (options.origin !== 'manual' && options.origin !== 'automatic')
+    throw new Error('Workspace capture origin is unsupported.');
   // A nested savepoint could return success before its outer transaction commits or rolls back.
   if (db.sqlite.inTransaction) throw new Error('Workspace capture requires its own commit.');
   // An immediate transaction serializes the identity check and insert across native connections.
@@ -84,7 +96,7 @@ export function protectCapture(
     .transaction(() => {
       const existing = inspectCapture(db, workspaceId, captureId);
       if (existing) {
-        if (existing.state !== 'active') {
+        if (existing.state !== 'active' || existing.origin !== options.origin) {
           throw new Error('Workspace capture identity is already terminal.');
         }
         return existing;
@@ -93,10 +105,17 @@ export function protectCapture(
       db.sqlite
         .prepare(
           `INSERT INTO workspace_capture_records
-         (capture_id, workspace_id, state, created_at, ended_at) VALUES (?, ?, 'active', ?, NULL)`
+         (capture_id, workspace_id, state, origin, created_at, ended_at) VALUES (?, ?, 'active', ?, ?, NULL)`
         )
-        .run(captureId, workspaceId, createdAt);
-      return { captureId, workspaceId, state: 'active' as const, createdAt, endedAt: null };
+        .run(captureId, workspaceId, options.origin, createdAt);
+      return {
+        captureId,
+        workspaceId,
+        state: 'active' as const,
+        origin: options.origin,
+        createdAt,
+        endedAt: null,
+      };
     })
     .immediate();
 }

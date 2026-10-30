@@ -11,6 +11,10 @@ export const workspaceCaptureRecords = sqliteTable(
     workspaceId: text('workspace_id').notNull(),
     /** Closed lifecycle; only an explicit owner decision can end active protection. */
     state: text('state', { enum: ['active', 'finished', 'abandoned'] }).notNull(),
+    /** Trusted capture origin; predecessor records stay manual and never auto-abandon. */
+    origin: text('origin', { enum: ['manual', 'automatic'] })
+      .notNull()
+      .default('manual'),
     /** Original creation time in UTC ISO format, never an expiry deadline. */
     createdAt: text('created_at').notNull(),
     /** First terminal decision time in UTC ISO format; null while active. */
@@ -20,6 +24,10 @@ export const workspaceCaptureRecords = sqliteTable(
     check(
       'workspace_capture_records_state_check',
       sql`${table.state} IN ('active', 'finished', 'abandoned')`
+    ),
+    check(
+      'workspace_capture_records_origin_check',
+      sql`${table.origin} IN ('manual', 'automatic')`
     ),
     check(
       'workspace_capture_records_end_check',

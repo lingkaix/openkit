@@ -605,6 +605,8 @@ export interface WorkspaceBackupCreateInput extends WorkspaceBackupVerificationI
   readonly expectedSourceDeploymentId: string;
   readonly backupId: string;
   readonly purpose: 'backup' | 'move';
+  /** Trusted maintenance provenance only; public capture operations omit this member. */
+  readonly origin?: 'manual' | 'automatic';
 }
 
 /** MOVE preparation deliberately carries no transferable seal or moved-out authority. */
@@ -638,7 +640,7 @@ export interface WorkspaceBackupStageResult {
 
 /** Installed native formats; app keys also admit recognized immutable recovery versions. */
 export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>> = Object.freeze({
-  'drizzle.workspace': 16,
+  'drizzle.workspace': 17,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,
@@ -1302,6 +1304,12 @@ export function runWorkspaceCaptureWorker(
 export async function createWorkspaceBackup(
   input: WorkspaceBackupCreateInput
 ): Promise<WorkspaceBackupCreateResult> {
+  if (
+    (input.origin !== undefined && input.origin !== 'manual' && input.origin !== 'automatic') ||
+    (input.origin === 'automatic' &&
+      (input.source.kind !== 'live-workspace' || input.purpose !== 'backup'))
+  )
+    refuse('invalid-arguments');
   if (input.source.kind !== 'live-workspace') return captureWorkspaceBackup(input);
   if (captureWorkerActive) refuse('capacity-exceeded');
   captureWorkerActive = true;
@@ -1323,6 +1331,7 @@ export async function createWorkspaceBackup(
       backupId: input.backupId,
       expectedSourceDeploymentId: input.expectedSourceDeploymentId,
       purpose: input.purpose,
+      origin: input.origin ?? 'manual',
       bundleRoot: input.bundleRoot,
       stagingParent: input.stagingParent,
       expectedRelease: input.expectedRelease,
@@ -1764,7 +1773,9 @@ async function captureWorkspaceBackup(
       captureDb = captureDatabase(sourceRoot, input.workspaceId);
       // A lost acknowledgement can still leave an active MOVE pin. Unknown completion keeps its fence.
       phase?.('pin');
-      protectCapture(captureDb, input.workspaceId, input.backupId);
+      protectCapture(captureDb, input.workspaceId, input.backupId, {
+        origin: input.origin ?? 'manual',
+      });
       phase?.('pin-end');
     }
     phase?.('mutable-copy');

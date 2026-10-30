@@ -22,3 +22,5 @@ All three boot lifecycle Audit publishers emit the shared retained SQL v1 marker
 Personal Workspace boot resolution uses the Core User current binding. Terminal retirement permits a fresh successor through the shared idempotent provisioner; a quarantined current home remains excluded. The retirement operation itself never opens or modifies the retired Workspace, and succession does not move its history or User Memory.
 
 Workspace recovery rebuilds the existing mutation fence from its quarantine census before recurrence scanners start. Prepared MOVE and unfinished manual captures stay closed across restart, including repeated inspection of an already refused scope; index-only degradation leaves mutation admission unchanged.
+
+Before scoped migrations, restart abandons only an explicitly automatic, active capture with no local seal. This uses the existing capture decision owner while the data-root lock is held and before native/request publishers start. An absent origin column supplies no automatic proof; manual, sealed, ambiguous and independently refused scopes keep their existing inspection and quarantine.

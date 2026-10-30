@@ -349,7 +349,7 @@ const databaseHandles: { readonly sqlite: Database.Database }[] = [];
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { version: '0.1.0-c-a-oracle', buildId: 'independent-snapshot-oracle' };
 const formats = {
-  'drizzle.workspace': 16,
+  'drizzle.workspace': 17,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,
@@ -4248,5 +4248,169 @@ describe('C-a independent sealed generations', () => {
       expect(bundle.manifestDigest).toBe(first.report.manifestDigest)
     );
     f.coreDb.sqlite.close();
+  });
+});
+
+// Online Snapshot Policy and Bootstrap recovery preserve origin and publication uncertainty.
+describe('C-b automatic capture origin after restart', () => {
+  it('abandons only the real automatic unsealed capture and does not retry it', async () => {
+    const f = await fixture();
+    const input = { ...f.input(), origin: 'automatic' as const };
+    captureWorkerProbe.script = `
+      Database.prototype.backup = async function() { throw new Error('Injected native SQLite backup failure.'); };
+    `;
+    try {
+      await expect(createWorkspaceBackup(input)).rejects.toThrow();
+    } finally {
+      captureWorkerProbe.script = undefined;
+    }
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    const inspectDb = bindWorkspaceSqlite(
+      new Database(workspaceDbPath(f.dataRoot, workspaceId), {
+        readonly: true,
+        fileMustExist: true,
+      }),
+      f.dataRoot,
+      workspaceId
+    );
+    databaseHandles.push(inspectDb);
+    expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toMatchObject({
+      state: 'active',
+      origin: 'automatic',
+    });
+    // Live capture has no Core recovery-admission authority to synthesize or end.
+    expect(readRecoveryAdmission(f.coreDb, input.backupId)).toBeUndefined();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const coreDb = openCoreDb(f.dataRoot);
+    databaseHandles.push(coreDb);
+    const gate = new WorkspaceMutationAdmission();
+    const generations = tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId));
+    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    const abandoned = inspectCapture(inspectDb, workspaceId, input.backupId);
+    expect(abandoned).toMatchObject({ state: 'abandoned', origin: 'automatic' });
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
+    expect(gate.isClosed(workspaceId)).toBe(false);
+    const release = gate.enter(workspaceId);
+    expect(release).not.toBeNull();
+    release!();
+    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(abandoned);
+    expect(readRecoveryAdmission(coreDb, input.backupId)).toBeUndefined();
+    expect(tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId))).toEqual(
+      generations
+    );
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+  });
+
+  it('preserves an automatic durable seal when its capture finish did not commit', async () => {
+    const f = await fixture();
+    const input = { ...f.input(), origin: 'automatic' as const };
+    let worker: Worker | undefined;
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    captureWorkerProbe.onPhase = (selected, message) => {
+      if (message.phase !== 'finish') return false;
+      worker = selected;
+      enter();
+      return true;
+    };
+    const capturing = createWorkspaceBackup(input).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    try {
+      await Promise.race([
+        entered,
+        capturing.then((outcome) => {
+          if ('error' in outcome) throw outcome.error;
+          throw new Error('Capture did not reach the real worker finish boundary.');
+        }),
+      ]);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(true);
+      await worker!.terminate();
+      expect(await capturing).toMatchObject({ error: expect.any(Error) });
+    } finally {
+      captureWorkerProbe.onPhase = undefined;
+      if (worker && worker.threadId !== -1) await worker.terminate();
+      await capturing;
+    }
+    const generation = tree(input.bundleRoot);
+    const inspectDb = bindWorkspaceSqlite(
+      new Database(workspaceDbPath(f.dataRoot, workspaceId), {
+        readonly: true,
+        fileMustExist: true,
+      }),
+      f.dataRoot,
+      workspaceId
+    );
+    databaseHandles.push(inspectDb);
+    const capture = inspectCapture(inspectDb, workspaceId, input.backupId);
+    expect(capture).toMatchObject({ state: 'active', origin: 'automatic' });
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const coreDb = openCoreDb(f.dataRoot);
+    databaseHandles.push(coreDb);
+    const gate = new WorkspaceMutationAdmission();
+    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(capture);
+    expect(tree(input.bundleRoot)).toEqual(generation);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+    expect(gate.isClosed(workspaceId)).toBe(true);
+    await f.read(input.backupId, async (bundle) => {
+      expect(bundle.seal?.backupId).toBe(input.backupId);
+      for (const entry of bundle.manifest.inventory)
+        expect(digest(await bytes(bundle, entry.path))).toBe(entry.sha256);
+    });
+  });
+
+  it('retains an independent database refusal when automatic capture recovery runs', async () => {
+    const f = await fixture();
+    const input = { ...f.input(), origin: 'automatic' as const };
+    captureWorkerProbe.script = `
+      Database.prototype.backup = async function() { throw new Error('Injected native SQLite backup failure.'); };
+    `;
+    try {
+      await expect(createWorkspaceBackup(input)).rejects.toThrow();
+    } finally {
+      captureWorkerProbe.script = undefined;
+    }
+    const inspectDb = bindWorkspaceSqlite(
+      new Database(workspaceDbPath(f.dataRoot, workspaceId), {
+        readonly: true,
+        fileMustExist: true,
+      }),
+      f.dataRoot,
+      workspaceId
+    );
+    databaseHandles.push(inspectDb);
+    expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toMatchObject({
+      state: 'active',
+      origin: 'automatic',
+    });
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const coreDb = openCoreDb(f.dataRoot);
+    databaseHandles.push(coreDb);
+    const { refuseScope } = await import('../bootstrap/readiness.js');
+    const databaseFailure = {
+      scope: 'workspace' as const,
+      id: workspaceId,
+      check: 'database' as const,
+    };
+    refuseScope(f.dataRoot, databaseFailure);
+    const capture = inspectCapture(inspectDb, workspaceId, input.backupId);
+    const before = tree(input.bundleRoot);
+    const gate = new WorkspaceMutationAdmission();
+    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual(databaseFailure);
+    expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(capture);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+    expect(gate.isClosed(workspaceId)).toBe(true);
+    expect(gate.enter(workspaceId)).toBeNull();
+    expect(tree(input.bundleRoot)).toEqual(before);
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
   });
 });
