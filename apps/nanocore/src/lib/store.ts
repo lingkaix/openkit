@@ -1,4 +1,7 @@
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 
 export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-request-records.js';
 
@@ -122,7 +125,10 @@ import type {
   ControlPendingCommandInput,
   ControlPendingCommandResult,
 } from '../runtime/pending-requests.js';
-import { loadApprovalProjections } from '../runtime/pending-requests.js';
+import {
+  loadApprovalProjections,
+  loadApprovalProjectionsFromSqlite,
+} from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
 import {
@@ -146,6 +152,7 @@ import {
   getCommandRequestRecordFromDb,
   listCommandRequestRecords,
   normalizeCommandRequestResponse,
+  readCommandRequestRecordsFromSqlite,
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
@@ -176,6 +183,7 @@ import {
   bindCoreSqlite,
   type CoreDb,
   openWorkspaceDbAtRoot,
+  openWorkspaceReadDb,
   type UserDb,
   type WorkspaceDb,
 } from '../storage/db.js';
@@ -213,6 +221,7 @@ import {
   KnowledgeProposalReviewFileSchema,
   listDirectoryNames,
   listNativeProducts,
+  loadWorkspace,
   loadWorkspaceFileRecords,
   type NativeProductScope,
   nativeProductMetadataScope,
@@ -232,12 +241,14 @@ import {
   readWorkspaceKnowledgePage,
   readWorkspaceKnowledgePages,
   readWorkspaceTurnEvents,
+  refuseWorkspaceIdentityConflicts,
   serializeKnowledgeProposalRecord,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   TurnReaderSchema,
   verifyTurnFileInputs,
   type WorkspaceFileRecords,
   WorkspaceSystemRecordSchema,
+  workspaceFileRecordIdentities,
   writeWorkspaceConfiguration,
   writeWorkspaceFileRecords,
 } from '../storage/workspace-file-records.js';
@@ -1387,47 +1398,7 @@ export class FsStore {
         });
         continue;
       }
-      this.workspaces.set(records.workspace.id, records.workspace);
-      this.workspaceResources.set(
-        records.workspace.id,
-        createWorkspaceResources([...records.knowledge])
-      );
-      for (const thread of records.threads) this.threads.set(thread.id, thread);
-      for (const turn of records.turns) {
-        this.turns.set(turn.id, turn);
-        for (const item of turn.items) this.items.set(item.id, item);
-      }
-      if (records.turnCaptureCoverage) {
-        for (const [turnId, binding] of records.turnCaptureCoverage) {
-          this.turnCaptureCoverage.set(turnId, binding);
-        }
-      }
-      this.itemRevisions.push(...records.itemRevisions);
-      for (const session of records.agentSessions) {
-        this.agentSessions.set(session.id, session);
-      }
-      for (const artifact of records.artifacts) {
-        this.artifacts.set(artifact.id, artifact);
-        this.artifactVersions.set(artifact.id, versions.get(artifact.id)!);
-      }
-
-      for (const proposal of records.knowledgeProposals) {
-        this.knowledgeProposals.set(proposal.id, proposal);
-      }
-      for (const review of records.knowledgeProposalReviews) {
-        this.knowledgeProposalReviews.set(review.proposalId, [
-          ...(this.knowledgeProposalReviews.get(review.proposalId) ?? []),
-          review,
-        ]);
-      }
-      for (const [turnId, events] of records.streamEvents) {
-        this.streams.set(turnId, {
-          sequence: events.at(-1)?.sequence ?? 0,
-          events: [...events],
-          listeners: new Set(),
-          timers: new Set(),
-        });
-      }
+      this.installWorkspaceProjection(records, versions);
     }
 
     if (this.dataRoot) {
@@ -1438,6 +1409,54 @@ export class FsStore {
       )) {
         this.approvals.set(approval.id, approval);
       }
+    }
+  }
+
+  /** Installs already-validated target records without I/O or cross-Workspace discovery. */
+  private installWorkspaceProjection(
+    records: WorkspaceFileRecords,
+    versions: ReadonlyMap<string, ArtifactVersionRecord[]>
+  ): void {
+    this.workspaces.set(records.workspace.id, records.workspace);
+    this.workspaceResources.set(
+      records.workspace.id,
+      createWorkspaceResources([...records.knowledge])
+    );
+    for (const thread of records.threads) this.threads.set(thread.id, thread);
+    for (const turn of records.turns) {
+      this.turns.set(turn.id, turn);
+      for (const item of turn.items) this.items.set(item.id, item);
+    }
+    if (records.turnCaptureCoverage) {
+      for (const [turnId, binding] of records.turnCaptureCoverage) {
+        this.turnCaptureCoverage.set(turnId, binding);
+      }
+    }
+    this.itemRevisions.push(...records.itemRevisions);
+    for (const session of records.agentSessions) {
+      this.agentSessions.set(session.id, session);
+    }
+    for (const artifact of records.artifacts) {
+      this.artifacts.set(artifact.id, artifact);
+      this.artifactVersions.set(artifact.id, versions.get(artifact.id)!);
+    }
+
+    for (const proposal of records.knowledgeProposals) {
+      this.knowledgeProposals.set(proposal.id, proposal);
+    }
+    for (const review of records.knowledgeProposalReviews) {
+      this.knowledgeProposalReviews.set(review.proposalId, [
+        ...(this.knowledgeProposalReviews.get(review.proposalId) ?? []),
+        review,
+      ]);
+    }
+    for (const [turnId, events] of records.streamEvents) {
+      this.streams.set(turnId, {
+        sequence: events.at(-1)?.sequence ?? 0,
+        events: [...events],
+        listeners: new Set(),
+        timers: new Set(),
+      });
     }
   }
 
@@ -2817,10 +2836,89 @@ export class FsStore {
     this.evictWorkspace(workspaceId);
   }
 
+  /** Revalidates and installs one restored target while its existing recovery freeze stays closed. */
+  public reloadRecoveredWorkspace(workspaceId: string, freeze: WorkspaceFrozenAdmission): void {
+    WorkspaceIdSchema.parse(workspaceId);
+    const gate = this.workspaceMutationAdmission;
+    if (!this.dataRoot || !gate?.ownsFreeze(workspaceId, freeze))
+      throw new Error('Workspace recovery freeze is not current.');
+    const root = join(this.dataRoot, 'workspaces', workspaceId);
+    closeWorkspaceProductReadHandles(root);
+    const records = loadWorkspace(root, workspaceId);
+    const versions = FsStore.readWorkspaceHistory(
+      records,
+      root,
+      new Set([
+        ...this.serverThreads.keys(),
+        ...this.serverTurns.keys(),
+        ...this.serverItems.keys(),
+      ])
+    );
+    const identities = workspaceFileRecordIdentities(records);
+    const peers = listDirectoryNames(join(this.dataRoot, 'workspaces')).filter(
+      (id) =>
+        id !== '.staging' && id !== workspaceId && isScopeAdmitted(this.dataRoot!, 'workspace', id)
+    );
+    const peerIds = new Set(peers);
+    const claims: Array<readonly [string, Iterable<string>]> = [[workspaceId, identities]];
+    const nativeKinds = {
+      thread: 'thread',
+      turn: 'turn',
+      item: 'item',
+      session: 'agent-session',
+    } as const;
+    for (const identity of identities) {
+      const separator = identity.indexOf(':');
+      const kind = identity.slice(0, separator) as keyof typeof nativeKinds;
+      const nativeKind = nativeKinds[kind];
+      if (!nativeKind) continue;
+      const found = this.findNativeOwner(nativeKind, identity.slice(separator + 1), workspaceId);
+      if (found?.owner.kind === 'server') throw new Error('Conflicting Server product owner.');
+      if (found?.owner.kind === 'workspace') claims.push([found.owner.workspaceId, [identity]]);
+    }
+    // These maps are the live file publishers' operands, including an unresolved publication claim.
+    for (const artifact of this.artifacts.values())
+      if (peerIds.has(artifact.workspaceId))
+        claims.push([artifact.workspaceId, [`artifact:${artifact.id}`]]);
+    for (const proposal of this.knowledgeProposals.values())
+      if (peerIds.has(proposal.workspaceId))
+        claims.push([proposal.workspaceId, [`proposal:${proposal.id}`]]);
+    for (const peer of peers)
+      claims.push([peer, this.listKnowledgeSources(peer).map(({ id }) => `source:${id}`)]);
+    if (peers.some((id) => !isScopeAdmitted(this.dataRoot!, 'workspace', id)))
+      throw new Error('Workspace recovery peer authority is unavailable.');
+    if (refuseWorkspaceIdentityConflicts(this.dataRoot, claims))
+      throw new Error('Conflicting Workspace product owner.');
+    const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
+    let approvals: ApprovalRequest[];
+    try {
+      approvals = loadApprovalProjectionsFromSqlite(
+        db.sqlite,
+        records.turns,
+        readCommandRequestRecordsFromSqlite(db.sqlite)
+      );
+    } finally {
+      db.sqlite.close();
+    }
+    if (!gate.ownsFreeze(workspaceId, freeze))
+      throw new Error('Workspace recovery freeze is not current.');
+    this.evictWorkspaceProjection(workspaceId, root);
+    this.installWorkspaceProjection(records, versions);
+    for (const approval of approvals) this.approvals.set(approval.id, approval);
+  }
+
   /** Removes one Workspace from process-local read models without touching its filesystem root. */
   public evictWorkspace(workspaceId: string): void {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
-    if (this.dataRoot) closeWorkspaceProductReadHandles(this.workspaceRootPath(workspaceId));
+    this.evictWorkspaceProjection(
+      workspaceId,
+      this.dataRoot ? this.workspaceRootPath(workspaceId) : undefined
+    );
+  }
+
+  /** Drops only the target's disposable projections after its caller has validated ownership. */
+  private evictWorkspaceProjection(workspaceId: string, root?: string): void {
+    if (root) closeWorkspaceProductReadHandles(root);
     const turnIds = new Set(
       [...this.turns.values()]
         .filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId)
@@ -2837,6 +2935,7 @@ export class FsStore {
     for (const turnId of turnIds) {
       this.turns.delete(turnId);
       this.turnCaptureCoverage.delete(turnId);
+      this.turnExecutors.delete(turnId);
       const stream = this.streams.get(turnId);
       if (stream) {
         for (const timer of stream.timers) {
@@ -2856,6 +2955,7 @@ export class FsStore {
     for (const [artifactId, artifact] of this.artifacts) {
       if (artifact.workspaceId === workspaceId) {
         this.artifacts.delete(artifactId);
+        this.pendingArtifactSubmissions.delete(artifactId);
         this.artifactVersions.delete(artifactId);
       }
     }
@@ -3744,14 +3844,20 @@ export class FsStore {
   /** Discovers opaque identities from native indexed selectors, not cached bodies or a new registry. */
   private findNativeOwner(
     kind: 'thread' | 'turn' | 'agent-session' | 'item',
-    id: string
+    id: string,
+    excludedWorkspaceId?: string
   ): { owner: ControlProductOwner; threadId: string | null; turnId?: string } | undefined {
     if (!this.dataRoot) return undefined;
     const owners: ControlProductOwner[] = [
       { kind: 'server' },
       ...listDirectoryNames(join(this.dataRoot, 'workspaces'))
         // Match startup readers: refused scopes cannot participate in another owner's discovery.
-        .filter((id) => id !== '.staging' && isScopeAdmitted(this.dataRoot!, 'workspace', id))
+        .filter(
+          (id) =>
+            id !== '.staging' &&
+            id !== excludedWorkspaceId &&
+            isScopeAdmitted(this.dataRoot!, 'workspace', id)
+        )
         .map((workspaceId) => ({ kind: 'workspace' as const, workspaceId })),
     ];
     let result:
@@ -3812,7 +3918,18 @@ export class FsStore {
         if (row) {
           if (row.schema_version !== 1)
             throw new Error('Unsupported native product selector format.');
-          if (result) throw new Error('Conflicting native product owner; recovery_required.');
+          if (result) {
+            if (excludedWorkspaceId) {
+              const identity = `${kind === 'agent-session' ? 'session' : kind}:${id}`;
+              const claims: Array<readonly [string, readonly string[]]> = [
+                [excludedWorkspaceId, [identity]],
+              ];
+              for (const peer of [result.owner, owner])
+                if (peer.kind === 'workspace') claims.push([peer.workspaceId, [identity]]);
+              refuseWorkspaceIdentityConflicts(this.dataRoot, claims);
+            }
+            throw new Error('Conflicting native product owner; recovery_required.');
+          }
           const threadId =
             'identity_json' in row ? JSON.parse(row.identity_json).threadId : row.thread_id;
           result = {

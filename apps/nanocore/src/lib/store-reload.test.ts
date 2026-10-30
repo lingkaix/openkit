@@ -1,13 +1,16 @@
+import { refuseScope } from '../bootstrap/readiness.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createPendingRequestFixture } from '../test-support/pending-request.js';
 import { createTestStore } from '../test-support/store.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
 } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -390,7 +393,200 @@ async function expectScopedReloadRefusal(dataRoot: string, workspaceIds: string[
   }
 }
 
+/** Reads disposable projections only: target public reads must remain quarantined during re-admission. */
+function recoveredProjection(store: FsStore, family: string, id: string): unknown {
+  return (Reflect.get(store, family) as ReadonlyMap<string, unknown>).get(id);
+}
+
 describe('FsStore canonical reload', () => {
+  it('reloads only the frozen recovered target and keeps its public admission closed', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-scoped-recovery-'));
+    let store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Recovered target');
+    const thread = await store.createThread(workspace.id, 'Recovered history');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Original input', localActor);
+    const item = await store.createItem({
+      id: testEntityId('it', `recovered_${turn.id}`),
+      owner: turn.owner,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Predecessor',
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    const sibling = await store.createWorkspace('Healthy sibling');
+    const siblingThread = await store.createThread(sibling.id, 'Sibling history');
+    const siblingTurn = await store.createTurn(sibling.id, siblingThread.id, 'Sibling', localActor);
+    const serverThread = await store.createServerThread('Server history');
+    const serverTurn = await store.createServerTurn(serverThread.id, 'Server', localActor);
+    store = new FsStore({ dataRoot });
+    const notifications: unknown[] = [];
+    const stop = store.addTurnListener(siblingTurn.id, (event) => notifications.push(event));
+    const stopServer = store.addServerTurnListener(serverTurn.id, () => {});
+    const preserved = [
+      ['workspaces', sibling.id],
+      ['threads', siblingThread.id],
+      ['turns', siblingTurn.id],
+      ['streams', siblingTurn.id],
+      ['serverThreads', serverThread.id],
+      ['serverTurns', serverTurn.id],
+      ['serverStreams', serverTurn.id],
+    ].map(([family, id]) => [family!, id!, recoveredProjection(store, family!, id!)] as const);
+    for (const [, , previous] of preserved) expect(previous).toBeDefined();
+    expect(recoveredProjection(store, 'workspaces', workspace.id)).toMatchObject({
+      id: workspace.id,
+    });
+    expect(recoveredProjection(store, 'items', item.id)).toEqual(item);
+    const replacement = new FsStore({ dataRoot });
+    const updated = await replacement.updateItem(item.id, { text: 'Recovered canonical revision' });
+    const artifact = await replacement.createArtifact({
+      id: testEntityId('ar', `recovered_${turn.id}`),
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      kind: 'summary',
+      title: 'Recovered Artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Recovered body' },
+      ...turnOutputArtifactProof(thread.id, turn.id, 'recovered-artifact', 'Recovered body'),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const event = await replacement.persistTurnEvent(turn.id, {
+      event: 'item.created',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'item-created', item: updated },
+    });
+    const coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    const pending = createPendingRequestFixture({
+      coreDb,
+      store: replacement,
+      workspaceId: workspace.id,
+    });
+    const requestId = `ap_recovered_${turn.id}`;
+    const requestItemId = testEntityId('it', requestId);
+    await pending.raise({
+      requestId,
+      requestItemId,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      raisingTurnId: turn.id,
+      kind: 'approval',
+      requesterKind: 'person',
+      responsibleUserId: localActor.id,
+      governedIntent: { operation: 'fixture' },
+      approval: {
+        kind: 'permission',
+        title: 'Recovered decision',
+        description: 'Current canonical Pending authority.',
+      },
+      now: timestamp,
+    });
+    const canonical = new FsStore({ dataRoot });
+    const expectedApproval = canonical.getApproval(requestId);
+    const expectedVersions = recoveredProjection(canonical, 'artifactVersions', artifact.id);
+    const expectedEvents = canonical.getTurnEvents(turn.id);
+    expect(expectedEvents).toContainEqual(event);
+    expect(nativeEntries(dataRoot, workspace.id, turn.id, 'item')).toContainEqual(
+      writeRetainedV1(updated)
+    );
+    expect(pending.read(requestId)).toMatchObject({ requestId, resolution: null });
+    pending.close();
+    coreDb.sqlite.close();
+    const admission = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(admission);
+    const freeze = admission.tryFreeze(workspace.id, () => []);
+    if (freeze.status !== 'frozen') throw new Error('Fixture freeze was refused.');
+    onTestFinished(async () => {
+      stop();
+      stopServer();
+      freeze.release();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    refuseScope(dataRoot, { scope: 'workspace', id: workspace.id, check: 'recovery' });
+    store.reloadRecoveredWorkspace(workspace.id, freeze);
+    expect(recoveredProjection(store, 'items', item.id)).toEqual(updated);
+    expect(recoveredProjection(store, 'artifacts', artifact.id)).toEqual(artifact);
+    expect(recoveredProjection(store, 'artifactVersions', artifact.id)).toEqual(expectedVersions);
+    expect(recoveredProjection(store, 'approvals', requestId)).toEqual(expectedApproval);
+    expect(recoveredProjection(store, 'streams', turn.id)).toMatchObject({
+      events: expectedEvents,
+    });
+    for (const [family, id, previous] of preserved)
+      expect(recoveredProjection(store, family, id)).toBe(previous);
+    expect(admission.ownsFreeze(workspace.id, freeze)).toBe(true);
+    expect(() => store.getWorkspace(workspace.id)).toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(() => store.getTurn(workspace.id, thread.id, turn.id)).toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    const next = await store.persistTurnEvent(siblingTurn.id, {
+      event: 'turn.updated',
+      workspaceId: sibling.id,
+      threadId: siblingThread.id,
+      turnId: siblingTurn.id,
+      data: { type: 'turn-updated', turn: siblingTurn },
+    });
+    store.emitTurnEvent(siblingTurn.id, next);
+    expect(notifications).toEqual([next]);
+    expect(store.getServerTurn(serverThread.id, serverTurn.id)).toEqual(serverTurn);
+    expect(await store.createThread(sibling.id, 'Sibling remains writable')).toMatchObject({
+      owner: { workspaceId: sibling.id },
+    });
+  });
+
+  it('refuses stale or foreign freezes and keeps prior projections when the target is malformed', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-recovery-refusal-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    let store = createTestStore({ dataRoot });
+    const target = await store.createWorkspace('Invalid target');
+    const thread = await store.createThread(target.id, 'Prior projection');
+    const sibling = await store.createWorkspace('Healthy sibling');
+    store = new FsStore({ dataRoot });
+    expect(recoveredProjection(store, 'threads', thread.id)).toEqual(thread);
+    expect(recoveredProjection(store, 'workspaces', target.id)).toMatchObject({ id: target.id });
+    expect(recoveredProjection(store, 'workspaces', sibling.id)).toBeDefined();
+    const admission = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(admission);
+    const stale = admission.tryFreeze(target.id, () => []);
+    const foreign = new WorkspaceMutationAdmission().tryFreeze(target.id, () => []);
+    const wrongTarget = admission.tryFreeze(sibling.id, () => []);
+    if (stale.status !== 'frozen' || foreign.status !== 'frozen' || wrongTarget.status !== 'frozen')
+      throw new Error('Fixture freeze was refused.');
+    stale.release();
+    for (const freeze of [stale, foreign, wrongTarget])
+      expect(() => store.reloadRecoveredWorkspace(target.id, freeze)).toThrow();
+    foreign.release();
+    wrongTarget.release();
+    await replaceMetadata(dataRoot, target.id, 'control_threads', thread.id, { id: thread.id });
+    const freeze = admission.tryFreeze(target.id, () => []);
+    if (freeze.status !== 'frozen') throw new Error('Fixture freeze was refused.');
+    onTestFinished(() => freeze.release());
+    refuseScope(dataRoot, { scope: 'workspace', id: target.id, check: 'recovery' });
+    expect(() => store.reloadRecoveredWorkspace(target.id, freeze)).toThrow();
+    expect(recoveredProjection(store, 'workspaces', target.id)).toMatchObject({ id: target.id });
+    expect(recoveredProjection(store, 'threads', thread.id)).toEqual(thread);
+    expect(admission.ownsFreeze(target.id, freeze)).toBe(true);
+    expect(() => store.getWorkspace(target.id)).toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(await store.createThread(sibling.id, 'Healthy write after refusal')).toMatchObject({
+      owner: { workspaceId: sibling.id },
+    });
+  });
+
   it('rebuilds every workspace from canonical records and resolves the latest item revision', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-canonical-reload-'));
     const store = createTestStore({ dataRoot });
@@ -1588,36 +1784,68 @@ describe('FsStore canonical reload', () => {
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
-  it('rejects global ids claimed by records in two workspaces', async () => {
+  it('rejects global ids claimed by records in three workspaces', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-global-collision-'));
-    const store = createTestStore({ dataRoot });
+    let store = createTestStore({ dataRoot });
     const firstWorkspace = await store.createWorkspace('First collision workspace');
     const firstThread = await store.createThread(firstWorkspace.id, 'First collision thread');
     const secondWorkspace = await store.createWorkspace('Second collision workspace');
-    await store.createThread(secondWorkspace.id, 'Second collision thread');
+    const secondThread = await store.createThread(secondWorkspace.id, 'Second collision thread');
+    const thirdWorkspace = await store.createWorkspace('Third collision workspace');
+    const thirdThread = await store.createThread(thirdWorkspace.id, 'Third collision thread');
+    const workspaces = [firstWorkspace, secondWorkspace, thirdWorkspace];
+    store = new FsStore({ dataRoot });
+    for (const thread of [firstThread, secondThread, thirdThread])
+      expect(recoveredProjection(store, 'threads', thread.id)).toEqual(thread);
+    for (const workspace of workspaces)
+      expect(recoveredProjection(store, 'workspaces', workspace.id)).toMatchObject({
+        id: workspace.id,
+      });
     await shutdownControlStoreWorkerClient();
     const source = workspaceSql(dataRoot, firstWorkspace.id, (db) =>
       db.prepare('SELECT * FROM control_threads WHERE id=?').get(firstThread.id)
     ) as Record<string, unknown>;
-    const duplicateThread = {
-      ...JSON.parse(source.record_json as string),
-      owner: { kind: 'workspace', workspaceId: secondWorkspace.id },
-    };
-    workspaceSql(dataRoot, secondWorkspace.id, (db) =>
-      db
-        .prepare(
-          'INSERT INTO control_threads (id,workspace_id,status,schema_version,revision,record_json) VALUES (?,?,?,?,?,?)'
-        )
-        .run(
-          firstThread.id,
-          secondWorkspace.id,
-          source.status,
-          source.schema_version,
-          source.revision,
-          JSON.stringify(duplicateThread)
-        )
+    for (const workspace of [secondWorkspace, thirdWorkspace]) {
+      const duplicateThread = {
+        ...JSON.parse(source.record_json as string),
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+      };
+      workspaceSql(dataRoot, workspace.id, (db) =>
+        db
+          .prepare(
+            'INSERT INTO control_threads (id,workspace_id,status,schema_version,revision,record_json) VALUES (?,?,?,?,?,?)'
+          )
+          .run(
+            firstThread.id,
+            workspace.id,
+            source.status,
+            source.schema_version,
+            source.revision,
+            JSON.stringify(duplicateThread)
+          )
+      );
+    }
+    const admission = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(admission);
+    const freeze = admission.tryFreeze(secondWorkspace.id, () => []);
+    if (freeze.status !== 'frozen') throw new Error('Fixture freeze was refused.');
+    onTestFinished(() => freeze.release());
+    refuseScope(dataRoot, { scope: 'workspace', id: secondWorkspace.id, check: 'recovery' });
+    expect(() => store.reloadRecoveredWorkspace(secondWorkspace.id, freeze)).toThrow();
+    for (const workspace of workspaces) {
+      expect(() => store.getWorkspace(workspace.id)).toThrow(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+      expect(recoveredProjection(store, 'workspaces', workspace.id)).toMatchObject({
+        id: workspace.id,
+      });
+    }
+    for (const thread of [firstThread, secondThread, thirdThread])
+      expect(recoveredProjection(store, 'threads', thread.id)).toEqual(thread);
+    await expectScopedReloadRefusal(
+      dataRoot,
+      workspaces.map(({ id }) => id)
     );
-    await expectScopedReloadRefusal(dataRoot, [firstWorkspace.id, secondWorkspace.id]);
   });
 
   it('rejects duplicate-current AgentSessions during canonical reload', async () => {

@@ -1408,28 +1408,39 @@ export function loadApprovalProjections(
     let db: ReturnType<typeof openBootVerifiedWorkspaceDb> | undefined;
     try {
       db = openBootVerifiedWorkspaceDb(dataRoot, scope.workspaceId);
-      if (!pendingRequestTableExists(db.sqlite))
-        throw new Error('Required Pending Request authority is missing.');
-      const rows = db.sqlite
-        .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests WHERE kind = 'approval'`)
-        .all() as PendingRequestRow[];
-      for (const row of rows) {
-        try {
-          const record = parsePendingRequestRow(row);
-          const threadTurns = turns.filter(
-            (turn) => workspaceIdForOwner(turn.owner) === record.workspaceId
-          );
-          if (validateCanonicalLoad(record, threadTurns, receipts)) continue;
-          const approval = projectApprovalRequest(record);
-          if (approval) approvals.push(approval);
-        } catch {
-          // One bad record stays inspect-only. The rest of the workspace remains usable.
-        }
-      }
+      approvals.push(...loadApprovalProjectionsFromSqlite(db.sqlite, turns, receipts));
     } catch {
       refuseScope(dataRoot, { scope: 'workspace', id: scope.workspaceId, check: 'database' });
     } finally {
       db?.sqlite.close();
+    }
+  }
+  return approvals;
+}
+
+/** Reads the original Pending projection from an already-owned database; required SQL failures propagate. */
+export function loadApprovalProjectionsFromSqlite(
+  sqlite: Database.Database,
+  turns: readonly Turn[] = [],
+  receipts: readonly CommandRequestRecord[] = []
+): ApprovalRequest[] {
+  const approvals: ApprovalRequest[] = [];
+  if (!pendingRequestTableExists(sqlite))
+    throw new Error('Required Pending Request authority is missing.');
+  const rows = sqlite
+    .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests WHERE kind = 'approval'`)
+    .all() as PendingRequestRow[];
+  for (const row of rows) {
+    try {
+      const record = parsePendingRequestRow(row);
+      const threadTurns = turns.filter(
+        (turn) => workspaceIdForOwner(turn.owner) === record.workspaceId
+      );
+      if (validateCanonicalLoad(record, threadTurns, receipts)) continue;
+      const approval = projectApprovalRequest(record);
+      if (approval) approvals.push(approval);
+    } catch {
+      // One bad record stays inspect-only. The rest of the workspace remains usable.
     }
   }
   return approvals;
