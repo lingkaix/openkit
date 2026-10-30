@@ -509,14 +509,61 @@ describe('Task conversation and Pending Request definition projections', () => {
     const f = await fixture({ responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
     try {
       const projectors = await projections(f);
+      const beforeItems = f.store.listAllItems();
+      const beforeCommands = f.store.listCommandRequests();
       for (const [id, input] of Object.entries(inputs(f)).filter(([id]) =>
         ['approval.respond', 'question.answer', 'pending-request.withdraw'].includes(id)
       ))
-        for (const project of Object.values(projectors))
-          await expect(project(id, input), id).rejects.toMatchObject({
-            code: 'workspace_access_denied',
-            status: 403,
-          });
+        for (const project of Object.values(projectors)) {
+          const refusal = (value: Record<string, unknown>) =>
+            project(id, value).then(
+              () => null,
+              (error) => ({
+                code: error.code,
+                message: error.message,
+                status: error.status,
+                details: error.details,
+              })
+            );
+          const denied = await refusal(input);
+          expect(denied, id).toMatchObject({ code: 'workspace_access_denied', status: 403 });
+          if (id === 'question.answer') {
+            // Pending Requests Resolve: record-dependent shape is not disclosed
+            // before the responsible-user/administrator authority decision.
+            for (const variant of [
+              { answers: { other: ['src'] } },
+              { userInputRequestId: 'ui_secret' },
+            ])
+              await expect.soft(refusal({ ...input, ...variant })).resolves.toEqual(denied);
+          }
+        }
+      expect(f.store.listAllItems()).toEqual(beforeItems);
+      expect(f.store.listCommandRequests()).toEqual(beforeCommands);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('checks authorized ended-request state before record-dependent answer shape', async () => {
+    const f = await fixture();
+    try {
+      const projectors = await projections(f);
+      await projectors.http('pending-request.withdraw', inputs(f)['pending-request.withdraw']);
+      const beforeItems = f.store.listAllItems();
+      const beforeCommands = f.store.listCommandRequests();
+      // A withdrawn request is no longer answerable, including with a mismatched map.
+      for (const project of Object.values(projectors))
+        await expect
+          .soft(
+            project('question.answer', {
+              ...inputs(f)['question.answer'],
+              userInputRequestId: 'ui_withdraw',
+              answers: { other: ['src'] },
+            })
+          )
+          .rejects.toMatchObject({ code: 'request_not_pending', status: 409 });
+      expect(f.store.listAllItems()).toEqual(beforeItems);
+      expect(f.store.listCommandRequests()).toEqual(beforeCommands);
     } finally {
       f.close();
     }

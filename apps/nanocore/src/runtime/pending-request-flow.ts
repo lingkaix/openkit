@@ -533,11 +533,11 @@ export async function answerRecordedUserInput(
     input.workspaceId,
     input.threadId
   );
-  assertAnswerShape(current, input.answers);
   assertResponsibleActor(store, current, actorId, coreDb, requestActor);
   if (current.state !== 'pending') {
     throw conflictOrNotPending(current, input.answers);
   }
+  assertAnswerShape(current, input.answers);
   const [answered] = await mutatePending(
     store,
     sqlite,
