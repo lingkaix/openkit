@@ -28,3 +28,5 @@ When exactly one Core recovery owns a refused target, the restored closure recor
 Before scoped migrations, restart abandons only an explicitly automatic, active capture with no local seal. This uses the existing capture decision owner while the data-root lock is held and before native/request publishers start. An absent origin column supplies no automatic proof; manual, sealed, ambiguous and independently refused scopes keep their existing inspection and quarantine.
 
 Exact target recovery may settle only its current recovery diagnosis after the original Core result and target Store/config validation, under the same live freeze. Independent index, retirement and sibling failures remain; a finished result alone never opens serving admission.
+
+A single valid active SQL capture without a competing Core recovery restores its exact capture identity in the same recovery closure. Explicit recovery can rejoin that identity after fresh retained-state checks. Multiple active captures, unrelated authority failures and plain ownerless closures confer no native publication permission; release keeps the original exclusion.

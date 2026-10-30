@@ -10,6 +10,7 @@ import type {
   WorkspaceFreezeAdmission,
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
+  WorkspaceRecoveryFreezeOrigin,
 } from '../workspace-mutation-admission.js';
 import { configureOwnedSqlite } from './control-store.js';
 import { closeWorkspaceProductReadHandles } from './control-store-products.js';
@@ -17,7 +18,7 @@ import type {
   ControlRecoveryNativeBinding,
   ControlRecoveryNativeCall,
 } from './control-store-worker-client.js';
-import { type CoreDb, openExistingCoreDbWithIntegrityCheck } from './db.js';
+import { type CoreDb, openExistingCoreDbWithIntegrityCheck, openWorkspaceReadDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
 import {
   type WorkspaceBackupReport,
@@ -28,6 +29,7 @@ import {
   parseWorkspaceBackupManifest,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
+import { inspectCapture } from './workspace-capture-protection.js';
 import { assertCanonicalDirectory, nativeProductScope } from './workspace-file-records.js';
 import type {
   WorkspaceRecoveryCliArgs,
@@ -181,38 +183,17 @@ export function bindWorkspaceRecoveryNativeOwner(
     !admission.ownsFreeze(current.workspace_id, freeze)
   )
     refuseRecovery('recovery-required');
-  const bind = (dataRoot: string, root: string): ControlRecoveryNativeBinding => {
-    assertCanonicalDirectory(root);
-    const scope = nativeProductScope(
-      dataRoot,
-      { kind: 'workspace', workspaceId: current.workspace_id },
-      root
-    );
-    const stat = lstatSync(scope.path, { throwIfNoEntry: false });
-    if (!stat?.isFile() || stat.isSymbolicLink() || stat.size === 0)
-      refuseRecovery('recovery-required');
-    const command = Object.freeze({
-      database: `workspace:${scope.path}`,
-      path: scope.path,
-      dataRoot,
-      productOwner: Object.freeze(scope.owner),
-      contentMount: Object.freeze(scope.contentMount),
-      create: false as const,
-      initialize: 'workspace' as const,
-    });
-    return Object.freeze({
-      command,
-      path: realpathSync(scope.path),
-      identity: `${stat.dev}:${stat.ino}`,
-      sourceDataRoot,
-    });
-  };
   assertCanonicalDirectory(privateDataRoot);
   assertCanonicalDirectory(join(privateDataRoot, 'workspaces'));
-  const candidate = bind(privateDataRoot, current.candidate_ref);
+  const candidate = bindRecoveryDatabase(
+    sourceDataRoot,
+    privateDataRoot,
+    current.workspace_id,
+    current.candidate_ref
+  );
   const root = join(sourceDataRoot, 'workspaces', current.workspace_id);
   const canonical = lstatSync(root, { throwIfNoEntry: false })
-    ? bind(sourceDataRoot, root)
+    ? bindRecoveryDatabase(sourceDataRoot, sourceDataRoot, current.workspace_id, root)
     : undefined;
   admission.bindRecovery(current.workspace_id, freeze, {
     ...(canonical ? { canonical } : {}),
@@ -223,6 +204,122 @@ export function bindWorkspaceRecoveryNativeOwner(
     candidate: Object.freeze({ freeze, binding: candidate }),
   });
 }
+/** Binds an existing physical database without creating schema or bypassing native admission. */
+function bindRecoveryDatabase(
+  sourceDataRoot: string,
+  dataRoot: string,
+  workspaceId: string,
+  root: string
+): ControlRecoveryNativeBinding {
+  assertCanonicalDirectory(root);
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspaceId }, root);
+  const stat = lstatSync(scope.path, { throwIfNoEntry: false });
+  if (!stat?.isFile() || stat.isSymbolicLink() || stat.size === 0)
+    refuseRecovery('recovery-required');
+  const command = Object.freeze({
+    database: `workspace:${scope.path}`,
+    path: scope.path,
+    dataRoot,
+    productOwner: Object.freeze(scope.owner),
+    contentMount: Object.freeze(scope.contentMount),
+    create: false as const,
+    initialize: 'workspace' as const,
+  });
+  return Object.freeze({
+    command,
+    path: realpathSync(scope.path),
+    identity: `${stat.dev}:${stat.ino}`,
+    sourceDataRoot,
+  });
+}
+
+/** Validates the selected source capture and any exact retained source-side Core proof. */
+function captureRecoveryOrigin(
+  core: CoreDb,
+  workspaceId: string,
+  captureId: string
+): WorkspaceRecoveryFreezeOrigin {
+  if (
+    !core.sqlite
+      .prepare("SELECT 1 FROM workspace_registry WHERE workspace_id=? AND status='active'")
+      .get(workspaceId)
+  )
+    refuseRecovery('recovery-required');
+  if (
+    scopeAdmissionFailures(core.dataRoot).some(
+      (failure) =>
+        failure.scope === 'workspace' &&
+        failure.id === workspaceId &&
+        !['index', 'recovery'].includes(failure.check)
+    )
+  )
+    refuseRecovery('recovery-required');
+  const db = openWorkspaceReadDb(core.dataRoot, workspaceId);
+  try {
+    if (!inspectCapture(db, workspaceId, captureId)) refuseRecovery('recovery-required');
+    const active = db.sqlite
+      .prepare("SELECT capture_id FROM workspace_capture_records WHERE state='active'")
+      .all() as { capture_id: string }[];
+    if (active.length > 1 || active.some((row) => row.capture_id !== captureId))
+      refuseRecovery('recovery-required');
+  } finally {
+    db.sqlite.close();
+  }
+  const owned = readRecoveryAdmission(core, captureId);
+  if (unresolvedRecoveryAdmissions(core, workspaceId).some((row) => row.admission_id !== captureId))
+    refuseRecovery('recovery-required');
+  if (!owned) return { captureId };
+  if (
+    owned.workspace_id !== workspaceId ||
+    owned.backup_id !== captureId ||
+    owned.purpose !== 'move' ||
+    (owned.proof.input.command !== 'capture' && owned.proof.input.command !== 'move-out') ||
+    owned.candidate_ref !== resolve(owned.proof.input.bundleRoot)
+  )
+    refuseRecovery('recovery-required');
+  // Source terminal decisions advance Core revision but retain the same capture publication right.
+  return { captureId };
+}
+
+/** Rejoins only a validated exact source capture, preserving quarantine and unrelated failures. */
+export function resumeWorkspaceCaptureOwner(
+  core: CoreDb,
+  workspaceId: string,
+  captureId: string,
+  admission: WorkspaceMutationAdmission,
+  readBlockers: Parameters<WorkspaceMutationAdmission['tryFreeze']>[1]
+): WorkspaceFreezeAdmission {
+  const origin = captureRecoveryOrigin(core, workspaceId, captureId);
+  const failures = scopeAdmissionFailures(core.dataRoot).filter(
+    (failure) =>
+      failure.scope === 'workspace' && failure.id === workspaceId && failure.check !== 'index'
+  );
+  if (failures.length !== 1 || failures[0]!.check !== 'recovery')
+    refuseRecovery('recovery-required');
+  return admission.tryResumeRecovery(workspaceId, origin, readBlockers);
+}
+
+/** Selects only the canonical source under the exact capture's current lifecycle freeze. */
+export function bindWorkspaceCaptureNativeOwner(
+  core: CoreDb,
+  workspaceId: string,
+  captureId: string,
+  admission: WorkspaceMutationAdmission,
+  freeze: WorkspaceFrozenAdmission
+): ControlRecoveryNativeCall {
+  const origin = captureRecoveryOrigin(core, workspaceId, captureId);
+  if (!admission.ownsRecoveryOrigin(workspaceId, freeze, origin))
+    refuseRecovery('recovery-required');
+  const binding = bindRecoveryDatabase(
+    resolve(core.dataRoot),
+    core.dataRoot,
+    workspaceId,
+    join(core.dataRoot, 'workspaces', workspaceId)
+  );
+  admission.bindRecovery(workspaceId, freeze, { canonical: binding });
+  return Object.freeze({ freeze, binding });
+}
+
 /** Keeps original identities under the existing private recovery container, outside live discovery. */
 export function workspaceRecoveryPredecessorRoot(owned: RecoveryAdmission): string {
   return join(

@@ -21,6 +21,50 @@ const unavailable = {
 
 /** R2947 freeze admission and brief 13j require synchronous refusal, not draining live work. */
 describe('Workspace freeze admission', () => {
+  it('rejoins only the exact capture exclusion and preserves quarantine after release', () => {
+    const gate = new WorkspaceMutationAdmission();
+    const origin = { captureId: 'selected-capture' };
+    const inspect = vi.fn(() => {
+      expect(gate.enter(workspaceId)).toBeNull();
+      expect(gate.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+      return [];
+    });
+    gate.restoreRecoveryClosed(workspaceId, origin);
+    // Local Hot Capture retains the selected capture, not authority from any closed gate.
+    expect(gate.tryResumeRecovery(workspaceId, { captureId: 'other-capture' }, inspect)).toEqual({
+      status: 'busy',
+    });
+    expect(
+      gate.tryResumeRecovery(
+        workspaceId,
+        { admissionId: 'selected-capture', revision: 1, candidateRef: '/candidate' },
+        inspect
+      )
+    ).toEqual({ status: 'busy' });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gate.tryResumeRecovery(workspaceId, origin, () => [turnBlocker])).toEqual({
+      status: 'blocked',
+      blockers: [turnBlocker],
+    });
+    const resumed = gate.tryResumeRecovery(workspaceId, origin, inspect);
+    if (resumed.status !== 'frozen') throw new Error('Expected the selected capture owner.');
+    const sibling = gate.enter(siblingId);
+    expect(sibling).toBeTypeOf('function');
+    sibling!();
+    resumed.release();
+    expect(gate.enter(workspaceId)).toBeNull();
+    const retry = gate.tryResumeRecovery(workspaceId, origin, inspect);
+    if (retry.status !== 'frozen') throw new Error('Expected an exact capture retry.');
+    resumed.release();
+    expect(gate.ownsFreeze(workspaceId, retry)).toBe(true);
+    retry.release();
+    gate.restoreClosed(workspaceId);
+    expect(gate.tryResumeRecovery(workspaceId, origin, inspect)).toEqual({ status: 'busy' });
+    const ownerless = new WorkspaceMutationAdmission();
+    ownerless.restoreClosed(workspaceId, 'capture');
+    expect(ownerless.tryResumeRecovery(workspaceId, origin, inspect)).toEqual({ status: 'busy' });
+  });
+
   it('characterizes close as waiting for an admitted mutation', async () => {
     const gate = new WorkspaceMutationAdmission();
     const releaseMutation = gate.enter(workspaceId);

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { WorkspaceBlocker } from '@openkit/app-api-schemas';
 
 /** Nonwaiting freeze result; the caller owns release only after successful admission. */
@@ -12,18 +13,22 @@ export interface WorkspaceFrozenAdmission {
   readonly release: () => void;
 }
 
-/** Exact retained recovery identity that caused this process-local boot exclusion. */
-export interface WorkspaceRecoveryFreezeOrigin {
-  readonly admissionId: string;
-  readonly revision: number;
-  readonly candidateRef: string;
-}
+/** Exact retained target admission or source capture that caused this process-local boot exclusion. */
+export type WorkspaceRecoveryFreezeOrigin =
+  | {
+      readonly admissionId: string;
+      readonly revision: number;
+      readonly candidateRef: string;
+    }
+  | { readonly captureId: string };
 
-/** Recovery uses the same closure, with at most its canonical and owned candidate bindings. */
+/** Source recovery binds only canonical bytes; target recovery also binds its owned candidate. */
 interface CaptureClosure {
   owner: WorkspaceFrozenAdmission | null;
   readonly origin?: WorkspaceRecoveryFreezeOrigin;
-  recovery?: { readonly canonical?: object; readonly candidate: object };
+  recovery?:
+    | { readonly canonical: object; readonly candidate?: object }
+    | { readonly canonical?: object; readonly candidate: object };
 }
 
 /** Process-local mutation admission state for one Workspace. */
@@ -77,9 +82,7 @@ export class WorkspaceMutationAdmission {
       state.admitted !== 0 ||
       !closure ||
       closure.owner !== null ||
-      closure.origin?.admissionId !== origin.admissionId ||
-      closure.origin.revision !== origin.revision ||
-      closure.origin.candidateRef !== origin.candidateRef
+      !isDeepStrictEqual(closure.origin, origin)
     )
       return { status: 'busy' };
     const blockers = this.freezeBlockers(readBlockers);
@@ -147,19 +150,14 @@ export class WorkspaceMutationAdmission {
   ): boolean {
     if (!this.ownsFreeze(workspaceId, owner)) return false;
     const retained = this.gates.get(workspaceId)!.captureClosed!.origin;
-    return (
-      !retained ||
-      (retained.admissionId === origin.admissionId &&
-        retained.revision === origin.revision &&
-        retained.candidateRef === origin.candidateRef)
-    );
+    return !retained || isDeepStrictEqual(retained, origin);
   }
 
-  /** The recovery admission owner installs its exact two native bindings; replacing them retires old calls. */
+  /** The recovery owner installs only its exact native bindings; replacing them retires old calls. */
   public bindRecovery(
     workspaceId: string,
     owner: WorkspaceFrozenAdmission,
-    bindings: { readonly canonical?: object; readonly candidate: object }
+    bindings: NonNullable<CaptureClosure['recovery']>
   ): void {
     if (!this.ownsFreeze(workspaceId, owner))
       throw new Error('Workspace recovery freeze is not current.');

@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { configureOwnedSqlite } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
-import { abandonCapture } from '../storage/workspace-capture-protection.js';
+import { abandonCapture, inspectCapture } from '../storage/workspace-capture-protection.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './readiness.js';
 
@@ -72,9 +72,17 @@ export function restoreWorkspaceRecoveryAdmission(
   );
   for (const row of unresolved)
     refuseScope(core.dataRoot, { scope: 'workspace', id: row.workspace_id, check: 'recovery' });
+  const captureOrigins = new Map<string, string>();
   // Capture protection also survives a failure before complete bundle facts can be recorded in Core.
   for (const id of registered) {
-    if (!isScopeAdmitted(core.dataRoot, 'workspace', id)) continue;
+    if (!isScopeAdmitted(core.dataRoot, 'workspace', id)) {
+      const failure = scopeAdmissionFailures(core.dataRoot).find(
+        (row) => row.scope === 'workspace' && row.id === id && row.check !== 'index'
+      );
+      // A repeated census may re-read capture facts, never a refused target candidate.
+      if (failure?.check !== 'recovery' || unresolved.some((row) => row.workspace_id === id))
+        continue;
+    }
     let db: Database.Database | undefined;
     try {
       db = new Database(join(workspaces, id, 'db/workspace.sqlite'), {
@@ -105,10 +113,20 @@ export function restoreWorkspaceRecoveryAdmission(
             for (const row of unsealed) abandonCapture(writer, id, row.capture_id);
           }
         }
-        if (
-          db.prepare("SELECT 1 FROM workspace_capture_records WHERE state='active' LIMIT 1").get()
-        )
+        const active = db
+          .prepare("SELECT capture_id FROM workspace_capture_records WHERE state='active'")
+          .all() as { capture_id: string }[];
+        if (active.length) {
+          if (active.length === 1) {
+            const capture = inspectCapture(
+              bindWorkspaceSqlite(db, core.dataRoot, id),
+              id,
+              active[0]!.capture_id
+            );
+            if (capture?.state === 'active') captureOrigins.set(id, capture.captureId);
+          }
           refuseScope(core.dataRoot, { scope: 'workspace', id, check: 'recovery' });
+        }
       }
     } catch {
       refuseScope(core.dataRoot, { scope: 'workspace', id, check: 'database' });
@@ -122,11 +140,25 @@ export function restoreWorkspaceRecoveryAdmission(
     const owners = unresolved.filter((row) => row.workspace_id === failure.id);
     if (failure.check === 'recovery' && owners.length === 1) {
       const owner = owners[0]!;
+      mutationAdmission?.restoreRecoveryClosed(
+        failure.id,
+        owner.admission_id.startsWith('wsbak_')
+          ? { captureId: owner.admission_id }
+          : {
+              admissionId: owner.admission_id,
+              revision: owner.revision,
+              candidateRef: owner.candidate_ref,
+            }
+      );
+    } else if (
+      failure.check === 'recovery' &&
+      owners.length === 0 &&
+      captureOrigins.has(failure.id)
+    ) {
       mutationAdmission?.restoreRecoveryClosed(failure.id, {
-        admissionId: owner.admission_id,
-        revision: owner.revision,
-        candidateRef: owner.candidate_ref,
+        captureId: captureOrigins.get(failure.id)!,
       });
+    } else if (failure.check === 'recovery' && mutationAdmission?.isClosed(failure.id, 'capture')) {
     } else
       mutationAdmission?.restoreClosed(
         failure.id,
