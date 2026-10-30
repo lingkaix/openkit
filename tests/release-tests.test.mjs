@@ -425,8 +425,9 @@ test('four actual partition blobs merge to original coverage and unchanged thres
       path.join(owner.cwd, `${file}.test.js`),
       `import {value} from './subject.js'; test('branch ${input}',()=>expect(value(${input})).toBe(${input}));`
     );
+  const sequencer = new URL('../scripts/ci-vitest-sequencer.mjs', import.meta.url).href;
   const config = (threshold) =>
-    `export default {test:{globals:true,maxWorkers:1,pool:"threads",include:["*.test.js"],coverage:{provider:"v8",reporter:["text"],include:["subject.js"],thresholds:{lines:${threshold},branches:${threshold},functions:${threshold},statements:${threshold}}}}};`;
+    `import CiSequencer from ${JSON.stringify(sequencer)}; export default {test:{sequence:{sequencer:CiSequencer},globals:true,maxWorkers:1,pool:"threads",include:["*.test.js"],coverage:{provider:"v8",reporter:["text"],include:["subject.js"],thresholds:{lines:${threshold},branches:${threshold},functions:${threshold},statements:${threshold}}}}};`;
   writeFileSync(path.join(owner.cwd, 'vitest.config.js'), config(100));
   for (const index of [1, 2, 3, 4]) {
     const prefix = `part-${index}`;
