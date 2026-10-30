@@ -583,7 +583,7 @@ const shardJobBaseline = {
   'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
   'l0-l2-build': 'd64709af62693597cde5f273c0c8ef1752f36609dce4ea30fdb1705467aeab2e',
   'l0-l2-shards': 'f7b5733bb480eb7e76d53824317099c608a2930d3662e217a14e8a12a7e1f55c',
-  'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
+  'l0-l2-coverage': '655073709e066f5323ce24839890cf12b32997a83ffe7121b54d24e4df55d7b6',
   'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
 };
 
@@ -1380,6 +1380,12 @@ test('partitioned coverage merges the complete current-attempt reports without a
   assert.equal(merge.container.image, actionExpression('needs.test-image.outputs.image'));
   assert.equal(merge.permissions.actions, 'read');
   assert.equal(merge.if, workflow.jobs['l0-l2-shards'].if);
+  const sharedBuild = step(merge, 'Restore shared build cache');
+  assert.deepEqual(sharedBuild, step(workflow.jobs['l0-l2-shards'], 'Restore shared build cache'));
+  assert.ok(
+    merge.steps.indexOf(sharedBuild) <
+      merge.steps.indexOf(step(merge, 'Merge whole-owner coverage as the unprivileged image user'))
+  );
   const download = step(merge, 'Download current-attempt coverage partitions');
   assert.equal(
     download.with.pattern,

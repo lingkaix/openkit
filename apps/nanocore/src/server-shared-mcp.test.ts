@@ -1189,10 +1189,10 @@ describe.skipIf(process.platform === 'win32')(
           expect((await f.worker.list()).status).toBe(200);
           const admitted = discovery.mock.calls[0]![0];
           discovery.mockRestore();
+          // Discovery closed its prior child. Both paths need fresh physical-session evidence.
+          for (const marker of [f.pidFile, f.descendantFile, f.requestFile])
+            rmSync(marker, { force: true });
           if (phase === 'in-flight') {
-            // Discovery closed its prior child; require fresh evidence from this actual call.
-            for (const marker of [f.pidFile, f.descendantFile, f.requestFile])
-              rmSync(marker, { force: true });
             gatewayOutcome = f.workerMcpGateway
               .callTool({
                 ...admitted,

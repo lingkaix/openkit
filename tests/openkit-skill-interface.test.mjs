@@ -3869,13 +3869,14 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
   assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, /okt_environment/);
 
   const masterKeyBase64 = 'master-key-value-that-must-stay-secret';
+  // Exercise redaction through a current secret-bearing operation, not the empty unlock input.
   const secretFailure = await runCli(
-    ['ops', 'call', 'vault.unlock', '--input', '-'],
+    ['ops', 'call', 'vault.provider-api-key-set', '--input', '-'],
     {
       OPENKIT_NANOCORE_URL: 'http://secret-redaction.example',
       OPENKIT_NANOCORE_TOKEN: '',
     },
-    JSON.stringify({ masterKeyBase64 }),
+    JSON.stringify({ providerId: 'redaction-fixture', apiKey: masterKeyBase64 }),
     [
       responseModule(422, {
         code: 'vault_key_rejected',

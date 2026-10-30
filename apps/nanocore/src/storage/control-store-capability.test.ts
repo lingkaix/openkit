@@ -15,6 +15,9 @@ import {
   prepareControlPermissionDecision,
 } from '../policy/permission-decisions.js';
 import { readWorkerRawOutput } from '../runtime/worker-raw-output.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { ControlCapabilityCommandInputSchema } from './control-store-capability.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
@@ -97,6 +100,16 @@ function fixture() {
   const db = openWorkspaceDb(root, workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
+  // Establish the real initiator and Workspace ownership before Main becomes query-only.
+  const coreDb = createTestCoreDb(root);
+  let actor: { kind: 'user'; id: string };
+  try {
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+    actor = { kind: 'user', id: userId };
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
 
   /** Creates real inference proof for one exact Turn and awaits its actual admission acknowledgement. */
   async function inference(
@@ -115,7 +128,7 @@ function fixture() {
       context: {
         threadId: scope.threadId,
         turnId: scope.turnId,
-        authorityActor: null,
+        authorityActor: actor,
         family: 'llm',
         operation: 'chat_completions',
         capabilityId: 'llm.gateway.use',
@@ -143,7 +156,7 @@ function fixture() {
     return client;
   }
 
-  return { root, db, workspaceId, inference, open };
+  return { root, db, workspaceId, actor, inference, open };
 }
 
 type Inference = Awaited<ReturnType<ReturnType<typeof fixture>['inference']>>;
@@ -440,7 +453,7 @@ it('commits a final no-contact refusal tuple and rolls it back on an actual nati
   const callId = allocateEntityId('cap');
   const allowId = allocateEntityId('pd');
   const refusalId = allocateEntityId('pd');
-  const actor = { kind: 'user' as const, id: allocateEntityId('usr') };
+  const actor = f.actor;
   const now = new Date();
   const preparedDecision = (result: 'allow' | 'deny', decisionId: string) =>
     prepareControlPermissionDecision({
