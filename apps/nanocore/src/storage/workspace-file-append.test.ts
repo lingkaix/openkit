@@ -4,16 +4,33 @@ import { join } from 'node:path';
 import { writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createTestStore } from '../test-support/store.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 
-const partialWriteState = vi.hoisted(() => ({
-  calls: 0,
-  failSync: false,
-  fullReads: 0,
-  nativeRoot: '',
-  nativeCalls: 0,
-  failNativeWrite: false,
-}));
+const partialWriteState = vi.hoisted(() => {
+  const nativeWrites = new Int32Array(new SharedArrayBuffer(8));
+  return {
+    calls: 0,
+    failSync: false,
+    fullReads: 0,
+    nativeRoot: '',
+    nativeWrites,
+    get nativeCalls() {
+      return Atomics.load(nativeWrites, 0);
+    },
+    set nativeCalls(value: number) {
+      Atomics.store(nativeWrites, 0, value);
+    },
+    get failNativeWrite() {
+      return Atomics.load(nativeWrites, 1) !== 0;
+    },
+    set failNativeWrite(value: boolean) {
+      Atomics.store(nativeWrites, 1, Number(value));
+    },
+  };
+});
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -47,33 +64,49 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
+// Wrap the actual native entry so the fault reaches its immutable FileHandle writes.
+vi.mock('node:worker_threads', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:worker_threads')>();
   return {
     ...actual,
-    open: async (...args: Parameters<typeof actual.open>) => {
-      const file = await actual.open(...args);
-      if (
-        partialWriteState.nativeRoot &&
-        typeof args[0] === 'string' &&
-        args[0].startsWith(partialWriteState.nativeRoot) &&
-        args[0].endsWith('.tmp')
-      ) {
-        const write = file.write.bind(file);
-        // Fault the immutable publisher's actual FileHandle, never its SQL owner or result.
-        file.write = (async (
-          buffer: Uint8Array,
-          offset: number,
-          length: number,
-          position: number
-        ) => {
-          partialWriteState.nativeCalls++;
-          if (partialWriteState.failNativeWrite && partialWriteState.nativeCalls === 2)
-            throw new Error('injected immutable write failure');
-          return write(buffer, offset, Math.max(1, Math.ceil(length / 2)), position);
-        }) as typeof file.write;
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (!partialWriteState.nativeRoot) {
+          super(filename, options);
+          return;
+        }
+        const prelude = `
+          const {workerData} = require('node:worker_threads');
+          const state = new Int32Array(workerData.nativeWrites);
+          const fs = require('node:fs/promises'), open = fs.open;
+          fs.open = async (...args) => {
+            const file = await open(...args);
+            if (typeof args[0] === 'string' && args[0].startsWith(workerData.nativeRoot) && args[0].endsWith('.tmp')) {
+              const write = file.write.bind(file);
+              file.write = async (buffer, offset, length, position) => {
+                const calls = Atomics.add(state, 0, 1) + 1;
+                if (Atomics.load(state, 1) && calls === 2)
+                  throw new Error('injected immutable write failure');
+                return write(buffer, offset, Math.max(1, Math.ceil(length / 2)), position);
+              };
+            }
+            return file;
+          };
+          require('node:module').syncBuiltinESMExports();
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            nativeRoot: partialWriteState.nativeRoot,
+            nativeWrites: partialWriteState.nativeWrites.buffer,
+          },
+        });
       }
-      return file;
     },
   };
 });
@@ -210,12 +243,20 @@ describe('canonical append writes', () => {
     const scope = nativeProductScope(dataRoot, item.owner);
     const before = store.getTurnById(turn.id);
     const entriesBefore = readNativeProductEntries(scope, turn.id, 'item');
-    // The private handoff is written on Main; native preparation verifies, syncs and links it.
+    // Restart only the native host to install this scope's real FileHandle fault.
+    await shutdownControlStoreWorkerClient();
     partialWriteState.nativeRoot = `${scope.contentMount.root}/`;
     partialWriteState.nativeCalls = 0;
     partialWriteState.failNativeWrite = true;
     try {
-      await expect(store.createItem(item)).rejects.toThrow('injected immutable write failure');
+      const failed = store.createItem(item);
+      // The native protocol returns closed failure facts, never the injected exception text.
+      await expect(failed).rejects.toBeInstanceOf(ControlStoreWorkerError);
+      await expect(failed).rejects.toMatchObject({
+        code: 'sql-failed',
+        commit: 'not-committed',
+        message: 'Control database writer operation failed.',
+      });
       expect(partialWriteState.nativeCalls).toBe(2);
       expect(store.getTurnById(turn.id)).toEqual(before);
       expect(readNativeProductEntries(scope, turn.id, 'item')).toEqual(entriesBefore);

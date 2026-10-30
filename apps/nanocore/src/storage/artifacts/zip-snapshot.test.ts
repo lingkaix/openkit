@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ZipFile } from 'yauzl';
-import { FileStorageAdmission } from './file-admission.js';
+import { FileStorageAdmission, type FileStorageReservation } from './file-admission.js';
 import { stageZipSnapshot, ZipExtractionBudget } from './zip-snapshot.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -28,17 +28,23 @@ const corpus = JSON.parse(
     entries: Array<{ name: string; actualSize: number; bodySha256: string }>;
   }>;
 };
-const roots: string[] = [];
+const roots: Array<{ root: string; reservation?: FileStorageReservation }> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.mocked(open).mockReset();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots.splice(0).map(async ({ root, reservation }) => {
+      await rm(root, { recursive: true, force: true });
+      reservation?.release();
+    })
+  );
 });
 
 /** Keeps hostile bytes and every extraction attempt within one disposable filesystem. */
 async function fixture(id: string) {
   const root = await mkdtemp(join(tmpdir(), 'artifact-zip-'));
-  roots.push(root);
+  const cleanup: (typeof roots)[number] = { root };
+  roots.push(cleanup);
   const workspaceRoot = join(root, 'workspaces', 'workspace');
   await mkdir(workspaceRoot, { recursive: true });
   const archivePath = join(root, 'original.zip');
@@ -51,6 +57,7 @@ async function fixture(id: string) {
     derivativeBytes: 0n,
     publicationBytes: 0n,
   });
+  cleanup.reservation = reservation;
   return {
     root,
     workspaceRoot,
