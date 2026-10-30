@@ -463,6 +463,8 @@ interface AuthenticatedWorkerControlInput {
   tokenFamily?: 'worker-control';
   /** Worker-provided lineage for request binding. */
   lineage: WorkerControlLineage;
+  /** Reports gateway-owned lineage only after the existing authentication and binding checks. */
+  onAuthenticated?: ((lineage: WorkerControlLineage) => void) | undefined;
 }
 
 /**
@@ -762,6 +764,7 @@ export class WorkerControlGateway {
         {
           authorization: input.authorization,
           lineage: request.lineage,
+          onAuthenticated: input.onAuthenticated,
         },
         request.reconnectKey
           ? {
@@ -1201,6 +1204,8 @@ export class WorkerControlGateway {
           this.throwTokenBindingRejection(resolution.reason);
         }
 
+        input.onAuthenticated?.({ ...state.lineage });
+
         if (
           resolution.cancellationOnly &&
           !(
@@ -1218,6 +1223,7 @@ export class WorkerControlGateway {
         replayOnly = resolution.replayOnly;
       } else {
         this.assertTokenBinding(state, token, 'worker-control', input.lineage);
+        input.onAuthenticated?.({ ...state.lineage });
       }
 
       const finalStatusSequence = acceptSequencedControlOperation(
@@ -1475,6 +1481,7 @@ export class WorkerControlGateway {
     }
 
     this.assertTokenBinding(state, token, 'worker-control', input.lineage);
+    input.onAuthenticated?.({ ...state.lineage });
 
     return state;
   }
@@ -1834,7 +1841,7 @@ function acceptSequencedControlOperation(
  * Creates a stable sequenced-operation fingerprint without retaining transport credentials.
  *
  * @param payload Authenticated operation payload used for exact retry comparison.
- * @returns Stable fingerprint containing every semantic payload field except authorization.
+ * @returns Stable fingerprint containing semantic payload fields without transport authentication inputs.
  */
 function sequencedControlFingerprint(payload: unknown): string {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -1843,6 +1850,7 @@ function sequencedControlFingerprint(payload: unknown): string {
 
   const canonicalPayload = { ...payload } as Record<string, unknown>;
   delete canonicalPayload.authorization;
+  delete canonicalPayload.onAuthenticated;
   return canonicalJsonText(canonicalPayload);
 }
 

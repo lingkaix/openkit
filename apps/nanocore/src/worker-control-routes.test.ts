@@ -1395,6 +1395,82 @@ describe('worker control routes', () => {
         threadId: lineage.threadId,
       });
       expect(acceptedCount.count).toBe(0);
+
+      const eventBody = (requestLineage = lineage) => ({
+        lineage: requestLineage,
+        record: {
+          event: { data: { delta: 'unadmitted', itemId: 'unadmitted_item' }, type: 'item.delta' },
+          kind: 'event',
+          lineage: requestLineage,
+          schemaVersion: 1,
+          sequence: 1,
+        },
+      });
+      const authorization = `Bearer ${registration.token}`;
+      const requests = [
+        { name: 'missing Token', authorization: null, body: eventBody(), status: 401 },
+        {
+          name: 'invalid Token',
+          authorization: `Bearer ${globalThis.crypto.randomUUID()}`,
+          body: eventBody(),
+          status: 401,
+        },
+        {
+          name: 'wrong authenticated outer lineage',
+          authorization,
+          body: eventBody({ ...lineage, threadId: testEntityId('th', 'th_wrong_outer') }),
+          status: 403,
+        },
+        {
+          name: 'schema refusal',
+          authorization,
+          body: { ...eventBody(), record: null },
+          status: 400,
+        },
+        {
+          name: 'size refusal',
+          authorization,
+          body: {
+            ...eventBody(),
+            record: {
+              ...eventBody().record,
+              event: {
+                data: { delta: 'x'.repeat(260 * 1024), itemId: 'unadmitted_item' },
+                type: 'item.delta',
+              },
+            },
+          },
+          status: 413,
+        },
+      ];
+      const quarantineCount = () =>
+        (
+          coreDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM worker_control_rejected_evidence')
+            .get() as { count: number }
+        ).count;
+      for (const request of requests) {
+        const before = quarantineCount();
+        const refused = await app.request('/api/worker-control/events/append', {
+          body: JSON.stringify(request.body),
+          headers: {
+            'content-type': 'application/json',
+            ...(request.authorization ? { authorization: request.authorization } : {}),
+          },
+          method: 'POST',
+        });
+        expect.soft(refused.status, request.name).toBe(request.status);
+        // Worker Control Verification: parsed bytes cannot supply authenticated
+        // lineage. The earlier admitted inner-lineage rejection remains retained.
+        expect.soft(quarantineCount(), request.name).toBe(before);
+      }
+      const evidence = coreDb.sqlite
+        .prepare('SELECT * FROM worker_control_rejected_evidence')
+        .all();
+      expect(JSON.stringify(evidence).includes(registration.token)).toBe(false);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_control_records').get()
+      ).toEqual({ count: 0 });
     } finally {
       await shutdownControlStoreWorkerClient();
       closeWorkspaceProductReadHandles(coreDb.dataRoot);

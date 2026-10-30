@@ -81,11 +81,12 @@ export function registerWorkerControlRoutes({
       parsed.data.sequence,
       arrivedAt
     );
+    const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json({
         heartbeat: workerControlGateway.recordHeartbeat({
-          ...workerControlTokenHashAuthentication(c),
           ...parsed.data,
+          ...authentication.input,
         }),
       });
       diagnose(response.status);
@@ -98,7 +99,7 @@ export function registerWorkerControlRoutes({
       quarantineWorkerControlRejection({
         coreDb,
         error,
-        lineage: parsed.data.lineage,
+        lineage: authentication.authenticatedLineage(),
         operation: 'heartbeat',
         route: '/api/worker-control/heartbeat',
       });
@@ -128,11 +129,12 @@ export function registerWorkerControlRoutes({
       parsed.data.sequence,
       arrivedAt
     );
+    const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json({
         artifact: workerControlGateway.recordArtifactNotice({
           artifact: parsed.data.artifact,
-          ...workerControlTokenHashAuthentication(c),
+          ...authentication.input,
           lineage: parsed.data.lineage,
           sequence: parsed.data.sequence,
         }),
@@ -147,7 +149,7 @@ export function registerWorkerControlRoutes({
       quarantineWorkerControlRejection({
         coreDb,
         error,
-        lineage: parsed.data.lineage,
+        lineage: authentication.authenticatedLineage(),
         operation: 'artifact_notice',
         route: '/api/worker-control/artifacts',
       });
@@ -177,9 +179,10 @@ export function registerWorkerControlRoutes({
       parsed.data.record.sequence,
       arrivedAt
     );
+    const authentication = workerControlTokenHashAuthentication(c);
     try {
       const accepted = workerControlGateway.appendEvent({
-        ...workerControlTokenHashAuthentication(c),
+        ...authentication.input,
         lineage: parsed.data.lineage,
         record: parsed.data.record,
       });
@@ -194,7 +197,7 @@ export function registerWorkerControlRoutes({
       quarantineWorkerControlRejection({
         coreDb,
         error,
-        lineage: parsed.data.lineage,
+        lineage: authentication.authenticatedLineage(),
         operation: 'event_append',
         route: '/api/worker-control/events/append',
       });
@@ -237,10 +240,11 @@ export function registerWorkerControlRoutes({
       return asInvalidRequestError(body.error);
     }
 
+    const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json(
         workerControlGateway.recordFinalStatus({
-          ...workerControlTokenHashAuthentication(c),
+          ...authentication.input,
           ...(body.data.diagnostics ? { diagnostics: body.data.diagnostics } : {}),
           evidenceManifestDigests: body.data.evidenceManifestDigests,
           lineage: parsed.data.lineage,
@@ -259,7 +263,7 @@ export function registerWorkerControlRoutes({
       quarantineWorkerControlRejection({
         coreDb,
         error,
-        lineage: parsed.data.lineage,
+        lineage: authentication.authenticatedLineage(),
         operation: 'final_status',
         route: '/api/worker-control/final-status',
       });
@@ -304,9 +308,10 @@ export function registerWorkerControlRoutes({
       return asInvalidRequestError(body.error);
     }
 
+    const authentication = workerControlTokenHashAuthentication(c);
     try {
       const supplyRefreshAck = workerControlGateway.recordSupplyRefreshAck({
-        ...workerControlTokenHashAuthentication(c),
+        ...authentication.input,
         lineage: parsed.data.lineage,
         message: body.data.message ?? null,
         refreshId: body.data.refreshId,
@@ -327,7 +332,7 @@ export function registerWorkerControlRoutes({
       quarantineWorkerControlRejection({
         coreDb,
         error,
-        lineage: parsed.data.lineage,
+        lineage: authentication.authenticatedLineage(),
         operation: 'supply_refresh_ack',
         route: '/api/worker-control/supply-refresh-ack',
       });
@@ -372,10 +377,11 @@ export function registerWorkerControlRoutes({
       return asInvalidRequestError(body.error);
     }
 
+    const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json({
         response: workerControlGateway.recordCapabilitySummary({
-          ...workerControlTokenHashAuthentication(c),
+          ...authentication.input,
           lineage: parsed.data.lineage,
           summary: body.data,
         }),
@@ -390,7 +396,7 @@ export function registerWorkerControlRoutes({
       quarantineWorkerControlRejection({
         coreDb,
         error,
-        lineage: parsed.data.lineage,
+        lineage: authentication.authenticatedLineage(),
         operation: 'capability_summary',
         route: '/api/worker-control/capability-summary',
       });
@@ -470,19 +476,20 @@ function observeControlRequest(
 }
 
 /**
- * Stores product-safe evidence when worker-control verification rejects a parsed request.
+ * Stores product-safe evidence only after gateway authentication proved the request lineage.
  *
  * @param input Rejection metadata from a worker-control route.
  */
 function quarantineWorkerControlRejection(input: {
   readonly coreDb: CoreDb | undefined;
   readonly error: unknown;
-  readonly lineage: WorkerControlLineage;
+  readonly lineage: WorkerControlLineage | undefined;
   readonly operation: string;
   readonly route: string;
 }): void {
   if (
     !input.coreDb ||
+    !input.lineage ||
     !(input.error instanceof WorkerControlGatewayError) ||
     input.error.code === 'worker_control_reconnect_required'
   ) {
@@ -501,18 +508,30 @@ function quarantineWorkerControlRejection(input: {
 }
 
 /**
- * Selects the worker-control hash family for one semantic route request.
+ * Selects the worker-control family and captures proof from the existing gateway admission.
  *
  * @param c Worker-control HTTP request context.
- * @returns Authorization input explicitly bound to the worker-control family.
+ * @returns Gateway authentication input and the proved lineage available to rejection handling.
  */
 function workerControlTokenHashAuthentication(c: Context): {
-  readonly authorization: string | null;
-  readonly tokenFamily: 'worker-control';
+  readonly input: {
+    readonly authorization: string | null;
+    readonly tokenFamily: 'worker-control';
+    readonly onAuthenticated: (lineage: WorkerControlLineage) => void;
+  };
+  readonly authenticatedLineage: () => WorkerControlLineage | undefined;
 } {
+  let authenticatedLineage: WorkerControlLineage | undefined;
+
   return {
-    authorization: c.req.header('authorization') ?? null,
-    tokenFamily: 'worker-control',
+    input: {
+      authorization: c.req.header('authorization') ?? null,
+      tokenFamily: 'worker-control',
+      onAuthenticated: (lineage) => {
+        authenticatedLineage = { ...lineage };
+      },
+    },
+    authenticatedLineage: () => authenticatedLineage,
   };
 }
 

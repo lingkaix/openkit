@@ -446,3 +446,5 @@ The existing Workspace gate keeps capture ownership separate from ordinary delet
 ## Snapshot maintenance join
 
 The existing scheduler-attempt maintenance service accepts an optional `snapshots` callback after scheduler, native and checkpoint recovery. It runs within the same single-flight pass; overlapping ticks share that pass, and `stop()` joins accepted snapshot work. Snapshot policy stays with the Workspace backup owner. This join adds no independent timer or retry.
+
+Worker-control route rejection handling retains quarantine evidence only from lineage proved at the existing gateway Token and current-binding checks. Parsed bodies, credential or outer-lineage refusals, and schema or size errors supply no such proof. Admitted sequence or inner-evidence failures retain their existing redacted quarantine records, including admitted refusals with status 403.
