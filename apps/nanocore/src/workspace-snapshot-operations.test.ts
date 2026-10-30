@@ -891,6 +891,303 @@ describe('C-a composed snapshot App API', () => {
     expect(f.admission.isClosed(workspaceId)).toBe(false);
   }, 120_000);
 
+  it('restores complete retained history and authored configuration under the original identity, then replays without replacement', async () => {
+    const f = await fixture();
+    try {
+      // Same-Deployment Restore and Workspace Bundle And Authority preserve complete local history.
+      await f.store.updateWorkspace(workspaceId, { name: 'Captured authored name' });
+      const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Retained history', {
+        kind: 'user',
+        id: f.ownerId,
+      });
+      const item = await f.store.createItem({
+        id: allocateEntityId('it'),
+        owner: turn.owner,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'in_progress',
+        text: 'Earlier retained revision',
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      });
+      const completedItem = await f.store.updateItem(item.id, {
+        status: 'completed',
+        text: 'Retained reply: é😀; second sentence.',
+        completedAt: new Date().toISOString(),
+      });
+      await f.store.persistTurnEvent(turn.id, {
+        event: 'item.completed',
+        workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        requestId: null,
+        data: { type: 'item-completed', itemId: item.id, item: completedItem },
+      });
+      await f.store.completeTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const configPath = join(f.dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+      const expected = {
+        thread: f.store.getThread(workspaceId, DEMO_THREAD_ID),
+        turns: f.store.listThreadTurns(workspaceId, DEMO_THREAD_ID),
+        revisions: f.store.listWorkspaceItemRevisions(workspaceId),
+        events: f.store.getTurnEventsForExport(turn.id),
+        knowledge: f.store.getWorkspaceResources(workspaceId).knowledge,
+        config: readFileSync(configPath),
+      };
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      WorkspaceSnapshotReportSchema.parse(await captured.json());
+      await f.store.updateThread(workspaceId, DEMO_THREAD_ID, { name: 'Post-capture Thread' });
+      const later = await f.store.createThread(workspaceId, 'Outside the captured cut');
+      const members = listWorkspaceMembers(f.coreDb, workspaceId);
+      const registry = getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId);
+      const input = {
+        workspaceId,
+        backupId,
+        requestId: randomUUID(),
+        acknowledgeLostSafety: false,
+      };
+      const restored = await request(f.app, 'workspace.backup-restore', input);
+      // The current uncomposed operation must fail here, rather than count as a valid refusal.
+      expect(restored.status, await restored.clone().text()).toBe(200);
+      const report = WorkspaceSnapshotReportSchema.parse(await restored.json());
+      expect(report).toMatchObject({
+        command: 'restore',
+        disposition: 'restored',
+        workspaceId,
+        restrictedRecovery: false,
+        nextAction: 'none',
+      });
+      expect(f.store.getWorkspace(workspaceId)).toMatchObject({
+        id: workspaceId,
+        name: 'Captured authored name',
+      });
+      expect(f.store.listThreads(workspaceId).map((thread) => thread.id)).not.toContain(later.id);
+      expect(f.store.getThread(workspaceId, DEMO_THREAD_ID)).toEqual(expected.thread);
+      expect(f.store.listThreadTurns(workspaceId, DEMO_THREAD_ID)).toEqual(expected.turns);
+      expect(f.store.listWorkspaceItemRevisions(workspaceId)).toEqual(expected.revisions);
+      expect(f.store.getTurnEventsForExport(turn.id)).toEqual(expected.events);
+      expect(f.store.getWorkspaceResources(workspaceId).knowledge).toEqual(expected.knowledge);
+      expect(readFileSync(configPath)).toEqual(expected.config);
+      expect(listWorkspaceMembers(f.coreDb, workspaceId)).toEqual(members);
+      expect(getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId)).toMatchObject({
+        workspaceId,
+        ownerUserId: registry!.ownerUserId,
+        status: registry!.status,
+      });
+      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      const after = await request(f.app, 'thread.create', {
+        workspaceId,
+        name: 'Fresh admission after restore',
+        visibility: 'workspace',
+        requestId: randomUUID(),
+      });
+      expect(after.status, await after.clone().text()).toBe(200);
+      const fresh = (await after.json()) as { id: string };
+      const replay = await request(f.app, 'workspace.backup-restore', input);
+      expect(replay.status, await replay.clone().text()).toBe(200);
+      expect(WorkspaceSnapshotReportSchema.parse(await replay.json())).toEqual(report);
+      expect(f.store.getThread(workspaceId, fresh.id).name).toBe('Fresh admission after restore');
+      const conflict = await request(f.app, 'workspace.backup-restore', {
+        ...input,
+        acknowledgeLostSafety: true,
+      });
+      expect(conflict.status, await conflict.clone().text()).toBe(409);
+      expect(ApiErrorSchema.parse(await conflict.json())).toMatchObject({
+        code: 'request-conflict',
+      });
+      expect(f.store.getThread(workspaceId, fresh.id).name).toBe('Fresh admission after restore');
+    } finally {
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it.each([
+    'admitted publisher',
+    'current freeze',
+    'running Turn',
+  ] as const)('refuses restore before the %s is released and preserves its current work', async (blocker) => {
+    const f = await fixture();
+    let release = () => {};
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let restoring: Promise<Response> | undefined;
+    try {
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      let turn: Awaited<ReturnType<FsStore['createTurn']>> | undefined;
+      if (blocker === 'admitted publisher') {
+        const admitted = f.admission.enter(workspaceId);
+        expect(admitted).not.toBeNull();
+        release = admitted!;
+      } else if (blocker === 'current freeze') {
+        const frozen = f.admission.tryFreeze(workspaceId, () => []);
+        expect(frozen.status).toBe('frozen');
+        if (frozen.status !== 'frozen') throw new Error('Expected the existing target freeze.');
+        release = frozen.release;
+      } else {
+        turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Must remain running', {
+          kind: 'user',
+          id: f.ownerId,
+        });
+      }
+      const before = f.store.listThreads(workspaceId);
+      restoring = request(f.app, 'workspace.backup-restore', {
+        workspaceId,
+        backupId,
+        requestId: randomUUID(),
+        acknowledgeLostSafety: false,
+      });
+      // Scoped Freeze And Blockers forbids waiting for either admitted or durable work.
+      const response = await Promise.race([
+        restoring,
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(
+            () => reject(new Error('Restore waited for an unreleased blocker.')),
+            5_000
+          );
+        }),
+      ]);
+      expect(response.status, await response.clone().text()).toBe(409);
+      const frozen = blocker === 'current freeze';
+      const error = ApiErrorSchema.parse(await response.json());
+      expect(error).toMatchObject({
+        code: frozen ? 'workspace_frozen' : 'workspace_blocked',
+        details: { workspaceId, operation: 'restore', retryable: frozen },
+      });
+      expect(error.details).toMatchObject({ blockers: expect.any(Array) });
+      expect((error.details as { blockers: unknown[] }).blockers.length).toBeGreaterThan(0);
+      if (turn) {
+        expect(error.details).toMatchObject({
+          blockers: expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'turn',
+              reason: 'active-work',
+              reference: { threadId: DEMO_THREAD_ID, turnId: turn.id },
+            }),
+          ]),
+        });
+        expect(f.store.getTurnById(turn.id)).toEqual(turn);
+      }
+      expect(f.store.listThreads(workspaceId)).toEqual(before);
+      expect(f.admission.isClosed(workspaceId)).toBe(frozen);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      release();
+      if (restoring) await restoring;
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
+  it('keeps a healthy sibling writable and refuses authority revoked during verified-byte acquisition', async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const observed = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let restoring: Promise<Response> | undefined;
+    try {
+      const sibling = await f.store.createWorkspace('Healthy sibling during restore');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
+      });
+      const backupId = allocateEntityId('wsbak');
+      const captured = await request(f.app, 'workspace.backup-capture', {
+        workspaceId,
+        backupId,
+        purpose: 'backup',
+      });
+      expect(captured.status, await captured.clone().text()).toBe(200);
+      await f.store.createThread(workspaceId, 'Current history must survive refusal');
+      const before = f.store.listThreads(workspaceId);
+      const configPath = join(f.dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+      const configBefore = readFileSync(configPath);
+      const issued = accessTokens.createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.ownerId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const copy = durableBytes.copyVerifiedFile;
+      let first = true;
+      vi.spyOn(durableBytes, 'copyVerifiedFile').mockImplementation(async (...args) => {
+        const result = await copy(...args);
+        if (first) {
+          first = false;
+          entered();
+          // The actual producer completed; withhold only its acknowledged result at the await.
+          await barrier;
+        }
+        return result;
+      });
+      restoring = server.request('/api/app/operations/workspace.backup-restore', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer ' + issued.secret,
+          'x-openkit-request-id': randomUUID(),
+        },
+        body: JSON.stringify({ workspaceId, backupId, acknowledgeLostSafety: false }),
+      });
+      await Promise.race([
+        observed,
+        restoring.then((response) => {
+          throw new Error('Restore did not reach verified-byte acquisition: ' + response.status);
+        }),
+      ]);
+      const siblingWrite = await request(f.app, 'thread.create', {
+        workspaceId: sibling.id,
+        name: 'Sibling native acknowledgement during restore',
+        visibility: 'workspace',
+        requestId: randomUUID(),
+      });
+      expect(siblingWrite.status, await siblingWrite.clone().text()).toBe(200);
+      const siblingThread = (await siblingWrite.json()) as { id: string };
+      expect(f.store.getThread(sibling.id, siblingThread.id).name).toBe(
+        'Sibling native acknowledgement during restore'
+      );
+      expect(accessTokens.revokeOpenKitAccessTokenRecord(f.coreDb, issued.tokenId)?.status).toBe(
+        'revoked'
+      );
+      release();
+      const response = await restoring;
+      // Operator Contract requires current administrator authority again after awaits.
+      expect([401, 403]).toContain(response.status);
+      ApiErrorSchema.parse(await response.json());
+      expect(f.store.listThreads(workspaceId)).toEqual(before);
+      expect(readFileSync(configPath)).toEqual(configBefore);
+      expect(accessTokens.getOpenKitAccessTokenRecord(f.coreDb, issued.tokenId)?.status).toBe(
+        'revoked'
+      );
+      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      expect(f.admission.isClosed(sibling.id)).toBe(false);
+    } finally {
+      release();
+      if (restoring) await restoring;
+      vi.restoreAllMocks();
+      closeTestCoreDb(f.coreDb);
+    }
+  }, 120_000);
+
   it.each([
     'workspace.backup-capture',
     'workspace.backup-verify',

@@ -71,6 +71,7 @@ import type { FileStorageAdmission } from './storage/artifacts/file-admission.js
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
+import { createWorkspaceRestoreOperationImplementations } from './storage/workspace-restore.js';
 import { createWorkspaceTransferOperationImplementations } from './storage/workspace-transfer-operations.js';
 import { createThreadOperationImplementations } from './thread-operation-implementations.js';
 import { createTurnOperationImplementations } from './turn-operation-implementations.js';
@@ -192,6 +193,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       'workspace.backup-capture': snapshot['workspace.backup-capture'],
       'workspace.backup-verify': snapshot['workspace.backup-verify'],
     },
+    createWorkspaceRestoreOperationImplementations(dependencies),
     createCallerOperationImplementations(dependencies),
     createChannelOperationImplementations(dependencies.channelServices),
     createMaterialOperationImplementations({

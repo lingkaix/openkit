@@ -279,3 +279,5 @@ The closed Workspace sharing failure family includes `personal_workspace_not_del
 Plugin import responses include component `diagnostics` with package keys and fixed management reasons. An empty list means complete component admission; diagnostics do not grant activation or change immutable valid membership.
 
 Plugin import accepts optional `pluginId` and `memberIds` to name explicit scoped catalog targets while retaining original package names. The existing native owner checks collisions and preserves prior member mappings; these inputs grant no permission or publisher trust.
+
+Same-deployment Workspace backup restore now joins the composed operation table. Its existing selectors, safety acknowledgement and report are unchanged; capture-selected recovery and MOVE activation remain separate.

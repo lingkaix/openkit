@@ -57,7 +57,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
-import { isScopeAdmitted } from '../bootstrap/readiness.js';
+import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import {
@@ -147,6 +147,7 @@ import {
 } from './workspace-file-records.js';
 import {
   prepareRecoveryAdmission,
+  type RecoveryAdmission,
   readRecoveryAdmission,
   recoveryReport,
   refuseRecovery as refuse,
@@ -241,6 +242,38 @@ export function readBlockers(input: {
   readonly operation?: WorkspaceFreezeRefusal['operation'];
   readonly canReadThread?: (threadId: string) => boolean;
 }): readonly WorkspaceBlocker[] {
+  try {
+    input.store.getWorkspace(input.workspaceId);
+  } catch {
+    return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+  }
+  return readWorkspaceBlockerFacts(input);
+}
+
+/** Reads the same obstruction facts for an exact selected recovery, without granting serving admission. */
+export function readWorkspaceRecoveryBlockers(
+  input: Parameters<typeof readBlockers>[0],
+  selected: RecoveryAdmission
+): readonly WorkspaceBlocker[] {
+  const current = readRecoveryAdmission(input.coreDb, selected.admission_id);
+  const refusal = scopeAdmissionFailures(input.coreDb.dataRoot).find(
+    (failure) =>
+      failure.scope === 'workspace' && failure.id === input.workspaceId && failure.check !== 'index'
+  );
+  if (
+    selected.workspace_id !== input.workspaceId ||
+    !isDeepStrictEqual(current, selected) ||
+    refusal?.check !== 'recovery'
+  )
+    return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+  return readWorkspaceBlockerFacts(input, selected);
+}
+
+/** One authoritative census serves ordinary and exact-recovery lifecycle inspection. */
+function readWorkspaceBlockerFacts(
+  input: Parameters<typeof readBlockers>[0],
+  selected?: RecoveryAdmission
+): readonly WorkspaceBlocker[] {
   const blockers: WorkspaceBlocker[] = [];
   let unavailable = false;
   const add = (blocker: WorkspaceBlocker, threadId?: string) => {
@@ -250,7 +283,6 @@ export function readBlockers(input: {
   try {
     const { coreDb, workspaceId } = input;
     if (!isEntityId('ws', workspaceId)) throw new Error('Invalid Workspace scope.');
-    input.store.getWorkspace(workspaceId);
     const reader = getWorkspaceProductReadHandle(
       join(coreDb.dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'),
       { kind: 'workspace', workspaceId }
@@ -545,6 +577,7 @@ export function readBlockers(input: {
     )) {
       const recovery = readRecoveryAdmission(coreDb, id);
       if (!recovery) throw new Error('Missing recovery authority.');
+      if (selected && isDeepStrictEqual(recovery, selected)) continue;
       if (recovery.state === 'prepared')
         add({
           kind: 'snapshot',
@@ -2567,81 +2600,90 @@ export function assertWorkspaceBackupCut(
   }
 }
 
+/** Preserves the existing safe domain refusal envelope at concrete online recovery joins. */
+export async function invokeWorkspaceRecoveryOperation<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof WorkspaceRecoveryError || error instanceof WorkspaceBackupBundleError)
+      throw new OperationError(error.code, error.message, 409, { cause: error });
+    throw error;
+  }
+}
+
+/** Supplies current administrator, build and storage owners for online Workspace snapshots. */
+export function workspaceSnapshotOperationPolicy(
+  dependencies: OperationInvocationDependencies,
+  context: AdmittedOperationContext
+) {
+  const { coreDb, dataRoot, fileAdmission, store, workspaceMutationAdmission } = dependencies;
+  if (!coreDb)
+    throw new OperationError('recovery_required', 'Administrator authority is unavailable.', 503);
+  if (!dataRoot || !fileAdmission || !store || !workspaceMutationAdmission)
+    throw new OperationError(
+      'operation_storage_unavailable',
+      'Workspace snapshot storage is unavailable.',
+      503
+    );
+  const currentAuthority = () => {
+    try {
+      requireAdministratorOperation(coreDb, publicOperationActor(context), 'api.call');
+    } catch (cause) {
+      if (cause instanceof DeploymentAdminRequiredError)
+        throw new OperationError(
+          'deployment_admin_required',
+          'Current deployment administrator authority is required.',
+          403,
+          { cause }
+        );
+      if (cause instanceof OperationError) throw cause;
+      const failure = projectOperationError(cause);
+      throw new OperationError(
+        failure?.code ?? 'internal_error',
+        failure?.message ?? 'Internal Server Error',
+        failure?.status ?? 500,
+        { cause }
+      );
+    }
+  };
+  currentAuthority();
+  const release = dependencies.diagnosticsServices?.releaseIdentity;
+  if (!release?.sourceCommit)
+    throw new OperationError(
+      'operation_storage_unavailable',
+      'The server build identity is unknown; install a build with its source commit.',
+      503
+    );
+  const stagingParent = join(dataRoot, 'server/backups');
+  ensureCanonicalDirectory(stagingParent);
+  realDirectory(stagingParent);
+  return {
+    coreDb,
+    dataRoot,
+    store,
+    mutationAdmission: workspaceMutationAdmission,
+    currentAuthority,
+    verification: {
+      stagingParent,
+      admission: fileAdmission,
+      expectedRelease: {
+        version: release.releaseTag ?? 'source',
+        buildId: release.sourceCommit,
+      },
+      ...WORKSPACE_BACKUP_POLICY,
+    },
+  };
+}
+
 /** Complete online operator joins; existing backup, bundle and Kernel owners retain their decisions. */
 export function createWorkspaceSnapshotOperationImplementations(
   dependencies: OperationInvocationDependencies
 ) {
   type Definitions = typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS;
   type Input<K extends keyof Definitions> = import('zod').infer<Definitions[K]['inputSchema']>;
-  // Offline domain refusals keep their existing safe identities in the online operation envelope.
-  const invoke = async <T>(operation: () => Promise<T>): Promise<T> => {
-    try {
-      return await operation();
-    } catch (error) {
-      if (error instanceof WorkspaceRecoveryError || error instanceof WorkspaceBackupBundleError)
-        throw new OperationError(error.code, error.message, 409, { cause: error });
-      throw error;
-    }
-  };
-  const policy = (context: AdmittedOperationContext) => {
-    const { coreDb, dataRoot, fileAdmission, store, workspaceMutationAdmission } = dependencies;
-    if (!coreDb)
-      throw new OperationError('recovery_required', 'Administrator authority is unavailable.', 503);
-    if (!dataRoot || !fileAdmission || !store || !workspaceMutationAdmission)
-      throw new OperationError(
-        'operation_storage_unavailable',
-        'Workspace snapshot storage is unavailable.',
-        503
-      );
-    const currentAuthority = () => {
-      try {
-        requireAdministratorOperation(coreDb, publicOperationActor(context), 'api.call');
-      } catch (cause) {
-        if (cause instanceof DeploymentAdminRequiredError)
-          throw new OperationError(
-            'deployment_admin_required',
-            'Current deployment administrator authority is required.',
-            403,
-            { cause }
-          );
-        if (cause instanceof OperationError) throw cause;
-        const failure = projectOperationError(cause);
-        throw new OperationError(
-          failure?.code ?? 'internal_error',
-          failure?.message ?? 'Internal Server Error',
-          failure?.status ?? 500,
-          { cause }
-        );
-      }
-    };
-    currentAuthority();
-    const release = dependencies.diagnosticsServices?.releaseIdentity;
-    if (!release?.sourceCommit)
-      throw new OperationError(
-        'operation_storage_unavailable',
-        'The server build identity is unknown; install a build with its source commit.',
-        503
-      );
-    const stagingParent = join(dataRoot, 'server/backups');
-    ensureCanonicalDirectory(stagingParent);
-    realDirectory(stagingParent);
-    return {
-      coreDb,
-      dataRoot,
-      store,
-      mutationAdmission: workspaceMutationAdmission,
-      currentAuthority,
-      verification: {
-        stagingParent,
-        admission: fileAdmission,
-        expectedRelease: {
-          version: release.releaseTag ?? 'source',
-          buildId: release.sourceCommit,
-        },
-        ...WORKSPACE_BACKUP_POLICY,
-      },
-    };
-  };
+  const invoke = invokeWorkspaceRecoveryOperation;
+  const policy = (context: AdmittedOperationContext) =>
+    workspaceSnapshotOperationPolicy(dependencies, context);
   // Online readers acquire here; Main already holds acquisition admission for sealed replay.
   const localSource = (
     input: Input<'workspace.backup-verify'>,

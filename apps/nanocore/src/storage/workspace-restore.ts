@@ -2,10 +2,22 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { scopeAdmissionFailures, settleWorkspaceRecoveryScope } from '../bootstrap/readiness.js';
+import {
+  type WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS,
+  WorkspaceSnapshotReportSchema,
+} from '@openkit/app-api-schemas';
+import {
+  isScopeAdmitted,
+  refuseScope,
+  scopeAdmissionFailures,
+  settleWorkspaceRecoveryScope,
+} from '../bootstrap/readiness.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import type { FsStore } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
+import type { AdmittedOperationContext } from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -19,9 +31,14 @@ import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
 import {
+  invokeWorkspaceRecoveryOperation,
+  readBlockers,
   readWorkspaceBackupManifest,
+  readWorkspaceRecoveryBlockers,
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
+  type WorkspaceBackupStageInput,
+  workspaceSnapshotOperationPolicy,
 } from './workspace-backup.js';
 import {
   WORKSPACE_BACKUP_MANIFEST_FILE,
@@ -49,6 +66,7 @@ import {
   readWorkspaceRecoveryReadmission,
   recoveryReport,
   refuseRecovery,
+  resumeWorkspaceRecoveryOwner,
   withRecoveryRoot,
   workspaceRecoveryPredecessorRoot,
 } from './workspace-recovery-admissions.js';
@@ -60,12 +78,14 @@ import type {
 type TargetArgs = Extract<WorkspaceRecoveryCliArgs, { command: 'restore' | 'move-in' }>;
 export type WorkspaceTargetRecoveryInput = TargetArgs & {
   readonly expectedRelease: WorkspaceBackupManifest['release'];
+  readonly snapshotSource?: WorkspaceBackupStageInput['snapshotSource'];
 };
 
 /** Existing Core, physical admission and optional live freeze owned by the invoking lifecycle. */
 interface TargetRecoveryOwner {
   readonly core: CoreDb;
   readonly fileAdmission: FileStorageAdmission;
+  readonly currentAuthority?: () => void;
   readonly native?: {
     readonly gate: WorkspaceMutationAdmission;
     readonly freeze: WorkspaceFrozenAdmission;
@@ -79,7 +99,7 @@ export interface WorkspaceRecoveryTargetOwner extends TargetRecoveryOwner {
 
 /** Binds all target effects to the supplied Core and, online, the same live target freeze. */
 function assertTargetRecoveryOwner(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
   dataRoot: string,
   workspaceId?: string
 ): void {
@@ -90,6 +110,7 @@ function assertTargetRecoveryOwner(
       !owner.native.gate.ownsFreeze(workspaceId, owner.native.freeze))
   )
     refuseRecovery('recovery-required');
+  owner.currentAuthority?.();
 }
 
 /** Request identity excludes the movable bundle pathname and orders only the explicit account map. */
@@ -125,11 +146,13 @@ function mapping(core: CoreDb, input: TargetArgs, owned: RecoveryAdmission) {
 }
 /** Publishes a proved candidate before one Core registration/result transaction; failure retains ownership. */
 async function finishTarget(
-  core: CoreDb,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
   owned: RecoveryAdmission,
   deps: WorkspaceRecoveryDependencies,
   expectedRelease?: WorkspaceBackupManifest['release']
 ): Promise<WorkspaceRecoveryCliReport> {
+  const core = owner.core;
+  assertTargetRecoveryOwner(owner, core.dataRoot, owned.workspace_id);
   const input = owned.proof.input as TargetArgs;
   if (!['restore', 'move-in'].includes(input.command)) refuseRecovery('request-conflict');
   if (owned.state === 'abandoned') refuseRecovery('request-conflict');
@@ -151,6 +174,9 @@ async function finishTarget(
   }
   if (candidate !== final) {
     deps.atBoundary?.('before-target-rename');
+    assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
+    if (owner.native)
+      refuseScope(core.dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
     if (input.command === 'restore' && existsSync(final)) {
       if (existsSync(predecessor)) refuseRecovery('recovery-required');
       assertCanonicalDirectory(dirname(dirname(owned.candidate_ref)));
@@ -171,6 +197,9 @@ async function finishTarget(
     droppedSourceMemberIds: map?.droppedSourceMemberIds ?? [],
     nextAction: 'none',
   };
+  assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
+  if (owner.native)
+    refuseScope(core.dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
   core.sqlite
     .transaction(() => {
       if (input.command === 'move-in') {
@@ -316,17 +345,18 @@ export function activateWorkspaceRecoveryAtCore(
   return owned.proof.result;
 }
 
-/** Shared body for the existing offline root lock and the admitted live lifecycle. */
-async function admitTarget(
-  owner: TargetRecoveryOwner,
-  input: WorkspaceTargetRecoveryInput,
-  deps: WorkspaceRecoveryDependencies = {}
-): Promise<WorkspaceRecoveryCliReport> {
-  const core = owner.core;
-  assertTargetRecoveryOwner(owner, input.dataRoot);
+/** Reuses original request/manifest identity before either replay or a new lifecycle effect. */
+function originalTargetRequest(
+  core: CoreDb,
+  input: WorkspaceTargetRecoveryInput
+): RecoveryAdmission | undefined {
   const previous = readRecoveryAdmission(core, input.requestId);
   if (previous) {
-    assertTargetRecoveryOwner(owner, input.dataRoot, previous.workspace_id);
+    if (
+      input.snapshotSource?.source.kind === 'local-snapshot' &&
+      input.snapshotSource.source.backupId !== previous.backup_id
+    )
+      refuseRecovery('request-conflict');
     if (
       !isDeepStrictEqual(
         requestIdentity(previous.proof.input as TargetArgs),
@@ -349,7 +379,23 @@ async function admitTarget(
         (digest !== undefined && digest !== previous.proof.capture.manifestDigest))
     )
       refuseRecovery('request-conflict');
-    return finishTarget(core, previous, deps, input.expectedRelease);
+    return previous;
+  }
+  return undefined;
+}
+
+/** Shared body for the existing offline root lock and the admitted live lifecycle. */
+async function admitTarget(
+  owner: TargetRecoveryOwner,
+  input: WorkspaceTargetRecoveryInput,
+  deps: WorkspaceRecoveryDependencies = {}
+): Promise<WorkspaceRecoveryCliReport> {
+  const core = owner.core;
+  assertTargetRecoveryOwner(owner, input.dataRoot);
+  const previous = originalTargetRequest(core, input);
+  if (previous) {
+    assertTargetRecoveryOwner(owner, input.dataRoot, previous.workspace_id);
+    return finishTarget(owner, previous, deps, input.expectedRelease);
   }
   const manifest = readWorkspaceBackupManifest(input.bundleRoot);
   const workspaceId = manifest.workspaceId;
@@ -389,6 +435,7 @@ async function admitTarget(
   mkdirSync(dirname(candidate), { recursive: true, mode: 0o700 });
   const staged = await stageWorkspaceBackup({
     ...WORKSPACE_BACKUP_POLICY,
+    ...(input.snapshotSource ? { snapshotSource: input.snapshotSource } : {}),
     bundleRoot: input.bundleRoot,
     stagingParent: container,
     admission: owner.fileAdmission,
@@ -400,8 +447,9 @@ async function admitTarget(
   });
   assertTargetRecoveryOwner(owner, input.dataRoot, workspaceId);
   const result = recoveryReport(input.command, 'quarantined', staged.report);
+  const { snapshotSource: _snapshotSource, ...retainedInput } = input;
   prepareRecoveryAdmission(core, input.requestId, candidate, {
-    input,
+    input: retainedInput,
     manifest: staged.manifest,
     capture: staged.report,
     result,
@@ -414,7 +462,7 @@ async function admitTarget(
   core.sqlite
     .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
     .run(JSON.stringify(proof), input.requestId);
-  return finishTarget(core, { ...owned, proof }, deps);
+  return finishTarget(owner, { ...owned, proof }, deps);
 }
 /** Finishes only the retained owned target; no bundle, account, or final directory discovers ownership. */
 export async function finishWorkspaceRecovery(
@@ -436,7 +484,7 @@ export async function finishWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function finishSelectedTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -445,7 +493,7 @@ async function finishSelectedTarget(
   if (input.selection.kind !== 'admission') refuseRecovery('request-conflict');
   const owned = selectRecoveryAdmission(core, input);
   return {
-    ...(await finishTarget(core, owned, deps, input.expectedRelease)),
+    ...(await finishTarget(owner, owned, deps, input.expectedRelease)),
     command: 'finish',
     selection: input.selection,
   };
@@ -468,7 +516,7 @@ export async function abandonWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function abandonSelectedTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   const core = owner.core;
@@ -540,6 +588,7 @@ async function bindTargetCandidate(
     if (native?.canonical) {
       await client.open(native.canonical.binding.command, native.canonical);
       await client.close(native.canonical.binding.command.database, native.canonical);
+      assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
     }
     mkdirSync(mount.root, { recursive: true, mode: 0o700 });
     mkdirSync(join(root, 'runtime'), { recursive: true, mode: 0o700 });
@@ -556,6 +605,7 @@ async function bindTargetCandidate(
       native?.candidate
     );
     opened = true;
+    assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
     if (input.command === 'restore') {
       const safety = await client.recoverySafety(
         database,
@@ -565,6 +615,7 @@ async function bindTargetCandidate(
         },
         native?.candidate
       );
+      assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
       if (safety === 'moved-out') refuseRecovery('workspace-moved-out');
       if (safety === 'unavailable') {
         if (!input.acknowledgeLostSafety) refuseRecovery('safety-unproved');
@@ -594,6 +645,7 @@ async function bindTargetCandidate(
       ],
       native?.candidate
     );
+    assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
     await client.recoveryCleanup(
       database,
       {
@@ -614,21 +666,214 @@ async function bindTargetCandidate(
       },
       native?.candidate
     );
+    assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
     if (manifest.requiredFeatures.includes('workspace.recurring-triggers.v1')) {
       // The admitted coordinator retires transfer inputs only after durable native preparation.
       if (live && !live.gate.ownsFreeze(workspaceId, live.freeze))
         refuseRecovery('recovery-required');
       for (const path of Object.values(RECURRING_PORTABLE_PATHS)) unlinkSync(join(root, path));
     }
-    while (!(await client.recoveryHistory(database, workspaceId, native?.candidate))) {
-      // Each acknowledged request advances one existing history unit; this is not a retry.
+    for (;;) {
+      const done = await client.recoveryHistory(database, workspaceId, native?.candidate);
+      assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
+      if (done) break; // Each ACK advances an existing history unit, never a retry.
     }
     owned.proof.result = { ...owned.proof.result, restrictedRecovery: restricted };
     const digest = await client.sealRecovery(database, native?.candidate);
     opened = false; // The reply proves close even when the subsequent byte seal was unavailable.
+    assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
     if (digest === null) refuseRecovery('recovery-required');
     return digest;
   } finally {
     if (opened) await client.close(database, native?.candidate);
   }
+}
+
+/** Composes same-deployment restore through the existing target and admission owners only. */
+export function createWorkspaceRestoreOperationImplementations(
+  dependencies: OperationInvocationDependencies
+) {
+  type Input = import('zod').infer<
+    (typeof WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS)['workspace.backup-restore']['inputSchema']
+  >;
+  return {
+    'workspace.backup-restore': (input: Input, context: AdmittedOperationContext) =>
+      invokeWorkspaceRecoveryOperation(async () => {
+        const owned = workspaceSnapshotOperationPolicy(dependencies, context);
+        const manager = dependencies.runtimeConfigManager;
+        if (
+          !manager ||
+          manager.getDataRoot() === null ||
+          resolve(manager.getDataRoot()!) !== resolve(owned.dataRoot)
+        )
+          throw new OperationError(
+            'operation_storage_unavailable',
+            'Workspace configuration is unavailable.',
+            503
+          );
+        const target: WorkspaceTargetRecoveryInput = {
+          command: 'restore',
+          dataRoot: owned.dataRoot,
+          bundleRoot: join(
+            owned.dataRoot,
+            'server/backups/workspaces',
+            input.workspaceId,
+            input.backupId
+          ),
+          workspaceId: input.workspaceId,
+          requestId: input.requestId,
+          acknowledgeLostSafety: input.acknowledgeLostSafety,
+          expectedRelease: owned.verification.expectedRelease,
+          snapshotSource: {
+            dataRoot: owned.dataRoot,
+            source: {
+              kind: 'local-snapshot',
+              workspaceId: input.workspaceId,
+              backupId: input.backupId,
+            },
+          },
+        };
+        const previous = originalTargetRequest(owned.coreDb, target);
+        // Original committed replay never freezes or rewrites current healthy work.
+        if (
+          previous?.state === 'finished' &&
+          isScopeAdmitted(owned.dataRoot, 'workspace', input.workspaceId)
+        ) {
+          owned.currentAuthority();
+          return WorkspaceSnapshotReportSchema.parse(previous.proof.result);
+        }
+        owned.store.setWorkspaceMutationAdmission(owned.mutationAdmission);
+        const inspect = () =>
+          previous
+            ? readWorkspaceRecoveryBlockers(
+                {
+                  coreDb: owned.coreDb,
+                  store: owned.store,
+                  workspaceId: input.workspaceId,
+                  operation: 'restore',
+                },
+                previous
+              )
+            : readBlockers({
+                coreDb: owned.coreDb,
+                store: owned.store,
+                workspaceId: input.workspaceId,
+                operation: 'restore',
+              });
+        let hold: Promise<() => void> | null = null;
+        const inspectAndHold = () => {
+          const blockers = inspect();
+          if (blockers.length) return blockers;
+          hold = getControlStoreWorkerClient(owned.mutationAdmission).tryPauseForWorkspaceCapture(
+            `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`,
+            owned.mutationAdmission
+          );
+          return hold
+            ? []
+            : [
+                {
+                  kind: 'publication' as const,
+                  reason: 'pending-publication' as const,
+                  reference: { workspaceId: input.workspaceId },
+                  actions: [],
+                },
+              ];
+        };
+        const wasClosed = owned.mutationAdmission.isClosed(input.workspaceId);
+        const freeze = previous
+          ? resumeWorkspaceRecoveryOwner(
+              owned.coreDb,
+              previous,
+              owned.mutationAdmission,
+              inspectAndHold
+            )
+          : owned.mutationAdmission.tryFreeze(input.workspaceId, inspectAndHold);
+        if (freeze.status !== 'frozen')
+          throw new OperationError(
+            freeze.status === 'busy' && wasClosed ? 'workspace_frozen' : 'workspace_blocked',
+            'Workspace restore is not admitted.',
+            409,
+            {
+              details: {
+                workspaceId: input.workspaceId,
+                operation: 'restore',
+                retryable: freeze.status === 'busy' && wasClosed,
+                blockers:
+                  freeze.status === 'blocked'
+                    ? freeze.blockers
+                    : [
+                        {
+                          kind: 'publication',
+                          reason: wasClosed ? 'frozen' : 'pending-publication',
+                          reference: { workspaceId: input.workspaceId },
+                          actions: [],
+                        },
+                      ],
+              },
+            }
+          );
+        let releaseHold: (() => void) | undefined;
+        try {
+          try {
+            if (!hold) refuseRecovery('recovery-required');
+            releaseHold = await hold;
+            owned.currentAuthority();
+            const blockers = inspect();
+            if (blockers.length)
+              throw new OperationError(
+                'workspace_blocked',
+                'Workspace restore is not admitted.',
+                409,
+                {
+                  details: {
+                    workspaceId: input.workspaceId,
+                    operation: 'restore',
+                    retryable: false,
+                    blockers,
+                  },
+                }
+              );
+          } finally {
+            // Native lifecycle posts must not wait on the hold owned by this same operation.
+            releaseHold?.();
+          }
+          const owner = {
+            core: owned.coreDb,
+            fileAdmission: owned.verification.admission,
+            native: { gate: owned.mutationAdmission, freeze },
+            currentAuthority: owned.currentAuthority,
+          };
+          await admitWorkspaceBackupAtCore(owner, target);
+          owned.currentAuthority();
+          const report = activateWorkspaceRecoveryAtCore(owner, {
+            requestId: input.requestId,
+            store: owned.store,
+            runtimeConfigManager: manager,
+            currentAuthority: owned.currentAuthority,
+          });
+          return WorkspaceSnapshotReportSchema.parse(report);
+        } catch (error) {
+          const current = readRecoveryAdmission(owned.coreDb, input.requestId);
+          if (
+            current &&
+            current.workspace_id === input.workspaceId &&
+            current.state !== 'abandoned'
+          ) {
+            refuseScope(owned.dataRoot, {
+              scope: 'workspace',
+              id: input.workspaceId,
+              check: 'recovery',
+            });
+            owned.mutationAdmission.restoreRecoveryClosed(input.workspaceId, {
+              admissionId: current.admission_id,
+              revision: current.revision - (current.state === 'finished' ? 1 : 0),
+              candidateRef: current.candidate_ref,
+            });
+          }
+          throw error;
+        } finally {
+          freeze.release();
+        }
+      }),
+  };
 }

@@ -1015,6 +1015,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'workspace.access-recovery-read',
       'workspace.backup-capture',
       'workspace.backup-download',
+      'workspace.backup-restore',
       'workspace.backup-verify',
       'workspace.retire-quarantined',
     ]

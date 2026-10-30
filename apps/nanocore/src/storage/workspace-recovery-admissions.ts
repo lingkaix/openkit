@@ -78,7 +78,7 @@ export function resumeWorkspaceRecoveryOwner(
   if (
     !current ||
     !isDeepStrictEqual(current, owned) ||
-    current.state !== 'prepared' ||
+    !['prepared', 'finished'].includes(current.state) ||
     !RequestIdSchema.safeParse(current.admission_id).success ||
     !['restore', 'move-in'].includes(current.proof.input.command) ||
     current.candidate_ref !==
@@ -87,8 +87,9 @@ export function resumeWorkspaceRecoveryOwner(
         'workspaces',
         current.workspace_id
       ) ||
-    unresolved.length !== 1 ||
-    unresolved[0]!.admission_id !== current.admission_id ||
+    (current.state === 'prepared'
+      ? unresolved.length !== 1 || unresolved[0]!.admission_id !== current.admission_id
+      : unresolved.length !== 0) ||
     failures.length !== 1 ||
     failures[0]!.check !== 'recovery'
   )
@@ -97,7 +98,7 @@ export function resumeWorkspaceRecoveryOwner(
     current.workspace_id,
     {
       admissionId: current.admission_id,
-      revision: current.revision,
+      revision: current.revision - (current.state === 'finished' ? 1 : 0),
       candidateRef: current.candidate_ref,
     },
     readBlockers
