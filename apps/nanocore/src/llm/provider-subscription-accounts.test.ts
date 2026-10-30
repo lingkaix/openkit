@@ -28,6 +28,7 @@ import {
 } from '@earendil-works/pi-ai';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listServerAuditEvents } from '../audit-events.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
@@ -5964,6 +5965,36 @@ type CodexExpiryManager = ProviderSubscriptionAccountManager & {
 };
 
 describe('Codex account policy at Gateway and periodic boundaries', () => {
+  it('keeps inference admission free of reconcile Audit while status remains audited', async () => {
+    const fixture = await codexManagementFixture();
+    codexManagementTransport(() => Response.json({ code: 'reset' }));
+    const reconcileCount = () =>
+      listServerAuditEvents(fixture.coreDb).filter(
+        (event) =>
+          event.action === 'provider_subscription.reconcile' &&
+          event.resource ===
+            `provider-subscription:${fixture.pair.subscriptionProviderId}:${fixture.pair.accountSlotId}`
+      ).length;
+    const beforeInference = reconcileCount();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(await fixture.manager.codexInferenceAllowed(fixture.pair)).toBe(false);
+    }
+    expect.soft(reconcileCount()).toBe(beforeInference);
+
+    const beforeStatus = reconcileCount();
+    expect(await fixture.manager.getStatus(fixture.pair)).toMatchObject({ status: 'logged_in' });
+    expect(reconcileCount()).toBe(beforeStatus + 1);
+
+    // Read current settings on each admission; a full quota observation does not cache authority.
+    for (const codexUseCredits of [true, false]) {
+      const response = await fixture.invoke('codex-settings', { settings: { codexUseCredits } });
+      expect(response.status).toBe(200);
+      const beforeNextInference = reconcileCount();
+      expect(await fixture.manager.codexInferenceAllowed(fixture.pair)).toBe(codexUseCredits);
+      expect.soft(reconcileCount()).toBe(beforeNextInference);
+    }
+  });
+
   it('defaults credits off for a fresh full window, but stale unavailable quota is not exhaustion proof', async () => {
     const fixture = await codexManagementFixture();
     const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));

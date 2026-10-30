@@ -859,6 +859,46 @@ describe('provider-subscription app API', () => {
     }
   });
 
+  it.each([
+    {
+      name: 'invalid slot string',
+      input: { accountSlotId: 'Bad Slot' },
+      code: 'provider_subscription_account_slot_invalid',
+      message: 'Account slot id is invalid.',
+    },
+    {
+      name: 'non-string slot',
+      input: { accountSlotId: 42 },
+      code: 'invalid_request',
+      message: 'Invalid operation input.',
+    },
+    {
+      name: 'unknown logical field',
+      input: { accountSlotId: 'default', unexpected: true },
+      code: 'invalid_request',
+      message: 'Invalid operation input.',
+    },
+  ])('classifies authorized native account-create $name at its owning boundary', async (testCase) => {
+    const fixture = createFixture();
+    // The admission/manager seam must use the real owner instead of the route fixture's stub.
+    fixture.spies.createAccount.mockRestore();
+    try {
+      const response = await fixture.app.request(
+        ...operationRequest('provider-subscription.account-create', {
+          subscriptionProviderId: 'xai',
+          ...testCase.input,
+        })
+      );
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect.soft(body.code).toBe(testCase.code);
+      expect.soft(body.message).toBe(testCase.message);
+      expectNoProviderStateIo(fixture);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('rejects invalid providers, slots, and strict bodies before account, Vault, or provider I/O', async () => {
     const fixture = createFixture();
     const cases = [
