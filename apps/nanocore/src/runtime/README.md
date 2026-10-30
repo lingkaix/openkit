@@ -462,3 +462,5 @@ Pending Request admission counts raw outstanding and unknown lifecycle rows towa
 Version-four Agent Environment Package inference uses only the governed Gateway mode and its local Integration binding. The producer has no direct-provider or backend-local inference branch; runtime provenance keeps its existing capability and path requirements.
 
 Worker Context Package Material selection applies the existing explicit, sensitivity, current Kernel policy and package-allowance predicates in order. Policy dependency or source-integrity failures refuse acceptance; a verified policy-allowed candidate loses only when its bounded representation cannot fit after the required request, and excluded candidates supply no package bytes or consumed queue. Restricted exclusions retain the first matching reason, so an explicit exclusion precedes restricted sensitivity without permitting any excluded bytes.
+
+MCP Tool listings use `mcp-result-too-large` with the existing bulk-output hint when either the parsed list or its native response exceeds its bound. Oversized initialization retains server-unavailable classification and does not establish Tool contact.

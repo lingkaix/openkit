@@ -470,6 +470,35 @@ describe('worker MCP gateway', () => {
     }
   });
 
+  it.each([
+    ['semantic result', 512 * 1024],
+    ['native response envelope', 1024 * 1024],
+  ] as const)('rejects an oversized tools/list %s without truncation or tool contact', async (_boundary, bytes) => {
+    const upstream = await createMcpHttpStub({ credentialListEcho: 'a'.repeat(bytes) });
+    const gateway = createDefaultWorkerMcpGateway();
+    try {
+      await expect
+        .soft(
+          gateway.listTools({
+            server: httpTestServer(upstream.url, 2_000),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        )
+        .rejects.toMatchObject({
+          code: 'mcp-result-too-large',
+          status: 413,
+          upstreamEffect: 'contacted',
+          message: expect.stringMatching(/artifacts.*data plane/i),
+        });
+      expect(upstream.observed.some((request) => request.endsWith('|initialize'))).toBe(true);
+      expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
+      expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(false);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
   it('rejects a chunked HTTP result at the transport byte boundary', async () => {
     const upstream = await createMcpHttpStub({ chunkedCallResultBytes: 1024 * 1024 });
     const gateway = createDefaultWorkerMcpGateway();

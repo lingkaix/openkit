@@ -208,7 +208,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
             hasCredentials(input)
           );
         }
-        const normalized = normalizeMcpListError(error);
+        const normalized = normalizeMcpListError(error, true);
         throw hasCredentials(input)
           ? new WorkerMcpGatewayCallError(
               normalized.code,
@@ -232,9 +232,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       }
       if (Buffer.byteLength(JSON.stringify(page.tools), 'utf8') > MCP_RESULT_MAX_BYTES) {
         throw new WorkerMcpGatewayCallError(
-          'mcp-server-unavailable',
-          'MCP tool listing exceeds the response bound.',
-          503,
+          'mcp-result-too-large',
+          MCP_RESULT_TOO_LARGE_MESSAGE,
+          413,
           'contacted',
           false,
           hasCredentials(input)
@@ -1177,15 +1177,20 @@ function requestOptions(
 /**
  * Maps native SDK and transport failures of a connect or tool-list request to the worker
  * capability vocabulary. Tool calls use `normalizeMcpCallError`, which also retains upstream
- * effect certainty.
+ * effect certainty. Only an actual Tool listing admits the semantic result-size code;
+ * an oversized initialization response remains a server-availability failure.
+ *
+ * @param error Upstream request failure.
+ * @param toolList Whether the failed request was tools/list after initialization.
+ * @returns Existing typed capability failure.
  */
-function normalizeMcpListError(error: unknown): WorkerControlGatewayError {
+function normalizeMcpListError(error: unknown, toolList = false): WorkerControlGatewayError {
   if (error instanceof WorkerControlGatewayError) return error;
   if (error instanceof McpHttpResponseTooLargeError) {
     return new WorkerMcpGatewayCallError(
-      'mcp-server-unavailable',
-      'MCP server is unavailable.',
-      503,
+      toolList ? 'mcp-result-too-large' : 'mcp-server-unavailable',
+      toolList ? MCP_RESULT_TOO_LARGE_MESSAGE : 'MCP server is unavailable.',
+      toolList ? 413 : 503,
       'contacted',
       false,
       error.credentialsMaterialized
