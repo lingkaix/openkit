@@ -115,7 +115,7 @@ export async function previewMcpDiscovery(
         !reference ||
         grant.status !== 'active' ||
         reference.status !== 'active' ||
-        !isTargetIssuedEffectAuthority(grant.grantId) ||
+        grant.issuance !== 'target' ||
         (grant.approvalId !== null &&
           (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
         (expiry !== null &&

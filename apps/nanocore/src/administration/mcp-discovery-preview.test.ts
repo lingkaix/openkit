@@ -20,6 +20,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
+import { getVaultGrant } from '../vault/vault-grants.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
@@ -117,6 +118,58 @@ async function seed(f: ReturnType<typeof fixture>, endpoint: string) {
 }
 
 describe('explicit administrator MCP discovery preview', () => {
+  it('refuses imported grant provenance in the second binding before resolving any material', async () => {
+    const f = fixture();
+    const upstream = await createMcpHttpStub();
+    cleanup.push(() => upstream.close());
+    const input = await seed(f, upstream.url);
+    const credentialBindings: Array<{
+      slot: string;
+      vaultGrantId: string;
+      sink: { kind: 'header'; name: string };
+    }> = [];
+    for (const index of [0, 1]) {
+      const reference = await f.call('vault.server-mcp-secret-create', {
+        requestId: randomUUID(),
+        material: randomUUID(),
+      });
+      const grant = await f.call('vault.server-mcp-grant-create', {
+        requestId: randomUUID(),
+        referenceId: reference.referenceId,
+        targetCapabilityId: 'mcp.list-tools',
+      });
+      credentialBindings.push({
+        slot: `preview-${index}`,
+        vaultGrantId: String(grant.grantId),
+        sink: { kind: 'header', name: `X-Preview-${index}` },
+      });
+    }
+    const importedGrantId = credentialBindings[1]!.vaultGrantId;
+    expect(getVaultGrant(f.coreDb, importedGrantId)).toMatchObject({
+      issuance: 'target',
+      status: 'active',
+    });
+    // No Server importer exists. Fault only canonical provenance after normal owner issuance.
+    f.coreDb.sqlite
+      .prepare("UPDATE vault_grants SET issuance = 'imported-history' WHERE grant_id = ?")
+      .run(importedGrantId);
+    expect(getVaultGrant(f.coreDb, importedGrantId)).toMatchObject({
+      grantId: importedGrantId,
+      issuance: 'imported-history',
+      status: 'active',
+    });
+    const resolve = vi.spyOn(f.vaultUnlockState.backend(), 'resolve');
+    const result = await f
+      .call('administration.mcp-discovery-preview', { ...input, credentialBindings })
+      .catch((error: unknown) => error);
+
+    // Vault Grant Shape: target-looking identity cannot promote imported-history issuance.
+    expect(resolve).not.toHaveBeenCalled();
+    expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+    expect(upstream.observed).toEqual([]);
+    expect(result).toMatchObject({ status: 403 });
+  });
+
   it('lists real tools before an allowlist without publication, Workspace data or tools/call', async () => {
     const f = fixture();
     const upstream = await createMcpHttpStub();
