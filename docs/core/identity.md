@@ -13,7 +13,7 @@ Identity answers who or what is acting. Permission answers whether that actor ma
 
 ## Purpose
 
-OpenKit supports both single-user local operation and shared server workspaces with invitations, roles, tokens, automations, and external integrations.
+OpenKit supports both single-user local operation and shared server workspaces with invitations, policy attributes, tokens, automations, and external integrations.
 
 The identity model provides stable names for the actors and credentials that appear in ownership, audit, permission, usage, and protocol records.
 
@@ -149,12 +149,12 @@ Workspace membership is the default bridge between identity and workspace-scoped
 Every shared workspace must be able to answer:
 
 - which users belong to a workspace
-- which roles or attributes they have
+- which policy attributes they have
 - which invitations are pending
 - which tokens or automations can act in the workspace
 - which user or automation caused a turn, approval, vault use, or capability call
 
-Workspace ownership is a distinguished lifecycle and authority relationship. It does not make the owner's user storage the parent of canonical workspace data, and changing the owner must not change workspace identity or move workspace-owned state.
+Workspace ownership is a distinguished lifecycle and recovery relationship. It grants no higher ordinary operation-permission tier. It does not make the owner's user storage the parent of canonical workspace data, and changing the owner must not change workspace identity or move workspace-owned state.
 
 The canonical owner must also have active membership. Ownership is stored once and effective owner authority is derived from that relationship rather than duplicated as a mutable membership role. Disabling a user preserves ownership for explicit administrator recovery and cannot cascade-delete a Workspace. Any future destructive user-deletion design must transfer ownership first or fail.
 

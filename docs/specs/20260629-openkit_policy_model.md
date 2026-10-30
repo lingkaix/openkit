@@ -224,7 +224,7 @@ OpenKit adapters may map a kernel decision plus product policy requirements into
 
 ### Decision Trace
 
-A decision trace explains why a request was allowed or denied. It records the subject closure, object closure, matching associations, matching prohibitions, and reason codes. Missing privilege and a matching prohibition MUST remain distinguishable as `not_granted` and `prohibited`. The product adapter preserves `require_approval` as a separate requirement reason; the Kernel does not emit a product approval result.
+A decision trace explains why a request was allowed or denied. It records the subject closure, object closure, matching associations, matching prohibitions, and reason codes. Missing privilege and a matching prohibition MUST remain distinguishable. The Kernel trace uses `missing-privilege` and `restriction`; the product adapter maps them to `not_granted` and `prohibited`, respectively. The product adapter preserves `require_approval` as a separate requirement reason; the Kernel does not emit a product approval result.
 
 Decision traces are required for development, tests, audit projection, and future support tooling. Product APIs must redact traces before exposing them to users or agents.
 
@@ -239,12 +239,12 @@ Decision traces are required for development, tests, audit projection, and futur
 | Prohibitions | Implement now | Implement user, process, and user-attribute restrictions over access rights with conjunctive and disjunctive attribute ranges. |
 | Policy classes | Implement now | Represent as elements and implement the NGAC policy-class semantics required for derived privileges. |
 | Access request decision function | Implement now | Evaluate process or user, operation, object or policy element, required access rights, privileges, restrictions, and trace. |
-| Process context | Existing subset; Goal projection Not Started | Map the actual process to the evaluated principal's NGAC user element, outside the policy-element graph. Record the responsible human separately for accountability; that identity supplies no inherited rights. |
-| Agent principal accountability | Planned; Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Policy; suspend grants on failure until human reassignment. |
+| Process context | Existing subset, including native Goal/Task projection | Map the actual process to the evaluated principal's NGAC user element, outside the policy-element graph. Record the responsible human separately for accountability; that identity supplies no inherited rights. |
+| Agent principal accountability | Bounded agent-gate subset implemented; general grants Not Started | Validate the finite, acyclic responsibility chain and current terminal human domain authority under Policy; suspend grants on failure until human reassignment. |
 | Administrative operations | Native human Policy candidate path; broader routines Not Started | The pre-v0.1.0 `policy.write` review path is owned by Policy Enforcement Mapping. Full standard administrative routines remain outside the implemented subset. |
 | Obligations | Deferred after v0.1.0 | Future `react` participation may change Policy after successful access under the defining author's current authority; issue #375 tracks it. Commit obligations such as credential injection are not NGAC post-success Policy obligations. |
 | Dynamic policy mutation | Native human Policy update; other adapters Not Started | The evaluator receives immutable state and stays pure and synchronous. The Policy owner validates and commits new revisions outside it. |
-| Delegated administration | Planned; Not Started | Plan approval creates a delegated Goal domain administered by the Coordinator under Policy. This does not claim full standard delegated-administration support. |
+| Delegated administration | Native Goal-domain and bounded Coordinator subset implemented | Plan approval creates a delegated Goal domain administered by the Coordinator under Policy. This does not claim full standard delegated-administration support. |
 | Functional architecture entities | No current plan | Do not make PEP, PDP, PAP, PIP, RAP, or EPP public OpenKit product concepts unless a future product need requires it. |
 | Standards-level API and full conformance | No current plan | Do not claim complete ANSI/INCITS NGAC compatibility. Claim only the implemented NGAC subset that is verified against the standard. |
 
@@ -258,7 +258,7 @@ The existing Policy collection and sole configuration CAS own publication. Exist
 
 The native read path rechecks the exact Plan, deciding credential, lifetime and saved/loaded revision on each use. An obsolete Plan, closed Goal, ended lifetime or lost human authority supplies no domain; a failed dependency read is an error. The close path withdraws only the Goal's statements and remains available after its old Plan or credential ends. Its current inactive statement prevents reactivation through the old approval. A new joint Plan approval may replace the Goal-owned identity. Generic Server Policy candidates must preserve these statements; the Goal owner supplies publication and withdrawal.
 
-Acceptance requires one joint human approval, no authority before successful publication, current readback inside Task admission, refusal after the human or Plan loses authority, closure without the old human credential, and truthful CAS/reload failures. Implementation status: native seam under qualification; the Goal producer, preview and Task join are Not Started in this slice. This does not implement general agent-principal responsibility chains or Coordinator administration.
+Acceptance requires one joint human approval, no authority before successful publication, current readback inside Task admission, refusal after the human or Plan loses authority, closure without the old human credential, and truthful CAS/reload failures. The Current Implementation Projection records which native consumers exist and separates that fact from complete Goal acceptance.
 
 ## OpenKit Policy Domains
 
@@ -374,7 +374,9 @@ The first runtime-policy integration should map one OpenKit policy decision into
 
 ## Current Implementation Projection
 
-The current package implements the first standard-aligned subset in this spec. The native I16 mediation pilot and human Policy candidate path use this subset without changing its evaluator. Agent responsibility-chain evaluation, Goal delegated-domain activation and automatic Policy review remain Not Started. Inactive declarations and shape validation do not prove these authority consumers. The [unified design decision](../decisions/20261018-unified_mediation_and_policy.md) records their acceptance.
+The current package implements the first standard-aligned subset in this spec. The native mediation pilot and human Policy candidate path use this subset without changing its evaluator. The bounded `mcp.call-tool@decide` agent gate checks current responsibility chains through `apps/nanocore/src/policy/statements.ts`. General agent grants and automatic Policy review remain Not Started. Inactive declarations and shape validation do not prove active authority.
+
+`apps/nanocore/src/policy/goal-domains.ts` implements joint Goal-domain publication, current readback, withdrawal and bounded Coordinator administration. `apps/nanocore/src/runtime/task-admission.ts` enforces the admitted domain before Task creation; the Goal producer and approval preview also retain the joint delegation. These implementation facts do not establish complete Goal acceptance, which remains with the Goal owner. The [unified design decision](../decisions/20261018-unified_mediation_and_policy.md) records their acceptance.
 
 The existing subset includes:
 

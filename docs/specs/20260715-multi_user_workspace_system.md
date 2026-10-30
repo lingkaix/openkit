@@ -202,7 +202,7 @@ Effective expiry is derived from `status = pending` and `expires_at <= now`; V1 
 
 At most one effective pending invitation may exist for one `(workspace_id, invitee_user_id)` pair. Re-invitation revokes the old pending row and creates a new row in one transaction.
 
-An authorized active member supplies an exact email as the product input. NanoCore normalizes it and resolves one existing active canonical user before creating the invitation. The email is a lookup input, not the durable authority key. Absent, disabled, already-active, and otherwise ineligible targets return the same product-safe `invitee_unavailable` result.
+An authorized active member supplies an exact email as the product input. NanoCore applies the authentication owner's normalization from [Config And Identity](20260628-nanocore_config_identity_contract.md#current-contract) and resolves exactly one existing active canonical user before creating the invitation. The email is a lookup input, not the durable authority key. Absent, disabled, already-active, and otherwise ineligible targets return the same product-safe `invitee_unavailable` result.
 
 Invitation acceptance and decline by the bound invitee require a Better Auth session or the implicit local identity whose canonical user ID equals `invitee_user_id`. A currently usable administrator credential may accept or decline under the administrator eligibility rule in [Core Policy](../core/policy.md), and the recorded actor is that administrator. Ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`, are not accepted for this user-scoped collection. V1 does not create a bearer invitation secret, send email, create an account, or expose a user directory.
 
@@ -216,7 +216,7 @@ The smallest safe V1 therefore requires the teammate to register first and binds
 
 ## Active-Member Authorization Target
 
-The 2026-09-09 decision recorded in [Member Permissions Stay Open Until The Policy Kernel Governs Them](../decisions/20260924-member_permissions_await_policy_kernel.md) replaces the previous owner/editor/viewer grant ceiling. Every current active member is eligible for the full Workspace operation set, including Light App schema/data operations, agent work, configuration, export, membership management, and governed Workspace lifecycle operations. Current Policy, credential intersection, exact human-gate eligibility, Vault grants, confidentiality, and lifecycle/integrity preconditions still decide whether a particular effect may execute. An active member does not gain another user's private scope or deployment administration.
+The 2026-09-09 decision recorded in [Member Permissions Stay Open Until The Policy Kernel Governs Them](../decisions/20260924-member_permissions_await_policy_kernel.md) replaces the previous owner/editor/viewer grant ceiling. Every current active member is eligible for the full Workspace operation set, including Light App schema/data operations, agent work, configuration, membership management, and governed Workspace lifecycle operations. [Workspace export requires administrator authority](../decisions/20261027-workspace_export_administrator_only.md). Current Policy, credential intersection, exact human-gate eligibility, Vault grants, confidentiality, and lifecycle/integrity preconditions still decide whether a particular effect may execute. An active member does not gain another user's private scope or deployment administration.
 
 Ownership remains one registry relationship for continuity, transfer-before-owner-leave, and the already owned deletion/recovery lineage. It MUST NOT cap ordinary active-Workspace permissions. User-scoped invitation response belongs to the bound invitee, and a user-input gate belongs to its exact responsible user, except that a currently usable administrator credential is also eligible under the administrator eligibility rule and is recorded as the deciding actor. These are target/principal semantics, not hidden member role tiers. Deleted or deleting Workspace recovery stays outside ordinary active-member access and keeps its exact-request and tombstone checks. The original owner, or a currently usable administrator credential under that rule, may recover it, and the recovered resource returns to the original owner.
 
@@ -232,15 +232,15 @@ The cutover removes obsolete editor/viewer fields and access-changing surfaces c
 | --- | --- | --- |
 | Read, query, and modify Workspace and Light App data | Full operation set | Current Policy, scope, schema, revision, and data-loss contract |
 | Agent work, tools, and external operations | Full operation set | Credential, Vault, capability, runtime, and effect-specific authority |
-| Configuration, membership, export, and Workspace lifecycle | Full operation set | Current Policy, integrity, confirmation, and exact lifecycle transition |
+| Configuration, membership, and Workspace lifecycle | Full operation set | Current Policy, integrity, confirmation, and exact lifecycle transition |
 | Human decisions | Full membership-derived eligibility | Exact gate kind/resource/principal and current Policy |
-| User-private or deployment-scoped resources | No grant from Workspace membership | Their separate scope owner |
+| User-private or deployment-scoped resources, and Workspace export | No grant from Workspace membership | Their separate scope owner |
 | Removed member, invitee, or unrelated user without a currently usable administrator credential | No Workspace operation grant | No implicit content bypass |
 | Currently usable administrator credential | Every operation under the administrator eligibility rule in Core Policy, including other users' resources | Truthful attribution, per-effect authority objects, credential limits, and the sandbox boundary |
 
 ### Policy Kernel Projection
 
-NanoCore translates the authenticated human or responsible agent identity, active Workspace membership, target resource, operation, credential restrictions, and current context into the existing NGAC-aligned Policy Kernel. One Workspace-scoped active-member association supplies the registered Workspace access-right set. No role ceiling or separate Light App ACL engine is added; denied, missing, or malformed required facts still fail closed.
+NanoCore translates the authenticated human or responsible agent identity, active Workspace membership, target resource, operation, credential restrictions, and current context into the existing NGAC-aligned Policy Kernel. One Workspace-scoped active-member association supplies the rights mapped by the current registry, except `api.call`, `administration.configuration.apply`, `workspace.export`, `invitation.respond`, and `deployment.recover`. Those operations require their separately owned scope or effect authority. The member association includes `workspace.configure` for Workspace Policy changes; no separate Workspace-administrator membership tier exists. No role ceiling or separate Light App ACL engine is added; denied, missing, or malformed required facts still fail closed.
 
 [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) remains the unique product-operation/access-right registry. Handlers consume the centralized decision and enforce their owned integrity or lifecycle preconditions. Future narrower Policy associations use the same boundary; they do not require new client-side role logic or a different Kernel API. Do not create authorization caches or per-request durable decision records for ordinary access.
 
@@ -476,6 +476,8 @@ Creating the invitation records full-member eligibility, inviter, expiry, reques
 
 The bound invitee may accept or decline, and a currently usable administrator credential may also accept or decline under the administrator eligibility rule. The recorded actor is the actor who decided, and an administrator decision does not impersonate the invitee. Acceptance conditionally consumes one pending unexpired invitation for an active Workspace and inserts or reactivates the membership in the same transaction. A missing or inactive Workspace returns the same non-enumerating access denial and leaves both invitation and membership unchanged.
 
+Acceptance rechecks the inviter's current authority to admit members. If that authority is lost, the pending invitation cannot grant membership. This check uses the existing acceptance boundary and adds no sweeper.
+
 Accepted, declined, revoked, and expired invitations cannot grant access again. Rejoining after removal requires a new invitation.
 
 ### Membership Access
@@ -670,10 +672,10 @@ The following foundation is already implemented:
 - per-request authentication followed by centralized active-membership, token-binding, read-only posture, and policy checks
 - candidate-first authorized Workspace collections, idempotent local-boot or active-session provisioning plus actor-derived owner-only Quick Chat resolution, and uniform non-enumerating Workspace access denial
 - handler-owned child-lineage checks that retain global not-found only when an existing owner can prove it, otherwise collapsing scoped missing and mismatch to the documented access denial
-- presented usable server-admin bearer access to active Workspaces without membership, exact private audience isolation, and same-deployment source-authorization checks before portable import collision or content reads. That private-audience isolation is running behavior and is not the target.
+- presented usable server-admin bearer access to active Workspaces without membership and current administrator eligibility in the central private-Thread audience check. The retiring portable-import implementation retains its same-deployment source-authorization checks before collision or content reads.
 - the fifteen-operation App API sharing and deletion surface, including authenticated invitee discovery and decisions, active-member invitation/member management, non-owner leave, ordinary member-authorized owner transfer, content-free administrator recovery, one-way user disable, member-initiated deletion, and tombstone recovery
 - one Core transaction for each accepted lifecycle authority mutation, immutable actor/subject/revision audit, and pointer-only command receipt, with receipt-only exact no-ops and `recovery_required` for a request-proven effect lacking its receipt
-- direct invitation, membership, ownership-transfer, and administrator-recovery conditional writes with the exact terminal, stale, missing, disabled-user, inactive-Workspace, re-invitation, Quick Chat, and recovery/invitation interleaving semantics above
+- direct invitation, membership, ownership-transfer, and administrator-recovery conditional writes with the terminal, stale, missing, disabled-invitee, inactive-Workspace, re-invitation, Quick Chat, and recovery/invitation interleaving semantics above. Acceptance does not yet recheck the inviter's current authority in `apps/nanocore/src/workspace-sharing.ts`; current invitee authorization alone does not implement that requirement
 - next-request session and token rejection for disabled users through stock Better Auth hooks and the shared canonical active-user predicate
 - one existing-harness server-mode restart path proving accepted membership persistence and next-request denial after removal
 - same-deployment export privacy checks
