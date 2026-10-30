@@ -108,7 +108,7 @@ Pi-ai's documented support for a consumer subscription is evidence that the adap
 
 ## Current Implementation Projection
 
-NanoCore declares stock `@earendil-works/pi-ai` at exact version `0.99.2`, resolved from the registry with integrity `sha512-9RFOEdY+ZTJ1AI+UuAFs4RM0tF2Tje/R/CEv9gWTJHt0iTu8XHZs64U/EIZxNSllFmec/4HfwsOxYj1qQek9bg==` (`pnpm-lock.yaml`). `packages/models-dev-catalog/scripts/validate.mjs` verifies the exact declaration and performs catalog reconciliation, and root `check:repo` runs that validator. The package is private to NanoCore and current public surfaces use OpenKit vocabulary.
+NanoCore declares stock `@earendil-works/pi-ai` at exact version `0.99.2`, resolved from the registry with integrity `sha512-9RFOEdY+ZTJ1AI+UuAFs4RM0tF2Tje/R/CEv9gWTJHt0iTu8XHZs64U/EIZxNSllFmec/4HfwsOxYj1qQek9bg==` (`pnpm-lock.yaml`). `packages/models-dev-catalog/scripts/validate.mjs` verifies the exact declaration and performs catalog reconciliation, and root `check:repo` runs that validator. The Gateway integration is private to NanoCore and uses OpenKit public vocabulary. Worker-runtime dependency pins are outside this specification.
 
 NanoCore now constructs one stock provider-only `Models` runtime with an injected Vault-backed `CredentialStore` per subscription pair. Provider-owned device-code login, cancellation signalling, refresh, logout, native Codex Responses, xAI inference, response metadata, streaming, usage, cache inputs, cancellation, and error interception are wired behind OpenKit-owned schemas and redaction. Default pi-ai auth files, ambient provider credentials, shell credential commands, patches, forks, and public pi-ai vocabulary remain absent.
 

@@ -158,7 +158,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
 | Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization, AssistantReadScope, OutputAudience | `policy.md` |
-| Operation, mediation point, enforcement point, Capability Mediation Boundary, AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
+| Operation, mediation point, enforcement point, Capability Mediation Boundary, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Storage, Layer 1 (System State And Work Data: scope-owned transactional control authority, immutable content, item log persistence, retention and deletion classes, format markers, Workspace portability), Layer 2 (User Data And The Storage Service: shared file storage, `contentRef`, Policy access leases, Knowledge package byte layout) | `storage.md` |
 | AuditEvent, audit projection, audit producer boundary, UsageRecord, capability-call usage units and attribution, System-wide measurement, Non-gateway measurement, Aggregation, Cost projection, Capture Coverage, Telemetry | `evidence.md` |

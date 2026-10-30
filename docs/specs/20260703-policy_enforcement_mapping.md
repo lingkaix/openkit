@@ -289,7 +289,7 @@ This specification keeps this registry. That one primary product operation is th
 | `tool.grant` | `ar:tool-grant` | Tool or capability grant administration. |
 | `runtime.launch` | `ar:runtime-launch` | Governed worker launch. |
 | `network.egress` | `ar:network-egress` | Governed external network access. |
-| `llm.gateway.use` | `ar:llm-gateway-use` | Workspace-attributed public LLM Gateway use. |
+| `llm.gateway.use` | `ar:llm-gateway-use` | Public LLM Gateway use; requested Workspace scope and credential limits remain mandatory. |
 
 A handler may enforce a durable lifecycle precondition such as exact invitee, responsible user, expected revision, or winning Approval claimant, but it must not define a competing role table. Ownership transfer maps only to `workspace.lifecycle`; the existing Workspace Vault reference list/rebind and `VaultGrant`, `VaultInjectionPlan`, and `VaultInjectionReceipt` metadata lists map only to `vault.admin`; `VaultUse` and other audit, usage, evidence, backend-handle, and permission-decision reads map only to `audit.read`. None of those read permissions turns evidence into injection authority.
 

@@ -221,7 +221,7 @@ explicit prompt_cache_key or authorized public hint
 
 The resolver hashes normalized scope before any provider-facing use. Raw workspace, thread, subscription-provider, account-slot, session, credential, prompt, or user identifiers must not cross the provider or public diagnostics boundary. The full `(subscriptionProviderId, accountSlotId)` pair participates in the scope so equal slot ids under different providers or accounts cannot share a cache or Codex turn-state lineage accidentally.
 
-For Internal Core Role and worker calls, trusted attribution comes only from server-owned identity, authorization, Workspace, thread, turn, agent, and AgentSession records. Public Gateway metadata is advisory: an explicit Workspace id must be authorized before use, other fields remain caller-asserted labels, and a call without Workspace scope remains dispatchable with process-local diagnostics.
+For Internal Core Role and worker calls, trusted attribution comes only from server-owned identity, authorization, Workspace, thread, turn, agent, and AgentSession records. Public Gateway metadata is advisory: an explicit Workspace id must be authorized before use, other fields remain caller-asserted labels, and an otherwise authorized call without Workspace scope uses existing Server-owned call and usage accounting when Core is available, and process-local diagnostics otherwise.
 
 ### Pi Mapping
 
