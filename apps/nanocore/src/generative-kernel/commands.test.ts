@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -91,6 +92,58 @@ async function createContext(
 }
 
 describe('Generative Kernel commands', () => {
+  it.each([
+    ['create', 'collection'],
+    ['create', 'field'],
+    ['update', 'collection'],
+    ['update', 'field'],
+  ] as const)('refuses caller-assigned new %s %s IDs without publishing changes', async (operation, entity) => {
+    const context = await createContext();
+    if (operation === 'create') {
+      const proposed = structuredClone(MAPPING_SCHEMA);
+      if (entity === 'collection') proposed.collections[0]!.id = allocateEntityId('col');
+      else proposed.collections[0]!.fields[0]!.id = allocateEntityId('fld');
+      await expect.soft(createLightApp(context, proposed)).rejects.toMatchObject({
+        code: 'validation_failed',
+      });
+      expect(listLightApps(context.dataRoot, context.workspaceId).items).toEqual([]);
+      return;
+    }
+    const app = await createLightApp(context, MAPPING_SCHEMA);
+    const {
+      appId: _appId,
+      schemaRevision: _schemaRevision,
+      ...proposed
+    } = structuredClone(app.schema!);
+    if (entity === 'collection') {
+      proposed.collections.push({
+        ...structuredClone(MAPPING_SCHEMA.collections[0]!),
+        id: allocateEntityId('col'),
+        name: 'extra_mappings',
+      });
+    } else {
+      proposed.collections[0]!.fields.push({
+        id: allocateEntityId('fld'),
+        name: 'source_note',
+        type: 'text',
+        required: false,
+        description: 'Where this mapping was observed.',
+      });
+    }
+    await expect
+      .soft(
+        updateLightAppSchema(
+          { ...context, requestId: randomUUID() },
+          app.appId,
+          app.appRevision,
+          app.schemaRevision,
+          proposed
+        )
+      )
+      .rejects.toMatchObject({ code: 'validation_failed' });
+    expect(getLightApp(context.dataRoot, context.workspaceId, app.appId)).toEqual(app);
+  });
+
   it('creates an app and record, then rereads them after reopen', async () => {
     const context = await createContext();
     const created = await createLightApp(context, MAPPING_SCHEMA);
@@ -233,6 +286,33 @@ describe('Generative Kernel commands', () => {
     );
     expect(preserved.data.annotation).toBe('keep');
     expect(preserved.data.source_note).toBeNull();
+    const {
+      appId: _appId,
+      schemaRevision: _schemaRevision,
+      ...renamedSchema
+    } = structuredClone(updated.schema!);
+    renamedSchema.collections[0]!.name = 'membership_links';
+    const renamed = await updateLightAppSchema(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      updated.appRevision,
+      updated.schemaRevision,
+      renamedSchema
+    );
+    expect(renamed.schema!.collections[0]!.id).toBe(collection.id);
+    expect(renamed.schema!.collections[0]!.fields.map((field) => field.id)).toEqual(
+      updated.schema!.collections[0]!.fields.map((field) => field.id)
+    );
+    expect(
+      getRecord(
+        context.dataRoot,
+        context.workspaceId,
+        app.appId,
+        'membership_links',
+        record.id,
+        renamed.schemaRevision
+      ).data.annotation
+    ).toBe('keep');
   });
 
   it('rechecks source-query membership before a lineage-bound record update', async () => {

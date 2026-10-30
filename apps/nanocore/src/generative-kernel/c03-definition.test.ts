@@ -1,3 +1,4 @@
+import { LightAppAdmittedSchemaSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { KernelCommandError } from './errors.js';
@@ -40,7 +41,9 @@ describe('C03 definition admission', () => {
   it('preserves exact reference strings and order in reusable and live definitions', () => {
     const reusable = admitLightAppDefinition(JSON.stringify({ ...definition, references }));
     expect(reusable.references).toEqual(references);
-    expect(admitLightAppSchema(reusable, appId, 1).references).toEqual(references);
+    const live = LightAppAdmittedSchemaSchema.parse({ ...reusable, appId, schemaRevision: 1 });
+    expect(live.references).toEqual(references);
+    expect(live.collections).toEqual(reusable.collections);
   });
 
   it('writes an explicit empty list when the authored definition omits references', () => {
