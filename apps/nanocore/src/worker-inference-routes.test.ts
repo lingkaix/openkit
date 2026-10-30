@@ -1654,13 +1654,13 @@ describe('worker inference routes', () => {
       await reader.cancel('network consumer disconnected');
       await vi.waitFor(() => {
         expect(fixture.dispatcher.responsesStreamCancellations).toHaveLength(1);
+        expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+          expect.objectContaining({
+            errorCode: 'worker_inference_cancelled',
+            status: 'aborted',
+          }),
+        ]);
       });
-      expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
-        expect.objectContaining({
-          errorCode: 'worker_inference_cancelled',
-          status: 'aborted',
-        }),
-      ]);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
