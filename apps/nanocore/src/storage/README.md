@@ -2,6 +2,8 @@
 
 File-backed Workspace `createItem` and `persistTurnEvent` send complete addressed intents to the existing native writer. That owner resolves the Turn and Item heads, checks identity and human attribution, prepares exact retained bytes, and applies the sequence/revision CAS in its existing savepoint and grouped FULL commit before ACK. In-memory Stores share the same pure validation; Server Items and other producer migrations remain separate slices.
 
+An addressed event validates the referenced Item's retained head, including required semantics, before preparing a new reference. Item existence alone cannot authorize publication over an unsupported retained representation.
+
 The native load instrument runs only with `pnpm exec vitest run --config vitest.load.config.ts` from `apps/nanocore`, using an explicit `OPENKIT_R2_ATTR_OUTPUT_DIR`. Missing output custody refuses execution. `load-controls.test.ts` stays in the default CI suite; the measurement file is excluded from its collection.
 
 Native requests reserve affected-filesystem bytes through the existing `FileStorageAdmission` before posting. Ordinary writes preserve the current configured physical reserve; decision and terminal closeout may consume that reserve but must still fit available bytes. Same-filesystem file producers share outstanding forecasts. Native reservations survive a lost reply until the actual Worker exits. `no-space` establishes non-commit only at admission or after proved rollback; a lost COMMIT acknowledgement remains unknown.

@@ -1294,6 +1294,15 @@ async function readControlItemHistory(
   return [...items.values()];
 }
 
+/** Selects the addressed retained head for both Item revision and event dependency validation. */
+function readControlItemHead(db: WorkspaceDb, item: { id: string }) {
+  return db.sqlite
+    .prepare(
+      "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+    )
+    .get(item.id) as Parameters<typeof readControlItemHistory>[3][number] | undefined;
+}
+
 /** Resolves current native heads and original Item bytes before preparation, without a Main read round trip. */
 export async function prepareControlItemAppend(
   db: WorkspaceDb,
@@ -1308,20 +1317,7 @@ export async function prepareControlItemAppend(
   if (!head) throw new ControlProductPreconditionError();
   const turn = StoredTurnV1Schema.parse(head.record);
   const sealed = !['pending', 'running'].includes(String(head.record.status));
-  const prior = db.sqlite
-    .prepare(
-      "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
-    )
-    .get(item.id) as
-    | {
-        turn_id: string;
-        id: string;
-        sequence: number;
-        revision: number;
-        schema_version: number;
-        content_json: string;
-      }
-    | undefined;
+  const prior = readControlItemHead(db, item);
   if (prior && prior.turn_id !== item.turnId)
     throw new ControlItemAppendError(`Item already exists: ${item.id}`);
   const rows =
@@ -1581,6 +1577,17 @@ export async function prepareControlEventAppend(
     throw new ControlItemAppendError(
       `Turn event ${event.event} has invalid lineage for ${input.turnId}.`
     );
+  const addressedItem =
+    'item' in event.data
+      ? event.data.item
+      : 'itemId' in event.data
+        ? { id: event.data.itemId }
+        : undefined;
+  if (!sealed && addressedItem) {
+    const prior = readControlItemHead(db, addressedItem);
+    // Contract Evolution: an ID witness cannot replace validation of required retained semantics.
+    if (prior) await readControlItemHistory(db, mount, turn, [prior], false);
+  }
   const ids = db.sqlite
     .prepare("SELECT DISTINCT id FROM control_product_entries WHERE kind='item' AND turn_id=?")
     .all(input.turnId) as { id: string }[];
