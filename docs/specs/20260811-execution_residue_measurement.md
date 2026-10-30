@@ -53,7 +53,7 @@ For each completed task, report only measures supported by its named evidence. M
 5. Recovery latency after compaction, pause, failed direction, or environment loss.
 6. Coordination cost visible in role invocations, handoffs, repeated reports, or waiting where the retained record supports a count.
 7. Escaped defects found after an artifact had been accepted.
-8. Strict incidents involving authorization, confidentiality, credentials, data loss, destructive effects, publication, sandbox containment, or concurrent writes.
+8. Strict incidents involving Authorization, Confidentiality, Credential Handling, Data Loss, Destructive Action, External Effect and Publication, Sandbox Containment, or Concurrent Write Ownership.
 9. Final acceptance and unresolved residual risk.
 
 Legacy records may support additional historical counts such as correction rounds, breaker trips, or assignment outcomes. Those counts are labeled legacy and never treated as requirements for new execution.

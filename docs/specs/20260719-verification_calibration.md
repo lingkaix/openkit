@@ -7,7 +7,7 @@ kind: process
 
 ## Owns
 
-This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineering trust boundaries, the shared fault taxonomy, the calibration record schema, cadences, audit-side ownership and separation rules, Goodhart guards, the zero-merge seed invariant, and the falsification thresholds for the delegation premise. It also owns the removal-evidence outcomes that apply whenever a mechanism is removed, and the documentation probes: document ablation, the rebuild probe, and the discovery probe.
+This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineering trust boundaries, the shared fault taxonomy, the calibration record schema, audit-side ownership and separation rules, Goodhart guards, the zero-merge seed invariant, and the falsification thresholds for the delegation premise. It also owns the removal-evidence outcomes that apply whenever a mechanism is removed, and the documentation probes: document ablation, the rebuild probe, and the discovery probe.
 
 ## Does Not Own
 
@@ -39,7 +39,7 @@ The program has three layers matching three trust boundaries: code mutation cali
 
 ## Current Scope
 
-The program covers this repository's engineering system at its current shape: one TypeScript monorepo, vitest and node:test suites, the existing L0 validators, agent-executed changes under the root `AGENTS.md` rules, and a small team. Strict surfaces are those named by `docs/core/doctrine.md` and the root rules: security, authorization, credentials, sandbox containment, data loss, durable authority, and irreversible external effects.
+The program covers this repository's engineering system at its current shape: one TypeScript monorepo, vitest and node:test suites, the existing L0 validators, agent-executed changes under the root `AGENTS.md` rules, and a small team. Strict surfaces are those named by `docs/core/doctrine.md` and the root Safety Kernel: Authorization, Confidentiality, Credential Handling, Data Loss, Destructive Action, External Effect and Publication, Sandbox Containment, and Concurrent Write Ownership.
 
 ## Goals
 
@@ -61,13 +61,13 @@ Code mutation calibrates the L1/L2 test suites by planting syntactic faults and 
 
 An audit-selected cycle samples changed code or strict-surface modules; a material change does not automatically trigger a mutation run. Record each sampled survivor as a detected gap, an evidence-backed equivalent, or unresolved, without forcing completion of unrelated production work. Required safety regressions and deliberate harness failure under `docs/verification-instruments.md` remain applicable independently of calibration.
 
-Sparse sampled runs report per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as builder targets, prompts, or gates.
+Cycles are sparse and audit-selected; this program sets no fixed execution cadence. Sampled runs report per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as builder targets, prompts, or gates.
 
 ## Layer 2: Seeded Defects
 
 Seeded defects calibrate the adaptive review and adjudication path by measuring its catch rate against known planted defects.
 
-A saboteur agent derives variants of real changes with planted defects indexed by the shared fault taxonomy, and the variants pass through the standard adversarial review blind. The output is a catch-rate matrix by defect class and reviewer configuration; a blind class drives reviewer prompt, context-discipline, or model-family changes.
+An [Auditor](../roles/auditor.md) acting as the seed author derives variants of real changes with planted defects indexed by the shared fault taxonomy, and the variants pass through the standard adversarial review blind. The output is a catch-rate matrix by defect class and reviewer configuration; a blind class drives reviewer prompt, context-discipline, or model-family changes.
 
 The zero-merge invariant is strict: seeds exist only on designated sandbox branches, every seed is registered before planting, teardown is verified, and no seeded change may reach an integration branch under any outcome.
 
@@ -96,7 +96,7 @@ Ablation asks which required behavior is lost when a mechanism is removed; mutat
 - Not concluded: the experiment or its oracle did not cover the responsibility, so no removal follows.
 - Behavior change found: leave the refactor scope and return the question to the owner.
 
-Mechanisms that back each other up are analyzed together, because each can look removable while the other remains. An unused export or a pure forwarding wrapper may rest on lighter evidence: its consumer closure, a check of real callers, and focused checks. Security, durable recovery, and external-effect paths need direct evidence under their own failure conditions. No experiment removes a safety protection in production, and no differential comparison fires an external effect twice. An import-graph unused-export tool may narrow a sample for an audit; a 2026-09-23 trial found it recalled 7 of 13 removed declarations and missed object and property members, so it is neither a gate nor a substitute for consumer closure.
+Mechanisms that back each other up are analyzed together, because each can look removable while the other remains. An unused export or a pure forwarding wrapper may rest on lighter evidence: its consumer closure, a check of real callers, and focused checks. Security, durable recovery, and external-effect paths need direct evidence under their own failure conditions. No experiment removes a safety protection in production, and no differential comparison fires an external effect twice. An import-graph unused-export tool may narrow an audit sample. It does not establish complete consumer closure and is neither a gate nor a substitute for that proof.
 
 ## Documentation And Discovery Probes
 

@@ -9,7 +9,7 @@ kind: process
 
 - The three-layer separation for documentation metadata: YAML frontmatter as the syntax layer, an allowed value subset as the schema layer, and loud-failing strict validation as the parse layer.
 - The requirement that one module owns the field vocabulary and per-type field rules, exports parsing and validation, and is the single reader of documentation metadata in this repository.
-- The consolidation of `scripts/validate-doc-model.mjs`, `scripts/validate-spec-lifecycle.mjs`, and the header-reading half of `scripts/generate-doc-index.mjs` onto that module.
+- The consolidation of documentation validation, specification lifecycle validation and index metadata reading onto that module.
 - The migration shape from the current plain `Field: value` header lines to frontmatter, including the round-trip equivalence predicate that makes a corpus-wide mechanical rewrite verifiable.
 - The condition under which a machine-readable field declaration for non-Node consumers may be generated, and the prohibition on hand-maintaining one.
 
@@ -26,15 +26,7 @@ kind: process
 
 ## Problem
 
-Documentation metadata is read by three scripts that disagree about where a header is.
-
-- `scripts/validate-spec-lifecycle.mjs` scopes fields to the text before the first level-two heading, via `content.split(/\n##\s+/u, 1)[0]`.
-- `scripts/validate-doc-model.mjs` scans the entire document with a global multiline pattern and requires exactly one match for `Type` and `Status`.
-- `scripts/generate-doc-index.mjs` carries its own `METADATA_LINE_PATTERN` skip-list to find the first content line.
-
-The consequence is observable, not theoretical: a change record whose body contains a line beginning `Status: ` at column zero fails `validate-doc-model.mjs` as a duplicate field while `validate-spec-lifecycle.mjs` never sees it. The same document is valid to one checker and invalid to another. The existing duplicate-status regression test compensates for the fragile scan rather than removing it.
-
-The field vocabulary is small enough to state exactly. Across the committed corpus: `Status` (183), `Implementation` (127), `Type` (28), `Date` (16), `Started`, `Completed`, and `Branch` (3 each), `Updated` (1), plus `Status Changed`, `Current Guidance`, and `Decision Evidence` on terminal specifications. Usage has already drifted: `Date` appears in three types with no per-type rule, and `Updated` appears once.
+Independent metadata readers can disagree about header boundaries and field types. One shared reader prevents a body example from being mistaken for document metadata.
 
 ## Three Layers
 
@@ -54,17 +46,21 @@ The mitigation is loud failure, not format restriction. Every field schema is `z
 
 ## Module Contract
 
-One module, `scripts/lib/doc-fields.mjs`, owns the executable projection of the field contract.
+One module owns the executable projection of the field contract.
 
-It exports:
+It exposes:
 
-- `parseFrontmatter(content)` — returns the metadata mapping and the body offset, or a typed parse failure. It never guesses: a document with no frontmatter block returns an explicit absent result rather than an empty mapping.
-- `validateFields(type, fields)` — returns errors for unknown fields, missing required fields, values outside a canonical set, values of the wrong shape, and values implicitly coerced away from string.
-- `fieldSchemas` — the per-type `zod` schemas, so a consumer can compose rather than re-derive.
+- Parsing: returns the metadata mapping and body offset, or a typed parse failure. A document without frontmatter returns an explicit absent result rather than an empty mapping.
+- Validation: returns errors for unknown fields, missing required fields, values outside a canonical set, wrong shapes and values implicitly coerced away from string.
+- Per-type schemas: consumers compose the shared schemas rather than re-derive them.
 
 It owns the vocabulary and per-type required and optional sets as data, mirroring `docs/documentation-model.md`. It owns nothing else: no plugin mechanism, no per-field custom validator beyond canonical-set and shape checks, no document classification, no index formatting. Classification stays with the type system projection; formatting stays with the index generator.
 
 The three current scripts become one validator plus one generator, both importing this module and neither containing a metadata regular expression. Removal of the last header regular expression from those scripts is an acceptance predicate, not a stylistic preference: a surviving regular expression means a fourth definition of where a header is.
+
+## Current Implementation Projection
+
+`scripts/lib/doc-fields.mjs` exports `parseFrontmatter(content)`, `validateFields(type, fields)` and `fieldSchemas`. The documentation validator, specification lifecycle validator and index generator import that shared metadata reader.
 
 ## Generated Declaration
 
@@ -74,19 +70,13 @@ No such consumer exists today, so none is generated. Building one now would be t
 
 ## Migration
 
-The migration inventory classified 212 documents: 187 carried legacy metadata and 25 carried none before the rewrite. The rewrite is mechanical, so its correctness must be evidence rather than trust.
+The legacy-header rewrite is mechanical, so its correctness requires equivalence evidence.
 
 **Round-trip equivalence is the acceptance predicate.** Before the rewrite, every legacy metadata-bearing document's fields are extracted with the three current parsers. After the rewrite, the same documents are parsed with the new module. The migration is accepted only when the two field mappings are identical for every rewritten document, except that keys containing spaces are renamed to their enumerated kebab-case forms (`Status Changed` becomes `status-changed`) rather than by an inferred rule.
 
-The 187-document equivalence claim covers format conversion only. Three semantic corrections are separately authorized and are not claimed as round-trip-equal to their earlier values: this specification's lifecycle changed from `Draft` / `Not Started` to `Accepted` / `In Progress`; the two metadata-absent manual pages gained their required `status: Accepted`; and `docs/roadmap.md` changed from the non-canonical `status: Living document` to `status: Accepted`. The field-contract lifecycle correction preceded the slice-2 snapshot, the manuals were outside the 187-document legacy set, and the roadmap correction followed the exact rewrite gate.
+The equivalence claim covers format conversion only. Separately authorized semantic corrections are reported separately and are not claimed as round-trip-equal.
 
-Migration proceeds in three slices so that no slice both changes format and changes rules:
-
-1. **Module and contract.** Add `yaml`, write the module and its tests, state the field contract in `docs/documentation-model.md`, and repoint the scripts. Both formats are accepted: frontmatter when present, the legacy header block otherwise. No document changes.
-2. **Corpus rewrite.** Convert every legacy metadata header, verified by round-trip equivalence. No rule changes. The two current manual pages that lack their required `status` field are corrected in this slice to satisfy the existing per-type contract, not in the module-and-contract slice.
-3. **Legacy removal.** Delete legacy header support and its tests. Frontmatter is then required for every type with required metadata and whenever a document declares optional metadata. A type with neither required nor present metadata may remain frontmatter-free.
-
-Slice 1 leaves the repository in a dual-format state deliberately. The alternative is a single change that alters the parser and every document at once, which would make a round-trip failure impossible to localize.
+The completed migration separated the module change, corpus rewrite and legacy-reader removal so that a format change did not also change field rules. Legacy headers are no longer admitted. Frontmatter is required for every type with required metadata and whenever a document declares optional metadata. A type with neither required nor present metadata may remain frontmatter-free.
 
 ## Acceptance Predicates
 
@@ -94,8 +84,8 @@ Slice 1 leaves the repository in a dual-format state deliberately. The alternati
 - One header definition exists, so no document can be valid to one check and invalid to another. The duplicate-status regression test is replaced by a frontmatter-level uniqueness guarantee, which YAML provides by rejecting duplicate keys.
 - A field whose value implicitly coerces to a non-string fails validation, naming the file, field, and received type.
 - A document with YAML outside the allowed subset fails validation with the offending construct named.
-- After slice 3, a document without frontmatter fails validation when its type requires metadata, and any declared optional metadata must be in frontmatter; a type with neither required nor present metadata may remain frontmatter-free.
-- Round-trip equivalence holds for all 187 rewritten legacy metadata mappings at slice 2, with the space-to-kebab renames enumerated and the authorized semantic corrections above reported separately.
+- A document without frontmatter fails validation when its type requires metadata, and any declared optional metadata must be in frontmatter; a type with neither required nor present metadata may remain frontmatter-free.
+- Round-trip equivalence holds for all rewritten legacy metadata mappings in the corpus rewrite, with the space-to-kebab renames enumerated and the authorized semantic corrections above reported separately.
 - `docs/documentation-model.md` states the vocabulary and per-type requirements, and the module's data mirrors it. A field present in one and absent from the other is a defect in the module.
 
 ## Risks

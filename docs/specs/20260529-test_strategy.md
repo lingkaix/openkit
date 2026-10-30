@@ -157,7 +157,7 @@ The current root scripts already include `check:repo`, `lint`, `typecheck`, `bui
 
 Generated protocol or schema artifacts should have drift tests that fail if source schemas changed without regenerating committed outputs.
 
-L0 should also enforce that every app and package keeps its own `AGENTS.md`, `README.md`, and package-level scripts aligned with root task names.
+L0 should also check each app and package for its required `README.md` and package-level scripts aligned with root task names. A local `AGENTS.md` is optional under root `AGENTS.md` LOCAL-001.
 
 L0 failures should not require browser traces or process logs because they are usually source-level problems.
 
@@ -294,19 +294,19 @@ Network access should be disabled or mocked by default unless the test is explic
 
 Quota-consuming provider tests must include a clear environment variable gate and must not run in normal CI by accident.
 
-The container rule and its one exception, the platform-divergence rule, oracle classification, and harness admission were previously stated in this specification and are now owned by `docs/verification-instruments.md`. A check chooses its layer under this specification and is believed under that one.
+The test placement rule and its admitted exceptions, the platform-divergence rule, oracle classification, and harness admission are owned by `docs/verification-instruments.md`. A check chooses its layer under this specification and is believed under that one.
 
 ## CI And Release Gates
 
-Pull requests should run only the lightweight repository check by default.
+Pull requests should run the lightweight repository check and the isolated NanoHost installer fixed-path gate by default. [NanoHost Runtime And Transport](20260802-nanohost_runtime_and_transport.md) owns the installer proof.
 
 Every push to `main` MUST run the complete deterministic release gate, including L4 Web e2e. Main pushes share one concurrency group: a newer pending head replaces an older pending head, but an in-progress main run is not cancelled. Other ordinary branch pushes do not run CI by default.
 
-A lowercase version tag that builds release artifacts and matches `v*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`. Under [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse), the complete-suite L0-L2 shards and NanoCore e2e tag job each first seek a completed main-push release-gate run or qualifying `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. L0-L2 requires the complete successful shard aggregate and execution-file inventory under that owner. Main-push shards may reuse exact-P dispatch evidence under the same rules. The candidate gate uses a main-push release-gate run or selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. On a tag that builds release artifacts, L5 and every other tag job still run, including preflight and `main` membership, portability, the installer, NanoHost build and qualification, packaging, promotion of the proved exact-P candidate index and platform digests, anonymous `worker-common` inspection, GitHub Release creation and upload, and download verification. Prerelease image build and per-platform exact-digest smoke run once in candidate CI and are admitted on the tag under Release Management; all existing publication predicates remain required. A stable promotion tag builds nothing. It runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
+A lowercase version tag that builds release artifacts and matches `v*.*.*` should run the release gate as separate jobs for L0-L2, L3 NanoCore e2e, and L5 smoke. Under [Release Management](20260829-release_management.md#candidate-ci-and-tag-reuse), the complete-suite L0-L2 shards and NanoCore e2e tag job each first seek a completed main-push release-gate run or qualifying `workflow_dispatch` run of the same workflow on exactly the tagged commit where that same job succeeded in its latest attempt. Each records the qualifying run and skips its tests when found, or runs its tests as before when absent. L0-L2 requires the complete successful shard aggregate and execution-file inventory under that owner. Main-push shards may reuse exact-P dispatch evidence under the same rules. The candidate gate uses a main-push release-gate run or selects `release-gate` or `full` on exactly the publishing commit; reuse never crosses commits. On a tag that builds release artifacts, L5 and every other tag job still run, including preflight and `main` membership, portability, the installer, NanoHost build and qualification, packaging, promotion of the proved exact-P candidate index and platform digests, anonymous `worker-common` inspection, GitHub Release creation and upload, and download verification. Prerelease image build and per-platform exact-digest smoke run once in candidate CI and are admitted on the tag under Release Management; all existing publication predicates remain required. A stable promotion tag builds nothing. It runs promotion of the already-published digests, the release pointers, GitHub Release creation, and published-release verification.
 
-Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full` selections.
+Manual workflow dispatch should expose the lightweight repository check, L0-L2, L3 NanoCore e2e, L4 Web e2e, L5 smoke, the complete release gate, and the registry-observation refresh owned by [Release Management](20260829-release_management.md#prerelease-candidate-images). Workflow identifiers belong in the implementation projection.
 
-The release gate should run `pnpm -w verify:release`.
+The release gate should cover the L0-L2, L3 NanoCore e2e and L5 smoke composition projected by `verify:release`, through its admitted shards. The additional jobs and exact-commit reuse rules remain owned by Release Management.
 
 The overlapping deterministic Vitest unit and coverage suites execute once with coverage enabled. Substitution requires equal collected test inventories, propagated injected failure, and preserved skip enforcement. Repeat that admission proof when suite-selection or command inputs change. Routine execution reuses the admitted recipe instead of collecting both inventories again. Root JavaScript tests, native Cargo tests, schema/catalog validation, builds, and artifact gates remain distinct required executions. A missing suite, changed inventory, collection failure, undeclared skip, or failed command fails the gate. Coverage executes on every exact P; cycle-only coverage is insufficient. Disjoint file partitions may execute a large package in parallel. Each partition must prove equal unit and coverage case collection and exact executed-case cardinality; the complete union must equal the unpartitioned file inventory. Duplicate case names retain their multiplicity. Merge the actual coverage blobs and apply the original whole-package thresholds before the aggregate passes. Per-partition threshold deferral is allowed only with that required merge; it cannot admit an incomplete, failing or skipped partition. [Release cadence](../decisions/20261014-release_cadence.md) records this decision.
 
@@ -355,11 +355,11 @@ L6 evidence follows `docs/specs/20260529-l6_story_acceptance.md`.
 
 Evidence must redact secrets before it is committed, uploaded, or pasted into a change record.
 
-L3 opt-in real-provider tests use a stricter failure-evidence contract than the general NanoCore list above. Each writes one owner-only (`0600`) redacted terminal result per attempted run, after that run's cleanup attempt settles and including when lifecycle work or cleanup fails. The result must retain enough to attribute a failure to product behavior rather than an external cause, and must never retain raw SSE, error text, request or response payloads, credential material, file paths, provider-private values, or durable product records. Evidence that cannot separate a product failure from a provider or environment failure is insufficient, not merely terse.
+L3 opt-in real-provider tests use a stricter failure-evidence contract than the general NanoCore list above. Each writes one owner-only (`0600`) redacted terminal result per attempted runner invocation, after its cleanup attempts settle and including when lifecycle work or cleanup fails. An invocation may contain the test's fixed sequence of lifecycle runs; their outcomes share that result. The result must retain enough to attribute a failure to product behavior rather than an external cause, and must never retain raw SSE, error text, request or response payloads, credential material, file paths, provider-private values, or durable product records. Evidence that cannot separate a product failure from a provider or environment failure is insufficient, not merely terse.
 
 Cleanup always runs to settlement. When lifecycle work and cleanup both fail, the first lifecycle failure controls both the reported phase and the propagated error; the later cleanup failure is reported only as its own outcome, never replaces the first failure, and retains no raw secondary error. When cleanup is the first failure, it controls the reported phase and propagates.
 
-Terminal failure classification is derived only from a parsed public Gateway terminal payload's error code, is restricted to the fixed public failure vocabulary owned by `docs/specs/20260526-llm_gateway_responses_api.md`, and maps every missing, non-string, or unrecognized code onto one generic fallback. A raw provider code is never retained. Run cardinality is fixed by the test rather than by its caller: at most one diagnostic cardinality override may exist per test, every other explicit value must be rejected before auth-source content access or any provider effect, and that override authorizes no general runner parameterization or additional lifecycle variant.
+Terminal failure classification is derived only from a parsed public Gateway terminal payload's error code, uses only the public failure meanings owned by `docs/specs/20260526-llm_gateway_responses_api.md` and the fixed code allowlist projected by the runner test, and maps every missing, non-string, or unrecognized code onto one generic fallback. A raw provider code is never retained. Run cardinality is fixed by the test rather than by its caller: at most one diagnostic cardinality override may exist per test, every other explicit value must be rejected before auth-source content access or any provider effect, and that override authorizes no general runner parameterization or additional lifecycle variant.
 
 `apps/nanocore/e2e/provider-subscription-real-lifecycle-runner.test.mjs` is the executable projection of this contract for C04 and holds no authority of its own. It owns the exact summary field set and types, the phase values, the code enumeration, and the override's name; this specification owns only the invariants above.
 
@@ -417,7 +417,7 @@ Mitigation: Apply Test Authority And Lifecycle: behavior-constraining assertions
 
 Risk: Release gates become too expensive for normal development.
 
-Mitigation: Keep PR gates to the lightweight repository check, require L0-L3 evidence plus fresh L5 on main pushes, version tags, or explicit manual release-gate dispatch, allowing exact-commit reuse for tag L0-L3 where the release owner permits it, and include L4 in main and complete manual release gates, and reserve L6, staging, real-provider, and real-subscription tests for explicit manual workflows.
+Mitigation: Keep PR gates to the lightweight repository check and isolated installer gate, require L0-L3 evidence plus fresh L5 on main pushes, version tags, or explicit manual release-gate dispatch, allowing exact-commit reuse for tag L0-L3 where the release owner permits it, and include L4 in main and complete manual release gates, and reserve L6, staging, real-provider, and real-subscription tests for explicit manual workflows.
 
 ## Resolved Decisions
 
@@ -436,8 +436,6 @@ Mitigation: Keep PR gates to the lightweight repository check, require L0-L3 evi
 - `docs/change-execution.md`
 - `docs/app-api.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
-- `docs/specs/superseded/agent-workflow/20260526-nano_core_lightweight_agents.md`
 - `docs/specs/20260528-core_client_boundary.md`
-- `docs/specs/superseded/20260529-remove_legacy_compatibility.md`
 - `apps/nanocore/README.md`
 - `apps/web/README.md`

@@ -13,7 +13,7 @@ kind: concept
 
 ## Does Not Own
 
-- A new reflection operation, API route, durable record, lifecycle, or internal Core Role. S18 adds no operation: the composition uses existing work-history reads, `knowledge.proposal-draft`, and `knowledge.proposal-decide`, plus the S61-owned bounded `knowledge.proposal-reverse` operation and existing Knowledge Page reads.
+- A new reflection operation, API route, durable record, lifecycle, or internal Core Role. S18 adds no operation: the composition uses existing work-history reads, `knowledge.proposal.draft`, and `knowledge.proposal.decide`, plus the S61-owned bounded `knowledge.proposal.reverse` operation and existing Knowledge Page reads.
 - Knowledge, Knowledge Proposal, Knowledge Review, validation, retrieval, proposal application, or revision storage. `docs/core/knowledge.md`, `docs/specs/20260702-knowledge_store_governance_rules.md`, and `docs/specs/20260703-knowledge_store_implementation.md` own those contracts.
 - Worker-context selection, persistence, materialization, or delivery. The owning mode service and `docs/specs/20260703-worker_context_package.md` own those effects and the single accepted S39 trace.
 - A persistent Reflector, Task Evaluator implementation, internal-agent runner, scheduler, trigger, event hook, retry queue, checkpoint, private session, or recovery workflow.
@@ -40,7 +40,7 @@ kind: concept
 
 This specification owns only the explicit completed-Worker-work reflection composition, which remains create-only. The common proposal operation also admits exact-base replacement for other compositions under S60/S61 and the scoped learning specification; the create-only restrictions below constrain this caller composition, never the shared command. The existing completed-work implementation is retained; adaptation to the new canonical scoped request identity is Not Started, hence the Partial projection.
 
-OpenKit V1 supports deliberate learning from real work without adding another runtime or workflow engine. An authenticated user asks an agent to inspect one retained completed work history through remote MCP guide and operation tools. The agent may then call the existing `knowledge.proposal-draft` operation with exact Workspace-owned source references and complete create-only Knowledge Page content, or explain that the evidence does not justify a reusable lesson without creating Knowledge state.
+OpenKit V1 supports deliberate learning from real work without adding another runtime or workflow engine. An authenticated user asks an agent to inspect one retained completed work history through remote MCP guide and operation tools. The agent may then call the existing `knowledge.proposal.draft` operation with exact Workspace-owned source references and complete create-only Knowledge Page content, or explain that the evidence does not justify a reusable lesson without creating Knowledge state.
 
 In this explicitly reviewed completed-work composition, Agent analysis is advisory. The proposal remains pending until the existing human Knowledge Review owner accepts, rejects, or defers it. Changing the fixed candidate requires a new proposal. A later worker has used accepted knowledge only when its existing S39 Context Package trace proves that the exact selected bytes were materialized and delivered. Restoration is a current-base Knowledge-owner publication from the retained proposal base, not a second improvement lifecycle.
 
@@ -56,7 +56,7 @@ In this explicitly reviewed completed-work composition, Agent analysis is adviso
 
 ### Non-goals
 
-- Do not mine work passively or on a schedule.
+- This completed-Worker-work reflection composition does not mine work passively or on a schedule. Scoped daily learning remains owned by [Personal Memory And Knowledge Learning](20260909-personal_memory_and_knowledge_learning.md#scheduled-maintenance).
 - Do not infer improvements from incomplete or cross-Workspace history.
 - Do not create a general improvement-proposal type or lifecycle.
 - Do not evaluate or mutate Skills, prompts, agents, workflows, coordinator behavior, NanoCore code, or external systems.
@@ -65,7 +65,7 @@ In this explicitly reviewed completed-work composition, Agent analysis is adviso
 ## Decision
 
 - V1 reflection is a composition of existing transport-neutral operations, not a new `knowledge.reflect` operation or NanoCore subsystem.
-- The reviewing agent reads exact completed Workspace records through the remote MCP and administrator CLI and either returns ordinary advisory output or invokes `knowledge.proposal-draft` once.
+- The reviewing agent reads exact completed Workspace records through the remote MCP and administrator CLI and either returns ordinary advisory output or invokes `knowledge.proposal.draft` once.
 - A generated proposal is create-only. Before review it fixes the notebook base/candidate commits, new target page id, exact bytes/digest and source lineage; it cannot describe a generic update, merge, Skill change, or workflow change.
 - NanoCore validates the normal proposal command, exact same-Workspace source references, create-only target, content shape, and authorization. It does not run a model or persist reflection state.
 - Human Knowledge Review is the only activation authority. Agent output, proposal existence, retrieval selection, citation count, and later model agreement cannot activate knowledge.
@@ -84,7 +84,7 @@ If the evidence is missing, contradictory, stale, unavailable, or insufficient, 
 
 ### Proposal creation and command replay
 
-This completed-work composition MUST submit a complete create target and exact source references to `knowledge.proposal-draft` under S60/S61. The command uses the common notebook-change envelope; this composition restricts its candidate diff to one new page, while separately admitted maintenance may change several pages. A successful call creates one ordinary pending Knowledge Proposal and returns its existing identifier and validation result. It creates no page, review decision, reflection record, evaluation record, or private lifecycle.
+This completed-work composition MUST submit a complete create target and exact source references to `knowledge.proposal.draft` under S60/S61. The command uses the common notebook-change envelope; this composition restricts its candidate diff to one new page, while separately admitted maintenance may change several pages. A successful call creates one ordinary pending Knowledge Proposal and returns its existing identifier and validation result. It creates no page, review decision, reflection record, evaluation record, or private lifecycle.
 
 The command uses the normal command-ledger key `command + requestId + scope`, with canonical owner scope exactly `{ kind: workspace, workspaceId }`; the complete normalized draft request is the input hash. A stored receipt replays through the existing owner projection, any changed draft input under the same Workspace and request id returns `idempotency_key_conflict`, and a proposal found through S61's deterministic owner-scope-plus-request owner id without a completed receipt returns `recovery_required`. Title and candidate fields MUST NOT enter the ledger scope because changing them would bypass same-request conflict detection. The command does not reconstruct a response, expand the direct-mutation ledger contract, or create recovery state.
 
@@ -116,7 +116,7 @@ An authorization, Knowledge Store, canonical-history, provider, worker, or trans
 
 ## Proposed Design
 
-Use remote MCP and bundled CLI as the agent's composition surface. Reuse existing work-history reads, `knowledge.proposal-draft`, `knowledge.proposal-decide`, Knowledge Page reads, the S61-owned bounded `knowledge.proposal-reverse`, and S39; extend only their owning contracts where exact source, page, application, reversal, and delivery predicates require it. Add no reflection route, schema family, module, table, file-backed ledger, runner, or dependency.
+Use remote MCP and bundled CLI as the agent's composition surface. Reuse existing work-history reads, `knowledge.proposal.draft`, `knowledge.proposal.decide`, Knowledge Page reads, the S61-owned bounded `knowledge.proposal.reverse`, and S39; extend only their owning contracts where exact source, page, application, reversal, and delivery predicates require it. Add no reflection route, schema family, module, table, file-backed ledger, runner, or dependency.
 
 ## Personal Interaction Learning Boundary
 
