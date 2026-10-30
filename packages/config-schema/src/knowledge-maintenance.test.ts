@@ -80,17 +80,41 @@ describe('Authored scoped notebook maintenance settings', () => {
     expect(KnowledgeMaintenanceSchema.safeParse(value).success).toBe(false);
   });
 
-  it('ignores additive descriptive fields without changing the exact protected set', () => {
-    expect(
-      KnowledgeMaintenanceSchema.parse({
-        enabled: true,
-        reviewRequiredPageIds: ['protected'],
-        note: 'Future description',
-      })
-    ).toEqual({
+  it.each([
+    {
+      scope: 'User',
+      parse: (knowledgeMaintenance: unknown) =>
+        UserConfigSchema.safeParse({ schemaVersion: 1, knowledgeMaintenance }),
+    },
+    {
+      scope: 'Workspace',
+      parse: (knowledgeMaintenance: unknown) =>
+        WorkspaceConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          workspace: { name: 'Work', knowledgeMaintenance },
+        }),
+    },
+    {
+      scope: 'Server',
+      parse: (knowledgeMaintenance: unknown) =>
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          knowledgeMaintenance,
+        }),
+    },
+  ])('rejects unknown maintenance authority in $scope configuration', ({ parse }) => {
+    const selected = {
       enabled: true,
       reviewRequiredPageIds: ['protected'],
-      schedule: { enabled: false },
-    });
+      schedule: { enabled: true },
+    };
+    expect(parse(selected).success).toBe(true);
+
+    // NanoCore Config Identity Contract: strict authority replaces the prior tolerant note oracle.
+    for (const unsupported of [
+      { ...selected, note: 'Future description' },
+      { ...selected, schedule: { enabled: true, futureAuthority: true } },
+    ])
+      expect.soft(parse(unsupported).success).toBe(false);
   });
 });

@@ -20,13 +20,13 @@ export const KnowledgeMaintenanceSchema = z
     /** Fixed daily execution is independent of publication delegation and stays off by default. */
     schedule: z
       .object({ enabled: z.boolean().default(false) })
-      .strip()
+      .strict()
       .default({ enabled: false }),
     reviewRequiredPageIds: z
       .array(NotebookPageIdSchema)
       .refine((ids) => new Set(ids).size === ids.length, 'Protected page ids must be unique.'),
   })
-  .strip();
+  .strict();
 
 /** Existing User, Workspace and Server settings share this structural contract without sharing authority. */
 export type KnowledgeMaintenance = z.infer<typeof KnowledgeMaintenanceSchema>;
