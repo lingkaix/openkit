@@ -282,8 +282,8 @@ export async function admitWorkspaceBackupAtCore(
 }
 
 /**
- * Revalidates one placed target before its exact recovery refusal and freeze can end.
- * The original finished result proves placement; it never substitutes for serving validation.
+ * Revalidates a placed target or restored predecessor before its exact recovery exclusion can end.
+ * A terminal result proves the lifecycle decision, never serving validity.
  */
 export function activateWorkspaceRecoveryAtCore(
   owner: WorkspaceRecoveryTargetOwner,
@@ -301,7 +301,11 @@ export function activateWorkspaceRecoveryAtCore(
   if (
     !['restore', 'move-in'].includes(owned.proof.input.command) ||
     owned.proof.result.disposition !==
-      (owned.proof.input.command === 'restore' ? 'restored' : 'imported') ||
+      (owned.state === 'abandoned'
+        ? 'abandoned'
+        : owned.proof.input.command === 'restore'
+          ? 'restored'
+          : 'imported') ||
     owned.proof.result.workspaceId !== owned.workspace_id ||
     owned.candidate_ref !==
       join(
@@ -309,16 +313,27 @@ export function activateWorkspaceRecoveryAtCore(
         'workspaces',
         owned.workspace_id
       ) ||
-    !owned.proof.candidateDigest ||
     input.store.getDataRoot() === null ||
     resolve(input.store.getDataRoot()!) !== resolve(core.dataRoot) ||
     input.runtimeConfigManager.getDataRoot() === null ||
-    resolve(input.runtimeConfigManager.getDataRoot()!) !== resolve(core.dataRoot) ||
-    candidateDigest(join(core.dataRoot, 'workspaces', owned.workspace_id)) !==
-      owned.proof.candidateDigest
+    resolve(input.runtimeConfigManager.getDataRoot()!) !== resolve(core.dataRoot)
   )
     refuseRecovery('recovery-required');
   const workspaceId = owned.workspace_id;
+  if (owned.state === 'finished') {
+    if (
+      !owned.proof.candidateDigest ||
+      candidateDigest(join(core.dataRoot, 'workspaces', workspaceId)) !==
+        owned.proof.candidateDigest
+    )
+      refuseRecovery('recovery-required');
+  } else {
+    // The retired candidate's digest cannot identify the restored predecessor. Both pending
+    // placement paths must be gone before the same canonical Store/config readers admit it.
+    if (existsSync(owned.candidate_ref) || existsSync(workspaceRecoveryPredecessorRoot(owned)))
+      refuseRecovery('recovery-required');
+    assertCanonicalDirectory(join(dirname(owned.candidate_ref), 'abandoned'));
+  }
   assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
   const failure = scopeAdmissionFailures(core.dataRoot).find(
     (entry) => entry.scope === 'workspace' && entry.id === workspaceId && entry.check !== 'index'

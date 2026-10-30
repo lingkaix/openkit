@@ -78,9 +78,11 @@ import {
   WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
 import {
+  abandonWorkspaceRecoveryAtCore,
   activateWorkspaceRecoveryAtCore,
   admitWorkspaceBackup,
   admitWorkspaceBackupAtCore,
+  finishWorkspaceRecoveryAtCore,
 } from './workspace-restore.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
@@ -423,7 +425,10 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
 }
 
 /** Reaches boot quarantine through a real interrupted restore, with stale live read models. */
-async function readmissionFixture(priorRecovery = false) {
+async function readmissionFixture(
+  priorRecovery = false,
+  interruption: 'before-target-rename' | 'after-target-rename' = 'before-target-rename'
+) {
   const f = await fixture();
   let foreignRuntimeConfigManager: ReturnType<typeof createRuntimeConfigManager> | undefined;
   if (priorRecovery) {
@@ -479,9 +484,9 @@ async function readmissionFixture(priorRecovery = false) {
   await expect(
     admitWorkspaceBackup(input, {
       atBoundary: (point) => {
-        if (point !== 'before-target-rename') return;
+        if (point !== interruption) return;
         interrupted = true;
-        throw new Error('Interrupt before canonical placement for boot readmission.');
+        throw new Error('Interrupt canonical placement for boot readmission.');
       },
     })
   ).rejects.toMatchObject({ code: 'recovery-required' });
@@ -526,6 +531,108 @@ async function readmissionFixture(priorRecovery = false) {
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it.each([
+    'before-target-rename',
+    'after-target-rename',
+  ] as const)('readmission: selected abandon validates and reopens the preserved predecessor after %s', async (interruption) => {
+    const f = await readmissionFixture(false, interruption);
+    const prepared = readRecoveryAdmission(f.owner.core, f.requestId)!;
+    const candidate = existsSync(prepared.candidate_ref)
+      ? prepared.candidate_ref
+      : join(f.dataRoot, 'workspaces', workspaceId);
+    const retainedCandidate = inventoryRegularFiles(candidate);
+    const selected = {
+      command: 'abandon' as const,
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection: { kind: 'admission' as const, requestId: f.requestId },
+    };
+    const result = await abandonWorkspaceRecoveryAtCore(f.owner, selected);
+    expect(result).toMatchObject({ disposition: 'abandoned', nextAction: 'none' });
+    const abandoned = readRecoveryAdmission(f.owner.core, f.requestId);
+    expect(abandoned?.state).toBe('abandoned');
+    // Target Admission requires retirement to preserve owned bytes, including retained holds.
+    expect(inventoryRegularFiles(join(dirname(prepared.candidate_ref), 'abandoned'))).toEqual(
+      retainedCandidate
+    );
+    await expect(
+      finishWorkspaceRecoveryAtCore(f.owner, { ...selected, command: 'finish' })
+    ).rejects.toBeInstanceOf(WorkspaceRecoveryError);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+    expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+    refuseScope(f.dataRoot, { scope: 'workspace', id: f.sibling.id, check: 'database' });
+    const independent = scopeAdmissionFailures(f.dataRoot).filter(
+      (failure) => failure.id !== workspaceId || failure.check !== 'recovery'
+    );
+    let checkedAuthority = false;
+    expect(
+      activateWorkspaceRecoveryAtCore(f.owner, {
+        ...f.activation,
+        currentAuthority: () => {
+          checkedAuthority = true;
+          expect(f.gate.enter(workspaceId)).toBeNull();
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+        },
+      })
+    ).toEqual(result);
+    expect(checkedAuthority).toBe(true);
+    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(abandoned);
+    expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
+    // Same-Deployment Restore step 5 requires canonical authority, not the retired candidate.
+    expect(f.store.getThread(workspaceId, f.staleThread.id)).toMatchObject({
+      id: f.staleThread.id,
+    });
+    expect(
+      f.runtimeConfigManager
+        .current()
+        .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config.workspace.name
+    ).toBe('Current recovered configuration');
+    f.freeze.release();
+    await expect(f.store.createThread(workspaceId, 'Work after abandon')).resolves.toMatchObject({
+      name: 'Work after abandon',
+    });
+  }, 120_000);
+
+  it('readmission: an abandoned result cannot admit invalid predecessor Store or config', async () => {
+    const f = await readmissionFixture(false, 'after-target-rename');
+    const result = await abandonWorkspaceRecoveryAtCore(f.owner, {
+      command: 'abandon',
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection: { kind: 'admission', requestId: f.requestId },
+    });
+    const assertClosed = () => {
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(f.gate.enter(workspaceId)).toBeNull();
+      expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+    };
+    // Same-Deployment Restore step 5 requires actual canonical Store validation after abandon.
+    const native = new Database(workspaceDbPath(f.dataRoot, workspaceId), { fileMustExist: true });
+    const retainedThread = native
+      .prepare('SELECT record_json FROM control_threads WHERE id=?')
+      .pluck()
+      .get(f.staleThread.id) as string;
+    try {
+      native
+        .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+        .run('{}', f.staleThread.id);
+      expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
+      assertClosed();
+    } finally {
+      native
+        .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+        .run(retainedThread, f.staleThread.id);
+      native.close();
+    }
+    const config = readFileSync(f.configPath);
+    writeFileSync(f.configPath, '{ invalid predecessor config');
+    expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
+    assertClosed();
+    writeFileSync(f.configPath, config);
+    expect(activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toEqual(result);
+    expect(f.store.getThread(workspaceId, f.staleThread.id).id).toBe(f.staleThread.id);
+  }, 120_000);
+
   it('readmission: opens only the validated finished target and preserves independent scope failures', async () => {
     const f = await readmissionFixture();
     const result = await admitWorkspaceBackupAtCore(f.owner, f.input);

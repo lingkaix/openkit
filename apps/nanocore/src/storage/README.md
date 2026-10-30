@@ -42,7 +42,7 @@ Native writer admission reserves the existing bounded slot before asynchronous p
 
 ## Boundaries
 
-- A boot-restored recovery exclusion can be rejoined only by its exact, freshly checked Core admission. The existing mutation gate keeps ordinary publishers excluded throughout that transient owner lifetime; release invalidates native bindings and retains the prior quarantine. Scoped Store/config validation and recovery-only readiness settlement remain required before live target activation.
+- A boot-restored recovery exclusion can be rejoined only by its exact, freshly checked Core admission. The existing mutation gate keeps ordinary publishers excluded throughout that transient owner lifetime; release invalidates native bindings and retains the prior quarantine. Scoped Store/config validation and recovery-only readiness settlement remain required before live target activation. The same exact-owner activation now validates the preserved predecessor after selected restore abandonment; retired candidate bytes remain outside serving authority, and the finished-target digest predicate stays unchanged. Public selected finish/abandon remains uncomposed until its capture branch is complete.
 
 - Scoped Store recovery uses the same global identity enumeration and both-owner collision decision as boot. Current native selectors and the application's live file publisher supply peer claims; required unreadable authority never supplies proof of absence. Target Pending projections use an existing query-only database owner and the original parser/canonical-load checks. These validation entries do not clear readiness.
 

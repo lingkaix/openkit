@@ -78,7 +78,7 @@ export function resumeWorkspaceRecoveryOwner(
   if (
     !current ||
     !isDeepStrictEqual(current, owned) ||
-    !['prepared', 'finished'].includes(current.state) ||
+    (current.state === 'abandoned' && current.proof.result.disposition !== 'abandoned') ||
     !RequestIdSchema.safeParse(current.admission_id).success ||
     !['restore', 'move-in'].includes(current.proof.input.command) ||
     current.candidate_ref !==
@@ -98,14 +98,14 @@ export function resumeWorkspaceRecoveryOwner(
     current.workspace_id,
     {
       admissionId: current.admission_id,
-      revision: current.revision - (current.state === 'finished' ? 1 : 0),
+      revision: current.revision - (current.state === 'prepared' ? 0 : 1),
       candidateRef: current.candidate_ref,
     },
     readBlockers
   );
 }
 
-/** Reads only a finished target whose original exclusion has no competing unfinished owner. */
+/** Reads a terminal target or abandoned restore whose original exclusion has no unfinished competitor. */
 export function readWorkspaceRecoveryReadmission(
   core: CoreDb,
   id: string,
@@ -115,7 +115,12 @@ export function readWorkspaceRecoveryReadmission(
   const owned = readRecoveryAdmission(core, id);
   if (
     !owned ||
-    owned.state !== 'finished' ||
+    (owned.state !== 'finished' &&
+      !(
+        owned.state === 'abandoned' &&
+        owned.proof.input.command === 'restore' &&
+        owned.proof.result.disposition === 'abandoned'
+      )) ||
     !RequestIdSchema.safeParse(id).success ||
     !['restore', 'move-in'].includes(owned.proof.input.command) ||
     unresolvedRecoveryAdmissions(core, owned.workspace_id).length !== 0 ||
