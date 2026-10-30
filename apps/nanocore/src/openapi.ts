@@ -202,8 +202,8 @@ type HonoPath<Path extends string> = Path extends `${infer Head}{${infer Paramet
   ? `${Head}:${Parameter}${HonoPath<Tail>}`
   : Path;
 
-/** Canonical OpenAPI path catalog inferred from the document builder. */
-type AppOpenApiPaths = ReturnType<typeof createAppOpenApiDocument>['paths'];
+/** Canonical path catalog inferred from its source bindings. */
+type AppOpenApiPaths = ReturnType<typeof appApiPaths>;
 
 /** Method, path, and operation id union derived from the canonical route catalog. */
 type AppApiRouteDefinition = {
@@ -285,19 +285,19 @@ export function getRegisteredAppApiOperationIds<E extends Env>(app: Hono<E>): st
 }
 
 /**
- * Resolves one runtime route definition from the OpenAPI operation catalog.
+ * Resolves one runtime route definition from the canonical operation catalog.
  *
  * @param operationId Stable OpenAPI operation identifier.
  * @returns Runtime method and Hono path.
- * @throws When the document contains duplicate operation ids or the requested id is unknown.
+ * @throws When the catalog contains duplicate operation ids or the requested id is unknown.
  */
-function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['operationId']>(
+export function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['operationId']>(
   operationId: OperationId
 ): AppApiRouteDefinitionFor<OperationId> {
   if (!appApiRouteDefinitions) {
     const definitions = new Map<string, RuntimeAppApiRouteDefinition>();
 
-    for (const [openApiPath, pathItem] of Object.entries(APP_OPENAPI_DOCUMENT.paths)) {
+    for (const [openApiPath, pathItem] of Object.entries(appApiPaths())) {
       for (const method of APP_OPENAPI_ROUTE_METHODS) {
         const operation = (pathItem as Readonly<Record<string, unknown>>)[method];
 
@@ -429,6 +429,284 @@ function knowledgePackageOperation<
 }
 
 /**
+ * Builds canonical route metadata from definition-owned JSON and retained streaming bindings.
+ *
+ * @returns Canonical App operation path catalog.
+ */
+function appApiPaths() {
+  return {
+    '/api/app/operations/knowledge.package.export': {
+      post: knowledgePackageOperation('knowledge.package.export'),
+    },
+    '/api/app/operations/knowledge.package.import': {
+      post: knowledgePackageOperation('knowledge.package.import'),
+    },
+    ...operationPaths(),
+    '/api/app/operations/artifact.version-file-commit': {
+      post: {
+        operationId: 'artifact.version-file-commit',
+        tags: ['artifact'],
+        summary: OPERATION_DEFINITIONS['artifact.version-file-commit'].description,
+        security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+        parameters: [
+          {
+            ...REQUEST_ID_HEADER,
+            schema: toJsonSchema(
+              OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.shape.requestId
+            ),
+          },
+          ...Object.entries(OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.shape)
+            .filter(([key]) => key !== 'requestId')
+            .map(([name, schema]) => ({
+              name,
+              in: 'query',
+              required: true,
+              // JSON query content preserves null separately from every authored summary string.
+              ...(name === 'summary'
+                ? { content: { [JSON_CONTENT_TYPE]: { schema: toJsonSchema(schema) } } }
+                : { schema: toJsonSchema(schema) }),
+            })),
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Accepted exact immutable Artifact version.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: toJsonSchema(
+                  OPERATION_DEFINITIONS['artifact.version-file-commit'].outputSchema
+                ),
+              },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+            },
+          },
+        },
+      },
+    },
+    '/api/app/operations/artifact.import': {
+      post: {
+        operationId: 'artifact.import',
+        tags: ['artifact'],
+        summary: OPERATION_DEFINITIONS['artifact.import'].description,
+        security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+        parameters: [
+          {
+            ...REQUEST_ID_HEADER,
+            schema: toJsonSchema(
+              OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.requestId
+            ),
+          },
+          ...Object.entries(OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape)
+            .filter(([key]) => key !== 'requestId')
+            .map(([name, schema]) => ({
+              name,
+              in: 'query',
+              required: true,
+              schema: toJsonSchema(schema),
+            })),
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Accepted exact immutable original.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: toJsonSchema(OPERATION_DEFINITIONS['artifact.import'].outputSchema),
+              },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+            },
+          },
+        },
+      },
+    },
+    '/api/app/operations/workspace.backup-download': {
+      post: {
+        operationId: 'workspace.backup-download',
+        tags: ['storage'],
+        summary: OPERATION_DEFINITIONS['workspace.backup-download'].description,
+        security: DEPLOYMENT_ADMIN_SECURITY,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: toJsonSchema(OPERATION_DEFINITIONS['workspace.backup-download'].inputSchema),
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description:
+              'Sealed verified operational inventory in the existing USTAR/Zstd container.',
+            content: {
+              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
+            },
+          },
+        },
+      },
+    },
+    '/api/app/operations/artifact.download': {
+      get: {
+        operationId: 'artifact.download',
+        tags: ['artifact'],
+        summary: OPERATION_DEFINITIONS['artifact.download'].description,
+        security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+        parameters: Object.entries(
+          OPERATION_DEFINITIONS['artifact.download'].inputSchema.shape
+        ).map(([name, schema]) => ({
+          name,
+          in: 'query',
+          required: true,
+          schema: toJsonSchema(schema),
+        })),
+        responses: {
+          '200': {
+            description: 'Exact immutable original; digest is in X-OpenKit-Content-Digest.',
+            content: {
+              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
+            },
+          },
+        },
+      },
+    },
+    '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
+      get: {
+        operationId: 'workspace.archive-download',
+        tags: ['storage'],
+        summary: OPERATION_DEFINITIONS['workspace.archive-download'].description,
+        security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+        parameters: [WORKSPACE_ID_PARAMETER, WORKSPACE_EXPORT_ID_PARAMETER],
+        responses: {
+          '200': {
+            description: 'Canonical portable Workspace archive stream.',
+            content: {
+              'application/vnd.openkit.workspace-export+tar.zstd': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ApiError' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/app/workspace-archives/import-dry-run': {
+      post: {
+        operationId: 'workspace.archive-import-dry-run',
+        tags: ['storage'],
+        summary: OPERATION_DEFINITIONS['workspace.archive-import-dry-run'].description,
+        security: SESSION_COOKIE_SECURITY,
+        requestBody: {
+          required: true,
+          content: {
+            'application/vnd.openkit.workspace-export+tar.zstd': {
+              schema: { type: 'string', format: 'binary' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Workspace archive import dry-run report.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/WorkspaceImportDryRunResponse' },
+              },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ApiError' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/app/workspace-archives/import': {
+      post: {
+        operationId: 'workspace.archive-import',
+        tags: ['storage'],
+        summary: OPERATION_DEFINITIONS['workspace.archive-import'].description,
+        security: SESSION_COOKIE_SECURITY,
+        parameters: [
+          {
+            name: 'x-openkit-request-id',
+            in: 'header',
+            required: true,
+            schema: { type: 'string', minLength: 1 },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/vnd.openkit.workspace-export+tar.zstd': {
+              schema: { type: 'string', format: 'binary' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Imported workspace and verification summary.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/WorkspaceImportResponse' },
+              },
+            },
+          },
+          default: {
+            description: 'Protocol error envelope.',
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ApiError' },
+              },
+            },
+          },
+        },
+      },
+    },
+  } as const satisfies AppOpenApiDocument['paths'];
+}
+
+/**
  * Creates the current App API OpenAPI projection from shared Zod schemas.
  *
  * @returns OpenAPI 3.1 JSON for the implemented App API projection slice.
@@ -443,280 +721,7 @@ export function createAppOpenApiDocument() {
         'Generated projection from OpenKit Zod schemas. Zod schemas in shared packages remain the source of truth.',
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
-    paths: {
-      '/api/app/operations/knowledge.package.export': {
-        post: knowledgePackageOperation('knowledge.package.export'),
-      },
-      '/api/app/operations/knowledge.package.import': {
-        post: knowledgePackageOperation('knowledge.package.import'),
-      },
-      ...operationPaths(),
-      '/api/app/operations/artifact.version-file-commit': {
-        post: {
-          operationId: 'artifact.version-file-commit',
-          tags: ['artifact'],
-          summary: OPERATION_DEFINITIONS['artifact.version-file-commit'].description,
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              ...REQUEST_ID_HEADER,
-              schema: toJsonSchema(
-                OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.shape.requestId
-              ),
-            },
-            ...Object.entries(
-              OPERATION_DEFINITIONS['artifact.version-file-commit'].inputSchema.shape
-            )
-              .filter(([key]) => key !== 'requestId')
-              .map(([name, schema]) => ({
-                name,
-                in: 'query',
-                required: true,
-                // JSON query content preserves null separately from every authored summary string.
-                ...(name === 'summary'
-                  ? { content: { [JSON_CONTENT_TYPE]: { schema: toJsonSchema(schema) } } }
-                  : { schema: toJsonSchema(schema) }),
-              })),
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Accepted exact immutable Artifact version.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: toJsonSchema(
-                    OPERATION_DEFINITIONS['artifact.version-file-commit'].outputSchema
-                  ),
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/operations/artifact.import': {
-        post: {
-          operationId: 'artifact.import',
-          tags: ['artifact'],
-          summary: OPERATION_DEFINITIONS['artifact.import'].description,
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              ...REQUEST_ID_HEADER,
-              schema: toJsonSchema(
-                OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.requestId
-              ),
-            },
-            ...Object.entries(OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape)
-              .filter(([key]) => key !== 'requestId')
-              .map(([name, schema]) => ({
-                name,
-                in: 'query',
-                required: true,
-                schema: toJsonSchema(schema),
-              })),
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Accepted exact immutable original.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: toJsonSchema(OPERATION_DEFINITIONS['artifact.import'].outputSchema),
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/operations/workspace.backup-download': {
-        post: {
-          operationId: 'workspace.backup-download',
-          tags: ['storage'],
-          summary: OPERATION_DEFINITIONS['workspace.backup-download'].description,
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: toJsonSchema(
-                  OPERATION_DEFINITIONS['workspace.backup-download'].inputSchema
-                ),
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description:
-                'Sealed verified operational inventory in the existing USTAR/Zstd container.',
-              content: {
-                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/operations/artifact.download': {
-        get: {
-          operationId: 'artifact.download',
-          tags: ['artifact'],
-          summary: OPERATION_DEFINITIONS['artifact.download'].description,
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: Object.entries(
-            OPERATION_DEFINITIONS['artifact.download'].inputSchema.shape
-          ).map(([name, schema]) => ({
-            name,
-            in: 'query',
-            required: true,
-            schema: toJsonSchema(schema),
-          })),
-          responses: {
-            '200': {
-              description: 'Exact immutable original; digest is in X-OpenKit-Content-Digest.',
-              content: {
-                'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
-        get: {
-          operationId: 'workspace.archive-download',
-          tags: ['storage'],
-          summary: OPERATION_DEFINITIONS['workspace.archive-download'].description,
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, WORKSPACE_EXPORT_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Canonical portable Workspace archive stream.',
-              content: {
-                'application/vnd.openkit.workspace-export+tar.zstd': {
-                  schema: { type: 'string', format: 'binary' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspace-archives/import-dry-run': {
-        post: {
-          operationId: 'workspace.archive-import-dry-run',
-          tags: ['storage'],
-          summary: OPERATION_DEFINITIONS['workspace.archive-import-dry-run'].description,
-          security: SESSION_COOKIE_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              'application/vnd.openkit.workspace-export+tar.zstd': {
-                schema: { type: 'string', format: 'binary' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Workspace archive import dry-run report.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceImportDryRunResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspace-archives/import': {
-        post: {
-          operationId: 'workspace.archive-import',
-          tags: ['storage'],
-          summary: OPERATION_DEFINITIONS['workspace.archive-import'].description,
-          security: SESSION_COOKIE_SECURITY,
-          parameters: [
-            {
-              name: 'x-openkit-request-id',
-              in: 'header',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              'application/vnd.openkit.workspace-export+tar.zstd': {
-                schema: { type: 'string', format: 'binary' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Imported workspace and verification summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceImportResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-    } as const,
+    paths: appApiPaths(),
     components: {
       securitySchemes: {
         bearerAuth: {
@@ -804,7 +809,7 @@ export function createAppOpenApiDocument() {
   };
 }
 
-/** Process-wide OpenAPI projection reused by runtime registration and document serving. */
+/** Process-wide OpenAPI projection reused for document serving. */
 export const APP_OPENAPI_DOCUMENT = createAppOpenApiDocument();
 
 /**

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { apiErrorPayload, asApiError } from '../api-errors.js';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
-import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
+import { getAppApiRouteDefinition } from '../openapi.js';
 import {
   evaluateProductAccess,
   type ProductAccessTarget,
@@ -1245,30 +1245,22 @@ function guardedOperationRoutes(): OperationRoute[] {
 }
 
 /**
- * Builds canonical App operation routes from the OpenAPI owner.
+ * Builds canonical App operation routes from the checked source catalog bindings.
  *
  * @returns Operation id to method and Hono path mapping.
- * @throws When the OpenAPI owner contains a duplicate operation id.
+ * @throws When the source catalog contains a missing or duplicate operation id.
  */
 function appOperationRoutes(): Map<string, Pick<OperationRoute, 'method' | 'path'>> {
   const routes = new Map<string, Pick<OperationRoute, 'method' | 'path'>>();
-  const document = createAppOpenApiDocument();
 
-  for (const [openApiPath, pathItem] of Object.entries(document.paths)) {
-    for (const method of APP_OPENAPI_ROUTE_METHODS) {
-      const operation = (pathItem as Readonly<Record<string, unknown>>)[method];
-      if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
-        continue;
-      }
-      const operationId = (operation as Readonly<Record<string, unknown>>).operationId;
-      if (typeof operationId !== 'string' || routes.has(operationId)) {
-        throw new Error(`Invalid or duplicate App operation id at ${method} ${openApiPath}.`);
-      }
-      routes.set(operationId, {
-        method: method.toUpperCase(),
-        path: openApiPath.replace(/\{([A-Za-z0-9_]+)\}/g, ':$1'),
-      });
-    }
+  for (const operationId of Object.keys(
+    OPERATION_DEFINITIONS
+  ) as (keyof typeof OPERATION_DEFINITIONS)[]) {
+    const binding = getAppApiRouteDefinition(operationId);
+    routes.set(operationId, {
+      method: binding.method.toUpperCase(),
+      path: binding.path,
+    });
   }
   return routes;
 }

@@ -19,6 +19,7 @@ import {
 } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import * as appOpenApi from '../openapi.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -281,6 +282,103 @@ afterEach(async () => {
 });
 
 describe('central Workspace operation authorizer', () => {
+  it('installs working direct and catalog guards without building an OpenAPI document', async () => {
+    const document = vi.spyOn(appOpenApi, 'createAppOpenApiDocument').mockImplementation(() => {
+      throw new Error('Generated OpenAPI is unavailable.');
+    });
+    try {
+      // Export needs current administrator authority; ownership supplies no grant.
+      const { record } = createOpenKitAccessTokenRecord(fixture.coreDb, {
+        ownerUserId: fixture.actorState.current.userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      fixture.actorState.current = {
+        kind: 'token',
+        userId: record.ownerUserId,
+        tokenId: record.tokenId,
+        tokenScope: record.scope,
+        tokenWorkspaceIds: record.workspaceIds,
+      };
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use('*', async (c, next) => {
+        c.set('actor', fixture.actorState.current);
+        await next();
+      });
+      registerOperationAccessGuards({
+        app,
+        coreDb: fixture.coreDb,
+        store: fixture.store,
+        quickChatWorkspaceIdForUser,
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+      });
+      app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
+      app.get('/api/app/workspaces/:workspaceId/exports/:exportId/archive', (c) =>
+        c.json(c.get('workspaceAccess') ?? null)
+      );
+      const requests = [
+        {
+          path: '/v1/responses',
+          init: {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ metadata: { openkit: { workspaceId: fixture.workspace.id } } }),
+          },
+          policyOperation: 'llm.gateway.use',
+        },
+        {
+          path: `/api/app/workspaces/${fixture.workspace.id}/exports/unread-export/archive`,
+          init: { method: 'GET' },
+          policyOperation: 'workspace.export',
+        },
+      ];
+      for (const { path, init, policyOperation } of requests) {
+        const allowed = await app.request(path, init);
+        expect(allowed.status, path).toBe(200);
+        await expect(allowed.json()).resolves.toMatchObject({
+          kind: 'workspace',
+          policyOperation,
+          workspaceId: fixture.workspace.id,
+        });
+      }
+      fixture.actorState.current = {
+        kind: 'session',
+        userId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+      };
+      for (const { path, init } of requests) {
+        const denied = await app.request(path, init);
+        expect(denied.status, path).toBe(403);
+        await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      }
+      expect(document).not.toHaveBeenCalled();
+    } finally {
+      document.mockRestore();
+    }
+  });
+
+  it('rejects a duplicate direct and catalog guard route', () => {
+    const directAlias = 'GET /api/app/workspaces/:workspaceId/exports/:exportId/archive';
+    Object.defineProperty(PUBLIC_OPERATION_ACCESS, directAlias, {
+      configurable: true,
+      enumerable: true,
+      value: PUBLIC_OPERATION_ACCESS['workspace.archive-download'],
+    });
+    try {
+      expect(() =>
+        registerOperationAccessGuards({
+          app: new Hono<{ Variables: AuthVariables }>(),
+          coreDb: fixture.coreDb,
+          store: fixture.store,
+          quickChatWorkspaceIdForUser,
+          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+        })
+      ).toThrow(`Duplicate guarded public route: ${directAlias}.`);
+    } finally {
+      Reflect.deleteProperty(PUBLIC_OPERATION_ACCESS, directAlias);
+    }
+  });
+
   it('propagates canonical-user storage failures instead of reporting a Policy denial', () => {
     const failure = new Error('injected canonical-user read failure');
     const read = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementationOnce(() => {
@@ -1845,7 +1943,10 @@ describe('central Workspace operation authorizer', () => {
         ) VALUES (?, 'usr_00000000-0000-7241-80d8-0d46cb74b40d', 'removed', NULL, ?, ?, 2, ?, ?)`
       )
       .run(actorQuickChatId, now, now, now, now);
-    presentServerAdmin('usr_00000000-0000-7241-80d8-0d46cb74b40d', 'token_admin_removed_qc');
+    presentServerAdmin(
+      'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+      testEntityId('tok', 'token_admin_removed_qc')
+    );
 
     const beforeThreads = fixture.store.listThreads(actorQuickChatId);
     const beforeReceipts = fixture.store.listCommandRequests();
@@ -1899,7 +2000,10 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('lets unexpected actor-home provisioning faults escape unchanged before implementation effects', async () => {
-    presentServerAdmin('usr_00000000-0000-7241-80d8-0d46cb74b40d', 'token_admin_home_fault');
+    presentServerAdmin(
+      'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+      testEntityId('tok', 'token_admin_home_fault')
+    );
     const failure = new Error('Workspace owner membership has been removed.');
     failure.name = 'WorkspaceOwnerMembershipRemovedError';
     const provision = vi.spyOn(fixture.store, 'ensureQuickChatWorkspace').mockImplementation(() => {
@@ -2179,7 +2283,7 @@ describe('canonical administration Workspace admission', () => {
             : 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
         scope: authority === 'administrator' ? 'server-admin' : 'workspace',
         workspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
-        tokenId: 'token_administration_fixture',
+        tokenId: testEntityId('tok', 'token_administration_fixture'),
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       fixture.actorState.current = {
@@ -2188,7 +2292,7 @@ describe('canonical administration Workspace admission', () => {
           authority === 'administrator'
             ? 'usr_00000000-0000-7241-80d8-0d46cb74b40d'
             : 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
-        tokenId: 'token_administration_fixture',
+        tokenId: testEntityId('tok', 'token_administration_fixture'),
         tokenScope: authority === 'administrator' ? 'server-admin' : 'workspace',
         tokenWorkspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
       };

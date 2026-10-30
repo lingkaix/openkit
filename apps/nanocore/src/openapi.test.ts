@@ -47,7 +47,6 @@ const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
 const PROJECTED_APP_API_ROUTE_PATTERN = /^\/api\/(?:app|setup|admin)(?:\/|$)/;
 const NON_APP_API_ROUTE_PATTERNS = [
   /^\/v1(?:\/|$)/,
-  /^\/internal(?:\/|$)/,
   /^\/api\/worker-control(?:\/|$)/,
   /^\/api\/worker-inference(?:\/|$)/,
   /^\/api\/worker-capabilities(?:\/|$)/,
@@ -152,6 +151,18 @@ function normalizeHonoRoutePath(path: string): string {
  */
 function isProjectedAppApiRoute(path: string): boolean {
   return PROJECTED_APP_API_ROUTE_PATTERN.test(path);
+}
+
+/** Lists explicit mounted routes outside the projection and its owned exclusions. */
+function unclassifiedAppApiRoutes(routes: readonly { method: string; path: string }[]): string[] {
+  return routes
+    .filter(
+      ({ method, path }) =>
+        OPENAPI_ROUTE_METHOD_SET.has(method) &&
+        !isProjectedAppApiRoute(path) &&
+        !NON_APP_API_ROUTE_PATTERNS.some((pattern) => pattern.test(path))
+    )
+    .map(({ method, path }) => `${method} ${path}`);
 }
 
 describe('app api openapi projection', () => {
@@ -1666,6 +1677,13 @@ describe('app api openapi projection', () => {
     expect(serialized).not.toContain('hostPath');
   });
 
+  it('reports unowned internal routes as missing coverage', () => {
+    const app = new Hono();
+    app.get('/internal/unregistered', (c) => c.json({ ok: true }));
+
+    expect(unclassifiedAppApiRoutes(app.routes)).toEqual(['GET /internal/unregistered']);
+  });
+
   it('keeps live public app api routes and openapi operations aligned', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
     onTestFinished(async () => {
@@ -1683,13 +1701,7 @@ describe('app api openapi projection', () => {
       )
       .map(({ method, path }) => `${method} ${path}`);
     const explicitRoutes = app.routes.filter(({ method }) => OPENAPI_ROUTE_METHOD_SET.has(method));
-    const unclassifiedRoutes = explicitRoutes
-      .filter(
-        ({ path }) =>
-          !isProjectedAppApiRoute(path) &&
-          !NON_APP_API_ROUTE_PATTERNS.some((pattern) => pattern.test(path))
-      )
-      .map(({ method, path }) => `${method} ${path}`);
+    const unclassifiedRoutes = unclassifiedAppApiRoutes(explicitRoutes);
     const liveRoutes = explicitRoutes.filter(({ path }) => isProjectedAppApiRoute(path));
     const document = createAppOpenApiDocument();
     const unsupportedRoutes = liveRoutes
