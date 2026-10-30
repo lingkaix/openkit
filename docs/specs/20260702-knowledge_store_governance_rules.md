@@ -11,7 +11,7 @@ Implementation note: C01/C02 reuse canonical Git Notebook pages for Claims and r
 
 [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) replaces the external Source registry with Notebook-owned OKF SourceSummary pointers when activated. Existing Source identity, capture/disclosure/sensitivity and review requirements remain binding; summaries are interpretation, not independent corroboration. Raw bytes stay outside Git.
 
-For this format, a changed original updates the same Source pointer in one commit, superseding the new-ID-on-recapture rule below. Historical digest-qualified citations must match their exact original bytes or report unavailable; deletion retains the unavailable pointer. The older registry/material rules remain current implementation projections until cutover.
+For this format, a changed original updates the same Source pointer in one commit, superseding the new-ID-on-recapture rule below. Historical digest-qualified citations must match their exact original bytes or report unavailable; deletion retains the unavailable pointer. The cutover has happened (`apps/nanocore/src/knowledge/source-publication.ts`), so the older registry and material rules below describe no current writer.
 
 ## Summary
 
@@ -276,7 +276,7 @@ The Notebook owner saves fixed-base Proposal candidates in the single Git conten
 
 Context preparation references the single governed retrieval trace and exposes no standalone worker-context trace or materialization. Only S39 materializes and proves worker delivery.
 
-No citation-based confirmation, TTL promotion or new scheduled trigger is implemented. Explicitly delegated notebook editing is accepted design but Not Started.
+No citation-based confirmation, TTL promotion or new scheduled trigger is implemented. Explicitly delegated notebook editing has a partial implementation (`apps/nanocore/src/knowledge/notebook-agent-editing.ts` and delegated publication in `apps/nanocore/src/knowledge/notebook-publication.ts`), qualified under [Knowledge Notebook Editing](20260909-knowledge_notebook_editing.md).
 
 Concrete implementation detail remains in the Knowledge Store implementation, Knowledge Manager service, and Context Package specifications rather than being duplicated here.
 

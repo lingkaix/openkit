@@ -120,7 +120,7 @@ Use remote MCP and bundled CLI as the agent's composition surface. Reuse existin
 
 ## Personal Interaction Learning Boundary
 
-This specification owns the explicitly reviewed completed-Worker-work composition. Scoped learning owns opted-in conversation-source extraction, and the notebook editing owner permits ordinary publication under explicit maintenance delegation. Neither changes the strict Worker/Item/S39 evidence meaning or adds a passive mining service. The Git publisher and scoped learning extensions remain Not Started; current create-only implementation evidence below does not constrain their accepted target.
+This specification owns the explicitly reviewed completed-Worker-work composition. Scoped learning owns opted-in conversation-source extraction, and the notebook editing owner permits ordinary publication under explicit maintenance delegation. Neither changes the strict Worker/Item/S39 evidence meaning or adds a passive mining service. The Git publisher (`apps/nanocore/src/knowledge/notebook-publication.ts`) and the scoped learning extensions (Workspace, User, and Server maintenance) are partly implemented under their owners; current create-only implementation evidence below does not constrain their accepted target.
 
 ## Current Implementation Projection
 

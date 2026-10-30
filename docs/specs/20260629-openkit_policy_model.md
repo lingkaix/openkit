@@ -397,7 +397,7 @@ The Runtime Epoch and stock RelayStream plus nested standard HTTP/2 transport ar
 
 - Add product-shaped policy adapters over the low-level evaluator.
 - Add durable policy snapshot identity and policy state loading.
-- Add NanoCore enforcement-point integration through `PermissionDecision` records.
+- Complete NanoCore enforcement-point integration through `PermissionDecision` records; the current writers are listed in the Current Implementation Projection of [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md).
 - Add product-safe trace redaction helpers.
 - Add indexes for higher-volume policy evaluation paths.
 - Implement the accepted pre-v0.1.0 Policy review/update path through the existing enforcement owner. Keep administration outside the pure evaluator.

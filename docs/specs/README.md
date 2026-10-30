@@ -2,10 +2,7 @@
 
 This directory contains design specifications for non-trivial OpenKit changes.
 
-Specs are the contract layer between stable core documents and implementation.
-They translate core concepts, boundaries, and principles into concrete,
-verifiable design contracts for modules, protocols, data models, lifecycle
-rules, migration paths, and implementation work.
+Specs are the contract layer between stable core documents and implementation. They translate core concepts, boundaries, and principles into concrete, verifiable design contracts for modules, protocols, data models, lifecycle rules, migration paths, and implementation work.
 
 Use [`docs/change-execution.md`](../change-execution.md) as the canonical policy for how specs relate to stable core docs and change records.
 
@@ -78,9 +75,7 @@ Do not use specs as task logs, release progress logs, or one-off implementation 
 - `docs/changes/` owns curated lifecycle records for material PRs, standalone important changes, and release summaries.
 - Uncommitted working space such as `temp/` holds noisy long-run release PRDs, task lists, and progress logs until closeout distills durable context into a change record.
 
-Core documents define canonical concepts once. Specs reference those concepts and
-describe how they are realized for a concrete module, protocol, data shape, or
-workflow. Change records explain what changed in a specific lifecycle event.
+Core documents define canonical concepts once. Specs reference those concepts and describe how they are realized for a concrete module, protocol, data shape, or workflow. Change records explain what changed in a specific lifecycle event.
 
 ## Active Spec Index
 
@@ -108,6 +103,10 @@ Kernel, protocol, and product surfaces:
 - [`20260704-app_api_openapi_projection.md`](./20260704-app_api_openapi_projection.md)
 - [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md)
 - [`20260710-web_ui_rebuild_stack.md`](./20260710-web_ui_rebuild_stack.md)
+- [`20260831-unified_conversation_composer.md`](./20260831-unified_conversation_composer.md)
+- [`20261012-product_integrity_check.md`](./20261012-product_integrity_check.md)
+- [`20260910-app_update_delivery.md`](./20260910-app_update_delivery.md)
+- [`20260910-agent_operator_skill.md`](./20260910-agent_operator_skill.md)
 
 Workflow, human attention, and verification:
 
@@ -129,6 +128,10 @@ Workflow, human attention, and verification:
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
 - [`20260719-verification_calibration.md`](./20260719-verification_calibration.md)
 - [`20260829-release_management.md`](./20260829-release_management.md)
+- [`20260909-persistent_deployment_acceptance.md`](./20260909-persistent_deployment_acceptance.md)
+- [`20260729-documentation_field_contract.md`](./20260729-documentation_field_contract.md)
+- [`20260811-execution_residue_measurement.md`](./20260811-execution_residue_measurement.md)
+- [`20261017-evaluation_foundation.md`](./20261017-evaluation_foundation.md)
 
 Worker runtime, supply, and synchronization:
 
@@ -158,6 +161,11 @@ Worker runtime, supply, and synchronization:
 - [`20260709-worker_sandbox_freedom_policy.md`](./20260709-worker_sandbox_freedom_policy.md)
 - [`20260711-scheduler_recurring_event_triggers.md`](./20260711-scheduler_recurring_event_triggers.md)
 - [`20260909-deployment_host_requirements.md`](./20260909-deployment_host_requirements.md)
+- [`20260907-agent_plugin_packaging_and_worker_supply.md`](./20260907-agent_plugin_packaging_and_worker_supply.md)
+- [`20260907-mcp_catalog_management.md`](./20260907-mcp_catalog_management.md)
+- [`20260910-persistent_worker_volumes.md`](./20260910-persistent_worker_volumes.md)
+- [`20260922-delegated_worker_policy_maintenance.md`](./20260922-delegated_worker_policy_maintenance.md)
+- [`20261020-compute_neutrality_target.md`](./20261020-compute_neutrality_target.md)
 
 Storage, knowledge, policy, vault, audit, and metering:
 
@@ -165,8 +173,14 @@ Storage, knowledge, policy, vault, audit, and metering:
 - [`20260921-work_data_retention_format.md`](./20260921-work_data_retention_format.md)
 - [`20260715-multi_user_workspace_system.md`](./20260715-multi_user_workspace_system.md)
 - [`20260703-schema_evolution_record_envelope.md`](./20260703-schema_evolution_record_envelope.md)
+- [`20261017-retained_format_register.md`](./20261017-retained_format_register.md)
+- [`20261019-durable_execution_and_control_store.md`](./20261019-durable_execution_and_control_store.md)
+- [`20261018-nanocore_interception_and_information_consolidation.md`](./20261018-nanocore_interception_and_information_consolidation.md)
 - [`20260702-knowledge_store_governance_rules.md`](./20260702-knowledge_store_governance_rules.md)
 - [`20260703-knowledge_store_implementation.md`](./20260703-knowledge_store_implementation.md)
+- [`20260909-knowledge_notebook_editing.md`](./20260909-knowledge_notebook_editing.md)
+- [`20261014-retrieval_kernel.md`](./20261014-retrieval_kernel.md)
+- [`20261018-file_storage_and_knowledge_packages.md`](./20261018-file_storage_and_knowledge_packages.md)
 - [`20260629-openkit_policy_model.md`](./20260629-openkit_policy_model.md)
 - [`20260703-policy_enforcement_mapping.md`](./20260703-policy_enforcement_mapping.md)
 - [`20260703-vault_secret_injection.md`](./20260703-vault_secret_injection.md)
@@ -178,7 +192,7 @@ Storage, knowledge, policy, vault, audit, and metering:
 - [`20260710-self_improvement_evaluation_loop.md`](./20260710-self_improvement_evaluation_loop.md)
 - [`20260711-evaluation_harness_design.md`](./20260711-evaluation_harness_design.md)
 
-Deprecated transition specifications remain at the root only while their documented legacy behavior is still implemented. Load their `Current Guidance` before reading historical contract text, do not extend them, and move them to the matching terminal directory only after their migration exit condition is proved.
+Deprecated transition specifications remain at the root only while their documented legacy behavior is still implemented. Load their `current-guidance` before reading historical contract text, do not extend them, and move them to the matching terminal directory only after their migration exit condition is proved.
 
 - [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md) — legacy per-session Cell implementation pending Runtime Epoch cutover and deletion
 
@@ -198,8 +212,7 @@ Historical or supporting material lives under the status-matching `superseded/`,
 
 Every spec MUST state exactly one document-authority status near the top.
 
-`Status` describes whether the document is current guidance. It does not
-describe whether the implementation is complete.
+`Status` describes whether the document is current guidance. It does not describe whether the implementation is complete.
 
 - `Draft`: proposed or still being shaped.
 - `Accepted`: current guidance for implementation and review.
@@ -208,24 +221,17 @@ describe whether the implementation is complete.
 - `Retired`: its contract or product capability ended without a successor contract, including a module or product surface that was removed or deliberately reset.
 - `Rejected`: the proposal never became current guidance because review found it unsound, infeasible, unnecessary, or contrary to the chosen direction.
 
-`Archived` is not a status. It describes retaining a non-active file for
-historical evidence under `superseded/`, `retired/`, or `rejected/`.
+`Archived` is not a status. It describes retaining a non-active file for historical evidence under `superseded/`, `retired/`, or `rejected/`.
 
-The existence of a later document about the same product area does not by
-itself make an older spec `Superseded`. Use `Superseded` only when the later
-authority actually continues or absorbs the earlier contract or substantive proposal. Use `Retired`
-when the old contract was ended and a later design starts again from a new
-contract.
+The existence of a later document about the same product area does not by itself make an older spec `Superseded`. Use `Superseded` only when the later authority actually continues or absorbs the earlier contract or substantive proposal. Use `Retired` when the old contract was ended and a later design starts again from a new contract.
 
-Do not use `Completed` as a `Status`. Completion is implementation alignment,
-not document authority.
+Do not use `Completed` as a `Status`. Completion is implementation alignment, not document authority.
 
 ## Implementation Values
 
 Every spec MUST state exactly one implementation-alignment value near the top.
 
-`Implementation` describes how the current system relates to the spec contract.
-It does not decide whether the spec is current guidance.
+`Implementation` describes how the current system relates to the spec contract. It does not decide whether the spec is current guidance.
 
 - `Not Started`: the described contract has no meaningful implementation yet.
 - `In Progress`: implementation work is actively underway.
@@ -234,10 +240,7 @@ It does not decide whether the spec is current guidance.
 - `Diverged`: the current system no longer matches the spec and the spec or implementation needs review.
 - `N/A`: implementation alignment does not apply to this spec.
 
-The values and capitalization above are exact. Do not introduce descriptive
-variants such as `Not started` or `Standard-aligned subset`; explain narrower
-alignment under `Current Implementation Projection` and use the closest exact
-value.
+The values and capitalization above are exact. Do not introduce descriptive variants such as `Not started` or `Standard-aligned subset`; explain narrower alignment under `Current Implementation Projection` and use the closest exact value.
 
 Common combinations:
 
@@ -249,9 +252,7 @@ Common combinations:
 - `Status: Retired` with `Implementation: N/A` when the contract or capability ended without a successor.
 - `Status: Rejected` with `Implementation: N/A` when a proposal was declined before acceptance.
 
-When a diverged spec is reconciled and again represents the current contract,
-keep or restore `Status: Accepted` and set `Implementation` to the real
-alignment value.
+When a diverged spec is reconciled and again represents the current contract, keep or restore `Status: Accepted` and set `Implementation` to the real alignment value.
 
 ## Lifecycle Transitions
 
@@ -271,18 +272,15 @@ Deprecated -> Accepted
 
 ## Lifecycle Evidence
 
-Every `Deprecated`, `Superseded`, `Retired`, or `Rejected` spec MUST include the
-following metadata near the top:
+Every `Deprecated`, `Superseded`, `Retired`, or `Rejected` spec MUST include the following metadata in its frontmatter, under the Field Contract in [`docs/documentation-model.md`](../documentation-model.md):
 
-```markdown
-Status Changed: YYYY-MM-DD
-Current Guidance: <repository-relative link or None>
-Decision Evidence: <successor Core or specification path, audit record, PR, issue, or commit link>
+```yaml
+status-changed: YYYY-MM-DD
+current-guidance: <repository-relative link or None>
+decision-evidence: <successor Core or specification path, audit record, PR, issue, or commit link>
 ```
 
-It MUST also include a substantive `Lifecycle Reason` section. Every archived
-terminal spec MUST additionally include a substantive `Retention Reason`
-section.
+It MUST also include a substantive `Lifecycle Reason` section. Every archived terminal spec MUST additionally include a substantive `Retention Reason` section.
 
 - `Lifecycle Reason` explains what decision or condition ended or restricted the old document's authority, why the old contract is no longer current, and which parts of the old direction are invalid or discontinued.
 - `Retention Reason` explains which historical constraints, rejected alternatives, migration details, edge cases, or audit evidence remain useful enough to keep the file.
@@ -291,28 +289,23 @@ section.
 
 Additional rules depend on the terminal state:
 
-- For a terminal transition performed after the auditor-owned archive rule was adopted, `Decision Evidence` MUST name the repository terminal-archive audit, not a change record or commit link alone. Specs already archived before adoption require no audit backfill; the bytes committed with the rule adoption become their freeze baseline.
+- For a terminal transition performed after the auditor-owned archive rule was adopted, `decision-evidence` MUST name the repository terminal-archive audit, not a change record or commit link alone. Specs already archived before adoption require no audit backfill; the bytes committed with the rule adoption become their freeze baseline.
 - `Deprecated` MUST link to current guidance and include a `Rollout / Migration Plan` with an exit condition.
-- `Superseded` MUST identify the replacement authority in `Current Guidance`; the replacement must actually absorb or continue the old contract or substantive proposal.
-- `Retired` MUST use `Current Guidance: None` for the ended contract. Related new work may be linked as context, but it must not be presented as a replacement unless the contract continues.
-- `Rejected` MUST identify why the proposal was not accepted. `Current Guidance` may be `None` or may link to the independently chosen direction.
+- `Superseded` MUST identify the replacement authority in `current-guidance`; the replacement must actually absorb or continue the old contract or substantive proposal.
+- `Retired` MUST use `current-guidance: None` for the ended contract. Related new work may be linked as context, but it must not be presented as a replacement unless the contract continues.
+- `Rejected` MUST identify why the proposal was not accepted. `current-guidance` may be `None` or may link to the independently chosen direction.
 
 ## Active And Archived Specs
 
 Keep current specs at the root of `docs/specs/`.
 
-Use `docs/specs/superseded/` only for `Status: Superseded` documents whose
-contracts or substantive proposals were absorbed or continued by named current guidance.
+Use `docs/specs/superseded/` only for `Status: Superseded` documents whose contracts or substantive proposals were absorbed or continued by named current guidance.
 
-Use `docs/specs/retired/` only for `Status: Retired` documents whose contracts,
-modules, capabilities, or product directions ended without successor contracts.
+Use `docs/specs/retired/` only for `Status: Retired` documents whose contracts, modules, capabilities, or product directions ended without successor contracts.
 
-Use `docs/specs/rejected/` only when at least one real `Status: Rejected` spec
-needs historical retention; do not create the directory speculatively.
+Use `docs/specs/rejected/` only when at least one real `Status: Rejected` spec needs historical retention; do not create the directory speculatively.
 
-Root-level current specs MUST use `Draft`, `Accepted`, or `Deprecated`.
-Archived specs MUST use the status matching their directory. Directory
-placement never substitutes for explicit lifecycle metadata and evidence.
+Root-level current specs MUST use `Draft`, `Accepted`, or `Deprecated`. Archived specs MUST use the status matching their directory. Directory placement never substitutes for explicit lifecycle metadata and evidence.
 
 Only an auditor may perform the final terminal metadata update and move into `docs/specs/superseded/`, `docs/specs/retired/`, or, once a real rejected proposal requires it, `docs/specs/rejected/`. The move and its non-authorizing audit record land together, and that commit freezes the archived bytes. A terminal spec is never edited, renamed, moved again, or deleted; later corrections and observations use a new audit record, and renewed work uses current guidance or a new active spec.
 
@@ -344,9 +337,7 @@ Example:
 
 ## Suggested Structure
 
-Use the existing decision-document shape, with explicit boundary and contract
-sections added. New important specs should use this structure unless a section is
-clearly irrelevant.
+Use the existing decision-document shape, with explicit boundary and contract sections added. New important specs should use this structure unless a section is clearly irrelevant.
 
 ```markdown
 # Title
@@ -403,22 +394,16 @@ Implementation: Not Started
 
 ## Open Questions And Deferred Work
 
-`Open Questions` are unresolved design decision entries for the current spec.
-They should help close the design, not collect broad prompts, brainstorming
-notes, or permanent philosophical questions.
+`Open Questions` are unresolved design decision entries for the current spec. They should help close the design, not collect broad prompts, brainstorming notes, or permanent philosophical questions.
 
 Use these categories:
 
 - `[Blocking]`: must be answered before the spec can move from `Draft` to `Accepted`.
 - `[Non-blocking]`: does not block the current contract, but may affect a later extension or implementation choice.
 
-Accepted specs should not contain blocking open questions. If a blocking
-question remains, keep the spec in `Draft` or narrow the accepted contract so the
-question becomes explicitly non-blocking.
+Accepted specs should not contain blocking open questions. If a blocking question remains, keep the spec in `Draft` or narrow the accepted contract so the question becomes explicitly non-blocking.
 
-Use `Deferred / Future Work` for important questions or work that should not be
-answered by the current spec or its related implementation. Deferred items should
-not change the meaning of the accepted contract.
+Use `Deferred / Future Work` for important questions or work that should not be answered by the current spec or its related implementation. Deferred items should not change the meaning of the accepted contract.
 
 Do not use `Open Questions` for:
 

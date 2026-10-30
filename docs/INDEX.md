@@ -81,7 +81,7 @@ and are not listed here.
 - `docs/specs/20260703-worker_agent_capability.md` — Accepted, Partial — The worker-facing agent capability plane and its gateway projection.
 - `docs/specs/20260703-worker_context_package.md` — Accepted, Partial — Worker-facing context package inputs, manifest shape, materialized file layout, trace records, and replay requirements.
 - `docs/specs/20260703-worker_control_protocol.md` — Accepted, Partial — The worker-visible end-to-end control-plane protocol between Sandbox Integration and NanoCore.
-- `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — This spec owns the backend-portable workspace synchronization contract for
+- `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — This spec owns the backend-portable workspace synchronization contract for worker-agent work:
 - `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — The current durable AgentSession identity, one-current-per-Thread selection, historical replacement lineage, and the relationship of one AgentSession to one Th…
 - `docs/specs/20260704-app_api_openapi_projection.md` — Accepted, Implemented — The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer, including the selected Worker MCP producer.
@@ -130,7 +130,7 @@ and are not listed here.
 - `docs/specs/20260907-mcp_catalog_management.md` — Accepted, Partial — Independent MCP catalog configuration versions, source provenance, current selection, Workspace bindings, and create/update/remove operations.
 - `docs/specs/20260908-generative_kernel_data_operations.md` — Accepted, Partial — This specification owns each Light App's stable schema and data implementation: file-authored definitions, one app SQLite database, semantic discovery, general…
 - `docs/specs/20260908-generative_ui_interaction.md` — Accepted, Partial — This specification owns agent-native declarative presentation and interaction across temporary and reusable surfaces: admission, source binding, action dispatc…
-- `docs/specs/20260909-deployment_host_requirements.md` — Accepted, Not Started — The supported host profiles for running NanoCore from source, running the NanoCore application image, running the packaged NanoHost, and co-locating the applic…
+- `docs/specs/20260909-deployment_host_requirements.md` — Accepted, Partial — The supported host profiles for running NanoCore from source, running the NanoCore application image, running the packaged NanoHost, and co-locating the applic…
 - `docs/specs/20260909-internal_agent_resource_integration.md` — Accepted, Partial — This specification owns trusted assembly of selected Skills, internal-capability MCP bindings and native Kernel/UI Tools for NanoCore's internal Assistant: sel…
 - `docs/specs/20260909-knowledge_notebook_editing.md` — Accepted, Partial — The single fixed-base editing and publication contract for an owner-scoped OKF notebook: retained Git content revisions, bounded Knowledge Manager file editing…
 - `docs/specs/20260909-persistent_deployment_acceptance.md` — Accepted, Implemented — This specification owns ordinary functional acceptance on a persistent internal OpenKit deployment: the composition of in-product work and external remote-MCP…
@@ -240,6 +240,22 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261003-git_write_workflow_terminal_archive.md` — Git Write Workflow Terminal Archive
 - `docs/audits/20261003-goal_mode_coordination_terminal_archive.md` — Goal Mode Coordination Terminal Archive
 - `docs/audits/20261005-openkit_agent_skill_interface_terminal_archive.md` — OpenKit Agent Skill Interface Terminal Archive
+- `docs/audits/20261023-independent_doc_audit.md` — Independent Documentation Audit Before v0.1.0
+- `docs/audits/20261024-independent_doc_audit_agent_supply.md` — Independent Documentation Audit: Agent-Supply Group
+- `docs/audits/20261024-independent_doc_audit_architecture.md` — Independent Documentation Audit: Architecture Group
+- `docs/audits/20261024-independent_doc_audit_communication.md` — Independent Documentation Audit: Communication Group
+- `docs/audits/20261024-independent_doc_audit_contract_evolution.md` — Independent Documentation Audit: Contract-Evolution Group
+- `docs/audits/20261024-independent_doc_audit_foundation.md` — Independent Documentation Audit: Foundation Group
+- `docs/audits/20261024-independent_doc_audit_identity.md` — Independent Documentation Audit: Identity Group
+- `docs/audits/20261024-independent_doc_audit_mediation.md` — Independent Documentation Audit: Mediation Group
+- `docs/audits/20261024-independent_doc_audit_policy.md` — Independent Documentation Audit: Policy Group
+- `docs/audits/20261024-independent_doc_audit_protocol.md` — Independent Documentation Audit: Protocol Group
+- `docs/audits/20261024-independent_doc_audit_sandbox.md` — Independent Documentation Audit: Sandbox Group
+- `docs/audits/20261024-independent_doc_audit_vault.md` — Independent Documentation Audit: Vault Group
+- `docs/audits/20261025-independent_doc_audit_agent_session.md` — Independent Documentation Audit: Agent-Session Group
+- `docs/audits/20261025-independent_doc_audit_generative_apps.md` — Independent Documentation Audit: Generative-Apps Group
+- `docs/audits/20261025-independent_doc_audit_knowledge.md` — Independent Documentation Audit: Knowledge Group
+- `docs/audits/20261025-independent_doc_audit_process.md` — Independent Documentation Audit: Process Group
 
 ## Platform References
 
