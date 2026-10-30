@@ -1531,9 +1531,7 @@ export function openShellNetworkEndpointsFromPackagePolicy(
     }
 
     return WorkerNetworkEndpointSchema.parse({
-      ...(rule.access === 'read-only' || rule.access === 'read-write'
-        ? { access: rule.access }
-        : {}),
+      ...('access' in rule ? { access: rule.access } : {}),
       ...('allowEncodedSlash' in rule ? { allowEncodedSlash: rule.allowEncodedSlash } : {}),
       binaries: rule.binaries,
       host: rule.host,

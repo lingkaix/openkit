@@ -529,6 +529,14 @@ describe('exact AEP network projection', () => {
     expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
   });
 
+  it('refuses unsupported declared access instead of applying a native default', async () => {
+    const pkg = await createNanoHostPackage();
+    pkg.policy.network!.rules = [{ ...grant, access: 'unsupported' }];
+
+    // Independent security review: present authority must reach the existing closed validator.
+    expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+  });
+
   it('refuses an allow rule with no binary constraints instead of omitting it', async () => {
     const pkg = await createNanoHostPackage();
     pkg.policy.network!.rules = [{ ...grant, binaries: [] }];
