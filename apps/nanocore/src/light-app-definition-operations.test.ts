@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { FsStore } from './lib/store.js';
+import { lightAppDbPath } from './storage/app-db.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -174,5 +175,125 @@ it('imports, pins, activates and restores a reusable definition through public o
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+/** Creates an isolated real public-operation boundary for catalog refusal tests. */
+async function catalogReadFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-definition-read-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const ownerUserId = ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = await store.createWorkspace('Catalog read boundaries');
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
+  const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
+  return {
+    dataRoot,
+    workspaceId: workspace.id,
+    call: (operation: string, input: object) =>
+      app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...('requestId' in input && typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify({ workspaceId: workspace.id, ...input }),
+      }),
+    async close() {
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+it('returns not_found for a Light App that was never created without adding inventory', async () => {
+  const fixture = await catalogReadFixture();
+  try {
+    const appId = randomUUID();
+    const databasePath = lightAppDbPath(fixture.dataRoot, fixture.workspaceId, appId);
+    expect(existsSync(databasePath)).toBe(false);
+    const response = await fixture.call('kernel.apps.get', { appId });
+    expect.soft(response.status, await response.clone().text()).toBe(404);
+    expect.soft(await response.json()).toMatchObject({ code: 'not_found' });
+    expect(existsSync(databasePath)).toBe(false);
+    const listed = await fixture.call('kernel.apps.list', {});
+    expect(listed.status, await listed.clone().text()).toBe(200);
+    expect(await listed.json()).toMatchObject({ totalItems: 0, items: [] });
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('reports unknown retained Light App facts as unavailable while other apps remain usable', async () => {
+  const fixture = await catalogReadFixture();
+  try {
+    const created = [];
+    for (const title of ['Unreadable app', 'Healthy app']) {
+      const response = await fixture.call('kernel.apps.create', {
+        requestId: randomUUID(),
+        format: 'openkit.light-app',
+        schemaVersion: 1,
+        title,
+        purpose: 'Exercise independent catalog read availability.',
+        references: [],
+        collections: [
+          {
+            name: 'notes',
+            type: 'base',
+            description: 'Local notes.',
+            fields: [{ name: 'note', type: 'text', required: false, description: 'A note.' }],
+            indexes: [],
+          },
+        ],
+      });
+      expect(response.status, await response.clone().text()).toBe(201);
+      created.push(await response.json());
+    }
+    const [unreadable, healthy] = created;
+    const original = await fixture.call('kernel.apps.get', { appId: unreadable.appId });
+    expect(original.status, await original.clone().text()).toBe(200);
+    expect(await original.json()).toEqual(unreadable);
+    // Fault injection follows valid public creation; only this fixture's app authority is damaged.
+    writeFileSync(
+      lightAppDbPath(fixture.dataRoot, fixture.workspaceId, unreadable.appId),
+      'Deliberately unreadable SQLite authority.'
+    );
+    const response = await fixture.call('kernel.apps.get', { appId: unreadable.appId });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect.soft(await response.json()).toMatchObject({
+      appId: unreadable.appId,
+      lifecycle: 'unavailable',
+      schema: null,
+      appRevision: null,
+      schemaRevision: null,
+      schemaDigest: null,
+    });
+    const unaffected = await fixture.call('kernel.apps.get', { appId: healthy.appId });
+    expect(unaffected.status, await unaffected.clone().text()).toBe(200);
+    expect(await unaffected.json()).toEqual(healthy);
+    const listed = await fixture.call('kernel.apps.list', {});
+    expect(listed.status, await listed.clone().text()).toBe(200);
+    const inventory = await listed.json();
+    expect(inventory.totalItems).toBe(2);
+    expect(inventory.items).toHaveLength(2);
+    expect
+      .soft(inventory.items.find((item: { appId: string }) => item.appId === unreadable.appId))
+      .toMatchObject({
+        appId: unreadable.appId,
+        lifecycle: 'unavailable',
+        appRevision: null,
+        schemaRevision: null,
+        schemaDigest: null,
+      });
+    const { schema: _schema, capabilities: _capabilities, ...healthyMetadata } = healthy;
+    expect(inventory.items.find((item: { appId: string }) => item.appId === healthy.appId)).toEqual(
+      healthyMetadata
+    );
+  } finally {
+    await fixture.close();
   }
 });
