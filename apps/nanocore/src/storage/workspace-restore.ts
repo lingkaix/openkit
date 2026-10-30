@@ -2,30 +2,15 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import {
-  allocateEntityId,
-  PROTOCOL_VERSION,
-  SEALED_TURN_TERMINALS,
-  writeRetainedV1,
-} from '@openkit/protocol';
 import { AutomationStore } from '../lib/automation-store.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
-import {
-  applyPendingCloseout,
-  listThreadPendingRequests,
-  renderPendingOutcomeItems,
-} from '../runtime/pending-requests.js';
-import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import type { ControlProductEntry } from './control-store-products.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { inventoryRegularFiles } from './data-root-backup.js';
-import { bindWorkspaceSqlite, type CoreDb } from './db.js';
+import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
-import { prepareRetainedProductJson } from './immutable-content.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
 import {
   readWorkspaceBackupManifest,
@@ -39,7 +24,6 @@ import {
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
-  loadWorkspaceFileRecords,
   nativeProductScope,
   syncCanonicalDirectory,
   syncCanonicalTree,
@@ -373,8 +357,6 @@ async function bindTargetCandidate(
   const workspaceId = owned.workspace_id;
   const manifest = owned.proof.manifest;
   const now = new Date().toISOString();
-  const sqlite = openRecoveryDatabase(join(root, 'db/workspace.sqlite'));
-  const db = bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
   const client = getControlStoreWorkerClient();
   const {
     owner,
@@ -413,10 +395,6 @@ async function bindTargetCandidate(
         };
       }
     }
-    const records = loadWorkspaceFileRecords(dataRoot).find(
-      (record) => record.workspace.id === workspaceId
-    );
-    if (!records) refuseRecovery('invalid-database');
     await client.write(database, [
       {
         mode: 'run',
@@ -452,244 +430,11 @@ async function bindTargetCandidate(
       // The root-locked coordinator retires transfer inputs only after durable native preparation.
       for (const path of Object.values(RECURRING_PORTABLE_PATHS)) unlinkSync(join(root, path));
     }
-    await interruptImportedHistory(db, root, records);
+    while (!(await client.recoveryHistory(database, workspaceId))) {
+      // Each acknowledged request advances one existing history unit; this is not a retry.
+    }
     owned.proof.result = { ...owned.proof.result, restrictedRecovery: restricted };
   } finally {
-    try {
-      if (opened) await client.close(database);
-    } finally {
-      sqlite.close();
-    }
-  }
-}
-
-/** Prepares interrupted history on the caller-admitted private candidate; shared Store preparation remains pending. */
-async function interruptImportedHistory(
-  db: ReturnType<typeof bindWorkspaceSqlite>,
-  root: string,
-  records: NonNullable<ReturnType<typeof loadWorkspaceFileRecords>[number]>
-): Promise<void> {
-  const client = getControlStoreWorkerClient();
-  const {
-    owner,
-    path,
-    contentMount: mount,
-  } = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId }, root);
-  const database = `workspace:${path}`;
-  // Captured execution is historical: publish interruption, never infer physical cleanup or replay.
-  for (const before of records.turns.filter((turn) => !SEALED_TURN_TERMINALS[turn.status])) {
-    const now = new Date().toISOString();
-    const turn = {
-      ...before,
-      status: 'interrupted' as const,
-      completedAt: now,
-      error: {
-        code: 'workspace_recovered',
-        message: 'Captured work was interrupted by offline recovery.',
-      },
-    };
-    const sequence = Number(
-      db.sqlite
-        .prepare(
-          "SELECT COALESCE(MAX(sequence),0)+1 FROM control_product_entries WHERE kind='event' AND turn_id=?"
-        )
-        .pluck()
-        .get(before.id)
-    );
-    const governed = db.sqlite
-      .prepare('SELECT 1 FROM control_executions WHERE work_id=?')
-      .get(before.id)
-      ? await workerTurnTerminalPublication(db, before.id, 'interrupted')
-      : undefined;
-    await client.terminal(database, {
-      owner,
-      turn: {
-        kind: 'turn',
-        expectedRevision: Number(
-          db.sqlite.prepare('SELECT revision FROM control_turns WHERE id=?').pluck().get(before.id)
-        ),
-        record: writeRetainedV1({
-          ...turn,
-          items: [],
-          captureCoverage: records.turnCaptureCoverage?.get(before.id),
-        }),
-      },
-      products: [],
-      entries: [
-        {
-          kind: 'event',
-          turnId: before.id,
-          sequence,
-          expectedRevision: 0,
-          ...(await prepareRetainedProductJson(
-            mount,
-            owner,
-            join(root, 'runtime/staging'),
-            writeRetainedV1({
-              protocolVersion: PROTOCOL_VERSION,
-              workspaceId: db.workspaceId,
-              threadId: before.threadId,
-              turnId: before.id,
-              requestId: null,
-              timestamp: now,
-              sequence,
-              event: 'turn.completed',
-              data: { type: 'turn-completed', stopReason: 'aborted', turn },
-            })
-          )),
-        },
-      ],
-      reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
-      evidence: governed?.evidence ?? [],
-      evidenceContent: [],
-      command: null,
-      execution: governed?.execution ?? null,
-    });
-  }
-  for (const thread of records.threads) {
-    const pending = () => listThreadPendingRequests(db.sqlite, db.workspaceId, thread.id);
-    const sources = () =>
-      pending().map((record) => ({
-        requestId: record.requestId,
-        sourceHash: commandInputHash(record),
-      }));
-    await client.pendingCommand(database, {
-      input: {
-        action: 'settle-unfinished',
-        workspaceId: db.workspaceId,
-        now: new Date().toISOString(),
-        expected: sources(),
-      },
-      products: [],
-      entries: [],
-      receipt: null,
-    });
-    for (const turnId of new Set(
-      pending()
-        .filter((record) => record.delivery === 'frozen')
-        .map((record) => record.deliveryTurnId!)
-    ))
-      await client.pendingCommand(database, {
-        input: {
-          action: 'delivery-unknown',
-          workspaceId: db.workspaceId,
-          turnId,
-          now: new Date().toISOString(),
-          expected: sources(),
-        },
-        products: [],
-        entries: [],
-        receipt: null,
-      });
-    for (const record of pending().filter(
-      (request) => request.state === 'pending' || request.delivery === 'undelivered'
-    )) {
-      const now = new Date().toISOString();
-      const turnId = allocateEntityId('tu');
-      const command = {
-        action: 'closeout' as const,
-        workspaceId: db.workspaceId,
-        threadId: thread.id,
-        closeoutTurnId: turnId,
-        actor: { kind: 'system' as const, id: 'workspace-recovery' },
-        now,
-        expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
-        expectedThreadCensus: pending().map((request) => request.requestId),
-        invalidatingEvents: [{ requestId: record.requestId, event: 'workspace-recovered' }],
-      };
-      let items: ReturnType<typeof renderPendingOutcomeItems>;
-      db.sqlite.exec('SAVEPOINT recovery_projection');
-      try {
-        items = renderPendingOutcomeItems(
-          applyPendingCloseout(db.sqlite, {
-            ...command,
-            usable: (request) => request.requestId === record.requestId,
-            invalidatingEvent: () => 'workspace-recovered',
-          }),
-          turnId,
-          now
-        );
-      } finally {
-        db.sqlite.exec('ROLLBACK TO recovery_projection');
-        db.sqlite.exec('RELEASE recovery_projection');
-      }
-      const turn = {
-        id: turnId,
-        owner,
-        threadId: thread.id,
-        triggerActor: {
-          kind: 'system' as const,
-          id: 'workspace-recovery',
-          responsibleUserId: null,
-        },
-        triggerSource: { kind: 'system-input' as const, summary: 'Offline recovery closeout' },
-        agentId: null,
-        agentSessionId: null,
-        configVersion: null,
-        items,
-        status: 'completed' as const,
-        startedAt: now,
-        completedAt: now,
-        durationMs: 0,
-        error: null,
-      };
-      const entries: ControlProductEntry[] = [];
-      for (const item of items)
-        entries.push({
-          kind: 'item',
-          turnId,
-          sequence: entries.length + 1,
-          expectedRevision: 0,
-          ...(await prepareRetainedProductJson(
-            mount,
-            owner,
-            join(root, 'runtime/staging'),
-            writeRetainedV1(item)
-          )),
-        });
-      const sequence = 1;
-      entries.push({
-        kind: 'event',
-        turnId,
-        sequence,
-        expectedRevision: 0,
-        ...(await prepareRetainedProductJson(
-          mount,
-          owner,
-          join(root, 'runtime/staging'),
-          writeRetainedV1({
-            protocolVersion: PROTOCOL_VERSION,
-            workspaceId: db.workspaceId,
-            threadId: thread.id,
-            turnId,
-            requestId: null,
-            timestamp: now,
-            sequence,
-            event: 'turn.completed',
-            data: { type: 'turn-completed', stopReason: 'completed', turn },
-          })
-        )),
-      });
-      await client.terminal(database, {
-        owner,
-        turn: {
-          kind: 'turn',
-          expectedRevision: 0,
-          record: writeRetainedV1({
-            ...turn,
-            items: [],
-            captureCoverage: { scope: 'workspace', value: 'off' },
-          }),
-        },
-        products: [],
-        entries,
-        pending: [command],
-        reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
-        evidence: [],
-        evidenceContent: [],
-        command: null,
-        execution: null,
-      });
-    }
+    if (opened) await client.close(database);
   }
 }

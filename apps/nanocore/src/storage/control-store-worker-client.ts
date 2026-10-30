@@ -217,6 +217,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'terminal':
     case 'project-cleanup':
     case 'recovery-cleanup':
+    case 'recovery-history':
     case 'recovery-safety':
       return true;
     case 'item':
@@ -788,6 +789,12 @@ class ControlStoreWorkerClient {
   ): Promise<readonly ControlSqlResult[]> {
     const reply = await this.request({ operation: 'write', database, statements });
     return (reply as Extract<Success, { operation: 'write' }>).results;
+  }
+
+  /** Advances one original captured history unit and acknowledges only its native covering commit. */
+  async recoveryHistory(database: string, workspaceId: string): Promise<boolean> {
+    const reply = await this.request({ operation: 'recovery-history', database, workspaceId });
+    return (reply as Extract<Success, { operation: 'recovery-history' }>).done;
   }
 
   /** Copies proved current safety into an admitted private candidate, acknowledged only after FULL COMMIT. */

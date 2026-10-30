@@ -93,7 +93,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 19;
+export const CONTROL_WORKER_VERSION = 20;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -169,6 +169,7 @@ export type ControlWorkerCommand =
           readonly contentMount?: ControlProductContentMount;
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
+      | { readonly operation: 'recovery-history'; readonly workspaceId: string }
       | { readonly operation: 'recovery-cleanup'; readonly input: ControlRecoveryCleanupInput }
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
@@ -340,6 +341,7 @@ export type ControlWorkerReply = {
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'recovery-history'; readonly done: boolean }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
       readonly status: 'ok';
@@ -535,6 +537,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   }
   if (reply.status !== 'ok') return false;
+  if (reply.operation === 'recovery-history') return typeof reply.done === 'boolean';
   if (reply.operation === 'recovery-safety')
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
@@ -757,6 +760,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'recovery-history')
+    return (
+      exactFields(value, [...scoped, 'workspaceId']) &&
+      WorkspaceIdSchema.safeParse(value.workspaceId).success
+    );
   if (value.operation === 'recovery-safety')
     return (
       exactFields(value, [...scoped, 'input']) &&

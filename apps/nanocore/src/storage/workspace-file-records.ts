@@ -1430,13 +1430,13 @@ export function writeWorkspaceFileRecords(
 }
 
 /**
- * Loads one workspace and every owned record family.
+ * Loads one Workspace and every owned record family after the caller admits its root.
  *
- * @param workspaceRoot Published workspace root.
+ * @param workspaceRoot Published or caller-admitted private Workspace root.
  * @param workspaceId Workspace directory id.
  * @returns Loaded canonical workspace records.
  */
-function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFileRecords {
+export function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFileRecords {
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
   const workspaceConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');

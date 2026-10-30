@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
+import { allocateEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { copyVerifiedFile, publishDurableFile } from '@openkit/storage';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
@@ -10,19 +11,46 @@ import {
   readWorkspaceResourceCatalog,
 } from '../catalog/resource-catalog.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
+  applyPendingCloseout,
+  type ControlPendingCommandInput,
+  listThreadPendingRequests,
+  type PreparedControlPendingCommand,
+  readPendingRequest,
+  renderPendingOutcomeItems,
+} from '../runtime/pending-requests.js';
+import {
+  applyControlPendingTransition,
+  type ControlPendingTransition,
+  prepareControlPendingCommands,
+} from './control-store-pending.js';
+import {
+  applyControlTerminal,
+  type ControlContentPreparation,
+  type ControlProductEntry,
   ControlProductPreconditionError,
+  type ControlTerminalTransition,
   openControlStoreProductReadHandle,
+  type PreparedControlTerminal,
+  prepareControlTerminal,
   readProduct,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
+import { prepareRetainedProductJson } from './immutable-content.js';
 import {
   RECURRING_PORTABLE_PATHS,
   readRecurringPortableFiles,
 } from './recurring-portable-history.js';
 import { endCaptureInDb } from './workspace-capture-protection.js';
-import { ensureCanonicalDirectory, publishCanonicalPathAsync } from './workspace-file-records.js';
+import {
+  ensureCanonicalDirectory,
+  loadWorkspace,
+  nativeProductScope,
+  publishCanonicalPathAsync,
+  readNativeTurnHistory,
+} from './workspace-file-records.js';
 
 /** Cleanup facts for an already admitted, unpublished restore or MOVE candidate. */
 export interface ControlRecoveryCleanupInput {
@@ -49,6 +77,8 @@ export async function prepareControlRecoveryCleanup(
 ): Promise<void> {
   if (db.workspaceId !== input.workspaceId || db.sqlite.inTransaction)
     throw new ControlProductPreconditionError();
+  // Keep the complete original file/history census inside the admitted native owner.
+  loadWorkspace(root, db.workspaceId);
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   const threads = (
     db.sqlite.prepare('SELECT id FROM control_threads').pluck().all() as string[]
@@ -300,4 +330,286 @@ export function applyControlRecoverySafety(
       .run(...Object.values(row));
   }
   return 'preserved';
+}
+
+/** One existing durable history unit; no phase or cursor survives acknowledgement. */
+export type PreparedControlRecoveryHistory =
+  | { readonly kind: 'done' }
+  | {
+      readonly kind: 'terminal';
+      readonly input: ControlTerminalTransition;
+      readonly prepared: PreparedControlTerminal;
+    }
+  | {
+      readonly kind: 'pending';
+      readonly input: ControlPendingTransition;
+      readonly prepared: PreparedControlPendingCommand;
+    };
+
+/** Prepares one captured history transition without calling a worker client or holding SQL across byte awaits. */
+export async function prepareControlRecoveryHistory(
+  db: WorkspaceDb,
+  workspaceId: string,
+  root: string,
+  directories: ControlContentPreparation
+): Promise<PreparedControlRecoveryHistory> {
+  if (db.workspaceId !== workspaceId || db.sqlite.inTransaction)
+    throw new ControlProductPreconditionError();
+  const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId }, root);
+  const { owner, contentMount: mount } = scope;
+  const now = new Date().toISOString();
+  const openTurn = db.sqlite
+    .prepare(
+      "SELECT id FROM control_turns WHERE status NOT IN ('completed','failed','cancelled','interrupted') ORDER BY id LIMIT 1"
+    )
+    .get() as { id: string } | undefined;
+  if (openTurn) {
+    const history = readNativeTurnHistory(scope, openTurn.id);
+    if (!history) throw new ControlProductPreconditionError();
+    const turn = {
+      ...history.turn,
+      status: 'interrupted' as const,
+      completedAt: now,
+      error: {
+        code: 'workspace_recovered',
+        message: 'Captured work was interrupted by offline recovery.',
+      },
+    };
+    const sequence = Number(
+      db.sqlite
+        .prepare(
+          "SELECT COALESCE(MAX(sequence),0)+1 FROM control_product_entries WHERE kind='event' AND turn_id=?"
+        )
+        .pluck()
+        .get(turn.id)
+    );
+    const governed = db.sqlite
+      .prepare('SELECT 1 FROM control_executions WHERE work_id=?')
+      .get(turn.id)
+      ? await (await import('../runtime/worker-turn-failure.js')).workerTurnTerminalPublication(
+          db,
+          turn.id,
+          'interrupted'
+        )
+      : undefined;
+    const input: ControlTerminalTransition = {
+      owner,
+      turn: {
+        kind: 'turn',
+        expectedRevision: history.revision,
+        record: writeRetainedV1({
+          ...turn,
+          items: [],
+          captureCoverage: history.captureCoverage ?? undefined,
+        }),
+      },
+      products: [],
+      entries: [
+        {
+          kind: 'event',
+          turnId: turn.id,
+          sequence,
+          expectedRevision: 0,
+          ...(await prepareRetainedProductJson(
+            mount,
+            owner,
+            join(root, 'runtime/staging'),
+            writeRetainedV1({
+              protocolVersion: PROTOCOL_VERSION,
+              workspaceId,
+              threadId: turn.threadId,
+              turnId: turn.id,
+              requestId: null,
+              timestamp: now,
+              sequence,
+              event: 'turn.completed',
+              data: { type: 'turn-completed', stopReason: 'aborted', turn },
+            })
+          )),
+        },
+      ],
+      reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
+      evidence: governed?.evidence ?? [],
+      evidenceContent: [],
+      command: null,
+      execution: governed?.execution ?? null,
+    };
+    return {
+      kind: 'terminal',
+      input,
+      prepared: await prepareControlTerminal(db, input, mount, directories),
+    };
+  }
+  const selected = db.sqlite
+    .prepare(`SELECT request_id FROM pending_requests WHERE workspace_id=? AND
+    ((claim='claimed' AND disposition IS NULL) OR delivery='frozen' OR state='pending' OR delivery='undelivered')
+    ORDER BY CASE WHEN claim='claimed' AND disposition IS NULL THEN 0 WHEN delivery='frozen' THEN 1 ELSE 2 END,request_id LIMIT 1`)
+    .get(workspaceId) as { request_id: string } | undefined;
+  if (!selected) return { kind: 'done' };
+  const record = readPendingRequest(db.sqlite, selected.request_id);
+  if (!record || record.workspaceId !== workspaceId) throw new ControlProductPreconditionError();
+  const pending = listThreadPendingRequests(db.sqlite, workspaceId, record.threadId);
+  if ((record.claim === 'claimed' && record.disposition === null) || record.delivery === 'frozen') {
+    const command: ControlPendingCommandInput =
+      record.delivery === 'frozen' && !(record.claim === 'claimed' && record.disposition === null)
+        ? {
+            action: 'delivery-unknown',
+            workspaceId,
+            turnId: record.deliveryTurnId!,
+            now,
+            expected: pending
+              .filter(
+                (request) =>
+                  request.delivery === 'frozen' && request.deliveryTurnId === record.deliveryTurnId
+              )
+              .map((request) => ({
+                requestId: request.requestId,
+                sourceHash: commandInputHash(request),
+              })),
+          }
+        : {
+            action: 'settle-unfinished',
+            workspaceId,
+            now,
+            expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+          };
+    const input = { input: command, products: [], entries: [], receipt: null };
+    return {
+      kind: 'pending',
+      input,
+      prepared: await prepareControlPendingCommands(
+        db,
+        [command],
+        mount,
+        [],
+        undefined,
+        directories
+      ),
+    };
+  }
+  const turnId = allocateEntityId('tu');
+  const command = {
+    action: 'closeout' as const,
+    workspaceId,
+    threadId: record.threadId,
+    closeoutTurnId: turnId,
+    actor: { kind: 'system' as const, id: 'workspace-recovery' },
+    now,
+    expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+    expectedThreadCensus: pending.map((request) => request.requestId),
+    invalidatingEvents: [{ requestId: record.requestId, event: 'workspace-recovered' }],
+  };
+  let items: ReturnType<typeof renderPendingOutcomeItems>;
+  db.sqlite.exec('SAVEPOINT recovery_projection');
+  try {
+    const closed = applyPendingCloseout(db.sqlite, {
+      ...command,
+      usable: (request) => request.requestId === record.requestId,
+      invalidatingEvent: () => 'workspace-recovered',
+    });
+    if (!closed.length) throw new ControlProductPreconditionError();
+    items = renderPendingOutcomeItems(closed, turnId, now);
+  } finally {
+    db.sqlite.exec('ROLLBACK TO recovery_projection');
+    db.sqlite.exec('RELEASE recovery_projection');
+  }
+  const turn = {
+    id: turnId,
+    owner,
+    threadId: record.threadId,
+    triggerActor: { kind: 'system' as const, id: 'workspace-recovery', responsibleUserId: null },
+    triggerSource: { kind: 'system-input' as const, summary: 'Offline recovery closeout' },
+    agentId: null,
+    agentSessionId: null,
+    configVersion: null,
+    items,
+    status: 'completed' as const,
+    startedAt: now,
+    completedAt: now,
+    durationMs: 0,
+    error: null,
+  };
+  const entries: ControlProductEntry[] = [];
+  for (const item of items)
+    entries.push({
+      kind: 'item',
+      turnId,
+      sequence: entries.length + 1,
+      expectedRevision: 0,
+      ...(await prepareRetainedProductJson(
+        mount,
+        owner,
+        join(root, 'runtime/staging'),
+        writeRetainedV1(item)
+      )),
+    });
+  entries.push({
+    kind: 'event',
+    turnId,
+    sequence: 1,
+    expectedRevision: 0,
+    ...(await prepareRetainedProductJson(
+      mount,
+      owner,
+      join(root, 'runtime/staging'),
+      writeRetainedV1({
+        protocolVersion: PROTOCOL_VERSION,
+        workspaceId,
+        threadId: record.threadId,
+        turnId,
+        requestId: null,
+        timestamp: now,
+        sequence: 1,
+        event: 'turn.completed',
+        data: { type: 'turn-completed', stopReason: 'completed', turn },
+      })
+    )),
+  });
+  const input: ControlTerminalTransition = {
+    owner,
+    turn: {
+      kind: 'turn',
+      expectedRevision: 0,
+      record: writeRetainedV1({
+        ...turn,
+        items: [],
+        captureCoverage: { scope: 'workspace', value: 'off' },
+      }),
+    },
+    products: [],
+    entries,
+    pending: [command],
+    reap: { reason: 'offline Workspace recovery', inferredBy: 'workspace-recovery' },
+    evidence: [],
+    evidenceContent: [],
+    command: null,
+    execution: null,
+  };
+  return {
+    kind: 'terminal',
+    input,
+    prepared: await prepareControlTerminal(db, input, mount, directories),
+  };
+}
+
+/** Applies one prepared original terminal/Pending tuple; its covering native commit proves progress. */
+export function applyControlRecoveryHistory(
+  db: WorkspaceDb,
+  prepared: PreparedControlRecoveryHistory
+): boolean {
+  if (!db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  if (prepared.kind === 'done') return true;
+  if (prepared.kind === 'terminal') {
+    applyControlTerminal(db, prepared.input, prepared.prepared);
+    const request = prepared.input.pending?.[0];
+    if (request?.action === 'closeout') {
+      const after = readPendingRequest(db.sqlite, request.expected![0]!.requestId);
+      if (!after || after.state === 'pending' || after.delivery === 'undelivered')
+        throw new ControlProductPreconditionError();
+    }
+  } else {
+    const result = applyControlPendingTransition(db, prepared.input, prepared.prepared);
+    if (!result.requestIds.length) throw new ControlProductPreconditionError();
+  }
+  return false;
 }

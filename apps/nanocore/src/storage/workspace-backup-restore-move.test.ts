@@ -70,7 +70,7 @@ function retainedBytes(root: string) {
 }
 
 /** Real current authority with optional unfinished Turn, Pending Request and unknown-effect history. */
-async function fixture(history = false, withPending = true) {
+async function fixture(history = false, withPending = true, pendingCount = 1) {
   const root = mkdtempSync(join(tmpdir(), 'd0-lifecycle-'));
   roots.push(root);
   const dataRoot = join(root, 'source');
@@ -81,6 +81,7 @@ async function fixture(history = false, withPending = true) {
   core.sqlite.close();
   let turnId: string | undefined;
   let pendingId: string | undefined;
+  const pendingIds: string[] = [];
   let callId: string | undefined;
   if (history) {
     const turn = await store.createTurn(workspaceId, DEMO_THREAD_ID, 'Captured unfinished work', {
@@ -92,27 +93,31 @@ async function fixture(history = false, withPending = true) {
     const db = openWorkspaceDb(dataRoot, workspaceId);
     try {
       if (withPending) {
-        pendingId = randomUUID();
-        await raiseRecordedPendingRequest(store, db.sqlite, {
-          requestId: pendingId,
-          workspaceId,
-          threadId: DEMO_THREAD_ID,
-          raisingTurnId: turn.id,
-          requestItemId: pendingRequestItemId(pendingId, 'request'),
-          kind: 'approval',
-          requesterKind: 'person',
-          responsibleUserId: ownerId,
-          governedIntent: {
-            operation: 'fixture.effect',
-            input: 'Never replay this captured request',
-          },
-          approval: {
-            kind: 'destructive-action',
-            title: 'Captured approval',
-            description: 'Historical request only',
-          },
-          now: new Date().toISOString(),
-        });
+        for (let index = 0; index < pendingCount; index++) {
+          const requestId = randomUUID();
+          pendingIds.push(requestId);
+          pendingId ??= requestId;
+          await raiseRecordedPendingRequest(store, db.sqlite, {
+            requestId,
+            workspaceId,
+            threadId: DEMO_THREAD_ID,
+            raisingTurnId: turn.id,
+            requestItemId: pendingRequestItemId(requestId, 'request'),
+            kind: 'approval',
+            requesterKind: 'person',
+            responsibleUserId: ownerId,
+            governedIntent: {
+              operation: 'fixture.effect',
+              input: 'Never replay this captured request',
+            },
+            approval: {
+              kind: 'destructive-action',
+              title: 'Captured approval',
+              description: 'Historical request only',
+            },
+            now: new Date().toISOString(),
+          });
+        }
       }
       await startCapabilityCall({
         workspaceDb: db,
@@ -183,6 +188,7 @@ async function fixture(history = false, withPending = true) {
     captureArgs,
     turnId,
     pendingId,
+    pendingIds,
     callId,
   };
 }
@@ -461,7 +467,7 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
   }, 120_000);
 
   it('WM 382, 432 / D0 exception: transferred unfinished executions and Pending Requests are inert, unknown effects stay unknown', async () => {
-    const f = await fixture(true);
+    const f = await fixture(true, true, 2);
     const { report } = await movedOut(f);
     expect(report.capture!.unknownEffectTurnIds).toContain(f.turnId);
     const targetRoot = join(f.root, 'target');
@@ -508,9 +514,11 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
     const closed = rows(targetDb, 'pending_requests').filter(
       (request) => request.delivery === 'closed-out'
     );
-    expect(closed).toHaveLength(1);
-    expect(targetTurns).toHaveLength(sourceTurns.length + closed.length);
-    expect(addedTurns).toHaveLength(closed.length);
+    expect(closed).toHaveLength(f.pendingIds.length);
+    // Pending Closeout requires complete publication, but does not require one Turn per request.
+    const publicationCount = new Set(closed.map((request) => request.publication_turn_id)).size;
+    expect(targetTurns).toHaveLength(sourceTurns.length + publicationCount);
+    expect(addedTurns).toHaveLength(publicationCount);
     // WM restore step 4 interrupts captured unfinished Turns and preserves sealed terminal history.
     expect(
       targetTurns.filter((turn) => sourceIds.has(turn.id)).map(({ id, status }) => ({ id, status }))
@@ -539,9 +547,10 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
       status: 'interrupted',
       completedAt: expect.any(String),
     });
-    for (const request of closed) {
+    for (const requestId of f.pendingIds) {
+      const request = closed.find((record) => record.request_id === requestId)!;
       expect(request).toMatchObject({
-        request_id: f.pendingId,
+        request_id: requestId,
         state: 'ended',
         resolution: null,
         claim: 'unclaimed',
@@ -564,10 +573,16 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
         triggerSource: { kind: 'system-input' },
         agentId: null,
         agentSessionId: null,
+        status: 'completed',
         completedAt: expect.any(String),
       });
       const closeoutId = pendingRequestItemId(String(request.request_id), 'ending');
-      expect(history.turn.items).toEqual([
+      expect(history.turn.items).toHaveLength(
+        closed.filter((record) => record.publication_turn_id === publication!.id).length
+      );
+      expect(
+        history.turn.items.filter((item) => item.causationId === request.request_item_id)
+      ).toEqual([
         expect.objectContaining({
           id: closeoutId,
           type: 'status',
