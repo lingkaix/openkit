@@ -250,6 +250,9 @@ describe('remote MCP App endpoint', () => {
         });
       }
       const guide = await f.call('openkit_guide', {}, admin.secret);
+      expect(guide.content[0].text).toContain('knowledge.package.export');
+      expect(guide.content[0].text).toContain('knowledge.package.import');
+      expect(guide.content[0].text).toContain('authenticated native App API');
       expect(guide.content[0].text).toContain('ordinary users use their Web file controls');
       expect(guide.content[0].text).toContain(
         'Workspace archives and Artifact import/download are streaming-only'
