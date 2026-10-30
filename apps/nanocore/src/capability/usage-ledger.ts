@@ -292,6 +292,7 @@ export function startCapabilityCall(
   | Promise<
       StartedCapabilityCall & { readonly admissionFailure?: ControlCapabilityAdmissionFailure }
     > {
+  assertWorkspaceCapabilityActor(input);
   if (input.workspaceDb.scope === 'core')
     return startCapabilityCallInDb(input as StartServerCapabilityCallInput);
   const {
@@ -335,6 +336,19 @@ export function startCapabilityCall(
     });
 }
 
+/** Requires existing Workspace LLM/MCP attribution before either admission path writes or dispatches. */
+function assertWorkspaceCapabilityActor(
+  input: StartCapabilityCallInput | StartServerCapabilityCallInput
+): void {
+  if (
+    input.workspaceDb.scope !== 'core' &&
+    (input.family === 'llm' || input.family === 'mcp') &&
+    input.authorityActor == null
+  ) {
+    throw new TypeError('Workspace LLM/MCP admission requires an authority actor.');
+  }
+}
+
 /**
  * Starts one durable capability call before upstream contact.
  *
@@ -348,6 +362,7 @@ export function startCapabilityCallInDb(input: StartCapabilityCallInput): Starte
 export function startCapabilityCallInDb(
   input: StartCapabilityCallInput | StartServerCapabilityCallInput
 ): StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> {
+  assertWorkspaceCapabilityActor(input);
   return input.workspaceDb.sqlite
     .transaction(() => {
       const {

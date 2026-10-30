@@ -2,12 +2,21 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, UsageRecordSchema } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  closeTestCoreDb,
+  createTestCoreDb,
+  openTestNativeWorkspace,
+} from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
@@ -15,12 +24,103 @@ import {
   listWorkspaceUsageRecords,
   readLatestCurrentAgentSessionLlmUsage,
   recordUsage,
+  recordUsageInDb,
   recoverRunningCapabilityCalls,
   startCapabilityCall,
+  startCapabilityCallInDb,
   writeGatewayRouteLineage,
 } from './usage-ledger.js';
 
+/** Establishes the existing canonical local initiator and Workspace ownership for live ledger fixtures. */
+function createWorkspaceLedgerActor(workspaceDb: ReturnType<typeof openWorkspaceDb>) {
+  const coreDb = createTestCoreDb(workspaceDb.dataRoot);
+  try {
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: userId,
+      workspaceId: workspaceDb.workspaceId,
+    });
+    return { kind: 'user' as const, id: userId };
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
+}
+
 describe('capability usage ledger', () => {
+  it.each([
+    ['native', 'llm'],
+    ['native', 'mcp'],
+    ['direct', 'llm'],
+    ['direct', 'mcp'],
+  ] as const)('refuses actorless %s Workspace %s admission before retained effects', async (path, family) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-actorless-admission-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+    let nativeAdmission: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      applyScopedMigrations(workspaceDb);
+      const actor = createWorkspaceLedgerActor(workspaceDb);
+      if (path === 'native') {
+        await openTestNativeWorkspace(workspaceDb);
+        nativeAdmission = vi.spyOn(getControlStoreWorkerClient(), 'workspaceCapability');
+      }
+      const input = {
+        workspaceDb,
+        workspaceId: workspaceDb.workspaceId,
+        authorityActor: null,
+        capabilityId: family === 'llm' ? 'llm.responses' : 'mcp.call-tool',
+        family,
+        operation: family === 'llm' ? 'responses.create' : 'mcp.call-tool',
+        redactionClass: 'metadata-only',
+      };
+      const calls = listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId);
+      const usage = listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId);
+      const audit = workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all();
+
+      await expect(
+        async () =>
+          await (path === 'native' ? startCapabilityCall(input) : startCapabilityCallInDb(input))
+      ).rejects.toThrow();
+      expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toEqual(calls);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual(usage);
+      expect(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual(audit);
+      if (nativeAdmission) expect(nativeAdmission).not.toHaveBeenCalled();
+
+      const admitted = { ...input, authorityActor: actor };
+      const call = await (path === 'native'
+        ? startCapabilityCall(admitted)
+        : startCapabilityCallInDb(admitted));
+      expect(call.context.authorityActor).toEqual(actor);
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit'"
+          )
+          .get(call.id)
+      ).toEqual({ actor_json: JSON.stringify(actor) });
+      const measurement = {
+        workspaceDb,
+        call,
+        records: [
+          {
+            category: family === 'llm' ? ('llm' as const) : ('tool' as const),
+            unit: family === 'llm' ? ('tokens' as const) : ('tool_calls' as const),
+            quantity: 1,
+          },
+        ],
+      };
+      await (path === 'native' ? recordUsage(measurement) : recordUsageInDb(measurement));
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([
+        expect.objectContaining({ capabilityCallId: call.id, responsibleUserId: actor.id }),
+      ]);
+    } finally {
+      nativeAdmission?.mockRestore();
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(workspaceDb);
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects an unknown retained capability format before replay or JSON decode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-format-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -28,6 +128,7 @@ describe('capability usage ledger', () => {
       applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const input = {
+        authorityActor: createWorkspaceLedgerActor(workspaceDb),
         workspaceDb,
         workspaceId: workspaceDb.workspaceId,
         capabilityId: 'llm.responses',
@@ -69,6 +170,7 @@ describe('capability usage ledger', () => {
       applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
+        authorityActor: createWorkspaceLedgerActor(workspaceDb),
         workspaceDb,
         workspaceId: workspaceDb.workspaceId,
         capabilityId: 'llm.responses',
@@ -110,7 +212,7 @@ describe('capability usage ledger', () => {
       const call = await startCapabilityCall({
         workspaceDb,
         workspaceId,
-        authorityActor: null,
+        authorityActor: createWorkspaceLedgerActor(workspaceDb),
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
@@ -1255,7 +1357,7 @@ describe('retained call digest round-trip', () => {
         const call = await startCapabilityCall({
           workspaceDb: source,
           workspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
-          authorityActor: null,
+          authorityActor: createWorkspaceLedgerActor(source),
           capabilityId: 'llm.responses',
           family: 'llm',
           operation: 'responses',
@@ -1365,7 +1467,7 @@ describe('Gateway lineage recovery', () => {
       const call = await startCapabilityCall({
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7849-b543-b73e540db459',
-        authorityActor: null,
+        authorityActor: createWorkspaceLedgerActor(workspaceDb),
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses',
@@ -1423,7 +1525,7 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
       const call = await startCapabilityCall({
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7993-ac5a-37822c1bf7ab',
-        authorityActor: null,
+        authorityActor: createWorkspaceLedgerActor(workspaceDb),
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses',

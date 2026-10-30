@@ -4482,7 +4482,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 inference === 'other-package' || inference === 'unsupported-other-package'
                   ? 'aepsnap_other'
                   : packageSnapshotId,
-              authorityActor: null,
+              authorityActor: { kind: 'user', id: ensureLocalUser(coreDb) },
               capabilityId: 'llm.responses',
               family: 'llm',
               operation: 'responses',

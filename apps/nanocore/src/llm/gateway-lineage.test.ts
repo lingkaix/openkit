@@ -545,7 +545,7 @@ describe('public durable logical Gateway lineage', () => {
         workspaceDb: db,
         workspaceId: f.workspaceId,
         threadId: thread.id,
-        authorityActor: null,
+        authorityActor: { kind: 'user', id: ensureLocalUser(f.coreDb) },
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses',

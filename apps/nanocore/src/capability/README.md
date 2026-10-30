@@ -35,3 +35,5 @@ Workspace mutation facades return Promises and use the admitted database worker 
 Model measurements retain logical modelId, the actual dispatched providerModel and existing measured-profile providerRef together. Nullable historical providerModel stays unknown. Native wire, equivalent-measurement comparison, reads and portable import preserve that same fact without another ledger.
 
 A captured MCP submission refusal joins its existing PermissionDecision, linked Audit and failed Call finish in one native transition without Usage. A later refusal has a distinct decision identity, so the original allow remains immutable. Portable ledger reads derive known no-contact from the explicit retained refusal context; an error code alone never proves contact certainty.
+
+Both Workspace LLM/MCP admission paths require an existing non-null authority actor before native dispatch or call insertion/replay. The shared recorder checks attribution presence only; producers retain current Policy admission. Unattributed Server diagnostics and existing other-family evidence stay separate, and historical actorless rows gain no inferred actor.

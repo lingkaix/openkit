@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { type ActorRef, allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -15,7 +15,13 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  closeTestCoreDb,
+  createTestCoreDb,
+  openTestNativeWorkspace,
+} from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import {
   assertWorkerRawOutputFinalStatus,
@@ -58,12 +64,21 @@ async function fixture() {
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
+  const coreDb = createTestCoreDb(root);
+  let authorityActor: ActorRef;
+  try {
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: scope.workspaceId, ownerUserId: userId });
+    authorityActor = { kind: 'user', id: userId };
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
   await openTestNativeWorkspace(db);
   const newCall = async (database = db, initialize = true) => {
     const call = await startCapabilityCall({
       workspaceDb: database,
       ...scope,
-      authorityActor: null,
+      authorityActor,
       family: 'llm',
       operation: 'chat_completions',
       capabilityId: 'llm.gateway.use',

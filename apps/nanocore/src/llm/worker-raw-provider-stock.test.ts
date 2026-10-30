@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai';
 import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
-import { allocateEntityId } from '@openkit/protocol';
+import { type ActorRef, allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -18,7 +18,13 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  closeTestCoreDb,
+  createTestCoreDb,
+  openTestNativeWorkspace,
+} from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import type { RawModelOutputPosition } from './raw-provider-output.js';
 
@@ -42,11 +48,20 @@ async function fixture() {
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
   applyScopedMigrations(db);
+  const coreDb = createTestCoreDb(root);
+  let authorityActor: ActorRef;
+  try {
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: scope.workspaceId, ownerUserId: userId });
+    authorityActor = { kind: 'user', id: userId };
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
   await openTestNativeWorkspace(db);
   const call = await startCapabilityCall({
     workspaceDb: db,
     ...scope,
-    authorityActor: null,
+    authorityActor,
     family: 'llm',
     operation: 'chat_completions',
     capabilityId: 'llm.gateway.use',

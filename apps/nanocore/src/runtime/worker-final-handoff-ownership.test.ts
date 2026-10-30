@@ -151,7 +151,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
       workspaceId,
       threadId: lineage.threadId,
       turnId: lineage.turnId,
-      authorityActor: null,
+      authorityActor: environmentPackage.scope.triggerActor,
       family: 'llm',
       operation: 'chat_completions',
       capabilityId: 'llm.gateway.use',

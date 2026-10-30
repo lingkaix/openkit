@@ -5,6 +5,7 @@ import { CapabilityCallSchema, ServerUsageRecordSchema } from '@openkit/protocol
 import { expect, it } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { closeTestCoreDb } from '../test-support/store.js';
 import {
   finishCapabilityCall,
   listServerCapabilityCalls,
@@ -133,6 +134,37 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
     ).toEqual({ actor_json: JSON.stringify(input.authorityActor), request_id: input.requestId });
   } finally {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  'llm',
+  'mcp',
+] as const)('keeps unattributed Server %s diagnostics separate from Workspace admission', (family) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-null-admission-'));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    const call = startCapabilityCall({
+      workspaceDb: coreDb,
+      owner: { kind: 'server' },
+      authorityActor: null,
+      capabilityId: `${family}.server_diagnostic`,
+      family,
+      operation: 'diagnostic.observe',
+      redactionClass: 'metadata-only',
+    });
+    expect(call.context.authorityActor).toBeNull();
+    expect(listServerCapabilityCalls(coreDb)).toEqual([
+      expect.objectContaining({ id: call.id, owner: { kind: 'server' }, family }),
+    ]);
+    expect(coreDb.sqlite.prepare('SELECT workspace_id FROM capability_calls').get()).toEqual({
+      workspace_id: null,
+    });
+    expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
+  } finally {
+    closeTestCoreDb(coreDb);
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
