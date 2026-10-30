@@ -148,15 +148,16 @@ Model-call fixtures:
 
 The check reads each Turn's complete durable event history through its existing reader without writes or repair. It preserves sequence-one and lineage validation. An unreadable retained row or missing immutable content yields `unknown` with reason `unreadable`, unless this invariant already has an established violation. The read honors the record and time bounds during reading, before accumulating the complete history. This is a read option at the existing seam, not a new reader. The check does not read the rolling in-memory window. The [control-store decision](../decisions/20261019-durable_execution_and_control_store.md) replaces mutable event files with control records and immutable content.
 
-The Turn record has no `StopReason` field and no worker flag. The identifying shape is that durable event. The closed mapping applies to every Turn that carries a `StopReason` on it, not only to a Turn that still retains a Worker Checkpoint. Current writers of that event are the worker completion publisher, the worker failure publisher, and the simulator publisher. The simulator publisher writes `completed` for a completed Turn and `aborted` for an interrupted Turn. A Turn with no such event is outside the predicate.
+The Turn record has no `StopReason` field and no worker flag. The identifying shape is that durable event. The closed mapping applies to every Turn that carries a `StopReason` on it, not only to a Turn that still retains a Worker Checkpoint. Current writers include the worker completion publisher, the worker failure publisher, the simulator publisher, and the shared terminal publisher used by Knowledge Manager and maintenance runs. Caller-cancelled Knowledge Manager and maintenance runs, and worker cancellation before backend effects, publish `cancelled` with `aborted`; worker abort completion publishes `interrupted` with `aborted`. The simulator publisher writes `completed` for a completed Turn and `aborted` for an interrupted Turn. A Turn with no such event is outside the predicate.
 
-The closed mapping is the reliability owner's initial terminal mapping. It does not depend on an adapter or mode projection. When a terminal checkpoint remains, the last two columns apply.
+The closed mapping includes the reliability owner's initial worker terminal mapping and the existing `cancelled` outcomes below. Under the [four-terminal-state decision](../decisions/20260921-four_turn_terminal_states.md), each owning specification decides its producers. The listed `cancelled` paths produce no terminal Worker Checkpoint; absence and a `preparing` checkpoint remain outside checkpoint comparison under the rules below. It does not depend on an adapter or mode projection. When a terminal checkpoint remains, the last two columns apply.
 
 | Event StopReason | Turn status | Checkpoint stage | Checkpoint StopReason |
 | --- | --- | --- | --- |
 | `completed` | `completed` | `completed` | `completed` |
 | `error` | `failed` | `failed` | `error` |
 | `aborted` | `interrupted` | `aborted` | `aborted` |
+| `aborted` | `cancelled` | Not produced by these paths | Not produced by these paths |
 | `length` | `completed` | `completed` | `length` |
 | `budget_exhausted` | `completed` | `completed` | `budget_exhausted` |
 
