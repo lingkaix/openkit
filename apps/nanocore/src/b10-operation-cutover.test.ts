@@ -155,7 +155,6 @@ async function admittedFixture() {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
     workspaceIds: [],
-    tokenId: 'token_b10_admission',
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
   let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b10' });

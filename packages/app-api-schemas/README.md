@@ -1,6 +1,6 @@
 # @openkit/app-api-schemas
 
-`workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. Only the complete capture, verify and download definitions are composed; restore, MOVE and explicit recovery remain uncomposed until their owners activate them. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.
+`workspace-snapshot-operations.ts` owns the closed operational snapshot selectors and reports. The complete capture, verify, download, same-deployment backup-restore and recovery-inspect definitions are composed; selected recovery finish/abandon and MOVE remain uncomposed until their owners activate them. `workspace-freeze.ts` owns the typed not-admitted blocker/refusal projection. Schemas grant no authority and expose no filesystem path.
 
 Knowledge retrieval exclusion reasons distinguish `selector_mismatch` for exact metadata filters from `policy_excluded` for current authorization or Source-policy refusal. The response shape and native admission boundary are unchanged.
 
@@ -34,7 +34,7 @@ Dashboard work-status and active-work schemas carry recorded activity and output
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
-`src/workspace-freeze.ts` defines the public lifecycle refusal, typed blockers and one quick-action union using existing operation inputs. The snapshot owner supplies authoritative facts and disclosure filtering; schemas grant no authority or cleanup proof. `src/workspace-snapshot-operations.ts` freezes ten administrator snapshot contracts. The definitions are exported but deliberately uncomposed: backend activation must supply each complete scoped handler before routes, Core Client, OpenAPI or CLI expose it. Only sealed-bundle download and MOVE-in are streaming. Inputs name owned identities, never server paths. The [snapshot owner](../../docs/specs/20260704-workspace_backup_export_import.md#scoped-freeze-and-blockers) defines refusal, freeze, consistency and recovery.
+`src/workspace-freeze.ts` defines the public lifecycle refusal, typed blockers and one quick-action union using existing operation inputs. The snapshot owner supplies authoritative facts and disclosure filtering; schemas grant no authority or cleanup proof. `src/workspace-snapshot-operations.ts` freezes ten administrator snapshot contracts. Capture, verify, download, same-deployment backup-restore and recovery-inspect have complete scoped handlers in the composed table; selected recovery finish/abandon and MOVE remain uncomposed until backend activation supplies their complete handlers. Only sealed-bundle download and MOVE-in are streaming. Inputs name owned identities, never server paths. The [snapshot owner](../../docs/specs/20260704-workspace_backup_export_import.md#scoped-freeze-and-blockers) defines refusal, freeze, consistency and recovery.
 
 The Skill row returned by `catalog.read` optionally exposes `pinAuditRef`, the recorded winning pin command's Audit identity. An absent field means that attribution was not retained; a digest alone does not identify the actor who last pinned it.
 
