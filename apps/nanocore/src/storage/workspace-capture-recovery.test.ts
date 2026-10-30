@@ -1,8 +1,20 @@
 // openkit-test-platform: posix
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
@@ -20,7 +32,12 @@ import {
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
-import { createWorkspaceBackup, WORKSPACE_BACKUP_POLICY } from './workspace-backup.js';
+import {
+  createWorkspaceBackup,
+  inspectWorkspaceSnapshot,
+  readWorkspaceRecoveryBlockers,
+  WORKSPACE_BACKUP_POLICY,
+} from './workspace-backup.js';
 import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import * as recovery from './workspace-recovery-admissions.js';
 
@@ -72,6 +89,162 @@ function fixture(competing = false) {
 
 /** Local Hot Capture and Source Seal retain exclusion across explicit recovery and native publication. */
 describe('retained capture exclusion rejoin', () => {
+  it('hands the original live MOVE fence to exact recovery only after capture Worker exit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'live-source-capture-rejoin-'));
+    roots.push(root);
+    const dataRoot = join(root, 'source');
+    const store = await createDemoStore({ dataRoot });
+    const coreDb = createTestCoreDb(dataRoot);
+    handles.push(coreDb);
+    const workspaceId = DEMO_WORKSPACE_ID;
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ensureLocalUser(coreDb) });
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    handles.push(db);
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    const source = { kind: 'live-workspace' as const, dataRoot, coreDb, store, mutationAdmission };
+    const stagingParent = join(root, 'staging');
+    mkdirSync(stagingParent);
+    const verification = {
+      ...WORKSPACE_BACKUP_POLICY,
+      stagingParent,
+      admission: new FileStorageAdmission(root, () => 0n),
+      expectedRelease: {
+        version: '0.1.0-live-source-rejoin',
+        buildId: 'live-source-rejoin-oracle',
+      },
+    };
+    const captureId = allocateEntityId('wsbak');
+    const bundleRoot = join(dataRoot, 'server/backups/workspaces', workspaceId, captureId);
+    const selected = { captureId };
+    const census = () =>
+      readWorkspaceRecoveryBlockers({ ...source, workspaceId, operation: 'move-out' }, selected);
+    const resume = () =>
+      recovery.resumeWorkspaceCaptureOwner(
+        coreDb,
+        workspaceId,
+        captureId,
+        mutationAdmission,
+        census
+      );
+    const owned = { ...source, currentAuthority: () => {}, verification };
+    const input = { workspaceId, backupId: captureId };
+    let worker: Worker | undefined;
+    let allowExit!: () => void;
+    const exitAllowed = new Promise<void>((resolve) => {
+      allowExit = resolve;
+    });
+    let signalExit!: () => void;
+    const exitRequested = new Promise<void>((resolve) => {
+      signalExit = resolve;
+    });
+    const terminate = Worker.prototype.terminate;
+    const holdExit = vi.spyOn(Worker.prototype, 'terminate').mockImplementation(async function (
+      this: Worker
+    ) {
+      worker = this;
+      signalExit();
+      await exitAllowed;
+      return terminate.call(this);
+    });
+    const capturing = createWorkspaceBackup({
+      ...verification,
+      source,
+      workspaceId,
+      backupId: captureId,
+      purpose: 'move',
+      expectedSourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      bundleRoot,
+    });
+    try {
+      await exitRequested;
+      expect(worker!.threadId).not.toBe(-1);
+      expect(mutationAdmission.enter(workspaceId)).toBeNull();
+      let beforeExit: string;
+      try {
+        beforeExit = resume().status;
+      } catch {
+        beforeExit = 'refused';
+      }
+      expect(beforeExit).not.toBe('frozen');
+    } finally {
+      allowExit();
+      holdExit.mockRestore();
+      await capturing;
+    }
+    const captured = await capturing;
+    expect(worker!.threadId).toBe(-1);
+    expect(captured.disposition).toBe('prepared');
+    expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
+    expect(mutationAdmission.enter(workspaceId)).toBeNull();
+    expect(mutationAdmission.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
+    expect(
+      readWorkspaceRecoveryBlockers({ ...source, workspaceId }, { captureId: randomUUID() })
+    ).toEqual([{ kind: 'unavailable', reason: 'unavailable', actions: [] }]);
+    expect(census()).toEqual([]);
+    const freeze = resume();
+    expect(freeze.status).toBe('frozen');
+    if (freeze.status !== 'frozen')
+      throw new Error('Expected the original live capture exclusion.');
+    const foreign = new WorkspaceMutationAdmission().tryFreeze(workspaceId, () => []);
+    if (foreign.status !== 'frozen') throw new Error('Expected an unrelated freeze.');
+    try {
+      await expect(inspectWorkspaceSnapshot(input, owned)).rejects.toThrow();
+      await expect(inspectWorkspaceSnapshot(input, owned, foreign)).rejects.toThrow();
+      await expect(
+        inspectWorkspaceSnapshot({ ...input, backupId: allocateEntityId('wsbak') }, owned, freeze)
+      ).rejects.toThrow();
+      const inspected = await inspectWorkspaceSnapshot(input, owned, freeze);
+      expect(inspected.disposition).toBe('staged');
+      expect(inspected.manifest.purpose).toBe('move');
+      expect(inspected.report.manifestDigest).toBe(captured.report.manifestDigest);
+      // Local Hot Capture step 4 requires exact pooled bytes, not a manifest-only inspection.
+      const entry = captured.manifest.inventory[0]!;
+      const object = join(
+        dataRoot,
+        'server/backups/workspaces',
+        workspaceId,
+        'objects',
+        entry.sha256.slice(7)
+      );
+      const original = readFileSync(object);
+      const originalMode = lstatSync(object).mode & 0o777;
+      chmodSync(object, originalMode | 0o200);
+      try {
+        writeFileSync(object, Buffer.from('damaged retained object'));
+        await expect(inspectWorkspaceSnapshot(input, owned, freeze)).rejects.toThrow();
+      } finally {
+        try {
+          writeFileSync(object, original);
+        } finally {
+          chmodSync(object, originalMode);
+        }
+      }
+    } finally {
+      foreign.release();
+      freeze.release();
+    }
+    await expect(inspectWorkspaceSnapshot(input, owned, freeze)).rejects.toThrow();
+    const retry = resume();
+    if (retry.status !== 'frozen') throw new Error('Expected an explicit selected-capture retry.');
+    freeze.release();
+    expect(mutationAdmission.ownsFreeze(workspaceId, retry)).toBe(true);
+    retry.release();
+    // An unrelated retained publication is still a blocker for the selected capture.
+    protectCapture(db, workspaceId, randomUUID());
+    expect(census()).not.toEqual([]);
+    let competing: string;
+    try {
+      competing = resume().status;
+    } catch {
+      competing = 'refused';
+    }
+    expect(competing).not.toBe('frozen');
+    expect(mutationAdmission.enter(workspaceId)).toBeNull();
+    expect(mutationAdmission.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
+  }, 30_000);
+
   it('rejoins a SQL-only boot capture for exact native recovery while publishers remain fenced', async () => {
     const f = fixture();
     const client = getControlStoreWorkerClient(f.gate);

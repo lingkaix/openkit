@@ -57,7 +57,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
-import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
+import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import {
@@ -93,7 +93,10 @@ import {
   isTerminalWorkspaceDeletionRequest,
   listWorkspaceDeletionRequests,
 } from '../workspace-deletion-request.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 import { assertAppDefinitionMatches } from './app-db.js';
 import {
   FileAdmissionError,
@@ -253,26 +256,36 @@ export function readBlockers(input: {
 /** Reads the same obstruction facts for an exact selected recovery, without granting serving admission. */
 export function readWorkspaceRecoveryBlockers(
   input: Parameters<typeof readBlockers>[0],
-  selected: RecoveryAdmission
+  selected: RecoveryAdmission | { readonly captureId: string }
 ): readonly WorkspaceBlocker[] {
-  const current = readRecoveryAdmission(input.coreDb, selected.admission_id);
+  const captureId = 'captureId' in selected ? selected.captureId : undefined;
+  const current = readRecoveryAdmission(
+    input.coreDb,
+    'captureId' in selected ? selected.captureId : selected.admission_id
+  );
   const refusal = scopeAdmissionFailures(input.coreDb.dataRoot).find(
     (failure) =>
       failure.scope === 'workspace' && failure.id === input.workspaceId && failure.check !== 'index'
   );
   if (
-    selected.workspace_id !== input.workspaceId ||
-    !isDeepStrictEqual(current, selected) ||
-    refusal?.check !== 'recovery'
+    refusal?.check !== 'recovery' ||
+    (!('captureId' in selected) &&
+      (selected.workspace_id !== input.workspaceId || !isDeepStrictEqual(current, selected))) ||
+    (captureId &&
+      current &&
+      (current.workspace_id !== input.workspaceId ||
+        current.backup_id !== captureId ||
+        !['capture', 'move-out'].includes(current.proof.input.command)))
   )
     return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
-  return readWorkspaceBlockerFacts(input, selected);
+  return readWorkspaceBlockerFacts(input, current, captureId);
 }
 
 /** One authoritative census serves ordinary and exact-recovery lifecycle inspection. */
 function readWorkspaceBlockerFacts(
   input: Parameters<typeof readBlockers>[0],
-  selected?: RecoveryAdmission
+  selected?: RecoveryAdmission,
+  captureId?: string
 ): readonly WorkspaceBlocker[] {
   const blockers: WorkspaceBlocker[] = [];
   let unavailable = false;
@@ -292,13 +305,15 @@ function readWorkspaceBlockerFacts(
     const ids = (sql: string): string[] => db.prepare(sql).pluck().all(workspaceId) as string[];
     const coreIds = (sql: string): string[] =>
       coreDb.sqlite.prepare(sql).pluck().all(workspaceId) as string[];
+    if (captureId && !inspectCapture(targetDb, workspaceId, captureId))
+      throw new Error('Missing selected capture authority.');
     const addCaptureBlockers = () => {
       for (const id of ids(
         "SELECT capture_id FROM workspace_capture_records WHERE workspace_id=? AND state NOT IN ('finished','abandoned')"
       )) {
         const capture = inspectCapture(targetDb, workspaceId, id);
         if (!capture) throw new Error('Missing capture authority.');
-        if (capture.state === 'active')
+        if (capture.state === 'active' && id !== captureId)
           add({
             kind: 'snapshot',
             reason: 'pending-publication',
@@ -1579,7 +1594,7 @@ async function runWorkspaceCapture(
   const live = input.source;
   let targetWorkspaceId = input.workspaceId;
   const reservations = new Map<number, FileStorageReservation>();
-  let releaseFreeze: (() => void) | undefined;
+  let captureFreeze: WorkspaceFrozenAdmission | undefined;
   let releaseReplayRead: (() => void) | undefined;
   let resumeNative: (() => void) | undefined;
   let worker: Worker | undefined;
@@ -1745,7 +1760,7 @@ async function runWorkspaceCapture(
                       }
                     );
                   }
-                  releaseFreeze = admission.release;
+                  captureFreeze = admission;
                   drained = hold!.then(
                     (release) => {
                       resumeNative = release;
@@ -1765,8 +1780,8 @@ async function runWorkspaceCapture(
                   resumeNative?.();
                   resumeNative = undefined;
                   if (input.purpose === 'backup') {
-                    releaseFreeze?.();
-                    releaseFreeze = undefined;
+                    captureFreeze?.release();
+                    captureFreeze = undefined;
                   }
                 }
               }
@@ -1804,19 +1819,35 @@ async function runWorkspaceCapture(
     await drained;
     try {
       resumeNative?.();
-      if (input.purpose === 'move' && releaseFreeze) {
+      if (input.purpose === 'move' && captureFreeze) {
         // Before a pin a refused MOVE reopens; uncertain retained truth keeps its fence.
         try {
           const retained = captureDatabase(live.dataRoot, targetWorkspaceId);
           try {
-            if (!inspectCapture(retained, targetWorkspaceId, input.backupId)) releaseFreeze();
+            if (!inspectCapture(retained, targetWorkspaceId, input.backupId))
+              captureFreeze.release();
+            else if (
+              !cleanupFailure &&
+              live.mutationAdmission.ownsFreeze(targetWorkspaceId, captureFreeze)
+            ) {
+              // The original capture Worker has exited. Preserve exclusion, but let the exact
+              // retained capture rejoin it for an explicit finish or abandon decision.
+              refuseScope(live.dataRoot, {
+                scope: 'workspace',
+                id: targetWorkspaceId,
+                check: 'recovery',
+              });
+              live.mutationAdmission.restoreRecoveryClosed(targetWorkspaceId, {
+                captureId: input.backupId,
+              });
+            }
           } finally {
             retained.sqlite.close();
           }
         } catch {
           /* Unknown retained truth keeps MOVE exclusion. */
         }
-      } else releaseFreeze?.();
+      } else captureFreeze?.release();
     } catch (error) {
       cleanupFailure ??= error;
     }
@@ -2696,10 +2727,31 @@ function workspaceSnapshotLocalSource(
 /** Verifies one local generation through the same bounded staging and graph owner as backup-verify. */
 export async function inspectWorkspaceSnapshot(
   input: { readonly workspaceId: string; readonly backupId: string },
-  owned: ReturnType<typeof workspaceSnapshotOperationPolicy>
+  owned: ReturnType<typeof workspaceSnapshotOperationPolicy>,
+  freeze?: WorkspaceFrozenAdmission
 ) {
+  const assertOwner = () => {
+    owned.currentAuthority();
+    if (
+      freeze &&
+      !owned.mutationAdmission.ownsRecoveryOrigin(input.workspaceId, freeze, {
+        captureId: input.backupId,
+      })
+    )
+      refuse('recovery-required');
+  };
+  assertOwner();
   const container = privateRoot(owned.verification.stagingParent, input.workspaceId);
   try {
+    const metadata = freeze
+      ? await readWorkspaceSnapshotMetadata({
+          ...owned.verification,
+          dataRoot: owned.dataRoot,
+          ...input,
+          allowPreparedMove: true,
+        })
+      : undefined;
+    assertOwner();
     const result = await stageWorkspaceBackup({
       ...owned.verification,
       bundleRoot: join(
@@ -2708,13 +2760,19 @@ export async function inspectWorkspaceSnapshot(
         input.workspaceId,
         input.backupId
       ),
-      snapshotSource: workspaceSnapshotLocalSource(input, owned),
+      snapshotSource: freeze
+        ? {
+            dataRoot: owned.dataRoot,
+            source: { kind: 'local-snapshot', ...input },
+          }
+        : workspaceSnapshotLocalSource(input, owned),
       expectedWorkspaceId: input.workspaceId,
       expectedSourceDeploymentId: readDataRootLayoutMarker(owned.dataRoot).deploymentId,
-      purpose: 'backup',
+      purpose: metadata?.manifest.purpose ?? 'backup',
+      ...(freeze ? { allowPreparedMove: true } : {}),
       candidateRoot: join(container.container, 'verified'),
     });
-    owned.currentAuthority();
+    assertOwner();
     return result;
   } finally {
     rmSync(container.container, { recursive: true, force: true });

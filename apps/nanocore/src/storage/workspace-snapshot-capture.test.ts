@@ -100,12 +100,13 @@ import {
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import * as databaseOwner from './db.js';
-import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb } from './db.js';
+import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
 import {
   createWorkspaceBackup,
   readBlockers,
+  readWorkspaceRecoveryBlockers,
   runWorkspaceSnapshotMaintenance,
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
@@ -755,12 +756,17 @@ describe('C-a snapshot authoritative blockers', () => {
         f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
       }
     } else {
-      const move = await createWorkspaceBackup({ ...f.input(), purpose: 'move' });
+      await shutdownControlStoreWorkerClient();
+      const move = await createWorkspaceBackup({
+        ...f.input(),
+        source: { kind: 'stopped-data-root', dataRoot: f.dataRoot },
+        bundleRoot: join(f.root, 'stopped-move'),
+        purpose: 'move',
+      });
       expect(move.disposition).toBe('prepared');
       endRecoveryAdmission(f.coreDb, move.manifest.backupId, 'abandoned');
       abandonCapture(db, workspaceId, move.manifest.backupId);
-      await shutdownControlStoreWorkerClient();
-      // A new process lifetime must inspect the retained row, rather than inherit the old MOVE gate.
+      // A fresh Store reads the stopped capture's retained Core scalar authority.
       source = {
         ...f.source,
         store: new FsStore({ dataRoot: f.dataRoot }),
@@ -2880,7 +2886,7 @@ describe('C-a independent sealed generations', () => {
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
     expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-    const db = openWorkspaceDb(f.dataRoot, workspaceId);
+    const db = openWorkspaceReadDb(f.dataRoot, workspaceId);
     databaseHandles.push(db);
     expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({
       captureId: input.backupId,
@@ -2888,11 +2894,11 @@ describe('C-a independent sealed generations', () => {
       state: 'active',
       endedAt: null,
     });
-    expect(readBlockers({ ...f, workspaceId })).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'snapshot', reference: { backupId: input.backupId } }),
-      ])
-    );
+    // Ordinary reads preserve quarantine; only the exact selected census omits its own pin.
+    expect(readBlockers({ ...f, workspaceId })).toEqual([unavailable]);
+    expect(
+      readWorkspaceRecoveryBlockers({ ...f, workspaceId }, { captureId: input.backupId })
+    ).toEqual([]);
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
   });
 
