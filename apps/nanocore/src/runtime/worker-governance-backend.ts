@@ -1479,11 +1479,13 @@ export function openShellFilesystemGrantsFromPackagePolicy(
 export function openShellNetworkEndpointsFromPackagePolicy(
   environmentPackage: AgentEnvironmentPackage
 ): WorkerNetworkEndpoint[] {
-  return (environmentPackage.policy.network?.rules ?? []).flatMap((rule) => {
+  const names = new Set<string>();
+  return (environmentPackage.policy.network?.rules ?? []).map((rule) => {
     if (
       !isRecord(rule) ||
       rule.action !== 'allow' ||
       typeof rule.port !== 'number' ||
+      typeof rule.protocol !== 'string' ||
       !Array.isArray(rule.binaries) ||
       !rule.binaries.every((binary) => typeof binary === 'string') ||
       rule.binaries.length === 0 ||
@@ -1495,15 +1497,19 @@ export function openShellNetworkEndpointsFromPackagePolicy(
           `OpenShell policy cannot project encoded-slash authority: ${String(rule.id)}`
         );
       }
-      return [];
+      throw new Error('OpenShell policy contains an unprojectable network grant.');
     }
     const name = rule.id.replaceAll('-', '_');
     if (name === 'openkit_worker_control' || name === 'openkit_worker_inference') {
       if ('allowEncodedSlash' in rule) {
         throw new Error(`OpenShell policy cannot project encoded-slash authority: ${rule.id}`);
       }
-      return [];
+      throw new Error('OpenShell policy contains a reserved network endpoint name.');
     }
+    if (names.has(name)) {
+      throw new Error('OpenShell policy contains colliding network endpoint names.');
+    }
+    names.add(name);
     let exactRules: WorkerNetworkEndpoint['rules'];
     if (rule.rules !== undefined) {
       if (!Array.isArray(rule.rules) || rule.rules.length === 0) {
@@ -1524,20 +1530,18 @@ export function openShellNetworkEndpointsFromPackagePolicy(
       });
     }
 
-    return [
-      WorkerNetworkEndpointSchema.parse({
-        ...(rule.access === 'read-only' || rule.access === 'read-write'
-          ? { access: rule.access }
-          : {}),
-        ...('allowEncodedSlash' in rule ? { allowEncodedSlash: rule.allowEncodedSlash } : {}),
-        binaries: rule.binaries,
-        host: rule.host,
-        name,
-        port: rule.port,
-        ...(typeof rule.protocol === 'string' ? { protocol: rule.protocol } : {}),
-        ...(exactRules ? { rules: exactRules } : {}),
-      }),
-    ];
+    return WorkerNetworkEndpointSchema.parse({
+      ...(rule.access === 'read-only' || rule.access === 'read-write'
+        ? { access: rule.access }
+        : {}),
+      ...('allowEncodedSlash' in rule ? { allowEncodedSlash: rule.allowEncodedSlash } : {}),
+      binaries: rule.binaries,
+      host: rule.host,
+      name,
+      port: rule.port,
+      ...(typeof rule.protocol === 'string' ? { protocol: rule.protocol } : {}),
+      ...(exactRules ? { rules: exactRules } : {}),
+    });
   });
 }
 

@@ -479,6 +479,94 @@ it.each([
   expect(imported?.body).toEqual(expectedBytes);
 });
 
+describe('exact AEP network projection', () => {
+  const grant = {
+    action: 'allow',
+    id: 'git-read',
+    host: 'git.example.test',
+    port: 443,
+    protocol: 'rest',
+    access: 'read-only',
+    purpose: 'Read Git repositories',
+    scope: 'session',
+    binaries: ['/usr/bin/git'],
+  };
+
+  it('refuses distinct AEP ids that collide after endpoint name projection', async () => {
+    const pkg = await createNanoHostPackage();
+    pkg.policy.network!.rules = [
+      grant,
+      { ...grant, id: 'git_read', host: 'other-git.example.test' },
+    ];
+
+    // Worker Sandbox Freedom Policy: materialized network policy must equal the AEP allowlist.
+    expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+  });
+
+  it.each([
+    'openkit-worker-control',
+    'openkit_worker_control',
+    'openkit-worker-inference',
+    'openkit_worker_inference',
+  ])('refuses unsupported reserved endpoint %s instead of omitting it', async (id) => {
+    const pkg = await createNanoHostPackage();
+    pkg.policy.network!.rules = [{ ...grant, id }];
+
+    expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+  });
+
+  it.each(['id', 'host', 'port', 'protocol', 'binaries'] as const)(
+    'refuses an allow rule without %s instead of omitting or completing it',
+    async (field) => {
+      const pkg = await createNanoHostPackage();
+      const { [field]: _omitted, ...incomplete } = grant;
+      pkg.policy.network!.rules = [incomplete];
+
+      expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+    }
+  );
+
+  it('refuses an allow rule with no binary constraints instead of omitting it', async () => {
+    const pkg = await createNanoHostPackage();
+    pkg.policy.network!.rules = [{ ...grant, binaries: [] }];
+
+    expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+  });
+
+  it('preserves distinct enforceable endpoint tuples', async () => {
+    const pkg = await createNanoHostPackage();
+    pkg.policy.network!.rules = [
+      grant,
+      {
+        ...grant,
+        id: 'package-read',
+        host: 'packages.example.test',
+        port: 8443,
+        binaries: ['/usr/local/bin/node'],
+      },
+    ];
+
+    expect(openShellNetworkEndpointsFromPackagePolicy(pkg)).toEqual([
+      {
+        name: 'git_read',
+        host: 'git.example.test',
+        port: 443,
+        protocol: 'rest',
+        access: 'read-only',
+        binaries: ['/usr/bin/git'],
+      },
+      {
+        name: 'package_read',
+        host: 'packages.example.test',
+        port: 8443,
+        protocol: 'rest',
+        access: 'read-only',
+        binaries: ['/usr/local/bin/node'],
+      },
+    ]);
+  });
+});
+
 describe('encoded-slash Core policy intent', () => {
   const endpoint = {
     name: 'package_read',
