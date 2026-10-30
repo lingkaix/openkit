@@ -32,7 +32,7 @@ updated: 2026-10-17
 
 Skills are first-class, independently versioned worker resources. A Skill may arrive alone, through an Agent Plugin, or as an agent-submitted candidate; its version and selection must not depend on publishing a new community plugin. OpenKit retains exact immutable content so a later comparison, promotion, or rollback identifies the actual instructions, scripts, and supporting files supplied to a worker.
 
-This contract replaces the earlier future-only entry conditions with the requested target. Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency. Catalog lifecycle and native Skill loading remain partially implemented; the current projection below names the remaining integration and acceptance work.
+Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency. Catalog lifecycle and native Skill loading remain partially implemented; the current projection below names the remaining integration and acceptance work.
 
 ## Goals / Non-goals
 
@@ -40,7 +40,7 @@ Cover creation, import, enumeration, inspection, content comparison, candidate s
 
 ## Background
 
-The earlier Draft preserved useful integrity, pointer, pin, AEP, and restart constraints but excluded a current catalog. The present product requirement establishes the need for real worker Skills and independent evolution. Plugin packaging distributes resources; it is not their version authority.
+Worker Skills evolve independently. Plugin packaging distributes resources; it is not their version authority.
 
 ## Decision
 
@@ -146,7 +146,7 @@ Reuse NanoCore storage, command, permission, audit, composed setup, AEP, and run
 
 ## Current Implementation Projection
 
-The native API and CLI expose version inspection, update checks, comparison, removal, purge and candidate withdrawal. The prepared Web Catalog source projects those operations through retained Skill history, exact file downloads, inventory comparison, source checks, explicit removal and confirmed purge, and candidate withdrawal. Existing Catalog import, candidate decision, default selection and pin controls retain their ordinary behavior and current pointer checks. Publication remains pending actual P20 main integration and the final Web checks; this source preparation establishes no physical Worker delivery or real-use acceptance.
+The native API and CLI expose version inspection, update checks, comparison, removal, purge and candidate withdrawal. The Web Catalog projects those operations through retained Skill history, exact file downloads, inventory comparison, source checks, explicit removal and confirmed purge, and candidate withdrawal. Existing Catalog import, candidate decision, default selection and pin controls retain their ordinary behavior and current pointer checks. These management surfaces establish no physical Worker delivery or real-use acceptance.
 
 The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
 

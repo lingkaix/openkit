@@ -90,7 +90,7 @@ Secret values must be injected outside agent prompt context.
 
 Each concrete injection path MUST define where the secret is visible, how long it is valid, how it is revoked, which backend capability it requires, and which non-secret evidence it records.
 
-The current NanoCore realization uses one encrypted-file Vault backend for both local and server deployment modes. That realization does not change the abstract Vault concepts or make ciphertext, authenticated metadata, or the external master-key file normal workspace storage.
+Vault ciphertext, authenticated backend metadata, and the external master-key file are not normal Workspace storage.
 
 The injection boundary is invariant across deployment shapes. Desktop-embedded, server, container, remote, and managed deployments all keep secret values inside a vault backend or a Core-controlled injection path, and agents receive credentials only through an approved injection path such as a gateway, proxy, or adapter mechanism. No deployment shape, release artifact, container image, or operator procedure may require writing a secret value into a prohibited surface in order to work; a shape that appears to require it is unsupported until an injection path covers it.
 

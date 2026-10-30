@@ -302,7 +302,7 @@ General authority-bearing field classification and required-feature fail-closed 
 
 This spec owns only the manifest-specific classification:
 
-- New fields under `workspace`, `vault`, `policy`, `sandbox`, `providers`, `mcp`, `tools`, `resources`, `scale`, `observability`, or `lifecycle` are authority-bearing by default; this spec is the place that may explicitly mark a specific field as descriptive metadata, and no field is currently so marked.
+- New fields under `workspace`, `vault`, `policy`, `sandbox`, `mcp`, `tools`, `resources`, `scale`, `observability`, or `lifecycle` are authority-bearing by default; this spec is the place that may explicitly mark a specific field as descriptive metadata, and no field is currently so marked.
 - Manifest writers SHOULD gate new behavior with `requiredFeatures` from the shared feature registry; `minCoreVersion` is the discouraged escape hatch per the schema evolution spec.
 - Required backend capabilities remain the correct gate when the requirement is a backend property rather than a reader-semantics property.
 
@@ -387,14 +387,15 @@ An AEP MCP catalog record carries only worker-safe selected supply metadata and 
 
 ## Readiness States
 
-Agent readiness is product-visible and should use these categories:
+The following states are internal Agent Manifest resolution values, as [Core Agent Supply](../core/agent-supply.md#readiness) requires. Product-visible protocol records project only a readiness and health summary under the protocol owner.
 
 - `ready`: all required refs, grants, catalogs, and backend capabilities are available.
 - `degraded`: launch is allowed, but an optional capability is missing or reduced.
 - `blocked`: launch must not start because a required dependency, grant, policy decision, or backend capability is missing.
-- `stale`: a running session uses an older snapshot and should be relaunched or refreshed at a safe point.
+- `disabled`: the configured Agent is disabled.
+- `unknown`: readiness has not been established.
 
-Catalog-level `disabled` and `unknown` states remain catalog or setup-discovery states. A resolver should project them into launch diagnostics rather than treating them as AEP launch states: disabled setup is `blocked` for launch, and unknown setup remains unresolved until the resolver can produce `ready`, `degraded`, or `blocked`.
+The resolver maps `disabled` to a blocked launch and leaves `unknown` unresolved until it establishes `ready`, `degraded`, or `blocked`. A stale running snapshot follows the existing AgentSession reuse and replacement owners; it is not another readiness value.
 
 Admission may report `degraded` when a required worker credential is owned by an explicit manifest declaration whose durable grant can be validated only by the existing turn-scoped AEP resolver. This is a bounded preflight compromise, not proof that the credential exists: the AEP resolver remains the sole grant authority and must fail before provider, sandbox, or other external effects when the grant, reference, lifetime, target session, injection path, or backend sink is invalid. Provider-profile credentials that are not manifest-owned must still be resolved by the existing provider credential resolver before admission. `disabled`, `blocked`, and `unknown` setups must not invoke the turn executor; only `ready` and this explicit `degraded` case may proceed.
 
@@ -445,7 +446,6 @@ Worker governance backends materialize the AEP into:
 - `/openkit/sessions/<agent-session-id>/config/package.json`
 - the exact governed image and generic `openkit-worker-shim` entrypoint
 - skill directories or references
-- provider endpoint config
 - distinct sandbox-local `/worker-control/*`, `/inference/*`, and `/capabilities/*` Integration bindings plus non-secret token references
 - exact sandbox network, credential, process, filesystem, and backend policy
 - workspace roots and generated files
@@ -492,7 +492,7 @@ Current production selects only the configured NanoHost RuntimeTarget and resolv
 
 This specification remains `Partial` for the provider-attachment, image real-use, and readiness evidence named below, and for persistent catalog versions, Plugin-reference expansion, exact Skill selection, and verified resource delivery. The MCP capability plane is implemented under its own owner; concrete Provider/model configuration and Workspace/User composition are not those missing catalog features.
 
-Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. The 2026-07-21 refreshed arm64 images build locally and pass their complete image smoke checks. The earlier minimal images passed stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks on A1, but refreshed-image stock OpenShell verification remains open under `docs/specs/20260721-worker_execution_environment_images.md`. The shared product-visible readiness projection can still report `ready` before provider/model compatibility and the fixed control-binary set are resolved; later AEP resolution fails closed, but this earlier false-ready projection keeps the specification Partial until the existing setup resolver owns both decisions.
+Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. Real-image acceptance remains governed by [Worker Execution Environment Images](20260721-worker_execution_environment_images.md). The shared product-visible readiness projection can still report `ready` before provider/model compatibility and the fixed control-binary set are resolved; later AEP resolution fails closed, but this earlier false-ready projection keeps the specification Partial until the existing setup resolver owns both decisions.
 
 ## Scale Fields
 
@@ -611,7 +611,7 @@ Verification should start with a regression whose expected failure is loss or re
 - Server Manifest, Workspace binding, selected profile, and User preference compose one authored setup before resolution. Workspace composition may add Workspace-owned resources; catalogs, grants, policy, runtime proof, governance materialization, and adaptation remain non-authoring.
 - The selected Codex and OpenCode adapters are relay-only for LLM authority; their deployment pins are recorded in `containers/worker-runtimes/versions.json`. Direct LLM Provider credentials and endpoints are excluded from dispatchable worker supply. Pi's SDK-host adapter now consumes that relay; the former direct-provider-only JSON-mode adapter was non-ready in the clean logical-model target until that accepted relay-capable replacement.
 - Runtime-native launch authority is adapter-derived from AEP snapshots; admitted public native environment settings remain authored inputs under Manifest Shape rather than adapter-derived authority. The current adapter interface does not provide verified Skill/plugin supply; its governed generated-file target is owned by `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
-- Readiness is a redacted pre-launch diagnostic with `ready`, `degraded`, `blocked`, and `stale` target states.
+- Readiness is a redacted pre-launch diagnostic using Core Agent Supply's internal vocabulary; product-visible records retain the protocol-owned summary.
 - Scale fields in manifests are intent. Scheduler records decide actual placement, queueing, reuse, and capacity.
 - Host execution is not a valid worker AEP backend target.
 - Workspace-scoped AEP snapshot metadata belongs in workspace-owned storage. Runtime/session directories may hold generated file-backed materialization copies and backend receipts.

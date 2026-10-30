@@ -40,9 +40,9 @@ updated: 2026-08-22
 
 An OpenKit workspace is not a folder. Work data may live in a network-addressable Git repository, an object-store prefix, a provider file API, or bounded OpenKit-owned records and Artifacts, and the same source is typically used by several agents across many turns.
 
-Today the only place that can describe such a source is the `workspace` section of each agent manifest, which would force every manifest to embed endpoint details and would spread authorization, audit, and configuration for one data source across N documents.
+The Workspace source catalog declares each endpoint once, so Agent Manifests can reference the same source without duplicating its configuration.
 
-This spec separates three questions that the manifest currently answers alone: what data exists (the workspace source catalog, owned here), what one agent gets (manifest source references bound to slots), and how bytes move (materialization strategy, owned by the session-static workspace spec).
+This spec separates three questions: what data exists (the workspace source catalog, owned here), what one agent gets (manifest source references bound to slots), and how bytes move (materialization strategy, owned by the session-static workspace spec).
 
 The Workspace is the logical governance and source boundary, not one filesystem directory or a promise that NanoCore holds a complete local copy. One Workspace may register network-addressable Git repositories, object or provider-file sources, and other supported external sources while bounded canonical NanoCore records, Knowledge, Artifacts, uploads, and generated context remain with their existing owners. Registration makes a source selectable under current authority; it does not copy source bytes, expose the source to every Agent, include it in every Turn, authorize external writeback, or turn NanoCore into the registered source's storage service.
 
@@ -114,7 +114,7 @@ Field rules:
 - `id` is a workspace-unique, stable, human-readable identifier; it is the value manifests reference and the value that flows into lineage.
 - `kind` uses the source-kind vocabulary of the session-static workspace spec (`git`, `workspace-file`, `workspace-dir`, `s3`, `r2`, `gcs`, `azure-blob`, `box`, `s3-files`, `http-archive`, `openkit-artifact`, and future kinds behind required features).
 - `locator` carries non-secret addressing only: URLs, buckets, prefixes, refs, immutable commits, and folder ids. Secret values and tokens are forbidden. Source kinds that admit catalog-bound credentials use `vaultGrantRef`; first-release Git clone and fetch use the separately configured user-injected read-only runtime-env token and no catalog source grant.
-- A `git` locator used by an Agent Runtime MUST contain a network-addressable repository URL and an immutable commit pin. A branch name alone is not the materialization identity. A NanoCore host path, `repositoryResourceId` that resolves only to such a path, unpublished local commit, bundle fallback, or implicit host checkout is not a valid runtime locator.
+- A `git` locator used by an Agent Runtime MUST contain exactly `url` and `commit`. The URL must use credential-free HTTPS without a query or fragment, and the commit must be a full immutable Git object id. A branch name alone is not the materialization identity. A NanoCore host path, `repositoryResourceId` that resolves only to such a path, unpublished local commit, bundle fallback, or implicit host checkout is not a valid runtime locator.
 - Source data that exceeds an accepted bounded NanoCore record, upload, Artifact, evidence, or handoff contract MUST use an external object-store or provider-file source. NanoCore stores only its non-secret locator, policy, and immutable version or digest lineage.
 - `access` is the maximum access class the source permits (`read-only` or `read-write`); slots and manifests may narrow it but never widen it.
 - `allowedSlotKinds` restricts which slot kinds may receive this source.
@@ -210,7 +210,7 @@ Future cloud/object adapters must resolve a supported immutable version and veri
 
 ## Resolved Decisions
 
-Previously open questions are resolved by accepted V1 defaults: per-source `syncHints` are suggestions only, and the materializer may choose a safer strategy; user-scope personal sources and user-scope catalogs are deferred until cross-workspace source ownership, tenancy, and revocation semantics are designed.
+Per-source `syncHints` are suggestions only, and the materializer may choose a safer strategy. User-scope personal sources and catalogs remain deferred until cross-workspace source ownership, tenancy, and revocation semantics are designed.
 
 ## Deferred / Future Work
 

@@ -127,7 +127,7 @@ The implementation may place this under an AEP `credentials` section or under an
 {
   "id": "foo_api",
   "requirementId": "github-token",
-  "vaultGrantId": "grant_foo_api",
+  "vaultGrantId": "grant_019a4f10-1000-7000-8000-000000000001",
   "visibility": "sandbox-provider",
   "provider": {
     "instanceId": "provider_foo_api",

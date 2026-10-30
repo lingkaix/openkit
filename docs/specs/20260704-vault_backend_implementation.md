@@ -59,7 +59,7 @@ Codex and xAI/Grok provider-subscription credentials use this same store through
 
 `docs/specs/20260703-vault_secret_injection.md` owns the Vault record and injection model, while this spec owns the concrete encrypted storage boundary. `docs/core/vault.md` requires secret values to remain outside prompts, records, logs, normal workspace files, and public diagnostics. `docs/core/storage.md` keeps Vault material outside ordinary storage records.
 
-The prior alternate-backend design created deployment-mode selection, platform-specific persistence, duplicate material and inventory copies, and recovery machinery that were not justified by the accepted one-process, one-data-root, small-deployment baseline. The current authority removes that design and keeps the already implemented encrypted-file path as the sole target.
+The encrypted-file backend serves the accepted one-process, one-data-root, small-deployment baseline without deployment-mode selection or duplicate material stores.
 
 ## Decision
 
@@ -227,7 +227,7 @@ Unlock state owns one mutable master-key `Buffer`, zeros it at explicit lifecycl
 - The audited backend wrapper records resolution success and typed failure, rejects implicit cross-scope use, and supports provider, Codex runtime-file, and generic MCP credential resolution without exposing material. The public issuer creates gateway-only grants with optional exact supported targets; the selected MCP consumer checks them under current Vault authority, and material stays at the Gateway sink. Local fixture coverage does not establish live vendor hosting acceptance.
 - The local and server boot paths both compose the same locked encrypted-file state at `DATA_ROOT/server/vault/`, load the external key only through the bounded key-file path, zero the temporary buffer, report truthful degraded readiness, and reuse one process Vault state through shutdown.
 - Provider `secretRef: vault://<referenceId>` resolution uses the audited wrapper for Gateway and Quick Chat calls, converts public failures to fixed provider-unavailable responses, and keeps typed Vault detail only in redacted internal evidence.
-- Config, App API, storage, workspace-import, generated OpenAPI, and bundled-client projections admit only `encrypted-file`; the prior Keychain backend source, dedicated tests, platform adapters, backend selector, and alternate backend-kind branches are deleted.
+- Config, App API, storage, workspace-import, generated OpenAPI, and bundled-client projections admit only `encrypted-file`.
 
 The encrypted-file-only backend convergence, generic Core lifecycle helpers, startup composition, public provider-subscription routes, and pi-ai credential consumers are implemented and tested. The Vault backend itself still does not create accounts, infer bindings, expose provider-subscription operations, or release pairs. This spec remains `Partial` because the explicitly reviewed provider-pair cleanup surface owned by `docs/specs/20260721-provider_subscription_accounts.md`, credential-backed provider verification, and the public gateway-only grant cutover for selected MCP use remain outstanding; no backend selector, alternate store, automatic repair, or second credential authority is introduced.
 
