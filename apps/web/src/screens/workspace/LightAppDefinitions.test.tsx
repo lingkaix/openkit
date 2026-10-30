@@ -1,4 +1,4 @@
-import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
+import { LIGHT_APP_CAPABILITIES, LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -86,12 +86,9 @@ function fixture() {
     ...liveAppFixture(),
     schema: null,
     capabilities: {
+      ...LIGHT_APP_CAPABILITIES,
       fieldTypes: [],
       filterOperators: [],
-      maxPerPage: 100,
-      maxRecords: 10000,
-      maxBatchEntries: 50,
-      maxFilterBytes: 2048,
     },
   });
   vi.spyOn(operations, 'kernel.snapshots.list').mockResolvedValue({
