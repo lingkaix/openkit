@@ -48,6 +48,7 @@ import {
   readWorkspaceSkillSnapshot,
 } from '../catalog/resource-catalog.js';
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
+import { OperationError } from '../operation-error.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
@@ -1414,14 +1415,24 @@ function resolveWorkerCredentialDeclarations(
       ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
     }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
 
-    appendCredentialDeclarationArtifacts({
-      artifacts,
-      declaration,
-      grant,
-      input,
-      material: vaultSecretMaterialToString(material),
-      reference,
-    });
+    try {
+      appendCredentialDeclarationArtifacts({
+        artifacts,
+        declaration,
+        grant,
+        input,
+        material: vaultSecretMaterialToString(material),
+        reference,
+      });
+    } catch (cause) {
+      if (cause instanceof TurnStartValidationError) throw cause;
+      throw new OperationError(
+        'credential_materialization_failed',
+        'Credential materialization failed.',
+        400,
+        { cause }
+      );
+    }
     input.credentialReceiptSink?.({
       agentSessionId: input.agentSessionId,
       backendSummary: injection.backendSummary,
@@ -1452,7 +1463,7 @@ function requireDeclarationGrant(
   const grant = getVaultGrant(coreDb, declaration.vaultGrantId);
 
   if (!grant) {
-    throw new Error(`Vault grant not found: ${declaration.vaultGrantId}`);
+    throw new TurnStartValidationError('vault_grant_not_found', 'Credential grant is unavailable.');
   }
 
   return grant;
@@ -1473,7 +1484,10 @@ function requireDeclarationReference(
   const reference = getVaultReference(coreDb, grant.vaultReferenceId);
 
   if (!reference) {
-    throw new Error(`Vault reference not found: ${grant.vaultReferenceId}`);
+    throw new TurnStartValidationError(
+      'vault_reference_inactive',
+      'Credential reference is unavailable.'
+    );
   }
 
   return reference;
@@ -1499,52 +1513,43 @@ function assertCredentialGrantMatchesDeclaration(
 ): void {
   const requiredInjectionPath = declarationRequiredInjectionPath(declaration);
 
-  if (grant.vaultReferenceId !== reference.referenceId) {
-    throw new Error(`Vault grant reference does not match declaration: ${declaration.id}`);
-  }
-  if (grant.targetAgentSessionId !== null && grant.targetAgentSessionId !== input.agentSessionId) {
-    throw new Error(`Vault grant targets a different AgentSession: ${declaration.id}`);
-  }
-  if (grant.ownerScope !== reference.ownerScope) {
-    throw new Error(`Vault grant owner scope does not match reference: ${declaration.id}`);
-  }
   if (
-    declaration.requirementId !== undefined &&
-    (grant.ownerScope !== 'workspace' || grant.workspaceId !== input.workspaceId)
+    grant.vaultReferenceId !== reference.referenceId ||
+    (grant.targetAgentSessionId !== null && grant.targetAgentSessionId !== input.agentSessionId) ||
+    grant.ownerScope !== reference.ownerScope ||
+    (declaration.requirementId !== undefined
+      ? grant.ownerScope !== 'workspace' || grant.workspaceId !== input.workspaceId
+      : grant.ownerScope !== 'server') ||
+    grant.workspaceId !== reference.workspaceId ||
+    grant.userId !== reference.userId ||
+    (grant.ownerScope === 'user' &&
+      (grant.userId === null || grant.userId !== input.responsibleUserId)) ||
+    (grant.workspaceId !== null && grant.workspaceId !== input.workspaceId) ||
+    (grant.targetAgentId !== null && grant.targetAgentId !== input.agentId) ||
+    grant.targetCapabilityId !== null
   ) {
-    throw new Error(`Credential requirement binding must use a Workspace grant: ${declaration.id}`);
-  }
-  if (declaration.requirementId === undefined && grant.ownerScope !== 'server') {
-    throw new Error(
-      `Direct Server credential declaration requires a Server grant: ${declaration.id}`
+    throw new TurnStartValidationError(
+      'credential_declaration_invalid',
+      'Credential declaration does not match the current grant.'
     );
   }
-  if (grant.workspaceId !== reference.workspaceId || grant.userId !== reference.userId) {
-    throw new Error(`Vault grant owner identity does not match reference: ${declaration.id}`);
+  if (reference.status !== 'active') {
+    throw new TurnStartValidationError(
+      'vault_reference_inactive',
+      'Credential reference is inactive.'
+    );
   }
-  if (
-    grant.ownerScope === 'user' &&
-    (grant.userId === null || grant.userId !== input.responsibleUserId)
-  ) {
-    throw new Error(`Vault grant targets a different responsible user: ${declaration.id}`);
-  }
-  if (grant.workspaceId !== null && grant.workspaceId !== input.workspaceId) {
-    throw new Error(`Vault grant targets a different workspace: ${declaration.id}`);
-  }
-  if (grant.targetAgentId !== null && grant.targetAgentId !== input.agentId) {
-    throw new Error(`Vault grant targets a different agent: ${declaration.id}`);
-  }
-  if (grant.targetCapabilityId !== null) {
-    throw new Error(`Vault grant targets an unproven capability: ${declaration.id}`);
-  }
-  if (grant.status !== 'active' || reference.status !== 'active') {
-    throw new Error(`Vault grant and reference must be active: ${declaration.id}`);
+  if (grant.status !== 'active') {
+    throw new TurnStartValidationError('vault_grant_inactive', 'Credential grant is inactive.');
   }
   if (!grant.allowedInjectionPaths.includes(requiredInjectionPath)) {
-    throw new Error(`Vault grant must allow ${requiredInjectionPath} injection: ${declaration.id}`);
+    throw new TurnStartValidationError(
+      'credential_visibility_not_allowed',
+      'Credential visibility is not allowed.'
+    );
   }
   if (grant.expiresAt && grant.expiresAt <= input.now()) {
-    throw new Error(`Vault grant has expired: ${declaration.id}`);
+    throw new TurnStartValidationError('vault_grant_expired', 'Credential grant has expired.');
   }
 }
 
@@ -1613,13 +1618,22 @@ function assertCredentialSinkAvailable(
   declaration: AgentEnvironmentCredentialDeclaration
 ): void {
   if (declaration.visibility === 'sandbox-provider' && !input.providerCredentialSink) {
-    throw new Error(`Provider credential sink is required for declaration: ${declaration.id}`);
+    throw new TurnStartValidationError(
+      'backend_credential_visibility_unsupported',
+      'The backend does not support the credential visibility.'
+    );
   }
   if (declaration.visibility === 'runtime-file' && !input.runtimeFileCredentialSink) {
-    throw new Error(`Runtime-file credential sink is required for declaration: ${declaration.id}`);
+    throw new TurnStartValidationError(
+      'backend_credential_visibility_unsupported',
+      'The backend does not support the credential visibility.'
+    );
   }
   if (declaration.visibility === 'runtime-env' && !input.runtimeEnvCredentialSink) {
-    throw new Error(`Runtime-env credential sink is required for declaration: ${declaration.id}`);
+    throw new TurnStartValidationError(
+      'backend_credential_visibility_unsupported',
+      'The backend does not support the credential visibility.'
+    );
   }
 }
 
@@ -1781,7 +1795,10 @@ function appendCredentialDeclarationArtifacts(
  */
 function vaultUseOwnerScope(grant: VaultGrantRecord): 'server' | 'workspace' {
   if (grant.ownerScope === 'user') {
-    throw new Error(`User-scoped worker credential grants are not supported: ${grant.grantId}`);
+    throw new TurnStartValidationError(
+      'credential_declaration_invalid',
+      'Credential grant scope is not supported.'
+    );
   }
 
   return grant.ownerScope;
@@ -1803,7 +1820,10 @@ function aepVaultGrantScope(grant: VaultGrantRecord): 'agent-session' | 'turn' |
     return grant.lifetime;
   }
 
-  throw new Error(`Worker credential grant lifetime is not supported: ${grant.grantId}`);
+  throw new TurnStartValidationError(
+    'credential_declaration_invalid',
+    'Credential grant lifetime is not supported.'
+  );
 }
 
 /**
@@ -1828,7 +1848,10 @@ function requireCoreDb(input: { readonly coreDb?: CoreDb }): CoreDb {
  */
 function requireVaultBackend(input: { readonly vaultBackend?: () => VaultBackend }): VaultBackend {
   if (!input.vaultBackend) {
-    throw new Error('Vault backend is required for durable provider artifact resolution.');
+    throw new TurnStartValidationError(
+      'credential_materialization_failed',
+      'Credential materialization is unavailable.'
+    );
   }
 
   return input.vaultBackend();
@@ -1839,8 +1862,15 @@ function assertCredentialBackendMatchesReference(
   backend: VaultBackend,
   reference: VaultReferenceRecord
 ): void {
-  if (backend.health().state !== 'available' || backend.kind !== reference.backendKind) {
-    throw new Error('Vault backend is unavailable for worker credential injection.');
+  const state = backend.health().state;
+  if (state === 'locked') {
+    throw new TurnStartValidationError('vault_locked', 'Credential backend is locked.');
+  }
+  if (state !== 'available' || backend.kind !== reference.backendKind) {
+    throw new TurnStartValidationError(
+      'credential_materialization_failed',
+      'Credential materialization is unavailable.'
+    );
   }
   const inventory = backend
     .listReferences({ ownerScope: reference.ownerScope })
@@ -1854,7 +1884,10 @@ function assertCredentialBackendMatchesReference(
     (inventory.workspaceId ?? null) !== reference.workspaceId ||
     (inventory.userId ?? null) !== reference.userId
   ) {
-    throw new Error('Vault reference requires inspection before worker credential injection.');
+    throw new TurnStartValidationError(
+      'credential_materialization_failed',
+      'Credential materialization is unavailable.'
+    );
   }
 }
 

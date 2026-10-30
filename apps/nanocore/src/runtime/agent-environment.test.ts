@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,7 +60,11 @@ import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
-import { createVaultGrant, importWorkspaceVaultGrants } from '../vault/vault-grants.js';
+import {
+  createVaultGrant,
+  importWorkspaceVaultGrants,
+  revokeVaultGrant,
+} from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
@@ -255,6 +260,118 @@ function prepareCredentialAttemptFixture(
 }
 
 describe('agent environment package resolver', () => {
+  it.each([
+    { failure: 'missing-grant', code: 'vault_grant_not_found' },
+    { failure: 'inactive-grant', code: 'vault_grant_inactive' },
+    { failure: 'expired-grant', code: 'vault_grant_expired' },
+    { failure: 'inactive-reference', code: 'vault_reference_inactive' },
+    { failure: 'disallowed-visibility', code: 'credential_visibility_not_allowed' },
+    { failure: 'missing-sink', code: 'backend_credential_visibility_unsupported' },
+    { failure: 'invalid-declaration', code: 'credential_declaration_invalid' },
+  ])('uses stable safe credential errors for $failure', async ({ failure, code }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-credential-errors-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const now = '2026-07-18T00:00:00.000Z';
+    const referenceId = testEntityId('vault', `credential-error-${failure}`);
+    const grantId = testEntityId('grant', `credential-error-${failure}`);
+    const requestedGrantId =
+      failure === 'missing-grant' ? testEntityId('grant', 'absent-credential-grant') : grantId;
+    const agentSessionId = testEntityId('as', `credential-error-${failure}`);
+    const sink = vi.fn();
+    const backend = vi.fn(() => {
+      throw new Error('Unexpected Vault backend access.');
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: USER_TRIGGER_ACTOR.id,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    createVaultReference(coreDb, {
+      referenceId,
+      ownerScope: 'server',
+      displayName: 'Credential error fixture',
+      secretKind: 'provider-api-key',
+      backendKind: 'encrypted-file',
+      backendLocator: 'synthetic-credential-reference',
+    });
+    createVaultGrant(coreDb, {
+      grantId,
+      vaultReferenceId: referenceId,
+      ownerScope: 'server',
+      lifetime: 'agent-session',
+      targetAgentSessionId: agentSessionId,
+      ...(failure === 'invalid-declaration' ? { targetAgentId: 'unrelated-agent' } : {}),
+      ...(failure === 'expired-grant' ? { expiresAt: '2026-07-17T00:00:00.000Z' } : {}),
+      allowedInjectionPaths:
+        failure === 'disallowed-visibility' ? ['gateway-only'] : ['runtime-env'],
+      now: () => '2026-07-16T00:00:00.000Z',
+    });
+    if (failure === 'inactive-grant') revokeVaultGrant(coreDb, { grantId });
+    if (failure === 'inactive-reference') {
+      // Fault only reference state after owner creation to exercise the separate reference refusal.
+      coreDb.sqlite
+        .prepare("UPDATE vault_references SET status = 'unbound' WHERE reference_id = ?")
+        .run(referenceId);
+    }
+    try {
+      const turn = await createTurnFixture('Reject unavailable credential declaration', coreDb);
+      prepareCredentialAttemptFixture(coreDb, turn, agentSessionId);
+      const declarationIds = [randomUUID(), randomUUID()];
+      const failures = declarationIds.map((id) => {
+        try {
+          resolveAgentEnvironmentPackage({
+            captureCoverage: { scope: 'server', value: 'off' },
+            agentSetup: createTestSetup({
+              credentialDeclarations: [
+                {
+                  id,
+                  vaultGrantId: requestedGrantId,
+                  visibility: 'runtime-env',
+                  targetEnvVarName: 'TOKEN',
+                },
+              ],
+              requiredCapabilities: [],
+            }),
+            agentSessionId,
+            backend: { kind: 'openshell' },
+            coreDb,
+            createdAt: now,
+            requestId: randomUUID(),
+            ...(failure === 'missing-sink' ? {} : { runtimeEnvCredentialSink: sink }),
+            turn,
+            triggerActor: USER_TRIGGER_ACTOR,
+            vaultBackend: backend,
+            workspaceCwd: '/workspace/repo',
+            workspaceRoots: [],
+          });
+        } catch (error) {
+          return error;
+        }
+        return undefined;
+      });
+
+      // Worker Credential Access Declarations / Failure Semantics replaces free-text identifiers.
+      for (const error of failures) {
+        expect(error).toBeInstanceOf(Error);
+        expect.soft(error).toMatchObject({ code });
+        const message = (error as Error).message;
+        expect(message.trim()).not.toBe('');
+        for (const identifier of [...declarationIds, requestedGrantId, referenceId])
+          expect.soft(message).not.toContain(identifier);
+      }
+      expect.soft((failures[0] as Error).message).toBe((failures[1] as Error).message);
+      expect(backend).not.toHaveBeenCalled();
+      expect(sink).not.toHaveBeenCalled();
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('binds explicit encoded-slash authority into immutable package and session material identity', async () => {
     const turn = await createTurnFixture('Read packages');
     const resolve = (allowEncodedSlash?: boolean) => {
@@ -1866,42 +1983,44 @@ describe('agent environment package resolver', () => {
       } else {
         vaultUnlockState.lock();
       }
-      const expectedError = {
-        scope: 'Vault reference requires inspection before worker credential injection.',
-        version: 'Vault reference requires inspection before worker credential injection.',
-        health: 'Vault backend is unavailable for worker credential injection.',
+      const expectedCode = {
+        scope: 'credential_materialization_failed',
+        version: 'credential_materialization_failed',
+        health: 'vault_locked',
       }[failure];
       const turn = await createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7791-97f9-e9eb064522fc');
-      expect(() =>
-        resolveAgentEnvironmentPackage({
-          captureCoverage: { scope: 'server', value: 'off' },
-          agentSetup: createTestSetup({
-            credentialDeclarations: [
-              {
-                id: 'github_token',
-                requirementId: 'github-token',
-                targetEnvVarName: 'GITHUB_TOKEN',
-                vaultGrantId: grant.grantId,
-                visibility: 'runtime-env',
-              },
-            ],
-            requiredCapabilities: [],
-          }),
-          agentSessionId: 'as_00000000-0000-7791-97f9-e9eb064522fc',
-          backend: { kind: 'openshell' },
-          coreDb,
-          createdAt: '2026-07-18T00:00:00.000Z',
-          requestId: `req_public_github_${failure}`,
-          runtimeEnvCredentialSink: (credential) =>
-            runtimeEnvCredentials.push(credential.credentialValue),
-          turn,
-          triggerActor: USER_TRIGGER_ACTOR,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      ).toThrow(expectedError);
+      expect(
+        () =>
+          resolveAgentEnvironmentPackage({
+            captureCoverage: { scope: 'server', value: 'off' },
+            agentSetup: createTestSetup({
+              credentialDeclarations: [
+                {
+                  id: 'github_token',
+                  requirementId: 'github-token',
+                  targetEnvVarName: 'GITHUB_TOKEN',
+                  vaultGrantId: grant.grantId,
+                  visibility: 'runtime-env',
+                },
+              ],
+              requiredCapabilities: [],
+            }),
+            agentSessionId: 'as_00000000-0000-7791-97f9-e9eb064522fc',
+            backend: { kind: 'openshell' },
+            coreDb,
+            createdAt: '2026-07-18T00:00:00.000Z',
+            requestId: `req_public_github_${failure}`,
+            runtimeEnvCredentialSink: (credential) =>
+              runtimeEnvCredentials.push(credential.credentialValue),
+            turn,
+            triggerActor: USER_TRIGGER_ACTOR,
+            vaultBackend: () => vaultUnlockState.backend(),
+            workspaceCwd: '/workspace/repo',
+            workspaceRoots: [],
+          })
+        // Failure Semantics: retain backend disagreement refusal using its stable public code.
+      ).toThrow(expect.objectContaining({ code: expectedCode }));
       expect(runtimeEnvCredentials).toEqual([]);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
@@ -2183,7 +2302,6 @@ describe('agent environment package resolver', () => {
 
   it.each([
     {
-      expectedError: 'Credential requirement binding must use a Workspace grant: scope_user',
       grantTarget: {},
       name: 'user',
       referenceScope: {
@@ -2193,7 +2311,6 @@ describe('agent environment package resolver', () => {
       triggerActor: AUTOMATION_TRIGGER_ACTOR,
     },
     {
-      expectedError: 'Credential requirement binding must use a Workspace grant: scope_workspace',
       grantTarget: {},
       name: 'workspace',
       referenceScope: {
@@ -2203,21 +2320,18 @@ describe('agent environment package resolver', () => {
       triggerActor: USER_TRIGGER_ACTOR,
     },
     {
-      expectedError: 'Vault grant targets a different agent: scope_agent',
       grantTarget: { targetAgentId: 'agent_other' },
       name: 'agent',
       referenceScope: { ownerScope: 'server' as const },
       triggerActor: USER_TRIGGER_ACTOR,
     },
     {
-      expectedError: 'Vault grant targets an unproven capability: scope_capability',
       grantTarget: { targetCapabilityId: 'mcp.github.call_tool' },
       name: 'capability',
       referenceScope: { ownerScope: 'server' as const },
       triggerActor: USER_TRIGGER_ACTOR,
     },
   ])('admits the complete declaration list before releasing a valid first credential: $name', async ({
-    expectedError,
     grantTarget,
     name,
     referenceScope,
@@ -2299,56 +2413,58 @@ describe('agent environment package resolver', () => {
     try {
       const turn = await createTurnFixture(`Reject ${name} scope`, coreDb, triggerActor);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e83-a452-cc477903d837');
-      await expect(async () =>
-        resolveAgentEnvironmentPackage({
-          captureCoverage: { scope: 'server', value: 'off' },
-          agentSetup: createTestSetup({
-            credentialDeclarations: [
-              {
-                id: 'valid_first',
-                targetEnvVarName: 'VALID_FIRST_SECRET',
-                vaultGrantId: firstGrantId,
-                visibility: 'runtime-env',
-              },
-              {
-                id: declarationId,
-                ...(name === 'user' || name === 'workspace'
-                  ? { requirementId: `requirement_${name}` }
-                  : {}),
-                targetEnvVarName: 'SCOPE_SECRET',
-                vaultGrantId: grantId,
-                visibility: 'runtime-env',
-              },
-            ],
-            network: [
-              {
-                access: 'read-write',
-                binaries: ['/usr/local/bin/codex'],
-                host: 'api.example.test',
-                id: 'scope-api',
-                port: 443,
-                protocol: 'rest',
-              },
-            ],
-            requiredCapabilities: [],
-          }),
-          agentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
-          backend: {
-            kind: 'openshell',
-          },
-          coreDb,
-          createdAt: now,
-          credentialReceiptSink: receiptSink,
-          requestId: `req_scope_${name}`,
-          runtimeEnvCredentialSink: (credential) =>
-            runtimeEnvCredentials.push(credential.credentialValue),
-          turn,
-          triggerActor,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow(expectedError);
+      await expect(
+        async () =>
+          resolveAgentEnvironmentPackage({
+            captureCoverage: { scope: 'server', value: 'off' },
+            agentSetup: createTestSetup({
+              credentialDeclarations: [
+                {
+                  id: 'valid_first',
+                  targetEnvVarName: 'VALID_FIRST_SECRET',
+                  vaultGrantId: firstGrantId,
+                  visibility: 'runtime-env',
+                },
+                {
+                  id: declarationId,
+                  ...(name === 'user' || name === 'workspace'
+                    ? { requirementId: `requirement_${name}` }
+                    : {}),
+                  targetEnvVarName: 'SCOPE_SECRET',
+                  vaultGrantId: grantId,
+                  visibility: 'runtime-env',
+                },
+              ],
+              network: [
+                {
+                  access: 'read-write',
+                  binaries: ['/usr/local/bin/codex'],
+                  host: 'api.example.test',
+                  id: 'scope-api',
+                  port: 443,
+                  protocol: 'rest',
+                },
+              ],
+              requiredCapabilities: [],
+            }),
+            agentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
+            backend: {
+              kind: 'openshell',
+            },
+            coreDb,
+            createdAt: now,
+            credentialReceiptSink: receiptSink,
+            requestId: `req_scope_${name}`,
+            runtimeEnvCredentialSink: (credential) =>
+              runtimeEnvCredentials.push(credential.credentialValue),
+            turn,
+            triggerActor,
+            vaultBackend: () => vaultUnlockState.backend(),
+            workspaceCwd: '/workspace/repo',
+            workspaceRoots: [],
+          })
+        // Failure Semantics replaces identifier-bearing scope text; complete-list refusal remains.
+      ).rejects.toThrow(expect.objectContaining({ code: 'credential_declaration_invalid' }));
       // Worker Credential Declarations / Shared Resolution Rules: all entries precede release.
       expect(resolve).not.toHaveBeenCalled();
       expect(receiptSink).not.toHaveBeenCalled();
@@ -2407,49 +2523,51 @@ describe('agent environment package resolver', () => {
     try {
       const turn = await createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672');
-      expect(() =>
-        resolveAgentEnvironmentPackage({
-          captureCoverage: { scope: 'server', value: 'off' },
-          agentSetup: createTestSetup({
-            adapter: 'pi',
-            credentialDeclarations: [
-              {
-                id: 'missing_sink',
-                targetEnvVarName: 'ANTHROPIC_API_KEY',
-                vaultGrantId: 'grant_00000000-0000-7e74-bdd2-996eccd67587',
-                visibility: 'runtime-env',
-              },
-            ],
-            network: [
-              {
-                access: 'read-write',
-                binaries: ['/usr/local/bin/node'],
-                host: 'api.anthropic.com',
-                id: 'anthropic-api',
-                port: 443,
-                protocol: 'rest',
-              },
-            ],
-            logicalModelId: 'claude',
-            requiredCapabilities: [],
-          }),
-          agentSessionId: 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672',
-          backend: {
-            kind: 'openshell',
-          },
-          coreDb,
-          createdAt: now,
-          requestId: 'req_missing_sink',
-          runtimeEnvCredentialSink: () => {
-            throw new Error('credential sink failed');
-          },
-          turn,
-          triggerActor: AUTOMATION_TRIGGER_ACTOR,
-          vaultBackend: () => vaultUnlockState.backend(),
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        })
-      ).toThrow('credential sink failed');
+      expect(
+        () =>
+          resolveAgentEnvironmentPackage({
+            captureCoverage: { scope: 'server', value: 'off' },
+            agentSetup: createTestSetup({
+              adapter: 'pi',
+              credentialDeclarations: [
+                {
+                  id: 'missing_sink',
+                  targetEnvVarName: 'ANTHROPIC_API_KEY',
+                  vaultGrantId: 'grant_00000000-0000-7e74-bdd2-996eccd67587',
+                  visibility: 'runtime-env',
+                },
+              ],
+              network: [
+                {
+                  access: 'read-write',
+                  binaries: ['/usr/local/bin/node'],
+                  host: 'api.anthropic.com',
+                  id: 'anthropic-api',
+                  port: 443,
+                  protocol: 'rest',
+                },
+              ],
+              logicalModelId: 'claude',
+              requiredCapabilities: [],
+            }),
+            agentSessionId: 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672',
+            backend: {
+              kind: 'openshell',
+            },
+            coreDb,
+            createdAt: now,
+            requestId: 'req_missing_sink',
+            runtimeEnvCredentialSink: () => {
+              throw new Error('credential sink failed');
+            },
+            turn,
+            triggerActor: AUTOMATION_TRIGGER_ACTOR,
+            vaultBackend: () => vaultUnlockState.backend(),
+            workspaceCwd: '/workspace/repo',
+            workspaceRoots: [],
+          })
+        // Failure Semantics replaces private sink exception text with the stable failure category.
+      ).toThrow(expect.objectContaining({ code: 'credential_materialization_failed' }));
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
