@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { hashPassword } from 'better-auth/crypto';
@@ -120,7 +120,7 @@ export function writeServerBootstrapTokenEmission(
   writeFileSync(
     path,
     [
-      'OpenKit server bootstrap token. This value is shown once and never stored in plaintext.',
+      'OpenKit server bootstrap credential. This owner-only file contains the one-time value in plaintext.',
       `Expires at: ${issue.expiresAt}`,
       `Token: ${issue.token}`,
       '',
@@ -128,6 +128,9 @@ export function writeServerBootstrapTokenEmission(
     { mode: 0o600 }
   );
   chmodSync(path, 0o600);
+  console.warn(
+    `OpenKit server bootstrap credential delivered through its one-time owner-readable file. It expires at ${issue.expiresAt} and cannot be recovered from NanoCore.`
+  );
 
   return { path };
 }
@@ -173,6 +176,20 @@ export async function consumeServerBootstrapToken(
       !verifyOpenKitAccessTokenSecret(input.token, current.tokenHash)
     ) {
       return { status: 'invalid' };
+    }
+    // Remove the delivery before database writes so cleanup failure cannot discard an issued credential.
+    try {
+      rmSync(
+        join(
+          resolveDataRootPath(coreDb.dataRoot, 'server', 'files', 'auth'),
+          'bootstrap-token.txt'
+        ),
+        {
+          force: true,
+        }
+      );
+    } catch {
+      return { status: 'unavailable' };
     }
     coreDb.sqlite
       .prepare(

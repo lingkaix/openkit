@@ -598,10 +598,7 @@ if (mode === 'local') {
 if (mode === 'server') {
   const bootstrap = ensureServerBootstrapToken(coreDb);
   if (bootstrap) {
-    const emission = writeServerBootstrapTokenEmission(dataRoot, bootstrap);
-    console.warn(
-      `OpenKit server bootstrap token written once to ${emission.path}; it expires at ${bootstrap.expiresAt}.`
-    );
+    writeServerBootstrapTokenEmission(dataRoot, bootstrap);
   }
 }
 const workerControlGateway = requireBootValue(

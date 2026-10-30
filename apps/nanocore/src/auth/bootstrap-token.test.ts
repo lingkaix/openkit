@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -12,6 +12,44 @@ import {
 } from './bootstrap-token.js';
 
 describe('server bootstrap token', () => {
+  it('announces completed one-time delivery without material or location and keeps the file header truthful', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-notice-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const coreDb = openCoreDb(dataRoot);
+    const notices = (['info', 'log', 'warn', 'error'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined)
+    );
+    try {
+      applyMigrations(coreDb);
+      const issued = ensureServerBootstrapToken(coreDb, {
+        now: new Date('2026-07-06T00:00:00.000Z'),
+      });
+      expect(issued !== null).toBe(true);
+      const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
+      const notice = notices.flatMap((spy) => spy.mock.calls.flat().map(String)).join(' ');
+
+      // Server-mode bootstrap ceremony: the notice states lifetime and recovery limits safely.
+      expect.soft(/one[- ]time/i.test(notice)).toBe(true);
+      expect.soft(/expir/i.test(notice)).toBe(true);
+      expect.soft(/cannot be recovered/i.test(notice)).toBe(true);
+      for (const privateValue of [issued!.token, emission.path, dataRoot])
+        expect(notice.includes(privateValue)).toBe(false);
+      const contents = readFileSync(emission.path, 'utf8');
+      expect(contents.includes(issued!.token)).toBe(true);
+      expect.soft(/never stored in plaintext/i.test(contents.split('\n')[0] ?? '')).toBe(false);
+      expect(statSync(emission.path).mode & 0o777).toBe(0o600);
+
+      rmSync(emission.path);
+      mkdirSync(emission.path);
+      for (const spy of notices) spy.mockClear();
+      expect(() => writeServerBootstrapTokenEmission(dataRoot, issued!)).toThrow();
+      expect(notices.flatMap((spy) => spy.mock.calls)).toEqual([]);
+    } finally {
+      for (const spy of notices) spy.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('writes a v1 bootstrap setting and preserves descriptive additions through consumption', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-setting-v1-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
@@ -89,7 +127,10 @@ describe('server bootstrap token', () => {
     }
   });
 
-  it('emits once, creates a login-capable owner, and issues the owner server-admin token', async () => {
+  it.each([
+    false,
+    true,
+  ])('emits once and preserves atomic owner creation with cleanup blocked=%s', async (cleanupBlocked) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -103,7 +144,8 @@ describe('server bootstrap token', () => {
         now: new Date('2026-07-06T00:01:00.000Z'),
       });
       const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
-      const consumed = await consumeServerBootstrapToken(coreDb, {
+      expect(statSync(emission.path).mode & 0o777).toBe(0o600);
+      const consumeInput = {
         displayName: 'Owner',
         email: 'owner@example.com',
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -111,7 +153,30 @@ describe('server bootstrap token', () => {
         token: issued!.token,
         tokenExpiresAt: '2026-07-07T00:00:00.000Z',
         now: new Date('2026-07-06T00:02:00.000Z'),
-      });
+      };
+
+      if (cleanupBlocked) {
+        // Fault the delivered destination; failed cleanup must not consume authority or create an owner.
+        rmSync(emission.path);
+        mkdirSync(emission.path);
+        const status = await consumeServerBootstrapToken(coreDb, consumeInput).then(
+          (result) => result.status,
+          () => 'refused'
+        );
+        expect.soft(status === 'consumed').toBe(false);
+        for (const table of ['users', 'account', 'openkit_access_tokens']) {
+          const row = coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+            count: number;
+          };
+          expect.soft(row.count).toBe(0);
+        }
+        const setting = coreDb.sqlite
+          .prepare('SELECT value FROM server_settings WHERE key = ?')
+          .get('auth.bootstrap_token') as { value: string };
+        expect.soft(JSON.parse(setting.value).consumedAt === null).toBe(true);
+        return;
+      }
+      const consumed = await consumeServerBootstrapToken(coreDb, consumeInput);
       const secondConsume = await consumeServerBootstrapToken(coreDb, {
         displayName: 'Owner',
         email: 'owner@example.com',
@@ -145,7 +210,7 @@ describe('server bootstrap token', () => {
 
       expect(issued?.token).toMatch(/^okt_/);
       expect(secondIssue).toBeNull();
-      expect(statSync(emission.path).mode & 0o777).toBe(0o600);
+      expect.soft(existsSync(emission.path)).toBe(false);
       expect(consumed).toMatchObject({
         record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
       });
