@@ -128,6 +128,8 @@ Design load envelope (committed work, not merely offers):
 
 Bound offered work, pending work and read duration. Keep each WAL at or below the existing 32 MiB bound through checkpoints and backpressure, preventing storage growth under blocked readers. WAL age triggers backpressure and is reported for diagnosis; it is not a latency objective.
 
+Queued envelope and binary/echo backing budgets are per owning database. Outstanding commands for that database share one bounded WAL-growth forecast; they do not each reserve the complete WAL allowance. Distinct databases and other file producers still share actual filesystem capacity. Every affected filesystem must admit each new request against its current ordinary or control margin. A failed channel retains its outstanding reservations until the native owner actually exits.
+
 At creation, including the authorized reset, set `auto_vacuum=INCREMENTAL` for all OpenKit-owned databases, including server, Workspace, user and Light App `data.sqlite`; opaque MCP databases remain app-owned.
 
 Run bounded `incremental_vacuum`; enforce `secure_delete=ON` per connection because FAST can leave freelist remnants; checkpoint/truncate after deletion obligations, retrying blocked checkpoints without device-erasure guarantees.

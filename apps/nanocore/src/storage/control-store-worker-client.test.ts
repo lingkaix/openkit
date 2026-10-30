@@ -60,6 +60,7 @@ vi.mock('node:worker_threads', async (load) => {
             const Database = require(workerData.databaseModule);
             const original = Database.prototype.exec;
             function hold() {
+              if (workerData.gate.length > 3 && Atomics.load(workerData.gate, 3) !== workerData.index) return;
               if (workerData.gate.length > 2 && Atomics.load(workerData.gate, 2) === 1) {
                 Atomics.add(workerData.gate, 0, 1);
                 Atomics.wait(workerData.gate, 1, 0);
@@ -91,6 +92,7 @@ vi.mock('node:worker_threads', async (load) => {
               databaseModule: require.resolve('better-sqlite3'),
               gate: new Int32Array(interception.gate),
               point: interception.point,
+              index: interception.workers.length,
             },
           });
         } else {
@@ -704,8 +706,9 @@ describe('control writer parent admission', () => {
   });
 
   it('charges deferred database backing to the existing byte budget before posting', async () => {
-    const f = await poolFixture(1);
+    const f = await poolFixture(2);
     const target = f.scope(0);
+    const sibling = f.scope(1);
     const resume = await f.client.pauseForDataRootBackup(target.database);
     const posted = vi.spyOn(Worker.prototype, 'postMessage');
     const bytes = new Uint8Array(256 * 1024);
@@ -727,6 +730,13 @@ describe('control writer parent admission', () => {
       expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(
         0
       );
+      // A target's 64 MiB backing pressure must not consume a sibling's native admission.
+      // Reuse the same bounded payload so leftover space below one command cannot mask coupling.
+      await expect(
+        f.client.write(sibling.database, [
+          { mode: 'get', sql: 'SELECT length(?) AS sibling_size', parameters: [bytes] },
+        ])
+      ).resolves.toMatchObject([{ mode: 'get', row: { sibling_size: BigInt(bytes.byteLength) } }]);
     } finally {
       resume();
       await Promise.all(accepted);
@@ -916,15 +926,16 @@ describe('control writer parent admission', () => {
     expect(new Set(hosts).size).toBe(5);
   });
 
-  it('shares Material binary admission across four real Workspace workers before posting', async () => {
-    interception.gate = new SharedArrayBuffer(12);
+  it('bounds Material binary admission per database before posting and preserves sibling service', async () => {
+    interception.gate = new SharedArrayBuffer(16);
     interception.point = 'before';
     const gate = new Int32Array(interception.gate);
     Atomics.store(gate, 0, 1); // Setup remains outside the real COMMIT holds.
+    Atomics.store(gate, 3, -1); // Select the actual target host only after its scope is open.
     const f = await productPoolFixture();
     const materials = [];
     for (let index = 0; index < 5; index += 1) {
-      const workspaceId = f.workspaces[Math.min(index, 3)]!.id;
+      const workspaceId = f.workspaces[0]!.id;
       const { materialId } = await f.call(workspaceId, 'material.create', {
         requestId: `create-${index}`,
         title: `Material ${index}`,
@@ -976,6 +987,19 @@ describe('control writer parent admission', () => {
       });
     };
     const post = Worker.prototype.postMessage;
+    const targetPost = vi.spyOn(Worker.prototype, 'postMessage');
+    await f.client.write(knowledgeDatabase, [
+      { mode: 'get', sql: 'SELECT 1 AS value', parameters: [] },
+    ]);
+    const targetCall = targetPost.mock.calls.findIndex(
+      ([request]) => request.database === knowledgeDatabase
+    );
+    const targetHost = interception.workers.indexOf(
+      targetPost.mock.contexts[targetCall] as NativeWorker
+    );
+    expect(targetHost).toBeGreaterThanOrEqual(0);
+    Atomics.store(gate, 3, targetHost);
+    targetPost.mockRestore();
     let admit!: () => void;
     const admitted = new Promise<void>((resolve) => {
       admit = resolve;
@@ -988,20 +1012,19 @@ describe('control writer parent admission', () => {
       post.apply(this, args);
       if (args[0]?.operation === 'material' && ++materialPosts === 4) admit();
     });
-    // Existing process-wide admission is 64 MiB; four maximum-size valid saves fill it exactly.
+    // The accepted per-database binary budget is 64 MiB; four valid 16 MiB saves fill it exactly.
     expect(CONTROL_WORKER_LIMITS.materialPendingBytes).toBe(67_108_864);
     Atomics.store(gate, 0, 0);
-    Atomics.store(gate, 2, 1); // Hold each real host, so no settled reply frees its binary reservation.
+    Atomics.store(gate, 2, 1); // Hold the target COMMIT so no reply frees its binary reservation.
     const accepted = Array.from({ length: 4 }, (_, index) => save(index, 'a'.repeat(16_777_216)));
     const settled = Promise.allSettled(accepted);
     try {
       await admitted;
-      const materialRequests = posted.mock.calls.flatMap(([request], index) =>
-        request.operation === 'material' ? [{ request, host: posted.mock.contexts[index] }] : []
+      const materialRequests = posted.mock.calls.filter(
+        ([request]) => request.operation === 'material'
       );
       expect(materialRequests).toHaveLength(4);
-      expect(new Set(materialRequests.map(({ host }) => host)).size).toBe(4);
-      while (Atomics.load(gate, 0) < 4) await nextTurn();
+      await waitForHold(gate);
       await expect(save(4, 'x')).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
       const capabilityPosts = posted.mock.calls.filter(
         ([request]) => request.operation === 'capability'
@@ -1016,6 +1039,11 @@ describe('control writer parent admission', () => {
       expect(
         posted.mock.calls.filter(([request]) => request.operation === 'material')
       ).toHaveLength(4);
+      const siblingDatabase = `workspace:${workspaceDbPath(f.root, f.workspaces[1]!.id)}`;
+      await expect(
+        f.client.write(siblingDatabase, [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }])
+      ).resolves.toMatchObject([{ mode: 'get', row: { value: 1n } }]);
+      expect(Atomics.load(gate, 1)).toBe(0);
     } finally {
       release(gate);
       await settled;

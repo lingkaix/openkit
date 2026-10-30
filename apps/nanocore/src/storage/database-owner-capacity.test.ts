@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { allocateEntityId, type Item } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
@@ -87,6 +88,47 @@ const bytes = (publicationBytes: bigint) => ({
   extractionBytes: 0n,
   derivativeBytes: 0n,
   publicationBytes,
+});
+
+it('shares one database WAL forecast across commands deferred by its capture hold', async () => {
+  const f = await fixture();
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${workspaceDbPath(f.root, DEMO_WORKSPACE_ID)}`;
+  // The accepted 32 MiB WAL ceiling fits once with small command backing, but never twice.
+  const admission = new FileStorageAdmission(
+    f.root,
+    () => 0n,
+    () => 48n * 1_024n * 1_024n
+  );
+  client.setFileStorageAdmission(f.root, admission);
+  const resume = await client.pauseForDataRootBackup(database);
+  const refused: unknown[] = [];
+  const pending = [1, 2, 3].map((value) =>
+    client
+      .write(database, [{ mode: 'get', sql: 'SELECT ? AS value', parameters: [value] }])
+      .catch((error: unknown) => {
+        refused.push(error);
+        throw error;
+      })
+  );
+  const settled = Promise.allSettled(pending);
+  try {
+    await nextTurn();
+    expect(refused).toEqual([]);
+  } finally {
+    resume();
+    await settled;
+  }
+  // Real native replies follow the outer FULL COMMIT, including after the hold releases.
+  const committed = await Promise.all(pending);
+  expect(
+    committed.map((results) =>
+      results.map((result) => {
+        const value = result.mode === 'get' ? result.row?.value : undefined;
+        return typeof value === 'bigint' ? Number(value) : value;
+      })
+    )
+  ).toEqual([[1], [2], [3]]);
 });
 
 it('shares physical forecasts and reserves the watermark for admitted Turn closeout', async () => {

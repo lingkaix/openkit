@@ -113,17 +113,23 @@ export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
 
 type Success = Extract<ControlWorkerReply, { status: 'ok' }>;
 type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
+/** Native requests own release; the filesystem owner retains all physical admission semantics. */
+type NativeCapacityReservation = Pick<FileStorageReservation, 'release'>;
+/** Queued backing belongs to one database; host attribution preserves it after channel loss. */
+interface DatabaseBacking {
+  inputBytes: number;
+  materialBytes: number;
+}
 
 /** One bounded native host; a failed host never restarts in this coordinator lifetime. */
 interface WriterHost {
   worker: Worker | undefined;
   failed: boolean;
   /** Includes posted binary bytes whose channel failed until actual worker exit. */
-  materialBytes: number;
-  inputBytes: number;
+  readonly backing: Map<string | undefined, DatabaseBacking>;
   pending: number;
   /** Disk forecasts survive failed transport until the worker actually exits. */
-  readonly capacity: Set<FileStorageReservation>;
+  readonly capacity: Set<NativeCapacityReservation>;
 }
 
 /** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
@@ -171,7 +177,7 @@ interface Pending {
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly inputBytes: number;
-  readonly capacity: readonly FileStorageReservation[];
+  readonly capacity: readonly NativeCapacityReservation[];
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
@@ -295,8 +301,7 @@ class ControlStoreWorkerClient {
     () => ({
       worker: undefined,
       failed: false,
-      materialBytes: 0,
-      inputBytes: 0,
+      backing: new Map(),
       pending: 0,
       capacity: new Set(),
     })
@@ -313,8 +318,7 @@ class ControlStoreWorkerClient {
   private readonly outstanding = new Map<string, number>();
   private readonly openings = new Map<string, Opening>();
   private nextId = 0;
-  private materialBytes = 0;
-  private inputBytes = 0;
+  private readonly backing = new Map<string | undefined, DatabaseBacking>();
   private stopping = false;
   private closed = false;
   private shutdownPromise: Promise<void> | undefined;
@@ -323,6 +327,26 @@ class ControlStoreWorkerClient {
   /** The application's one gate survives cold scope close/open for this native client lifetime. */
   private workspaceMutationAdmission: WorkspaceMutationAdmission | undefined;
   private readonly fileAdmissions = new Map<string, FileStorageAdmission>();
+  private readonly walCapacity = new Map<
+    string,
+    { reservation: FileStorageReservation; users: number }
+  >();
+
+  /** Charges each database independently, with exact host ownership until ACK or actual exit. */
+  private adjustBacking(
+    database: string | undefined,
+    inputBytes: number,
+    materialBytes: number,
+    host?: WriterHost
+  ): void {
+    for (const entries of host ? [this.backing, host.backing] : [this.backing]) {
+      const current = entries.get(database) ?? { inputBytes: 0, materialBytes: 0 };
+      current.inputBytes += inputBytes;
+      current.materialBytes += materialBytes;
+      if (current.inputBytes === 0 && current.materialBytes === 0) entries.delete(database);
+      else entries.set(database, current);
+    }
+  }
 
   /** Binds the existing live file policy before native admission, including cold scope opens. */
   setFileStorageAdmission(dataRoot: string, admission: FileStorageAdmission): void {
@@ -336,10 +360,11 @@ class ControlStoreWorkerClient {
     inputBytes: number,
     materialBytes: number,
     creditedCloseout: boolean
-  ): readonly FileStorageReservation[] {
+  ): readonly NativeCapacityReservation[] {
     if (['shutdown', 'close', 'checkpoint', 'reclaim'].includes(command.operation)) return [];
     const path = command.operation === 'open' ? command.path : opening?.path;
-    if (!path) return [];
+    const database = 'database' in command ? command.database : undefined;
+    if (!path || database === undefined) return [];
     const root =
       command.operation === 'open'
         ? (command.dataRoot ?? dirname(path))
@@ -376,19 +401,51 @@ class ControlStoreWorkerClient {
     }
     const stagingBytes = entries.reduce((sum, entry) => sum + BigInt(entry.content.byteLength), 0n);
     const priority = creditedCloseout || isControlCapacityCommand(command) ? 'control' : 'ordinary';
-    const reservations: FileStorageReservation[] = [];
+    const reservations: NativeCapacityReservation[] = [];
     try {
-      reservations.push(
-        admission.forPath(path).reserve(
-          {
-            stagingBytes: 0n,
-            extractionBytes: 0n,
-            derivativeBytes: 0n,
-            publicationBytes: BigInt(CONTROL_STORE_BUDGET.maxWalBytes),
-          },
-          priority
-        )
-      );
+      let wal = this.walCapacity.get(database);
+      if (!wal) {
+        wal = {
+          reservation: admission.forPath(path).reserve(
+            {
+              stagingBytes: 0n,
+              extractionBytes: 0n,
+              derivativeBytes: 0n,
+              publicationBytes: BigInt(CONTROL_STORE_BUDGET.maxWalBytes),
+            },
+            priority
+          ),
+          users: 0,
+        };
+        this.walCapacity.set(database, wal);
+      } else {
+        // Every affected filesystem still needs capacity; ordinary borrowers also keep the margin.
+        admission
+          .forPath(path)
+          .reserve(
+            {
+              stagingBytes: 0n,
+              extractionBytes: 0n,
+              derivativeBytes: 0n,
+              publicationBytes: 0n,
+            },
+            priority
+          )
+          .release();
+      }
+      const shared = wal;
+      shared.users += 1;
+      let released = false;
+      reservations.push({
+        release: () => {
+          if (released) return;
+          released = true;
+          if (--shared.users === 0) {
+            shared.reservation.release();
+            this.walCapacity.delete(database);
+          }
+        },
+      });
       const contentRoot =
         command.operation === 'open'
           ? command.contentMount?.root
@@ -441,10 +498,9 @@ class ControlStoreWorkerClient {
       // Even during producer drain, exit cannot leave a host eligible for later causal work.
       this.fail(host);
       // A failed channel alone cannot prove the worker released its queued bytes. Exit can.
-      this.inputBytes -= host.inputBytes;
-      host.inputBytes = 0;
-      this.materialBytes -= host.materialBytes;
-      host.materialBytes = 0;
+      for (const [database, bytes] of host.backing)
+        this.adjustBacking(database, -bytes.inputBytes, -bytes.materialBytes);
+      host.backing.clear();
       for (const reservation of host.capacity) reservation.release();
       host.capacity.clear();
     });
@@ -526,7 +582,7 @@ class ControlStoreWorkerClient {
     if (
       !closeout &&
       ((this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions ||
-        bytes > CONTROL_WORKER_LIMITS.pendingBytes - this.inputBytes)
+        bytes > CONTROL_WORKER_LIMITS.pendingBytes - (this.backing.get(database)?.inputBytes ?? 0))
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     const physical = realpathSync(database.slice(database.indexOf(':') + 1));
@@ -541,7 +597,7 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     const predecessors = keys.map((key) => this.turnTails.get(key)?.tail);
-    this.inputBytes += bytes;
+    this.adjustBacking(database, bytes, 0);
     if (closeout) closeout.borrowing = true;
     else this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
     const result = this.runOperation(
@@ -564,7 +620,7 @@ class ControlStoreWorkerClient {
     try {
       return await result;
     } finally {
-      this.inputBytes -= bytes;
+      this.adjustBacking(database, -bytes, 0);
       if (closeout) {
         closeout.borrowing = false;
         if (!closeout.active) this.releaseOutstanding(database);
@@ -824,7 +880,7 @@ class ControlStoreWorkerClient {
     if (
       (this.outstanding.get(database) ?? 0) + requests.length >
         CONTROL_WORKER_LIMITS.pendingTransitions ||
-      this.inputBytes + bytes > CONTROL_WORKER_LIMITS.pendingBytes
+      (this.backing.get(database)?.inputBytes ?? 0) + bytes > CONTROL_WORKER_LIMITS.pendingBytes
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     // No await or post occurs between the complete admission check and reservation of all slots.
@@ -962,7 +1018,8 @@ class ControlStoreWorkerClient {
         (Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes ||
           (!this.closeoutCredit(database, input) &&
             Buffer.byteLength(text) >
-              CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes))
+              CONTROL_WORKER_LIMITS.materialPendingBytes -
+                (this.backing.get(database)?.materialBytes ?? 0)))
       )
         throw new ControlStoreWorkerError('busy', 'not-committed');
       const transfer = prepareControlCapabilityTransfer(input);
@@ -1258,8 +1315,7 @@ class ControlStoreWorkerClient {
           for (const reservation of host.capacity) reservation.release();
           host.capacity.clear();
         }
-        this.materialBytes = 0;
-        this.inputBytes = 0;
+        this.backing.clear();
         this.closed = true;
       }
     })();
@@ -1338,7 +1394,8 @@ class ControlStoreWorkerClient {
       command.operation !== 'shutdown' &&
       !closeout &&
       !creditedPublication &&
-      this.inputBytes + inputBytes > CONTROL_WORKER_LIMITS.pendingBytes
+      (this.backing.get(database)?.inputBytes ?? 0) + inputBytes >
+        CONTROL_WORKER_LIMITS.pendingBytes
     )
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     let materialBytes = 0;
@@ -1358,7 +1415,9 @@ class ControlStoreWorkerClient {
         !Number.isSafeInteger(materialBytes) ||
         materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes ||
         (!closeout &&
-          materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes - this.materialBytes)
+          materialBytes >
+            CONTROL_WORKER_LIMITS.materialPendingBytes -
+              (this.backing.get(database)?.materialBytes ?? 0))
       )
         return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
       if (materialParts?.length) {
@@ -1402,7 +1461,7 @@ class ControlStoreWorkerClient {
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       }
     }
-    let capacity: readonly FileStorageReservation[];
+    let capacity: readonly NativeCapacityReservation[];
     try {
       capacity = this.reserveCapacity(
         command,
@@ -1428,10 +1487,7 @@ class ControlStoreWorkerClient {
     }
     const id = this.nextId++;
     const result = new Promise<Success>((resolve, reject) => {
-      this.inputBytes += inputBytes;
-      host.inputBytes += inputBytes;
-      this.materialBytes += materialBytes;
-      host.materialBytes += materialBytes;
+      this.adjustBacking(database, inputBytes, materialBytes, host);
       host.pending += 1;
       for (const reservation of capacity) host.capacity.add(reservation);
       if (closeout) closeout.borrowing = true;
@@ -1591,10 +1647,12 @@ class ControlStoreWorkerClient {
           ? entry.cohort.inputBytes
           : 0
         : entry.inputBytes;
-      this.inputBytes -= releasedInputBytes;
-      entry.host.inputBytes -= releasedInputBytes;
-      this.materialBytes -= entry.materialBytes;
-      entry.host.materialBytes -= entry.materialBytes;
+      this.adjustBacking(
+        'database' in entry.command ? entry.command.database : undefined,
+        -releasedInputBytes,
+        -entry.materialBytes,
+        entry.host
+      );
       for (const reservation of entry.capacity) {
         reservation.release();
         entry.host.capacity.delete(reservation);

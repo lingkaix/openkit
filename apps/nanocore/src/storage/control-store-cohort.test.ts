@@ -279,10 +279,15 @@ describe('eligible native product cohorts', () => {
     const ids = f.frames()[0]!.requests.map(({ id }) => id);
     // Read-only storage-owner graybox setup: measure actual admission cost; never set accounting.
     const admission = f.client as unknown as {
-      readonly inputBytes: number;
-      readonly materialBytes: number;
+      readonly backing: ReadonlyMap<
+        string | undefined,
+        { readonly inputBytes: number; readonly materialBytes: number }
+      >;
     };
-    const usedBytes = () => admission.inputBytes + admission.materialBytes;
+    const usedBytes = () => {
+      const backing = admission.backing.get(lane.database)!;
+      return backing.inputBytes + backing.materialBytes;
+    };
     const observe = <T>(operation: Promise<T>) =>
       operation.then(
         (value) => ({ status: 'fulfilled' as const, value }),
