@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RegisterKnowledgeSourceResponseSchema } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
@@ -79,7 +80,7 @@ async function expectError(response: Response, status: number, code: string, dat
   const body: unknown = response.headers.get('content-type')?.includes('application/json')
     ? JSON.parse(text)
     : text;
-  expect.soft(body).toMatchObject({ protocolVersion: '0.6.0', code });
+  expect.soft(body).toMatchObject({ protocolVersion: PROTOCOL_VERSION, code });
   expect.soft(Buffer.byteLength(text)).toBeLessThanOrEqual(64 * 1024);
   expect.soft(text).not.toContain(ORIGINAL.trim());
   expect.soft(text).not.toContain('Harmless literal original');

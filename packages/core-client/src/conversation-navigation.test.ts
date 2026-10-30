@@ -1,5 +1,6 @@
+import { PROTOCOL_VERSION as CURRENT_PROTOCOL } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createCoreClient } from './client.js';
+import { createCoreClient as createClient } from './client.js';
 
 describe('conversation navigation client', () => {
   it('reads the selected Workspace projection and rejects malformed rows', async () => {
@@ -25,3 +26,21 @@ describe('conversation navigation client', () => {
     ).rejects.toThrow();
   });
 });
+
+/** Supplies current metadata without consuming the command fixture's response sequence. */
+function createCoreClient(options: Parameters<typeof createClient>[0]) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return createClient({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname === '/api/meta'
+        ? Promise.resolve(
+            Response.json({
+              protocolVersion: CURRENT_PROTOCOL,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          )
+        : fetcher(input, init),
+  });
+}

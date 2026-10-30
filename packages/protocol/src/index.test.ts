@@ -576,7 +576,7 @@ describe('protocol schemas', () => {
   });
 
   it('exports the pinned protocol version', () => {
-    expect(PROTOCOL_VERSION).toBe('0.6.0');
+    expect(PROTOCOL_VERSION).toBe('0.7.0');
   });
 
   it('requires an explicit nullable responsible user on every usage record', () => {

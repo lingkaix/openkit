@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -550,7 +551,7 @@ it.each([
     const message = 'Turn not found: tu_00000000-0000-7577-9378-7e96d0d15fd2';
     if (projection === 'HTTP') {
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+      expect(await response.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
     } else {
       expect(response.status).toBe(200);
       const body = await response.json();

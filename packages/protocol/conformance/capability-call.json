@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "0.6.0",
+  "protocolVersion": "0.7.0",
   "schema": "capability-call",
   "data": {
     "id": "cap_00000000-0000-7dab-b906-9484bf8db5d0",

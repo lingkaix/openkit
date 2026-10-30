@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MetaResponseSchema } from '@openkit/protocol';
+import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { createApp as createNanoCoreApp } from './app.js';
@@ -61,7 +61,7 @@ describe('nanocore metadata', () => {
       const parsed = MetaResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         capabilities: [
           'core.interrupt',
           'core.artifacts',

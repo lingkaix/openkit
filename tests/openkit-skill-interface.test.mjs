@@ -1212,7 +1212,7 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
     const method = 'POST';
     const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
     const result = await runCli(args, env, JSON.stringify(input), [
-      dataModule(`
+      commandModule(`
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
@@ -1234,7 +1234,7 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
         { ...env, OPENKIT_NANOCORE_TOKEN: token },
         JSON.stringify(input),
         [
-          dataModule(`
+          commandModule(`
         globalThis.fetch = async (url, options) => {
           const headers = new Headers(options.headers);
           if (url !== ${JSON.stringify(url)} || options.method !== '${method}') throw new Error('unexpected transport');
@@ -1335,7 +1335,7 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
       ...(supplied ? { requestId: supplied } : {}),
     };
     const result = await runCli(args, env, JSON.stringify(input), [
-      dataModule(`
+      commandModule(`
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
@@ -1369,7 +1369,7 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
         requestId,
       }),
       [
-        dataModule(`
+        commandModule(`
         globalThis.fetch = async (url, options) => {
           const headers = new Headers(options.headers);
           if (url !== 'http://127.0.0.1:3456/api/app/operations/workspace.leave' || options.method !== 'POST') throw new Error('unexpected transport');
@@ -1480,7 +1480,7 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
     const args = ['ops', 'call', `workspace.my-invitation-${action}`, '--input', '-'];
     const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
     const result = await runCli(args, env, JSON.stringify(input), [
-      dataModule(`
+      commandModule(`
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
@@ -1506,7 +1506,7 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
         { ...env, OPENKIT_NANOCORE_TOKEN: token },
         JSON.stringify(input),
         [
-          dataModule(`
+          commandModule(`
         globalThis.fetch = async (url, options) => {
           const headers = new Headers(options.headers);
           if (headers.has('cookie')) throw new Error('unexpected session');
@@ -1971,7 +1971,7 @@ for (const [label, executable] of [
         },
         JSON.stringify(input),
         [
-          dataModule(`
+          commandModule(`
           globalThis.fetch = async (url, options) => {
             if (url !== 'http://caller.test/api/app/operations/caller.read' || options.method !== 'POST') throw new Error('Noncanonical caller route');
             if (JSON.stringify(JSON.parse(options.body)) !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('Changed caller selection');
@@ -2059,7 +2059,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
     OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456',
     OPENKIT_NANOCORE_TOKEN: 'okt_artifact_fixture',
   };
-  const fetchModule = dataModule(`
+  const fetchModule = commandModule(`
     globalThis.fetch = async (url, options) => {
       const parsed = new URL(url);
       const headers = new Headers(options.headers);
@@ -2184,6 +2184,15 @@ test('Artifact CLI transfers use file bindings, exact bytes, and exclusive local
     fetch: async (input, init) => {
       const url = new URL(String(input));
       const headers = new Headers(init.headers);
+      if (url.href === 'http://127.0.0.1/api/meta') {
+        assert.equal(init.method, 'GET');
+        assert.equal(init.body, undefined);
+        return Response.json({
+          protocolVersion: protocol.PROTOCOL_VERSION,
+          capabilities: [],
+          eventFamilies: [],
+        });
+      }
       if (url.pathname === '/api/app/operations/artifact.import') {
         assert.equal(init.method, 'POST');
         assert.equal(headers.get('x-openkit-request-id'), metadata.requestId);
@@ -2900,7 +2909,7 @@ test('bundled named credential selection authenticates exact calls without chang
   );
   const env = { ...layout.env, OPENKIT_NANOCORE_URL: endpoint, OPENKIT_NANOCORE_TOKEN: '' };
   const args = ['ops', 'call', 'workspace.list', '--input', '-', '--credential', 'member'];
-  const transport = dataModule(`
+  const transport = commandModule(`
     globalThis.fetch = async (url, options) => {
       if (url !== '${endpoint}/api/app/operations/workspace.list') throw new Error('wrong endpoint');
       const headers = new Headers(options.headers);
@@ -2919,7 +2928,7 @@ test('bundled named credential selection authenticates exact calls without chang
     const code = status === 401 ? 'core.auth.unauthenticated' : 'core.auth.forbidden';
     const denied = await runCli(args, env, '{}', [
       ...layout.imports,
-      dataModule(`
+      commandModule(`
         let calls = 0;
         globalThis.fetch = async (_url, options) => {
           if (++calls !== 1 || new Headers(options.headers).get('authorization') !== 'Bearer okt_fixture_member') throw new Error('Unexpected credential or retry');
@@ -3067,7 +3076,7 @@ for (const platform of ['darwin', 'linux']) {
       };
       const url = `${endpoint}/api/app/operations/token.${action}`;
       const args = ['ops', 'call', `token.${action}`, '--input', '-'];
-      const transport = dataModule(`
+      const transport = commandModule(`
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (url !== ${JSON.stringify(url)} || options.method !== 'POST') throw new Error('wrong route');
@@ -3095,7 +3104,7 @@ for (const platform of ['darwin', 'linux']) {
       for (const status of [401, 403]) {
         const denied = await runCli(args, env, JSON.stringify(input), [
           ...imports,
-          responseModule(status, {
+          commandResponseModule(status, {
             code: status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required',
             message: 'Denied okt_fake_admin',
             protocolVersion: '0.4.0',
@@ -3166,7 +3175,7 @@ for (const platform of ['darwin', 'linux']) {
       JSON.stringify(input),
       [
         ...imports,
-        dataModule(`
+        commandModule(`
     globalThis.fetch = async (url, options) => {
       if (url !== '${endpoint}/api/app/operations/bootstrap.consume' || options.method !== 'POST') throw new Error('wrong bootstrap route');
       const headers = new Headers(options.headers);
@@ -3236,7 +3245,7 @@ test('bundled token delivery reports preflight and post-issuance storage failure
   };
   const response = { token: 'okt_fake_one_time', record };
   const result = await runCli(args, env, input, [
-    dataModule(`
+    commandModule(`
     import { rmSync, writeFileSync } from 'node:fs';
     globalThis.fetch = async () => {
       rmSync(${JSON.stringify(configDir)}, { recursive: true });
@@ -3352,7 +3361,7 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
     },
     '{}',
     [
-      responseModule(200, {
+      commandResponseModule(200, {
         backendKind: 'os-keychain',
         diagnostic: 'Obsolete backend response.',
         state: 'available',
@@ -3433,7 +3442,7 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
       },
       JSON.stringify(input),
       [
-        dataModule(`
+        commandModule(`
       globalThis.fetch = async (url, options) => {
         if (url !== 'http://nanocore.example/api/app/operations/${operation}' || options.method !== 'POST') throw new Error('Wrong transport');
         const body = JSON.parse(options.body);
@@ -3514,7 +3523,23 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
       },
     },
   };
+  let metadataReads = 0;
   const server = createServer(async (request, reply) => {
+    if (request.url === '/api/meta') {
+      assert.equal(request.method, 'GET');
+      metadataReads++;
+      reply.writeHead(200, { 'content-type': 'application/json' });
+      reply.end(
+        JSON.stringify({
+          protocolVersion: protocol.PROTOCOL_VERSION,
+          capabilities: [],
+          eventFamilies: [],
+        })
+      );
+      return;
+    }
+    assert.equal(request.url, '/api/app/operations/catalog.skill-import');
+    assert.equal(request.method, 'POST');
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     requests.push({
@@ -3542,6 +3567,7 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
   const result = await runCli(args, env, JSON.stringify(input), [], undefined, executable);
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.equal(requests.length, 1);
+  const metadataReadsAfterImport = metadataReads;
   assert.equal(requests[0].url, '/api/app/operations/catalog.skill-import');
   assert.equal(requests[0].method, 'POST');
   assert.equal(requests[0].headers['x-openkit-client-channel'], 'openkit-cli');
@@ -3590,6 +3616,11 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
       1,
       'Local source/schema failures must not contact the import endpoint.'
     );
+    assert.equal(
+      metadataReads,
+      metadataReadsAfterImport,
+      'Invalid local input must not probe metadata.'
+    );
     assert.equal(rejected.stdout.includes(source), false);
   }
   for (const source of ['https://example.invalid/skill.zip', 'https://github.com/example/skills']) {
@@ -3604,7 +3635,7 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
 });
 
 test('the bundled CLI performs one typed call with fixed audit headers', async () => {
-  const fetchStub = dataModule(`
+  const fetchStub = commandModule(`
     globalThis.fetch = async (url, options) => {
       const headers = new Headers(options.headers);
       if (url !== 'http://nanocore.example/api/app/operations/workspace.list') throw new Error('unexpected URL');
@@ -3720,7 +3751,7 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     },
     JSON.stringify(prepareInput),
     [
-      dataModule(`
+      commandModule(`
         globalThis.fetch = async (url, options) => {
           if (url !== 'http://nanocore.example/api/app/operations/worker-environment.prepare') throw new Error('unexpected URL');
           if (options.method !== 'POST') throw new Error('unexpected method');
@@ -3761,7 +3792,7 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     },
     JSON.stringify(activateInput),
     [
-      dataModule(`
+      commandModule(`
         globalThis.fetch = async (url, options) => {
           if (url !== 'http://nanocore.example/api/app/operations/worker-environment.activate') throw new Error('unexpected URL');
           if (options.method !== 'POST') throw new Error('unexpected method');
@@ -3853,7 +3884,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     },
     '{}',
     [
-      responseModule(422, {
+      commandResponseModule(422, {
         code: 'conflict',
         details: { path: '/Users/private', token: 'okt_environment' },
         message: 'Rejected okt_environment',
@@ -3880,7 +3911,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     },
     JSON.stringify({ providerId: 'redaction-fixture', apiKey: masterKeyBase64 }),
     [
-      responseModule(422, {
+      commandResponseModule(422, {
         code: 'vault_key_rejected',
         details: { masterKeyBase64 },
         message: `Rejected ${masterKeyBase64}`,
@@ -3902,7 +3933,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     },
     '{}',
     [
-      responseModule(401, {
+      commandResponseModule(401, {
         code: 'unauthorized',
         message: 'Authentication required.',
         protocolVersion: '0.4.0',
@@ -3918,7 +3949,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
       OPENKIT_NANOCORE_TOKEN: '',
     },
     '{}',
-    [dataModule("globalThis.fetch = async () => { throw new TypeError('connection failed'); };")]
+    [commandModule("globalThis.fetch = async () => { throw new TypeError('connection failed'); };")]
   );
   assert.equal(connectionFailure.code, 3);
 
@@ -3930,7 +3961,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     },
     '{}',
     [
-      dataModule(
+      commandModule(
         "globalThis.fetch = async () => { process.stderr.write('fetch-started\\n'); return new Promise(() => {}); };"
       ),
     ],
@@ -4003,14 +4034,36 @@ function dataModule(source) {
 }
 
 /**
+ * Supplies the release metadata prerequisite only to an explicit command fetch fixture.
+ *
+ * @param {string} source Module source that installs the operation fetch stub.
+ * @returns {string} Data URL.
+ */
+function commandModule(source) {
+  return dataModule(`${source}
+    const operationFetch = globalThis.fetch;
+    const endpoint = process.env.OPENKIT_NANOCORE_URL || 'http://127.0.0.1:3000';
+    const metadataUrl = endpoint + (endpoint.endsWith('/') ? 'api/meta' : '/api/meta');
+    globalThis.fetch = async (input, options) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === metadataUrl) {
+        if (options?.method !== 'GET' || options.body !== undefined) throw new Error('Invalid metadata probe');
+        return Response.json(${JSON.stringify({ protocolVersion: protocol.PROTOCOL_VERSION, capabilities: [], eventFamilies: [] })});
+      }
+      return operationFetch(input, options);
+    };
+  `);
+}
+
+/**
  * Creates an inline fetch stub returning one JSON response.
  *
  * @param {number} status HTTP status.
  * @param {unknown} body JSON response body.
  * @returns {string} Data URL.
  */
-function responseModule(status, body) {
-  return dataModule(
+function commandResponseModule(status, body) {
+  return commandModule(
     `globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(body))}, ` +
       `{ status: ${status}, headers: { 'content-type': 'application/json' } });`
   );
@@ -4176,7 +4229,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         },
         JSON.stringify(input),
         [
-          dataModule(`
+          commandModule(`
         globalThis.fetch = async (url, options) => {
           if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' || operation === 'worker.list' || operation === 'app.search' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
@@ -4247,6 +4300,15 @@ test('automation deletion derives strict CLI input and maps the bodyless HTTP su
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',
     fetch: async (url, init) => {
+      if (String(url) === 'http://nanocore.test/api/meta') {
+        assert.equal(init.method, 'GET');
+        assert.equal(init.body, undefined);
+        return Response.json({
+          protocolVersion: protocol.PROTOCOL_VERSION,
+          capabilities: [],
+          eventFamilies: [],
+        });
+      }
       requests.push(new Request(url, init));
       return new Response(null, { status: 204 });
     },

@@ -2,9 +2,10 @@ import {
   workerEnvironmentActivationConfirmation,
   workerEnvironmentPurgeConfirmation,
 } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION as CURRENT_PROTOCOL } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { createCoreClient } from './client.js';
+import { createCoreClient as createClient } from './client.js';
 
 const STORAGE_REF = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const DIGEST = `sha256:${'b'.repeat(64)}`;
@@ -276,3 +277,21 @@ describe('Worker environment App API client', () => {
     expect(calls).toBe(0);
   });
 });
+
+/** Supplies current metadata without consuming the command fixture response sequence. */
+function createCoreClient(options: Parameters<typeof createClient>[0]) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return createClient({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname === '/api/meta'
+        ? Promise.resolve(
+            Response.json({
+              protocolVersion: CURRENT_PROTOCOL,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          )
+        : fetcher(input, init),
+  });
+}

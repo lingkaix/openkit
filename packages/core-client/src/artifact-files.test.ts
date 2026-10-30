@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, PROTOCOL_VERSION as CURRENT_PROTOCOL } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createCoreClient } from './client.js';
+import { createCoreClient as createClient } from './client.js';
 import { ApiCallError, ProtocolValidationError } from './errors.js';
 
 const originals = JSON.parse(
@@ -280,3 +280,21 @@ describe('Artifact binary client bindings', () => {
     await expect(request).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
   });
 });
+
+/** Supplies current metadata without consuming the command fixture's response sequence. */
+function createCoreClient(options: Parameters<typeof createClient>[0]) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return createClient({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname === '/api/meta'
+        ? Promise.resolve(
+            Response.json({
+              protocolVersion: CURRENT_PROTOCOL,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          )
+        : fetcher(input, init),
+  });
+}

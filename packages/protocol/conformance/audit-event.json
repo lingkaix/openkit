@@ -1,10 +1,10 @@
 {
-  "protocolVersion": "0.6.0",
+  "protocolVersion": "0.7.0",
   "schema": "audit-event",
   "data": {
     "id": "aud_00000000-0000-7e8e-9dda-823fbd6c1493",
     "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a",
-    "protocolVersion": "0.6.0",
+    "protocolVersion": "0.7.0",
     "threadId": "th_00000000-0000-7162-9ddb-378c8b96b0a3",
     "turnId": "tu_00000000-0000-7a7e-8dd5-ad6ea5188a9c",
     "itemId": "it_00000000-0000-7805-99c2-9f7445de7927",

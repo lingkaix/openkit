@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -217,12 +218,12 @@ describe('scheduler admission routes', () => {
       expect(missingRetry.status).toBe(404);
       expect(missingCancel.status).toBe(404);
       expect(JSON.parse(missingRetryText)).toEqual({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         code: 'not_found',
         message: 'Thread not found.',
       });
       expect(JSON.parse(missingCancelText)).toEqual({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         code: 'not_found',
         message: 'Thread not found.',
       });

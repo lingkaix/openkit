@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -1137,7 +1138,7 @@ it.each([
       : 'Workspace reconciliation record is already terminal: wrr_projection';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1174,7 +1175,7 @@ it.each([
       : 'Workspace recovery collection has no durable output manifest: wrr_projection';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1214,7 +1215,7 @@ it.each([
   const message = 'The record could not be processed.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1253,7 +1254,7 @@ it.each([
   const message = 'Filesystem workspace root identity changed after review staging.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else {
     expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
@@ -1360,7 +1361,7 @@ it.each([
       : `Workspace apply plan replay conflict: wap_${input.reviewId}`;
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
 });
 
@@ -1403,6 +1404,6 @@ it.each([
   const message = 'Unsafe filesystem rollback root.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
 });

@@ -1,4 +1,5 @@
 import type { AutomationRecord } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { parseWorkspaceSharingError } from './app.js';
 import { type CoreClient, createCoreClient } from './client.js';
@@ -37,7 +38,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** Creates a current protocol API error fixture. */
 function apiError(code: string, message: string): Record<string, string> {
-  return { protocolVersion: '0.6.0', code, message };
+  return { protocolVersion: PROTOCOL_VERSION, code, message };
 }
 
 /** Creates a tiny SSE response from complete event payloads. */
@@ -80,6 +81,13 @@ function createFakeClient(routes: RouteMap): {
     const path = `${url.pathname}${url.search}`;
     const method = init?.method ?? 'GET';
     const route = routes[`${method} ${path}`] ?? routes[path];
+    if (!route && method === 'GET' && path === '/api/meta') {
+      return jsonResponse({
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: [],
+        eventFamilies: [],
+      });
+    }
     let body: unknown = null;
 
     if (typeof init?.body === 'string') {
@@ -956,7 +964,7 @@ function workspaceAuditEventsResponse() {
       {
         id: 'aud_00000000-0000-72f4-8dcc-8c92fd4028d3',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         itemId: null,
@@ -990,7 +998,7 @@ function serverAuditEventsResponse() {
       {
         id: 'aud_00000000-0000-726b-8ee2-162b4bf37c24',
         workspaceId: null,
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         threadId: null,
         turnId: null,
         itemId: null,
@@ -1300,7 +1308,7 @@ function interruptedWorkerState() {
 /** Returns one valid turn event envelope. */
 function turnEvent(sequence: number, event = 'turn.started') {
   return {
-    protocolVersion: '0.6.0',
+    protocolVersion: PROTOCOL_VERSION,
     event,
     sequence,
     requestId,
@@ -1326,7 +1334,7 @@ function turnEvent(sequence: number, event = 'turn.started') {
 /** Returns one internal-only AgentSession stream event. */
 function agentSessionEvent(sequence: number) {
   return {
-    protocolVersion: '0.6.0',
+    protocolVersion: PROTOCOL_VERSION,
     event: 'agent.session.updated',
     sequence,
     requestId,
@@ -1510,6 +1518,13 @@ describe('createCoreClient', () => {
       baseUrl: 'https://nanocore.test',
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
+        if (path === '/api/meta') {
+          return jsonResponse({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: [],
+            eventFamilies: [],
+          });
+        }
         const body = init?.body
           ? new Uint8Array(await new Response(init.body).arrayBuffer())
           : new Uint8Array();
@@ -1737,7 +1752,7 @@ describe('createCoreClient', () => {
     const { client, requests } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.6.0',
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: [],
           eventFamilies: [],
         },
@@ -2026,7 +2041,7 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.6.0' });
+    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: PROTOCOL_VERSION });
     await expect(
       client.operations['workspace.read']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2262,6 +2277,7 @@ describe('createCoreClient', () => {
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'GET /api/meta',
+      'GET /api/meta',
       'POST /api/app/operations/workspace.read',
       'POST /api/app/operations/workspace.update',
       'POST /api/app/operations/knowledge.notebook.list',
@@ -2294,9 +2310,9 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/environment.snapshot-read',
       'POST /api/app/operations/thread.items',
     ]);
-    expect(requests[2]?.body).toMatchObject({ status: 'archived' });
-    expect(requests[2]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
-    expect(requests[6]?.body).toEqual({
+    expect(requests[3]?.body).toMatchObject({ status: 'archived' });
+    expect(requests[3]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
+    expect(requests[7]?.body).toEqual({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       path: knowledge.path,
       summary: 'Remove shared page',
@@ -2304,7 +2320,7 @@ describe('createCoreClient', () => {
       expectedContentDigest: `sha256:${'a'.repeat(64)}`,
       confirmRemoval: true,
     });
-    expect(requests[6]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
+    expect(requests[7]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
   });
 
   it('derives approval response JSON and request identity from the operation definition', async () => {
@@ -2930,7 +2946,7 @@ describe('createCoreClient', () => {
       code: 'revision_conflict',
       details: { current: workspaceMember(), resource: 'membership' },
       message: 'Workspace membership revision changed.',
-      protocolVersion: '0.6.0',
+      protocolVersion: PROTOCOL_VERSION,
       requestId,
     });
     expect(parseWorkspaceSharingError(malformedConflict)).toBeNull();
@@ -4970,7 +4986,7 @@ describe('createCoreClient', () => {
     const { client } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.6.0',
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: ['core.questions'],
           eventFamilies: ['turn.started', 'turn.completed'],
         },
@@ -5005,7 +5021,7 @@ describe('createCoreClient', () => {
         }
 
         return jsonResponse({
-          protocolVersion: '0.6.0',
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: [],
           eventFamilies: [],
         });
@@ -5346,7 +5362,7 @@ describe('createCoreClient', () => {
         });
 
         return jsonResponse({
-          protocolVersion: '0.6.0',
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: [],
           eventFamilies: [],
         });

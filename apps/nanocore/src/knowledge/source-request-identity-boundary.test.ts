@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RegisterKnowledgeSourceResponseSchema } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
@@ -86,7 +87,7 @@ describe('public Source request identity', () => {
     const response = await f.register('opaque-source-command');
     expect.soft(response.status).toBe(400);
     expect.soft(await response.json()).toMatchObject({
-      protocolVersion: '0.6.0',
+      protocolVersion: PROTOCOL_VERSION,
       code: 'invalid_request',
     });
     expect({

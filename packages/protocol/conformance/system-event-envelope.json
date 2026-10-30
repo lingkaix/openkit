@@ -1,8 +1,8 @@
 {
-  "protocolVersion": "0.6.0",
+  "protocolVersion": "0.7.0",
   "schema": "system-event-envelope",
   "data": {
-    "protocolVersion": "0.6.0",
+    "protocolVersion": "0.7.0",
     "event": "workspace.updated",
     "sequence": 1,
     "requestId": null,

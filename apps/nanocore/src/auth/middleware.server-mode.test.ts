@@ -1,7 +1,6 @@
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
@@ -152,7 +151,7 @@ describe('server-mode auth middleware', () => {
 
     expect(metaRes.status).toBe(200);
     expect(await metaRes.json()).toEqual({
-      protocolVersion: '0.6.0',
+      protocolVersion: PROTOCOL_VERSION,
       capabilities: [],
       eventFamilies: [],
     });

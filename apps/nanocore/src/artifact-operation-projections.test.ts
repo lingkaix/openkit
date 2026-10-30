@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
@@ -884,7 +885,7 @@ describe('Artifact definition projections', () => {
       });
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         code: 'internal_error',
         message: 'Internal Server Error',
       });

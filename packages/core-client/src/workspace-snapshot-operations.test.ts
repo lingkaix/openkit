@@ -1,7 +1,7 @@
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { PROTOCOL_VERSION as CURRENT_PROTOCOL, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createCoreClient } from './client.js';
+import { createCoreClient as createClient } from './client.js';
 import { ApiCallError, ProtocolValidationError } from './errors.js';
 
 const selection = {
@@ -155,3 +155,21 @@ describe('W operational backup download client boundary', () => {
     else expect(cancel).toHaveBeenCalledOnce();
   });
 });
+
+/** Supplies current metadata without consuming the command fixture response sequence. */
+function createCoreClient(options: Parameters<typeof createClient>[0]) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return createClient({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname === '/api/meta'
+        ? Promise.resolve(
+            Response.json({
+              protocolVersion: CURRENT_PROTOCOL,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          )
+        : fetcher(input, init),
+  });
+}

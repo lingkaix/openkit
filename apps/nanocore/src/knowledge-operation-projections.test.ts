@@ -3,7 +3,11 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
-import { formatReferenceUri, RetrievalTraceReferenceSchema } from '@openkit/protocol';
+import {
+  formatReferenceUri,
+  PROTOCOL_VERSION,
+  RetrievalTraceReferenceSchema,
+} from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import {
@@ -1117,7 +1121,7 @@ it.each([
     const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![1].id}`;
     if (projection === 'HTTP') {
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ protocolVersion: '0.6.0', code, message });
+      expect(await response.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
     } else {
       expect(response.status).toBe(200);
       const body = await response.json();

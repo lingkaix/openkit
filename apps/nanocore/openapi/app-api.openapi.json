@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "description": "Generated projection from OpenKit Zod schemas. Zod schemas in shared packages remain the source of truth."
   },
-  "x-openkit-protocol-version": "0.6.0",
+  "x-openkit-protocol-version": "0.7.0",
   "paths": {
     "/api/app/operations/knowledge.package.export": {
       "post": {
@@ -154351,5 +154351,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:ea6db8fa25001c9878b2c95c65726d53bd501884859f54e03d3e572b5ec13135"
+  "x-openkit-source-digest": "sha256:988606ab18f595c4e06372938122eebfb6d08b230f9941e41473defec41d18d0"
 }

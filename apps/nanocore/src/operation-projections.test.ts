@@ -9,7 +9,7 @@ import {
   OPERATION_DEFINITIONS,
   operationToolName,
 } from '@openkit/app-api-schemas';
-import { ApiErrorSchema, workspaceIdForOwner } from '@openkit/protocol';
+import { ApiErrorSchema, PROTOCOL_VERSION, workspaceIdForOwner } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -274,7 +274,7 @@ describe('shared family contract', () => {
       };
       for (const name of ['http', 'worker']) {
         await expect(projections[name]!('kernel.records.create', input)).rejects.toEqual({
-          ...(name === 'http' ? { protocolVersion: '0.6.0' } : {}),
+          ...(name === 'http' ? { protocolVersion: PROTOCOL_VERSION } : {}),
           code: 'limit_exceeded',
           message: 'Record limit exceeded.',
           details: { limit: 'records', maximum: 2 },
@@ -289,7 +289,7 @@ describe('shared family contract', () => {
       });
       expect(httpFailure.status).toBe(400);
       expect(await httpFailure.json()).toEqual({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         code: 'limit_exceeded',
         message: 'Record limit exceeded.',
         details: { limit: 'records', maximum: 2 },
@@ -365,7 +365,7 @@ describe('shared family contract', () => {
       expect(response.status).toBe(400);
       const body = await response.json();
       expect(body).toEqual({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         code: 'invalid_request',
         message: 'Invalid operation input.',
         details: { fields: ['appId'] },

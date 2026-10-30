@@ -125,3 +125,5 @@ Provider account login operations use `provider-subscription.login-start` and `p
 Thread, Turn, Item and CapabilityCall responses carry the canonical explicit Workspace-or-Server owner. Workspace operation selectors keep their existing request shape. Turn stream classification withholds valid Server-owned terminal payloads on a Workspace subscription, advances their cursor and continues to the exact owning terminal. Run the complete package suite for both Fetch and EventSource boundaries.
 
 Notebook page calls use definition-derived `client.operations['knowledge.notebook.list' | 'knowledge.notebook.create' | 'knowledge.notebook.update' | 'knowledge.notebook.delete']`. List pages carry complete OKF Markdown; create/delete return the existing Notebook publication result. There are no legacy Knowledge entry types or CRUD aliases.
+
+The shared transport validates NanoCore metadata against the current protocol identity before the first effectful request. A mismatch or unreadable metadata refuses locally before sending that command; successful admission belongs to that client instance. Capability discovery remains descriptive and does not substitute for this check.

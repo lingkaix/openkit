@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "0.6.0",
+  "protocolVersion": "0.7.0",
   "schema": "agent-session",
   "data": {
     "id": "as_00000000-0000-797c-9610-9f2b978140b7",

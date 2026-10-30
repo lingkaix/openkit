@@ -1,7 +1,7 @@
 import { OPERATION_DEFINITIONS, operationHttpPath } from '@openkit/app-api-schemas';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { PROTOCOL_VERSION as CURRENT_PROTOCOL, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-import { createCoreClient } from './client.js';
+import { createCoreClient as createClient } from './client.js';
 import { ProtocolValidationError } from './errors.js';
 
 describe('definition-derived client operations', () => {
@@ -157,3 +157,21 @@ describe('definition-derived client operations', () => {
     ).rejects.toBeInstanceOf(ProtocolValidationError);
   });
 });
+
+/** Supplies current metadata without consuming the command fixture's response sequence. */
+function createCoreClient(options: Parameters<typeof createClient>[0]) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return createClient({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname === '/api/meta'
+        ? Promise.resolve(
+            Response.json({
+              protocolVersion: CURRENT_PROTOCOL,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          )
+        : fetcher(input, init),
+  });
+}

@@ -1,3 +1,4 @@
+import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
 import { ProtocolValidationError } from './errors.js';
 import { type FetchLike, parseJsonResponse } from './http.js';
@@ -103,6 +104,22 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return parseJsonResponse(response, schema);
   };
 
+  let contractAdmitted = false;
+
+  /** Admits this release-coupled consumer before its first effectful request. */
+  const admitContract = async (): Promise<void> => {
+    if (contractAdmitted) return;
+    const meta = await getJson('/api/meta', MetaResponseSchema);
+    if (meta.protocolVersion !== PROTOCOL_VERSION) {
+      throw new ProtocolValidationError({
+        path: ['protocolVersion'],
+        code: 'incompatible_protocol',
+        message: 'NanoCore protocol identity is incompatible with this client.',
+      });
+    }
+    contractAdmitted = true;
+  };
+
   const getDownload: ClientTransport['getDownload'] = async (path) => {
     const response = await fetcher(url(path), {
       credentials: 'include',
@@ -117,6 +134,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
   };
 
   const getStream: ClientTransport['getStream'] = async (path, mediaType, input) => {
+    if (input !== undefined) await admitContract();
     const response =
       input === undefined
         ? await getDownload(path)
@@ -154,6 +172,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     extraHeaders?: HeadersInit,
     emptySuccess = false
   ): Promise<z.infer<TSchema>> => {
+    await admitContract();
     const response = await fetcher(url(path), {
       credentials: 'include',
       method,
@@ -175,6 +194,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
   };
 
   const postStream: ClientTransport['postStream'] = async (path, body, headers, schema) => {
+    await admitContract();
     const response = await fetcher(url(path), {
       body,
       credentials: 'include',
@@ -186,6 +206,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
   };
 
   const deleteEmpty: ClientTransport['deleteEmpty'] = async (path) => {
+    await admitContract();
     const response = await fetcher(url(path), {
       credentials: 'include',
       headers: mergeHeaders(),
@@ -200,6 +221,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
   };
 
   const deleteJson: ClientTransport['deleteJson'] = async (path, input) => {
+    await admitContract();
     const response = await fetcher(url(path), {
       credentials: 'include',
       method: 'DELETE',

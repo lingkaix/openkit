@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listSqliteAuditEvents } from './audit-events.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
@@ -596,7 +597,7 @@ it('retains Workspace availability failures and refuses before any app or presen
         });
       else
         expect(await response.json()).toEqual({
-          protocolVersion: '0.6.0',
+          protocolVersion: PROTOCOL_VERSION,
           code: 'internal_error',
           message: 'Internal Server Error',
         });

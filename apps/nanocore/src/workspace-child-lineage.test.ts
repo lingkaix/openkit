@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApiErrorSchema } from '@openkit/protocol';
+import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -371,7 +371,7 @@ describe('Workspace child lineage', () => {
       );
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({
-        protocolVersion: '0.6.0',
+        protocolVersion: PROTOCOL_VERSION,
         code: 'not_found',
         message: 'Artifact not found.',
       });

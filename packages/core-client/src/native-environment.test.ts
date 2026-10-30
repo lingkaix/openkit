@@ -1,7 +1,8 @@
+import { PROTOCOL_VERSION as CURRENT_PROTOCOL } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import { createOperationClient } from './operations.js';
-import { createClientTransport } from './transport.js';
+import { createClientTransport as createClient } from './transport.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 const view = {
@@ -89,3 +90,21 @@ describe('native environment configuration client', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+/** Supplies current metadata without consuming the command fixture response sequence. */
+function createClientTransport(options: Parameters<typeof createClient>[0]) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  return createClient({
+    ...options,
+    fetch: (input, init) =>
+      new URL(String(input)).pathname === '/api/meta'
+        ? Promise.resolve(
+            Response.json({
+              protocolVersion: CURRENT_PROTOCOL,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          )
+        : fetcher(input, init),
+  });
+}
