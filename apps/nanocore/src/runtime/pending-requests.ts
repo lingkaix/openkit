@@ -718,7 +718,15 @@ export function preflightPendingRequest(
   );
   const duplicate = pending.find((record) => sameQualifiedBinding(record, input));
   if (duplicate) return duplicate;
-  if (pending.length >= PENDING_REQUEST_BOUND) {
+  // An unreadable payload or unknown lifecycle cannot prove an outstanding slot is free.
+  const outstanding = sqlite
+    .prepare(
+      `SELECT COUNT(*) AS count FROM pending_requests
+       WHERE workspace_id = ? AND thread_id = ?
+         AND (state IS NULL OR state NOT IN ('resolved', 'ended'))`
+    )
+    .get(input.workspaceId, input.threadId) as { count: number };
+  if (outstanding.count >= PENDING_REQUEST_BOUND) {
     throw new PendingRequestCommandError(
       'request_limit_reached',
       'The Thread already has 16 pending requests.',

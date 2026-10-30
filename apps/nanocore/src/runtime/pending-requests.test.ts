@@ -1160,7 +1160,10 @@ describe('pending requests', () => {
     }
   });
 
-  it('does not mutate a contradictory request during archive closeout', async () => {
+  it.each([
+    'contradictory',
+    'unreadable',
+  ] as const)('does not mutate a %s request during archive closeout', async (fault) => {
     const { coreDb, store, dataRoot, app } = await openPendingApp();
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1184,6 +1187,13 @@ describe('pending requests', () => {
         "UPDATE pending_requests SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'user', deciding_actor_id = 'usr_00000000-0000-7000-8000-000000000001', decided_at = ?, claim = 'claimed', execution_call_id = ? WHERE request_id = ?"
       )
       .run(NOW, 'cap_00000000-0000-71cc-8b29-e0da8c534fd7', record.requestId);
+    if (fault === 'unreadable') {
+      db.sqlite
+        .prepare(
+          "UPDATE pending_requests SET authorization_context_json = '{invalid' WHERE request_id = ?"
+        )
+        .run(record.requestId);
+    }
     const before = db.sqlite
       .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
       .get(record.requestId);
@@ -1206,7 +1216,16 @@ describe('pending requests', () => {
         }
       )
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(fault === 'unreadable' ? 409 : 200);
+    if (fault === 'unreadable') {
+      await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(
+        store.getThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ).status
+      ).not.toBe('archived');
+    }
     expect(
       db.sqlite.prepare('SELECT * FROM pending_requests WHERE request_id = ?').get(record.requestId)
     ).toEqual(before);
@@ -2077,6 +2096,24 @@ describe('pending requests', () => {
       expect(() =>
         raisePendingRequest(db.sqlite, approvalRaise(turn.id, 'ap_seventeenth', 'digest-last'))
       ).toThrow(/request_limit_reached|16 pending requests/);
+      // Retained payload damage cannot remove an outstanding row from the Thread bound.
+      await shutdownControlStoreWorkerClient();
+      db.sqlite
+        .prepare(
+          "UPDATE pending_requests SET authorization_context_json = '{invalid' WHERE request_id = ?"
+        )
+        .run('ap_bound_13');
+      expect(() =>
+        raisePendingRequest(
+          db.sqlite,
+          approvalRaise(turn.id, 'ap_after_damage', 'digest-after-damage')
+        )
+      ).toThrow(/request_limit_reached|16 pending requests/);
+      expect(
+        db.sqlite
+          .prepare("SELECT COUNT(*) AS n FROM pending_requests WHERE state = 'pending'")
+          .get()
+      ).toEqual({ n: 16 });
     } finally {
       db.sqlite.close();
       coreDb.sqlite.close();

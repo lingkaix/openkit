@@ -972,6 +972,13 @@ export async function archiveThreadWithCloseout(
   const { census, records } = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
     const census = listThreadPendingRequests(sqlite, workspaceId, threadId);
+    const rawCensus = sqlite
+      .prepare(
+        'SELECT COUNT(*) AS count FROM pending_requests WHERE workspace_id = ? AND thread_id = ?'
+      )
+      .get(workspaceId, threadId) as { count: number };
+    // Inspect-only reads may omit damaged rows; archive needs the complete addressed Thread.
+    if (census.length !== rawCensus.count) throw associationGap();
     return {
       census,
       records: census.filter((record) => canonicalRecordIsUsable(store, sqlite, record)),
