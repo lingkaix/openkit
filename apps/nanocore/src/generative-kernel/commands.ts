@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
+  constants,
   existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
 } from 'node:fs';
@@ -317,7 +319,7 @@ export async function updateLightAppSchema(
         const admitted = admitLightAppSchema(
           schema,
           appId,
-          expectedSchemaRevision + 1,
+          nextSchemaRevision(appDb, current.schemaRevision),
           parseSchema(current)
         );
         const schemaJson = `${JSON.stringify(admitted)}\n`;
@@ -1969,6 +1971,37 @@ function countAppDirectories(dataRoot: string, workspaceId: string): number {
     return 0;
   }
   return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;
+}
+
+/** Allocates beyond retained definition history, which survives app snapshot replacement. */
+function nextSchemaRevision(appDb: AppDb, currentRevision: number): number {
+  const root = join(lightAppRoot(appDb.dataRoot, appDb.workspaceId, appDb.appId), 'definitions');
+  let highest = currentRevision;
+  try {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
+      if (!entry.isFile()) throw new Error('Definition history must contain regular files.');
+      const descriptor = openSync(
+        join(root, entry.name),
+        constants.O_RDONLY | constants.O_NOFOLLOW
+      );
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      const retained = LightAppAdmittedSchemaSchema.parse(JSON.parse(bytes.toString('utf8')));
+      if (`${digest}.json` !== entry.name || retained.appId !== appDb.appId) {
+        throw new Error('Definition history identity does not match.');
+      }
+      highest = Math.max(highest, retained.schemaRevision);
+    }
+  } catch {
+    throw new KernelCommandError('unavailable', 'App definition history is unavailable.');
+  }
+  return highest + 1;
 }
 
 /**

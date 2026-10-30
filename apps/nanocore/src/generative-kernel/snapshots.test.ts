@@ -79,6 +79,94 @@ function proposal(app: Awaited<ReturnType<typeof createLightApp>>): LightAppSche
 }
 
 describe('Light App migration recovery', () => {
+  it('never reuses inspected schema revisions after restoring an older snapshot and restarting', async () => {
+    const ctx = await context();
+    const app = await createLightApp(ctx, schema);
+    const record = await createRecord(request(ctx), app.appId, 'contacts', 1, {
+      name: 'Ada',
+      note: 'Keep the exact prior value.',
+    });
+    const second = await updateLightAppSchema(request(ctx), app.appId, 1, 1, {
+      ...proposal(app),
+      title: 'Second definition',
+    });
+    const third = await updateLightAppSchema(request(ctx), app.appId, 2, 2, {
+      ...proposal(second),
+      title: 'Third definition',
+    });
+    const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots.find(
+      (snapshot) => snapshot.schemaRevision === 1
+    )!;
+    const restored = await rollbackLightAppSnapshot(
+      request(ctx),
+      app.appId,
+      3,
+      selected.snapshotId
+    );
+    expect(restored.schemaRevision).toBe(1);
+    const restarted = {
+      ...ctx,
+      store: await createDemoStore({ dataRoot: ctx.dataRoot }),
+      inflightCommands: new WeakMap(),
+    };
+    const activated = await updateLightAppSchema(
+      request(restarted),
+      app.appId,
+      restored.appRevision,
+      1,
+      {
+        ...proposal(restored),
+        title: 'Different definition after recovery',
+      }
+    );
+
+    expect(activated.schemaRevision).toBeGreaterThan(third.schemaRevision);
+    for (const stale of [second.schemaRevision, third.schemaRevision]) {
+      expect(() =>
+        listRecords(ctx.dataRoot, ctx.workspaceId, app.appId, 'contacts', { schemaRevision: stale })
+      ).toThrowError(expect.objectContaining({ code: 'schema_stale' }));
+      await expect(
+        createRecord(request(restarted), app.appId, 'contacts', stale, { name: 'Refused' })
+      ).rejects.toMatchObject({ code: 'schema_stale' });
+    }
+    const current = listRecords(ctx.dataRoot, ctx.workspaceId, app.appId, 'contacts', {
+      schemaRevision: activated.schemaRevision,
+    });
+    expect(current.items).toHaveLength(1);
+    expect(current.items[0]).toMatchObject({
+      id: record.id,
+      data: { name: 'Ada', note: 'Keep the exact prior value.' },
+    });
+  });
+
+  it('refuses schema publication when a retained historical definition no longer matches its digest', async () => {
+    const ctx = await context();
+    const app = await createLightApp(ctx, schema);
+    const second = await updateLightAppSchema(request(ctx), app.appId, 1, 1, {
+      ...proposal(app),
+      title: 'Second definition',
+    });
+    const path = join(
+      lightAppRoot(ctx.dataRoot, ctx.workspaceId, app.appId),
+      'definitions',
+      `${app.schemaDigest.slice('sha256:'.length)}.json`
+    );
+    const bytes = readFileSync(path, 'utf8');
+    writeFileSync(path, `${bytes}\n`);
+    await expect(
+      updateLightAppSchema(request(ctx), app.appId, 2, 2, {
+        ...proposal(second),
+        title: 'Must not publish',
+      })
+    ).rejects.toMatchObject({ code: 'unavailable' });
+    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId)).toMatchObject({
+      appRevision: 2,
+      schemaRevision: 2,
+      schemaDigest: second.schemaDigest,
+    });
+    expect(readFileSync(path, 'utf8')).toBe(`${bytes}\n`);
+  });
+
   it('refuses missing or unknown recovery metadata versions before decoding core fields', async () => {
     const ctx = await context();
     const app = await createLightApp(ctx, schema);
