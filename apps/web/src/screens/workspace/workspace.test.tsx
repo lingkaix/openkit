@@ -2307,6 +2307,63 @@ describe('Catalog', () => {
     );
   });
 
+  it('binds MCP version selection to the exact observed current digest', async () => {
+    const user = userEvent.setup();
+    const currentDigest = `sha256:${'a'.repeat(64)}`;
+    const nextDigest = `sha256:${'b'.repeat(64)}`;
+    const selectMcp = vi.fn().mockResolvedValue({});
+    const catalog = {
+      revision: 7,
+      candidates: [],
+      skills: [],
+      plugins: [],
+      mcp: [
+        {
+          availability: 'available',
+          allowedTools: ['echo'],
+          bindingRevision: 1,
+          currentVersionDigest: currentDigest,
+          displayName: 'Echo',
+          enabled: true,
+          id: 'echo',
+          schemaPolicy: 'tracking',
+          timeoutMs: 60_000,
+          transportKind: 'stdio',
+          versions: [
+            { createdAt: TIMESTAMP_NEW, digest: currentDigest, transportKind: 'stdio' },
+            { createdAt: TIMESTAMP_NEW, digest: nextDigest, transportKind: 'stdio' },
+          ],
+        },
+      ],
+    };
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
+    renderApp(
+      '/catalog',
+      makeClient({
+        operations: {
+          'catalog.read': vi.fn().mockResolvedValue(catalog),
+          'catalog.light-app-list': vi.fn().mockResolvedValue({ revision: 0, entries: [] }),
+          'catalog.shared-mcp-list': vi.fn().mockResolvedValue({ revision: 0, items: [] }),
+          'catalog.mcp-select': selectMcp,
+        },
+      })
+    );
+    const selectVersion = await screen.findByRole('button', { name: 'Select bbbbbbbb' });
+    await waitFor(() => expect(selectVersion).toBeEnabled());
+    await user.click(selectVersion);
+    await waitFor(() =>
+      expect(selectMcp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_A.id,
+          mcpId: 'echo',
+          digest: nextDigest,
+          expectedRevision: 7,
+          expectedCurrentDigest: currentDigest,
+        })
+      )
+    );
+  });
+
   it('submits a Skill candidate from an existing catalog entry', async () => {
     const user = userEvent.setup();
     const digest = `sha256:${'a'.repeat(64)}`;

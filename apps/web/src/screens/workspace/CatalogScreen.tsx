@@ -646,6 +646,7 @@ export function CatalogScreen() {
                         if (!workspaceId) return;
                         void selectMcp.mutateAsync({
                           digest: version.digest,
+                          expectedCurrentDigest: server.currentVersionDigest,
                           expectedRevision: revision,
                           mcpId: server.id,
                           workspaceId,

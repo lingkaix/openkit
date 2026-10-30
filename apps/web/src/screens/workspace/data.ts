@@ -885,6 +885,7 @@ export function useSelectSkillDefault() {
 /** Exact MCP version selection bound to one Workspace revision. */
 export type SelectMcpVersionCommand = {
   digest: string;
+  expectedCurrentDigest: string | null;
   expectedRevision: number;
   mcpId: string;
   workspaceId: string;
@@ -900,6 +901,7 @@ export function useSelectMcpVersion() {
         workspaceId: command.workspaceId,
         mcpId: command.mcpId,
         digest: command.digest,
+        expectedCurrentDigest: command.expectedCurrentDigest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
       }),
