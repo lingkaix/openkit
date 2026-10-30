@@ -7,6 +7,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from '@earendil-works/pi-ai';
+import { allocateEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from './audit-events.js';
@@ -15,6 +16,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
+import { consumeServerBootstrapToken, ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import { createAuthMiddleware } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
@@ -1339,6 +1341,23 @@ describe('OpenAI-compatible agent gateway', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const browserCredentials = {
+      name: 'Gateway administrator',
+      email: 'gateway-admin@example.invalid',
+      password: 'gateway-fixture-password-2430',
+    };
+    const bootstrap = ensureServerBootstrapToken(coreDb);
+    if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+    const consumed = await consumeServerBootstrapToken(coreDb, {
+      token: bootstrap.token,
+      ownerUserId: allocateEntityId('usr'),
+      displayName: browserCredentials.name,
+      email: browserCredentials.email,
+      password: browserCredentials.password,
+      tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+    expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
     const localUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Private capture');
@@ -1419,14 +1438,10 @@ describe('OpenAI-compatible agent gateway', () => {
         },
       });
       const registered = await auth.handler(
-        new Request(`${baseUrl}/api/auth/sign-up/email`, {
+        new Request(`${baseUrl}/api/auth/sign-in/email`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            name: 'Gateway administrator',
-            email: 'gateway-admin@example.invalid',
-            password: 'gateway-fixture-password-2430',
-          }),
+          body: JSON.stringify(browserCredentials),
         })
       );
       expect(registered.status).toBe(200);

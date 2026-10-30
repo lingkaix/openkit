@@ -17,6 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SYNC_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../../packages/core-client/src/index.js';
 import {
@@ -24,6 +25,10 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
+import {
+  consumeServerBootstrapToken,
+  ensureServerBootstrapToken,
+} from '../auth/bootstrap-token.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -237,6 +242,12 @@ afterEach(async () => {
   for (const close of cleanups.splice(0)) close();
 });
 
+const browserCredentials = {
+  email: 'sync-admin@example.com',
+  name: 'Sync administrator',
+  password: 'test-password-123456',
+};
+
 /** Creates explicit current membership, persisted review and recovery rows, and bearer authority. */
 async function fixture(
   options: {
@@ -249,6 +260,20 @@ async function fixture(
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-projections-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  if (options.sessionAuth) {
+    const bootstrap = ensureServerBootstrapToken(coreDb);
+    if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+    const consumed = await consumeServerBootstrapToken(coreDb, {
+      token: bootstrap.token,
+      ownerUserId: allocateEntityId('usr'),
+      displayName: browserCredentials.name,
+      email: browserCredentials.email,
+      password: browserCredentials.password,
+      tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+    expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
+  }
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
   if (options.administrator)
@@ -497,14 +522,10 @@ async function foreignFilesystemFixture() {
 
 /** Signs in through the real Web authentication route and returns the authenticated user's cookie. */
 async function webSession(f: ReturnType<typeof fixture>) {
-  const response = await f.app.request('http://localhost:3000/api/auth/sign-up/email', {
+  const response = await f.app.request('http://localhost:3000/api/auth/sign-in/email', {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: 'http://localhost:3000' },
-    body: JSON.stringify({
-      email: 'sync-admin@example.com',
-      name: 'Sync administrator',
-      password: 'test-password-123456',
-    }),
+    body: JSON.stringify(browserCredentials),
   });
   expect(response.status).toBe(200);
   const cookie = response.headers.get('set-cookie')?.split(';')[0];

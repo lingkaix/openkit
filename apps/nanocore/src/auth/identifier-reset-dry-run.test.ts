@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isEntityId } from '@openkit/protocol';
+import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
@@ -11,8 +11,12 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { createOpenKitAccessTokenRecord } from './access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './access-token-store.js';
 import { createBetterAuth } from './better-auth.js';
+import { consumeServerBootstrapToken, ensureServerBootstrapToken } from './bootstrap-token.js';
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
@@ -63,15 +67,35 @@ async function authenticate(
   subject: string,
   register: boolean
 ) {
+  const browserCredentials = {
+    ...(register ? { name: subject } : {}),
+    email: [subject, 'example.invalid'].join('@'),
+    password: 'isolated-synthetic-reset-fixture-password',
+  };
+  if (
+    register &&
+    (target.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number })
+      .count === 0
+  ) {
+    const bootstrap = ensureServerBootstrapToken(target.coreDb);
+    if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+    const consumed = await consumeServerBootstrapToken(target.coreDb, {
+      token: bootstrap.token,
+      ownerUserId: allocateEntityId('usr'),
+      displayName: subject,
+      email: browserCredentials.email,
+      password: browserCredentials.password,
+      tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+    expect(revokeOpenKitAccessTokenRecord(target.coreDb, consumed.tokenId)?.status).toBe('revoked');
+    register = false;
+  }
   const response = await target.auth.handler(
     new Request(`${baseUrl}/api/auth/${register ? 'sign-up' : 'sign-in'}/email`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...(register ? { name: subject } : {}),
-        email: [subject, 'example.invalid'].join('@'),
-        password: 'isolated-synthetic-reset-fixture-password',
-      }),
+      body: JSON.stringify(browserCredentials),
     })
   );
   expect(response.status).toBe(200);

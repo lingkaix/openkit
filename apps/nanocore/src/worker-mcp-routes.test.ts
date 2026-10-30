@@ -46,6 +46,7 @@ import {
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import {
+  allocateEntityId,
   canonicalJsonText,
   deriveEntityId,
   PolicyDocumentV1Schema,
@@ -64,6 +65,7 @@ import {
   verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
+import { consumeServerBootstrapToken, ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -257,6 +259,25 @@ describe('worker MCP routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-i16-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const browserCredentials = {
+      name: 'I16 administrator',
+      email: 'i16-admin@example.invalid',
+      password: randomUUID(),
+    };
+    if (authorityCase !== 'member') {
+      const bootstrap = ensureServerBootstrapToken(coreDb);
+      if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        token: bootstrap.token,
+        ownerUserId: allocateEntityId('usr'),
+        displayName: browserCredentials.name,
+        email: browserCredentials.email,
+        password: browserCredentials.password,
+        tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+      expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
+    }
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     let userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -268,14 +289,10 @@ describe('worker MCP routes', () => {
         env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
       });
       const registered = await auth.handler(
-        new Request('http://nanocore.test/api/auth/sign-up/email', {
+        new Request('http://nanocore.test/api/auth/sign-in/email', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            name: 'I16 administrator',
-            email: 'i16-admin@example.invalid',
-            password: randomUUID(),
-          }),
+          body: JSON.stringify(browserCredentials),
         })
       );
       expect(registered.status).toBe(200);
@@ -1864,6 +1881,25 @@ describe('worker MCP routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-work-peers-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const browserCredentials = {
+      name: 'Peer administrator',
+      email: 'peer-admin@example.invalid',
+      password: randomUUID(),
+    };
+    if (audience === 'nonmember administrator') {
+      const bootstrap = ensureServerBootstrapToken(coreDb);
+      if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        token: bootstrap.token,
+        ownerUserId: allocateEntityId('usr'),
+        displayName: browserCredentials.name,
+        email: browserCredentials.email,
+        password: browserCredentials.password,
+        tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+      expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
+    }
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -1948,14 +1984,10 @@ describe('worker MCP routes', () => {
       let callerUserId = actor.id as string;
       if (audience === 'nonmember administrator') {
         const registered = await auth.handler(
-          new Request('http://nanocore.test/api/auth/sign-up/email', {
+          new Request('http://nanocore.test/api/auth/sign-in/email', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              name: 'Peer administrator',
-              email: 'peer-admin@example.invalid',
-              password: randomUUID(),
-            }),
+            body: JSON.stringify(browserCredentials),
           })
         );
         expect(registered.status).toBe(200);
@@ -2950,6 +2982,23 @@ describe('worker MCP routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    const browserCredentials = {
+      name: 'MCP Admin',
+      email: 'mcp-admin@example.invalid',
+      password: randomUUID(),
+    };
+    const bootstrap = ensureServerBootstrapToken(coreDb);
+    if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+    const consumed = await consumeServerBootstrapToken(coreDb, {
+      token: bootstrap.token,
+      ownerUserId: allocateEntityId('usr'),
+      displayName: browserCredentials.name,
+      email: browserCredentials.email,
+      password: browserCredentials.password,
+      tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+    expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -3056,14 +3105,10 @@ describe('worker MCP routes', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       const registered = await auth.handler(
-        new Request(`${baseUrl}/api/auth/sign-up/email`, {
+        new Request(`${baseUrl}/api/auth/sign-in/email`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            name: 'MCP Admin',
-            email: 'mcp-admin@example.invalid',
-            password: randomUUID(),
-          }),
+          body: JSON.stringify(browserCredentials),
         })
       );
       expect(registered.status).toBe(200);
