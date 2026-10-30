@@ -111,6 +111,7 @@ describe('workspace resource catalog', () => {
     'stale-current',
     'removed-selection',
     'removed-binding',
+    'removed-stage',
   ] as const)('refuses %s without changing MCP history or admission', (scenario) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-lifecycle-'));
     const owner = { kind: 'workspace' as const, workspaceId: testEntityId('ws', scenario) };
@@ -157,22 +158,33 @@ describe('workspace resource catalog', () => {
       };
       expect
         .soft(() =>
-          scenario === 'removed-binding'
-            ? updateMcpBinding({
+          scenario === 'removed-stage'
+            ? createMcpConfig({
                 dataRoot,
                 owner,
-                entryId: 'echo',
+                id: 'echo',
+                displayName: 'Rewritten after removal',
+                declaration: { kind: 'http', endpoint: 'https://example.test/third' },
+                createdAt: '2026-10-30T00:02:00.000Z',
                 expectedRevision: before.revision,
-                binding: {
-                  allowedTools: ['echo'],
-                  credentialBindings: [],
-                  enabled: true,
-                  revision: before.mcp.bindings[0]?.revision ?? 0,
-                  schemaPolicy: 'tracking',
-                  timeoutMs: 60_000,
-                },
+                selectCurrent: false,
               })
-            : selectMcpVersion(select)
+            : scenario === 'removed-binding'
+              ? updateMcpBinding({
+                  dataRoot,
+                  owner,
+                  entryId: 'echo',
+                  expectedRevision: before.revision,
+                  binding: {
+                    allowedTools: ['echo'],
+                    credentialBindings: [],
+                    enabled: true,
+                    revision: before.mcp.bindings[0]?.revision ?? 0,
+                    schemaPolicy: 'tracking',
+                    timeoutMs: 60_000,
+                  },
+                })
+              : selectMcpVersion(select)
         )
         .toThrow(scenario === 'stale-current' ? CatalogConflictError : CatalogNotFoundError);
       expect(loadWorkspaceResourceCatalog(dataRoot, owner.workspaceId)).toEqual(before);

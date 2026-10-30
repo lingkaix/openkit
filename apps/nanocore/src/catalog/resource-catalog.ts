@@ -854,6 +854,7 @@ export function createMcpConfig(input: {
   const current = input.baseCatalog ?? readResourceCatalog(input.dataRoot, input.owner);
   const existingBinding = current.mcp.bindings.find((item) => item.entryId === id);
   const entry = current.mcp.entries.find((item) => item.id === id);
+  if (entry?.availability === 'removed') throw new CatalogNotFoundError('MCP entry was removed.');
   const currentVersion = current.mcp.versions.find(
     (item) => item.entryId === id && item.digest === entry?.currentVersionDigest
   );
