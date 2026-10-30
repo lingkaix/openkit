@@ -2979,9 +2979,68 @@ describe('worker MCP routes', () => {
           .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
           .get(prior.id);
         const retainedSchemas = listExportableMcpToolSchemaSnapshots(db, workspaceId);
+        // The whole-ledger reader must reject the corrupt header; inspect only durable rows here.
+        const retainedCalls = db.sqlite
+          .prepare('SELECT * FROM capability_calls ORDER BY call_id')
+          .all();
+        const retainedUsage = listWorkspaceUsageRecords(db, workspaceId);
+        const retainedAudits = listWorkspaceAuditEvents(db, workspaceId);
         const contacts = vi.mocked(workerMcpGateway.listTools).mock.calls.length;
-        expect(await request('tools/list')).toHaveProperty('error');
+        const toolContacts = vi.mocked(workerMcpGateway.callTool).mock.calls.length;
+        const failedDiscoveryRequestId = requestId + 1;
+        const failedDiscoveryCallId = deriveEntityId('cap', [
+          'mcp',
+          environmentPackage.snapshotId,
+          'echo',
+          'mcp.list-tools',
+          failedDiscoveryRequestId,
+        ]);
+        const failedDiscovery = await request('tools/list', {}, failedDiscoveryRequestId);
+        expect(failedDiscovery).toHaveProperty('error');
+        // Foundation89 requires a Call and Audit even when retained schema reading fails.
+        expect.soft(failedDiscovery).toMatchObject({
+          error: { data: { code: 'mcp-call-failed' } },
+        });
+        expect
+          .soft(
+            db.sqlite
+              .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
+              .get(failedDiscoveryCallId)
+          )
+          .toMatchObject({
+            capability_id: 'mcp.list-tools',
+            completed_at: expect.any(String),
+            error_code: 'mcp-call-failed',
+            operation: 'mcp.list-tools',
+            package_snapshot_id: environmentPackage.snapshotId,
+            provider_ref: 'echo',
+            status: 'failed',
+            turn_id: environmentPackage.scope.turnId,
+          });
+        expect(
+          db.sqlite
+            .prepare('SELECT * FROM capability_calls WHERE call_id != ? ORDER BY call_id')
+            .all(failedDiscoveryCallId)
+        ).toEqual(retainedCalls);
+        const addedAudits = listWorkspaceAuditEvents(db, workspaceId).filter(
+          (event) => !retainedAudits.some((priorEvent) => priorEvent.id === event.id)
+        );
+        expect.soft(addedAudits).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              action: 'capability.admit',
+              capabilityCallId: failedDiscoveryCallId,
+            }),
+            expect.objectContaining({
+              action: 'capability.finish',
+              capabilityCallId: failedDiscoveryCallId,
+              errorCode: 'mcp-call-failed',
+            }),
+          ])
+        );
+        expect(listWorkspaceUsageRecords(db, workspaceId)).toEqual(retainedUsage);
         expect(workerMcpGateway.listTools).toHaveBeenCalledTimes(contacts);
+        expect(workerMcpGateway.callTool).toHaveBeenCalledTimes(toolContacts);
         expect(
           db.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(prior.id)
         ).toEqual(retainedCall);

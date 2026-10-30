@@ -200,8 +200,11 @@ describe('bounded native Policy pipeline', () => {
     expect(policyStatementUsedByDecision(input.workspaceDb, statement, decision)).toBe(false);
   });
 
-  it('refuses active advice before disclosure until its safe output can be retained', async () => {
-    const input = fixture([binding('context', 'advise')]);
+  it.each([
+    'advise',
+    'transform',
+  ] as const)('refuses active %s before disclosure until its safe output can be retained', async (mode) => {
+    const input = fixture([binding('context', mode)]);
     const invoke = vi.fn(async () => ({ attributes: { risk: 'reviewed' } }));
     const finalKernel = vi.fn(() => kernel());
     await expect(

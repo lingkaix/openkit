@@ -1142,7 +1142,7 @@ describe('Goal-domain Task consumers', () => {
       return { content: [{ type: 'text', text: 'ISSUE_RESULT_CANARY' }] };
     });
     const result = mcp.call();
-    const assertion = expect(result).rejects.toMatchObject({ data: { code: 'mcp-policy-stale' } });
+    const assertion = expect(result).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
     await upstreamEntered;
     await executeGoalOperation(
       'goal.cancel',
