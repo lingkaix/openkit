@@ -23,6 +23,7 @@ import {
   parseDataRootBackupManifest,
 } from '@openkit/config-schema';
 import { DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { closeWorkspaceProductReadHandles } from './control-store-products.js';
 import { writeFileAtomic } from './workspace-file-records.js';
@@ -699,4 +700,9 @@ function assertLightAppDefinitionCoverage(root: string): void {
       sqlite.close();
     }
   }
+}
+
+/** Binds recovery placement to the original ordered inventory encoding, after all writers close. */
+export function workspaceRecoveryCandidateDigest(root: string): string {
+  return sha256Hex(JSON.stringify(inventoryRegularFiles(root)));
 }

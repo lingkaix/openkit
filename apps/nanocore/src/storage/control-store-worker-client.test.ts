@@ -1,6 +1,14 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -356,6 +364,119 @@ describe('control writer parent admission', () => {
     await f.client.close('user');
     await f.client.open({ database: 'user', path: f.path, create: false, initialize: 'user' });
     expect(count(f.path)).toBe(1);
+  });
+
+  it('seals recovery only after accepted Item publications and hashes the closed tree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'control-recovery-seal-'));
+    roots.push(root);
+    interception.gate = new SharedArrayBuffer(8);
+    interception.point = 'before';
+    const gate = new Int32Array(interception.gate);
+    Atomics.store(gate, 0, 1);
+    client = getControlStoreWorkerClient();
+    const store = await createDemoStore({ dataRoot: root });
+    const turn = await store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Private recovery', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    });
+    const scope = nativeProductScope(root, turn.owner);
+    const database = `workspace:${scope.path}`;
+    const tree = join(root, 'workspaces', DEMO_WORKSPACE_ID);
+    const publish = (text: string) =>
+      store.createItem({
+        id: allocateEntityId('it'),
+        owner: turn.owner,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text,
+        createdAt: turn.startedAt!,
+        completedAt: turn.startedAt!,
+      });
+    Atomics.store(gate, 0, 0);
+    const first = publish('Complete immutable recovery content.\n'.repeat(2048));
+    await waitForHold(gate);
+    const second = publish('Accepted after the first publication, before its acknowledgement.');
+    await nextTurn();
+    let settled = false;
+    const sealing = client.sealRecovery(database).then((digest) => {
+      settled = true;
+      return digest;
+    });
+    let settledWhileHeld: boolean;
+    try {
+      await nextTurn();
+      settledWhileHeld = settled;
+    } finally {
+      release(gate);
+    }
+    await Promise.allSettled([first, second, sealing]);
+    expect(settledWhileHeld).toBe(false);
+    const items = await Promise.all([first, second]);
+    const digest = await sealing;
+    // Same-Deployment Restore seals the complete post-close inventory before placement.
+    const expected = createHash('sha256')
+      .update(JSON.stringify(dataRootBackup.inventoryRegularFiles(tree)))
+      .digest('hex');
+    expect(digest).toBe(expected);
+    expect(store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual(items);
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: root,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+      create: false,
+      initialize: 'workspace',
+    });
+    const later = await publish('A new explicit opening can publish after the seal.');
+    expect(store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual([...items, later]);
+  });
+
+  it('reports a post-close recovery seal refusal and permits an explicit fresh opening', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'control-recovery-seal-refusal-'));
+    roots.push(root);
+    client = getControlStoreWorkerClient();
+    const store = await createDemoStore({ dataRoot: root });
+    const turn = await store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Private recovery', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    });
+    const scope = nativeProductScope(root, turn.owner);
+    const database = `workspace:${scope.path}`;
+    const tree = join(root, 'workspaces', DEMO_WORKSPACE_ID);
+    const before = store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID);
+    const inode = statSync(scope.path).ino;
+    expect(dataRootBackup.inventoryRegularFiles(tree).length).toBeGreaterThan(0);
+    // Fault injection follows valid owner setup; inventory and sealing must refuse this link.
+    const link = join(tree, 'forbidden-recovery-link');
+    symlinkSync(scope.path, link);
+    await expect(client.sealRecovery(database)).resolves.toBeNull();
+    expect(statSync(scope.path).ino).toBe(inode);
+    rmSync(link);
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: root,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+      create: false,
+      initialize: 'workspace',
+    });
+    const item = await store.createItem({
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Explicitly reopened after a seal refusal.',
+      createdAt: turn.startedAt!,
+      completedAt: turn.startedAt!,
+    });
+    expect(store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual([...before, item]);
+    expect(statSync(scope.path).ino).toBe(inode);
   });
 
   it('pins open Workspace databases to four bounded hosts and keeps the server separate', async () => {

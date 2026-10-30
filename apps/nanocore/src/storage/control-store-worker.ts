@@ -91,6 +91,7 @@ import {
   type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalTransition,
+  closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
   type PreparedControlEntry,
   type PreparedControlPublication,
@@ -129,11 +130,13 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
 import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyNativeScopeMigrations } from './migrate.js';
 import { applyControlWorkObservation } from './work-observations.js';
+import { syncCanonicalTree } from './workspace-file-records.js';
 
 if (isMainThread || parentPort === null) {
   throw new Error('The database writer entrypoint requires a dedicated worker thread.');
@@ -1530,24 +1533,48 @@ async function drain(owner: OwnedDatabase): Promise<void> {
 
 /** Includes accepted asynchronous preparation in ordered close/checkpoint/reclaim, without holding SQL across an await. */
 function maintainDatabase(
-  request: Extract<ControlWorkerRequest, { operation: 'close' | 'checkpoint' | 'reclaim' }>,
+  request: Extract<
+    ControlWorkerRequest,
+    { operation: 'close' | 'checkpoint' | 'reclaim' | 'recovery-seal' }
+  >,
   owner: OwnedDatabase
 ): void {
-  if (request.operation === 'close') owner.closing = true;
+  if (request.operation === 'close' || request.operation === 'recovery-seal') owner.closing = true;
   const finish = async () => {
     try {
       await drain(owner);
-      if (request.operation === 'close') {
+      if (request.operation === 'close' || request.operation === 'recovery-seal') {
+        closeWorkspaceProductReadHandles(owner.path);
         owner.sqlite.close();
         databases.delete(request.database);
         paths.delete(owner.path);
         identities.delete(owner.identity);
-        reply({
-          version: CONTROL_WORKER_VERSION,
-          id: request.id,
-          status: 'ok',
-          operation: 'close',
-        });
+        if (request.operation === 'recovery-seal') {
+          let digest: string | null = null;
+          try {
+            if (owner.poisoned || owner.scopeDb?.scope !== 'workspace')
+              throw new ControlProductPreconditionError();
+            const root = dirname(dirname(owner.path));
+            syncCanonicalTree(root);
+            digest = workspaceRecoveryCandidateDigest(root);
+          } catch (error) {
+            // Closing is proved; an unavailable seal must not resurrect the closed opening.
+            failureCode(error, [request.id]);
+          }
+          reply({
+            version: CONTROL_WORKER_VERSION,
+            id: request.id,
+            status: 'ok',
+            operation: 'recovery-seal',
+            digest,
+          });
+        } else
+          reply({
+            version: CONTROL_WORKER_VERSION,
+            id: request.id,
+            status: 'ok',
+            operation: 'close',
+          });
       } else if (owner.poisoned) reply(failure(request.id, 'unavailable'));
       else if (request.operation === 'checkpoint')
         reply({
@@ -1807,7 +1834,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'not-open'));
       return;
     }
-    if (value.operation === 'close') {
+    if (value.operation === 'close' || value.operation === 'recovery-seal') {
       maintainDatabase(value, owner);
       return;
     }

@@ -218,6 +218,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'project-cleanup':
     case 'recovery-cleanup':
     case 'recovery-history':
+    case 'recovery-seal':
     case 'recovery-safety':
       return true;
     case 'item':
@@ -1217,6 +1218,26 @@ class ControlStoreWorkerClient {
       if (opening) closeWorkspaceProductReadHandles(opening.path);
       await this.request({ operation: 'close', database });
       if (this.openings.get(database) === opening) this.openings.delete(database);
+    } finally {
+      if (opening) closeWorkspaceProductReadHandles(opening.path);
+    }
+  }
+
+  /** Closes the admitted private candidate before sealing; null proves close but never a usable seal. */
+  async sealRecovery(database: string): Promise<string | null> {
+    const opening = this.openings.get(database);
+    try {
+      // The caller excludes new publishers. Accepted same-Turn producers can still be waiting
+      // to post, so join their existing tails before the native close/drain boundary.
+      const path = opening && realpathSync(opening.path);
+      const accepted = [...this.turnTails].filter(([key]) => JSON.parse(key)[0] === path);
+      const settled = await Promise.allSettled(accepted.map(([, entry]) => entry.tail));
+      const failed = settled.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      if (opening) closeWorkspaceProductReadHandles(opening.path);
+      const reply = await this.request({ operation: 'recovery-seal', database });
+      if (this.openings.get(database) === opening) this.openings.delete(database);
+      return (reply as Extract<Success, { operation: 'recovery-seal' }>).digest;
     } finally {
       if (opening) closeWorkspaceProductReadHandles(opening.path);
     }

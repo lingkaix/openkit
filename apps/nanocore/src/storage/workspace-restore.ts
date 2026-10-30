@@ -8,7 +8,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
-import { inventoryRegularFiles } from './data-root-backup.js';
+import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
 import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
@@ -26,7 +26,6 @@ import {
   ensureCanonicalDirectory,
   nativeProductScope,
   syncCanonicalDirectory,
-  syncCanonicalTree,
 } from './workspace-file-records.js';
 import {
   selectRecoveryAdmission,
@@ -55,12 +54,6 @@ export type WorkspaceTargetRecoveryInput = TargetArgs & {
   readonly expectedRelease: WorkspaceBackupManifest['release'];
 };
 
-/** Binds only canonical target bytes; the retained source manifest and evidence remain unchanged. */
-function candidateDigest(root: string): string {
-  return createHash('sha256')
-    .update(JSON.stringify(inventoryRegularFiles(root)))
-    .digest('hex');
-}
 /** Request identity excludes the movable bundle pathname and orders only the explicit account map. */
 function requestIdentity(input: TargetArgs) {
   return input.command === 'restore'
@@ -280,9 +273,8 @@ export async function admitWorkspaceBackup(
     });
     const owned = readRecoveryAdmission(core, input.requestId)!;
     const map = mapping(core, input, owned);
-    await bindTargetCandidate(core, owned, map);
-    syncCanonicalTree(candidate);
-    const proof = { ...owned.proof, candidateDigest: candidateDigest(candidate) };
+    const digest = await bindTargetCandidate(core, owned, map);
+    const proof = { ...owned.proof, candidateDigest: digest };
     core.sqlite
       .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
       .run(JSON.stringify(proof), input.requestId);
@@ -350,7 +342,7 @@ async function bindTargetCandidate(
   core: CoreDb,
   owned: RecoveryAdmission,
   map: ReturnType<typeof mapping>
-): Promise<void> {
+): Promise<string> {
   const input = owned.proof.input as TargetArgs;
   const root = owned.candidate_ref;
   const dataRoot = dirname(dirname(root));
@@ -434,6 +426,10 @@ async function bindTargetCandidate(
       // Each acknowledged request advances one existing history unit; this is not a retry.
     }
     owned.proof.result = { ...owned.proof.result, restrictedRecovery: restricted };
+    const digest = await client.sealRecovery(database);
+    opened = false; // The reply proves close even when the subsequent byte seal was unavailable.
+    if (digest === null) refuseRecovery('recovery-required');
+    return digest;
   } finally {
     if (opened) await client.close(database);
   }

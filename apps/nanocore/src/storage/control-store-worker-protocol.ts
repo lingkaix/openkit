@@ -93,7 +93,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 20;
+export const CONTROL_WORKER_VERSION = 21;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -196,7 +196,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
       | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
-      | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
+      | { readonly operation: 'checkpoint' | 'reclaim' | 'close' | 'recovery-seal' }
     ));
 
 /** Transient correlation header; the command receipt remains in the owning SQL tuple. */
@@ -342,6 +342,7 @@ export type ControlWorkerReply = {
       readonly result: ControlRecoverySafetyResult;
     }
   | { readonly status: 'ok'; readonly operation: 'recovery-history'; readonly done: boolean }
+  | { readonly status: 'ok'; readonly operation: 'recovery-seal'; readonly digest: string | null }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
       readonly status: 'ok';
@@ -537,6 +538,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   }
   if (reply.status !== 'ok') return false;
+  if (reply.operation === 'recovery-seal')
+    return (
+      reply.digest === null ||
+      (typeof reply.digest === 'string' && /^[0-9a-f]{64}$/.test(reply.digest))
+    );
   if (reply.operation === 'recovery-history') return typeof reply.done === 'boolean';
   if (reply.operation === 'recovery-safety')
     return (
@@ -948,7 +954,8 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   return (
     (value.operation === 'checkpoint' ||
       value.operation === 'reclaim' ||
-      value.operation === 'close') &&
+      value.operation === 'close' ||
+      value.operation === 'recovery-seal') &&
     exactFields(value, scoped)
   );
 }
