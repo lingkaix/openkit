@@ -730,7 +730,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     }
                     if (!resultCurrent)
                       throw new WorkerControlGatewayError(
-                        'mcp-policy-stale',
+                        'mcp-denied',
                         'MCP call completed; current authority does not permit result delivery.',
                         409
                       );
@@ -765,7 +765,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     requireCurrentBuiltinToolPolicy();
                   } catch {
                     throw new WorkerControlGatewayError(
-                      'mcp-policy-stale',
+                      'mcp-denied',
                       'MCP call completed; current authority does not permit result delivery.',
                       409
                     );
@@ -869,6 +869,11 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             mcpRequestName(environmentPackage, serverId, 'mcp.list-tools', ctx.mcpReq.id)
           );
           return await runMcpOperation(workspaceDb, callId, async () => {
+            const current = readTurnMcpToolSchemaSnapshot({
+              environmentPackage,
+              selected,
+              workspaceDb,
+            });
             const call = await startMcpCapabilityCall({
               callId,
               capabilityId: 'mcp.list-tools',
@@ -877,16 +882,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               operation: 'mcp.list-tools',
               serverId,
               protocolRequestId: ctx.mcpReq.id,
+              schemaSnapshotId: current?.schemaSnapshotId ?? null,
               workspaceDb: workspaceDb,
             });
             try {
               requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
               requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-              const current = readTurnMcpToolSchemaSnapshot({
-                environmentPackage,
-                selected,
-                workspaceDb: workspaceDb,
-              });
               if (current) {
                 await stampCapabilityCallSchemaSnapshot({
                   callId: call.id,
@@ -1518,22 +1519,26 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     };
     const pendingInput =
       approvalRequired && currentSnapshot ? capturedInput(currentSnapshot, null) : null;
+    let pendingDuplicate: ReturnType<typeof preflightPendingToolRequest> | undefined;
+    let pendingPreflightFailure: { error: unknown } | undefined;
     if (
       pendingInput &&
       hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage) &&
       hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
     ) {
-      assertValidMcpToolArguments(currentSnapshot!.tools, input.toolName, input.arguments);
       try {
-        // Returning an existing request releases no effect; its human response reruns Policy.
-        const duplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, pendingInput);
-        if (duplicate) return pendingToolResult('pending-approval', duplicate.requestId);
+        assertValidMcpToolArguments(currentSnapshot!.tools, input.toolName, input.arguments);
+        pendingDuplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, pendingInput);
       } catch (error) {
-        if (error instanceof OperationError)
-          throw new ProtocolError(ProtocolErrorCode.InvalidRequest, error.message, {
-            code: error.code,
-          });
-        throw error;
+        // Recheck a new request's refusal after admission so its no-contact Call is retained.
+        pendingPreflightFailure = {
+          error:
+            error instanceof OperationError
+              ? new ProtocolError(ProtocolErrorCode.InvalidRequest, error.message, {
+                  code: error.code,
+                })
+              : error,
+        };
       }
     }
     const startedAt = Date.now();
@@ -1648,6 +1653,9 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             409
           );
         }
+        if (pendingPreflightFailure) throw pendingPreflightFailure.error;
+        if (pendingDuplicate && replay.status === 'denied')
+          return pendingToolResult('pending-approval', pendingDuplicate.requestId);
         throw mcpDeniedError();
       }
       call = await startCall(requestCallId);
@@ -1702,7 +1710,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           status === 'completed'
             ? 'MCP call completed; terminal Item publication is unavailable.'
             : 'MCP terminal Item publication is unavailable.',
-          { code: 'policy_evidence_unavailable' }
+          { code: 'recovery_required' }
         );
       }
     };
@@ -1729,16 +1737,35 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           );
         assertValidMcpToolArguments(currentSnapshot.tools, input.toolName, input.arguments);
       }
+      if (pendingInput) {
+        // Admission may await native storage; use the current Pending state again.
+        const duplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, pendingInput);
+        if (duplicate) {
+          publishTerminalItem = false;
+          await stampCapabilityCallSchemaSnapshot({
+            callId: call.id,
+            schemaSnapshotId: currentSnapshot!.schemaSnapshotId,
+            workspaceDb: input.workspaceDb,
+          });
+          await finishMcpToolCall(
+            call,
+            input.workspaceDb,
+            { status: 'denied', errorCode: 'policy_requires_approval', clearItem: true },
+            false
+          );
+          terminalCommitted = true;
+          status = 'declined';
+          requireMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage);
+          requireCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage);
+          return pendingToolResult('pending-approval', duplicate.requestId);
+        }
+      }
       policyInput ??= mcpInterceptionInput(input, call);
       const policyDecision = synchronousDecision ?? (await input.interception.decide(policyInput));
       if (policyDecision.result === 'allow') policyInput.useDecision(policyDecision);
       if (policyDecision.result === 'require_escalation' && policyDecision.escalation) {
         if (!policyInput.stillCurrent())
-          throw new WorkerControlGatewayError(
-            'mcp-policy-stale',
-            'Goal Task authority changed before Coordinator escalation.',
-            409
-          );
+          throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
         const escalation = policyDecision.escalation;
         // Commit the Goal-scoped gap and its wake marker together before notifying the owner.
         await finishMcpToolCall(
@@ -1777,11 +1804,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage) ||
             !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
           )
-            throw new WorkerControlGatewayError(
-              'mcp-policy-stale',
-              'MCP Policy changed before human review capture.',
-              409
-            );
+            throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
         };
         const snapshot = await currentMcpEscalationSnapshot(input);
         assertReviewCurrent();
@@ -1812,11 +1835,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             previousRecord?.policySnapshotId !== policyDecision.policyRevision ||
             previous.authorizationRevision !== policyDecision.authorizationRevision
           )
-            throw new WorkerControlGatewayError(
-              'mcp-policy-stale',
-              'The existing human review has stale Policy facts; inspect or withdraw it.',
-              409
-            );
+            throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
         }
         const raised =
           duplicate ??
@@ -1855,8 +1874,8 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       if (policyDecision.result !== 'allow') {
         publishTerminalItem = false;
         throw new WorkerControlGatewayError(
-          policyDecision.result === 'deny' ? 'mcp-denied' : 'mcp-policy-unavailable',
-          'MCP Policy did not allow the call.',
+          policyDecision.result === 'deny' ? 'mcp-denied' : 'mcp-call-failed',
+          policyDecision.result === 'deny' ? 'MCP tool call was denied.' : 'MCP tool call failed.',
           policyDecision.result === 'deny' ? 403 : 503
         );
       }
@@ -1919,11 +1938,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         }
       }
       if (!policyInput.stillCurrent())
-        throw new WorkerControlGatewayError(
-          'mcp-policy-stale',
-          'MCP Policy or current authority changed before dispatch.',
-          409
-        );
+        throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
       const dispatchCredentials = observedCredentials;
       // Untyped gateway failures after dispatch cannot prove that the Tool was not contacted.
       upstreamEffect = 'unknown';
@@ -1974,7 +1989,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           throw new ProtocolError(
             ProtocolErrorCode.InvalidRequest,
             'MCP call completed; current authority does not permit result delivery.',
-            { code: 'mcp-policy-stale' }
+            { code: 'mcp-denied' }
           );
       };
       assertResultCurrent();
@@ -1986,7 +2001,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           throw new ProtocolError(
             ProtocolErrorCode.InternalError,
             'MCP call completed; observation evidence is unavailable.',
-            { code: 'policy_evidence_unavailable' }
+            { code: 'recovery_required' }
           );
         }
       }
@@ -3431,6 +3446,7 @@ async function startMcpCapabilityCall(input: {
   readonly itemId: string | null;
   readonly operation: string;
   readonly protocolRequestId: string | number;
+  readonly schemaSnapshotId?: string | null;
   readonly serverId: string;
   readonly summary?: string;
   readonly toolName?: string;
@@ -3457,6 +3473,7 @@ async function startMcpCapabilityCall(input: {
     providerRef: input.serverId,
     redactionClass: 'metadata-only',
     requestId: null,
+    schemaSnapshotId: input.schemaSnapshotId ?? null,
     serviceRef: input.toolName ? `mcp-tool:${input.toolName}` : 'mcp-gateway',
     sourceIds: [],
     summary: input.summary ?? `MCP ${input.operation} for ${input.serverId}.`,
