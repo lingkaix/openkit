@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, WorkspaceSharingErrorSchema } from '@openkit/app-api-schemas';
 import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -830,9 +830,9 @@ describe('Workspace sharing routes', () => {
     );
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      code: 'personal_workspace_not_shareable',
-    });
+    const failure = await response.json();
+    expect.soft(failure).toMatchObject({ code: 'quick_chat_not_shareable' });
+    expect.soft(WorkspaceSharingErrorSchema.safeParse(failure).success).toBe(true);
     expect(
       fixture.coreDb.sqlite
         .prepare(
