@@ -27,7 +27,7 @@ One lowercase semantic-version tag identifies the complete product bundle:
 - every `release: true` image in `containers/images.json`,
 - `openkit-ops-skill-<tag>.tar.gz`, containing `LICENSE`, the complete operations Skill tree with its generated administrator executable, and `release-identity.json` for the exact archived source commit and tag,
 - `openkit-nanohost-<tag>-linux-amd64.tar.gz` and `openkit-nanohost-<tag>-linux-arm64.tar.gz`, each containing the verified NanoHost binary, pin-bound Gateway, service unit, installer, bundled capability profile, generated profile/provenance metadata, checksums, and licenses,
-- `SHA256SUMS` for all three portable archives,
+- `SHA256SUMS` for all three portable archives and `openkit-release-<tag>.json`; the manifest itself lists only the three archive checksums.
 - one GitHub Release with image digests and gate evidence.
 
 Private workspace packages are not npm release assets, and their `package.json` versions do not follow the product tag.

@@ -625,11 +625,11 @@ Pre-release tags do not update `latest`.
 
 OpenKit uses GHCR's digest namespace as the temporary candidate boundary and does not need a separate promotion registry.
 
-The release tag build pushes an untagged digest, and `docker buildx imagetools create` assigns release tags only after that exact digest passes every platform smoke check.
-
-Same-tag reruns reuse a complete, matching immutable identity and build only absent image identities.
+Prerelease candidate CI builds and smokes the exact image digests. The release tag promotes those proved indexes without rebuilding, under [Release Management](../specs/20260829-release_management.md#prerelease-candidate-images). Same-tag recovery follows that owner's immutable-retry rules; it adds no tag-stage rebuild fallback.
 
 ## Current Implementation
+
+The App image currently serves Caddy on port 8080 by default and forwards `/api/*`, `/internal/*` and exact `/mcp` to the loopback App listener, whose default port is 4317. `/api/nanohost/transport/*` returns 404; turn event streams flush immediately. Unsupported API paths do not fall back to the SPA. `Caddyfile` and `containers/app/entrypoint.sh` implement this projection; the App Dockerfile declares no `USER` override.
 
 Applied image catalog and Dockerfile layout. The common base and combined deployment image use one shared Dockerfile; deployment smoke and version evidence have one owner:
 

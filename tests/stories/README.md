@@ -36,6 +36,8 @@ contracts: docs/specs/20260628-web_product_surface_projection.md, docs/core/vaul
 
 `contracts` is one comma-separated scalar line naming the owning Core and specification documents whose behavior the story accepts.
 
+When a listed contract changes, the change reviewer reviews the affected story and updates it if its accepted behavior changed. The schema validator checks contract existence; it does not mark stories for review.
+
 There is no `mode` or `runner` field. Every L6 story is agent-first by definition, so the mode would restate the layer and a per-story runner would prescribe its trajectory.
 
 The front matter is scalar key-value lines with a closed field set, not YAML. The L6 specification owns the one-step switch trigger to a real YAML parser; do not add partial YAML syntax to the scalar parser.
