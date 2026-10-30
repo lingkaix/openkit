@@ -16,7 +16,7 @@ test('test image jobs reap orphaned processes through Docker init', () => {
   const jobs = Object.entries(workflow.jobs).filter(
     ([, job]) => job.container?.image === actionExpression('needs.test-image.outputs.image')
   );
-  assert.equal(jobs.length, 10);
+  assert.equal(jobs.length, 12);
   for (const [name, job] of jobs) {
     assert.equal(job.container.options, '--init', `${name} must reap orphaned processes`);
   }
@@ -546,6 +546,7 @@ test('release notes are checked before publication and verified against the gene
 // Complete main verification adds L4 to main/release gates and the registry dependency; all other Web and registry steps stay unchanged.
 // New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
 // #533 re-records runner selection and the two-LTS installer matrix; all other job bytes stay frozen.
+// CI speed proof adds shared build/manual worker probes and changes only the shard prerequisites/observations.
 const unchangedJobBaseline = {
   'container-image-matrix': 'aaf9dbadd90c16a7be23c7198f043c96a0903ed9673f9692d070ff9a6d18a88d',
   'build-app-candidate': '11ee3d0655617efd27aaeaca35f343f331565e9423dac70191a178be29276e23',
@@ -579,7 +580,9 @@ const candidateJobBaseline = {
 
 const shardJobBaseline = {
   'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
-  'l0-l2-shards': '97539c19600c69fc5c37e47fbbe54021011cc079f362e19793712bac6f22f371',
+  'l0-l2-build': 'd64709af62693597cde5f273c0c8ef1752f36609dce4ea30fdb1705467aeab2e',
+  'l0-l2-shards': '086a437e2ce6169ef26ccf3d878acc79a088797dacb7c80f6533e9225847d4dc',
+  'l0-l2-worker-probes': '2a47307b39835f761350d2a84ffd7a4d7b6f5df1e59729add04297fc1144f5b0',
   'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
   'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
 };
@@ -629,7 +632,7 @@ test('only complete L0-L2 shards, whole-owner coverage and NanoCore e2e read exa
     assert.deepEqual(
       job.needs,
       name === 'l0-l2-shards'
-        ? ['test-image', 'l0-l2-plan']
+        ? ['test-image', 'l0-l2-plan', 'l0-l2-build']
         : name === 'l0-l2-coverage'
           ? ['test-image', 'l0-l2-plan', 'l0-l2-shards']
           : 'test-image'
@@ -671,6 +674,9 @@ test('only complete L0-L2 shards, whole-owner coverage and NanoCore e2e read exa
         assert.equal(later.with['if-no-files-found'], 'error');
       } else if (later.name === 'Restore exact-commit execution evidence') {
         assert.equal(later.if, "steps.reuse.outputs.reused == 'true'");
+      } else if (later.name === 'Inspect runner CPU and memory') {
+        assert.equal(name, 'l0-l2-shards');
+        assert.equal(later.if, "steps.reuse.outputs.reused != 'true' && matrix.id == 'nanocore-1'");
       } else assert.equal(later.if, "steps.reuse.outputs.reused != 'true'", later.name);
     }
   }

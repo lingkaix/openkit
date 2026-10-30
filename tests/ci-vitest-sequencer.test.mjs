@@ -67,7 +67,8 @@ test('runtime discovery, not checked-in timing keys, determines shard membership
 });
 
 test('checked-in costs are positive per-file milliseconds with named source batches', () => {
-  assert(timings.sourceRuns.length >= 2);
+  assert.deepEqual(timings.sourceRuns, [41004638641]);
+  assert.equal(Object.keys(timings.files).length, 673);
   assert(timings.sourceRuns.every(Number.isSafeInteger));
   assert(Number.isSafeInteger(timings.fallbackMs) && timings.fallbackMs > 0);
   assert(Object.keys(timings.files).length > 0);

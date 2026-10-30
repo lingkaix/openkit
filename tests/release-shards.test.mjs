@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -146,7 +147,9 @@ test('native groups preserve guarded owners and prepare Core only for NanoHost',
     assert.deepEqual(packages, shard.owners);
     assert.deepEqual(
       commands,
-      shard.id === 'native-nanohost' ? [['pnpm', '--filter', '@openkit/nanocore...', 'build']] : []
+      shard.id === 'native-nanohost'
+        ? [['pnpm', 'exec', 'turbo', 'run', 'build', '--filter=@openkit/nanocore...']]
+        : []
     );
     for (const failed of shard.owners)
       assert.throws(
@@ -211,6 +214,34 @@ test('grouped coverage prepares once and writes a distinct original-owner execut
       assert.equal(options.partition, undefined);
       assert.equal(options.blobFile, undefined);
     }
+    // Exercise the real shared-preparation CLI while observing, not bypassing, its build commands.
+    mkdirSync(join(root, 'bin'));
+    writeFileSync(
+      join(root, 'bin/pnpm'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> prepared-commands\n',
+      { mode: 0o755 }
+    );
+    const preparation = spawnSync(
+      process.execPath,
+      [join(process.cwd(), 'scripts/ci-l0-l2.mjs'), '--prepare'],
+      {
+        cwd: root,
+        env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` },
+        encoding: 'utf8',
+      }
+    );
+    assert.equal(preparation.status, 0, preparation.stdout + preparation.stderr);
+    const commands = readFileSync(join(root, 'prepared-commands'), 'utf8').trim().split('\n');
+    assert.equal(commands.length, 2);
+    for (const owner of testOwners(root).filter((owner) => owner.vitest))
+      assert.ok(
+        commands[0].includes(
+          `--filter=${owner.name}${owner.name === '@openkit/nanocore' ? '...' : '^...'}`
+        )
+      );
+    assert.ok(commands[0].includes('--filter=@openkit/policy-kernel'));
+    assert.ok(commands[0].includes('--filter=@openkit/storage'));
+    assert.equal(commands[1], 'exec turbo run build --filter=@openkit/core-client...');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -281,6 +312,134 @@ test('workflow matrix derives its complete membership and aggregate fails closed
         /success/.test(s.run ?? '')
     )
   );
+});
+
+test('one exact-source build cache feeds every shard and worker probe without omitting prerequisites', () => {
+  const { jobs } = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const build = jobs['l0-l2-build'];
+  assert.ok(build.needs.includes('test-image'));
+  assert.ok(
+    build.steps.some((step) => /node scripts\/ci-l0-l2.mjs --prepare/.test(step.run ?? ''))
+  );
+  const uploaded = build.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(uploaded.with.path, '.turbo/cache');
+  assert.equal(uploaded.with['include-hidden-files'], true);
+  assert.equal(uploaded.with['if-no-files-found'], 'error');
+  assert.match(uploaded.with.name, /github.sha/);
+  assert.match(uploaded.with.name, /github.run_attempt/);
+  assert.ok(!uploaded.with.name.startsWith('l0-l2-'), 'build cache is not a shard observation');
+  for (const id of ['l0-l2-shards', 'l0-l2-worker-probes']) {
+    assert.ok(jobs[id].needs.includes('l0-l2-build'));
+    const downloaded = jobs[id].steps.find((step) => step.name === 'Restore shared build cache');
+    assert.equal(downloaded.with.name, uploaded.with.name);
+    assert.equal(downloaded.with.path, '.turbo/cache');
+    assert.ok(!downloaded.with['run-id']);
+    assert.ok(!downloaded['continue-on-error']);
+    assert.ok(jobs[id].steps.some((step) => /pnpm install --frozen-lockfile/.test(step.run ?? '')));
+  }
+});
+
+test('manual worker probes repeat exactly the Factory bin and never enter the coverage union', () => {
+  const { jobs } = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const probe = jobs['l0-l2-worker-probes'];
+  assert.equal(probe.if, "github.event_name == 'workflow_dispatch' && inputs.gate == 'l0-l2'");
+  assert.deepEqual(probe.strategy.matrix, { workers: [3, 4] });
+  assert.equal(probe.strategy['fail-fast'], false);
+  assert.ok(!probe['continue-on-error']);
+  const run = probe.steps.find((step) => step.env?.PROBE_WORKERS);
+  assert.match(run.run, /--run nanocore-1 --workers/);
+  assert.match(run.run, /nproc/);
+  assert.match(run.run, /MemTotal/);
+  const artifact = probe.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.match(artifact.with.name, /^ci-worker-probe-/);
+  assert.ok(!artifact.with.name.startsWith('l0-l2-'));
+  assert.ok(!jobs['l0-l2-shards'].steps.some((step) => /--workers/.test(step.run ?? '')));
+  assert.ok(jobs['l0-l2-shards'].steps.some((step) => /nproc/.test(step.run ?? '')));
+  assert.equal(shardPlan().length + probe.strategy.matrix.workers.length + 2, 20);
+});
+
+test('only NanoCore accepts bounded explicit worker probes, with two remaining the default', () => {
+  for (const workers of [undefined, 2, 3, 4]) {
+    const calls = [];
+    const details = runShard('nanocore-1', {
+      ...(workers === undefined ? {} : { workers }),
+      prepare: () => {},
+      runCoverage: (owner, options) => {
+        calls.push(options);
+        return { name: owner.name };
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].workers, workers ?? 2);
+    assert.equal(details.workers, workers ?? 2);
+    assert.deepEqual(calls[0].partition, { index: 1, count: 8 });
+  }
+  for (const workers of [0, -1, 1.5, 5, NaN])
+    assert.throws(
+      () => runShard('nanocore-1', { workers, prepare: () => assert.fail() }),
+      /workers/
+    );
+  assert.throws(() => runShard('root', { workers: 3 }), /workers/);
+});
+
+test('real Turbo cache restores removed outputs without rebuilding and rejects changed source', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-shared-build-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const pkg = join(root, 'packages/subject');
+  mkdirSync(pkg, { recursive: true });
+  const { packageManager } = JSON.parse(readFileSync('package.json', 'utf8'));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true, packageManager }));
+  writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+  writeFileSync(
+    join(root, 'pnpm-lock.yaml'),
+    "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  packages/subject: {}\n"
+  );
+  writeFileSync(
+    join(root, 'turbo.json'),
+    JSON.stringify({
+      tasks: {
+        build: { inputs: ['package.json', 'build.mjs', 'value.txt'], outputs: ['dist/**'] },
+      },
+    })
+  );
+  writeFileSync(
+    join(pkg, 'package.json'),
+    JSON.stringify({ name: '@fixture/subject', scripts: { build: 'node build.mjs' } })
+  );
+  writeFileSync(join(pkg, 'value.txt'), 'original');
+  writeFileSync(
+    join(pkg, 'build.mjs'),
+    "import{appendFileSync,mkdirSync,readFileSync,writeFileSync}from'node:fs';mkdirSync('dist',{recursive:true});writeFileSync('dist/value.txt',readFileSync('value.txt'));appendFileSync('build-count','built\\n');"
+  );
+  const build = () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(process.cwd(), 'node_modules/turbo/bin/turbo'),
+        'run',
+        'build',
+        '--filter=@fixture/subject',
+      ],
+      { cwd: root, encoding: 'utf8' }
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  };
+  build();
+  const snapshot = join(root, 'snapshot');
+  cpSync(join(root, '.turbo/cache'), snapshot, { recursive: true });
+  for (let consumer = 0; consumer < 2; consumer++) {
+    rmSync(join(pkg, 'dist'), { recursive: true });
+    rmSync(join(root, '.turbo/cache'), { recursive: true });
+    cpSync(snapshot, join(root, '.turbo/cache'), { recursive: true });
+    build();
+    assert.equal(readFileSync(join(pkg, 'dist/value.txt'), 'utf8'), 'original');
+    assert.equal(readFileSync(join(pkg, 'build-count'), 'utf8'), 'built\n');
+  }
+  writeFileSync(join(pkg, 'value.txt'), 'changed');
+  rmSync(join(pkg, 'dist'), { recursive: true });
+  build();
+  assert.equal(readFileSync(join(pkg, 'dist/value.txt'), 'utf8'), 'changed');
+  assert.equal(readFileSync(join(pkg, 'build-count'), 'utf8'), 'built\nbuilt\n');
 });
 
 // The root gate's real P29 native fixture requires Linux before tests start.

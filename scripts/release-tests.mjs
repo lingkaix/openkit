@@ -64,6 +64,7 @@ export function coveredSuite(
   owner,
   {
     inventoryOnly = false,
+    workers = 2,
     reportFile,
     partition,
     blobFile,
@@ -74,7 +75,9 @@ export function coveredSuite(
   const cli = join(owner.cwd, 'node_modules/vitest/vitest.mjs');
   // Vitest's environment overrides CLI worker limits; keep NanoCore's actual child cap exact.
   const nanoCore = owner.name === '@openkit/nanocore';
-  const env = nanoCore ? { ...process.env, VITEST_MAX_WORKERS: '2' } : undefined;
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 4 || (!nanoCore && workers !== 2))
+    throw Error('Test Strategy: invalid NanoCore workers');
+  const env = nanoCore ? { ...process.env, VITEST_MAX_WORKERS: String(workers) } : undefined;
   if (
     partition &&
     (!Number.isSafeInteger(partition.index) ||
@@ -93,7 +96,7 @@ export function coveredSuite(
         cli,
         'list',
         '--json',
-        `--maxWorkers=${nanoCore ? 2 : 4}`,
+        `--maxWorkers=${nanoCore ? workers : 4}`,
         '--pool=threads',
         ...(coverage ? ['--coverage'] : []),
         ...(filesOnly ? ['--filesOnly'] : []),
@@ -128,7 +131,7 @@ export function coveredSuite(
         process.execPath,
         cli,
         'run',
-        ...(nanoCore ? ['--maxWorkers=2'] : []),
+        ...(nanoCore ? [`--maxWorkers=${workers}`] : []),
         '--coverage',
         '--reporter=tap-flat',
         ...(reportFile ? ['--reporter=json', `--outputFile.json=${reportFile}`] : []),
@@ -423,14 +426,14 @@ export function rootSuite({ root = process.cwd() } = {}) {
   };
   command([
     'pnpm',
-    '--filter',
-    '@openkit/core-client...',
-    '--filter',
-    '@openkit/retrieval-kernel',
-    '--filter',
-    '@openkit/nanocore...',
-    '--workspace-concurrency=1',
+    'exec',
+    'turbo',
+    'run',
     'build',
+    '--filter=@openkit/core-client...',
+    '--filter=@openkit/retrieval-kernel',
+    '--filter=@openkit/nanocore...',
+    '--concurrency=1',
   ]);
   command([
     'pnpm',

@@ -350,6 +350,43 @@ test('NanoCore partition admission caps collection and execution at two workers 
     /invalid coverage partition/
   );
 });
+test('explicit three/four-worker probes agree in collection flags, execution flags and real child environment', (t) => {
+  for (const workers of [3, 4]) {
+    const owner = { name: '@openkit/nanocore', cwd: '/example' };
+    coveredSuite(owner, {
+      workers,
+      inventoryOnly: true,
+      spawn: (_exe, args, options) => {
+        assert(args.includes(`--maxWorkers=${workers}`));
+        assert.equal(options.env.VITEST_MAX_WORKERS, String(workers));
+        return { status: 0, stdout: JSON.stringify(inventory) };
+      },
+    });
+    coveredSuite(owner, {
+      workers,
+      run: ({ command, env }) => {
+        assert(command.includes(`--maxWorkers=${workers}`));
+        assert.equal(env.VITEST_MAX_WORKERS, String(workers));
+        return [];
+      },
+    });
+    const fixture = vitestFixture(
+      t,
+      `test('worker environment',()=>expect(process.env.VITEST_MAX_WORKERS).toBe('${workers}'));`
+    );
+    fixture.name = '@openkit/nanocore';
+    const result = runAdmissionFixture(
+      `coveredSuite(${JSON.stringify(fixture)},{workers:${workers}});`
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+  for (const workers of [0, 5, 2.5])
+    assert.throws(
+      () => coveredSuite({ name: '@openkit/nanocore', cwd: '/example' }, { workers }),
+      /workers/
+    );
+});
+
 test('merged coverage preserves original thresholds and propagates the deciding command failure', (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-merge-command-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

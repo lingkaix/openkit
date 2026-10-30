@@ -129,6 +129,7 @@ export function runShard(
   {
     root = process.cwd(),
     inventoryOnly = false,
+    workers = 2,
     execute = command,
     runPackage = packageSuite,
     prepare = prepareCoverage,
@@ -137,6 +138,9 @@ export function runShard(
 ) {
   const shard = shardPlan(root).find((s) => s.id === id);
   if (!shard) throw Error('Unknown L0-L2 shard');
+  const nanoCore = shard.owners[0] === '@openkit/nanocore';
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 4 || (!nanoCore && workers !== 2))
+    throw Error('Invalid NanoCore workers');
   const owners = testOwners(root).filter((o) => shard.owners.includes(o.name));
   if (shard.kind === 'coverage') {
     prepare(owners, { root });
@@ -150,6 +154,7 @@ export function runShard(
     const executions = owners.map((owner) =>
       runCoverage(owner, {
         inventoryOnly,
+        ...(nanoCore ? { workers } : {}),
         partition: shard.partition,
         reportFile: inventoryOnly
           ? undefined
@@ -164,6 +169,7 @@ export function runShard(
     for (const execution of executions) console.log(JSON.stringify(execution));
     return {
       owners: shard.owners,
+      ...(nanoCore ? { workers } : {}),
       ...(shard.partition ? { partition: shard.partition } : {}),
       executions,
     };
@@ -174,7 +180,7 @@ export function runShard(
     if (inventoryOnly) throw Error('Inventory admission selects coverage shards only');
     // Only NanoHost's native protocol seam consumes the built NanoCore process.
     if (shard.owners.includes('@openkit/nanohost'))
-      execute(['pnpm', '--filter', '@openkit/nanocore...', 'build'], root);
+      execute(['pnpm', 'exec', 'turbo', 'run', 'build', '--filter=@openkit/nanocore...'], root);
     for (const owner of owners) runPackage(owner, { root });
   } else {
     if (inventoryOnly) throw Error('Inventory admission selects coverage shards only');
@@ -208,8 +214,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     } else if (args[0] === '--join' && args.length === 2) {
       const files = readdirSync(args[1]).filter((f) => f.endsWith('.json'));
       requireShardResults(files.map((f) => JSON.parse(readFileSync(join(args[1], f), 'utf8'))));
-    } else if (args[0] === '--run' && args.length === 2) {
-      const details = runShard(args[1]);
+    } else if (args.length === 1 && args[0] === '--prepare') {
+      prepareCoverage(testOwners(process.cwd()).filter((owner) => owner.vitest));
+      // The root CLI also consumes Core Client itself, not just its coverage dependencies.
+      command(
+        ['pnpm', 'exec', 'turbo', 'run', 'build', '--filter=@openkit/core-client...'],
+        process.cwd()
+      );
+    } else if (
+      args[0] === '--run' &&
+      (args.length === 2 || (args.length === 4 && args[2] === '--workers'))
+    ) {
+      const details = runShard(args[1], { workers: args.length === 4 ? Number(args[3]) : 2 });
       const directory = resolve('temp/ci-shards');
       mkdirSync(directory, { recursive: true });
       writeFileSync(
@@ -218,7 +234,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       );
     } else {
       throw Error(
-        'Usage: node scripts/ci-l0-l2.mjs --matrix | --coverage-matrix | --run ID | --merge-coverage ID | --join DIRECTORY'
+        'Usage: node scripts/ci-l0-l2.mjs --matrix | --coverage-matrix | --prepare | --run ID [--workers N] | --merge-coverage ID | --join DIRECTORY'
       );
     }
   } catch (error) {
