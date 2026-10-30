@@ -407,7 +407,6 @@ export type CommandRequestName =
   | 'workspace.invitation.accept'
   | 'workspace.invitation.decline'
   | 'workspace.invitation.revoke'
-  | 'workspace.member.access.change'
   | 'workspace.member.remove'
   | 'workspace.leave'
   | 'workspace.ownership.transfer'

@@ -66,7 +66,7 @@ export const AuthorizedWorkspaceSummarySchema = WorkspaceAccessRelationSchema.sa
   isOwner: z.boolean(),
   registryRevision: WorkspaceRevisionSchema,
   membershipRevision: WorkspaceRevisionSchema.nullable(),
-});
+}).strict();
 
 /** Administrator-safe Workspace access recovery projection. */
 export const WorkspaceAccessRecoveryStateSchema = z

@@ -153,9 +153,9 @@ export type WorkspaceInvitationTransitionResult =
   | { kind: 'revision_conflict'; invitation: WorkspaceInvitation }
   | { kind: 'workspace_access_denied' };
 
-/** Closed result of a membership access or tombstone mutation. */
+/** Closed result of a membership tombstone mutation. */
 export type WorkspaceMemberMutationResult =
-  | { kind: 'changed' | 'removed' | 'unchanged'; member: WorkspaceMember }
+  | { kind: 'removed'; member: WorkspaceMember }
   | { kind: 'revision_conflict'; member: WorkspaceMember }
   | { kind: 'owner_transfer_required' }
   | { kind: 'workspace_access_denied' };

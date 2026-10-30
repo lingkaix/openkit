@@ -5894,6 +5894,22 @@ describe('WP5 Workspace sharing schemas', () => {
     }
   });
 
+  it('refuses obsolete access tiers on the closed authorized Workspace summary', () => {
+    expect(appApiSchemas.AuthorizedWorkspaceSummarySchema.parse(authorizedWorkspace)).toEqual(
+      authorizedWorkspace
+    );
+    for (const accessLevel of ['editor', 'viewer'] as const) {
+      expect
+        .soft(
+          appApiSchemas.AuthorizedWorkspaceSummarySchema.safeParse({
+            ...authorizedWorkspace,
+            accessLevel,
+          }).success
+        )
+        .toBe(false);
+    }
+  });
+
   it('rejects incoherent lifecycle projections and forbidden authority fields', () => {
     expect(
       appApiSchemas.AuthorizedWorkspaceSummarySchema.safeParse({

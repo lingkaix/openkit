@@ -1011,10 +1011,10 @@ async function runInvitationTransition(
   });
 }
 
-/** Input shared by membership change, removal, and leave command wrappers. */
+/** Input shared by membership removal and leave command wrappers. */
 interface RunMemberMutationInput {
   /** Stable lifecycle command name. */
-  readonly action: 'workspace.member.access.change' | 'workspace.member.remove' | 'workspace.leave';
+  readonly action: 'workspace.member.remove' | 'workspace.leave';
   /** Authenticated actor id. */
   readonly actorId: string;
   /** Open Core database. */
@@ -1050,18 +1050,16 @@ async function runMemberMutation(input: RunMemberMutationInput): Promise<Workspa
       });
       const result = input.execute();
       const member = requireMemberMutation(result);
-      if (result.kind !== 'unchanged') {
-        recordLifecycleAudit(input.coreDb, {
-          action: input.action,
-          actorId: input.actorId,
-          requestId: input.request.requestId,
-          resource: `workspace-member:${input.workspaceId}:${input.memberUserId}`,
-          resourceRevision: member.revision,
-          subjectId: input.memberUserId,
-          summary: input.summary,
-          workspaceId: input.workspaceId,
-        });
-      }
+      recordLifecycleAudit(input.coreDb, {
+        action: input.action,
+        actorId: input.actorId,
+        requestId: input.request.requestId,
+        resource: `workspace-member:${input.workspaceId}:${input.memberUserId}`,
+        resourceRevision: member.revision,
+        subjectId: input.memberUserId,
+        summary: input.summary,
+        workspaceId: input.workspaceId,
+      });
       return member;
     },
     inflightCommands: input.inflightCommands,
@@ -1291,9 +1289,9 @@ function requireInvitationTransition(
   throwDomainFailure(result);
 }
 
-/** Requires one successful or exact no-op membership mutation. */
+/** Requires one successful membership tombstone mutation. */
 function requireMemberMutation(result: WorkspaceMemberMutationResult): WorkspaceMember {
-  if (result.kind === 'changed' || result.kind === 'removed' || result.kind === 'unchanged') {
+  if (result.kind === 'removed') {
     return result.member;
   }
   throwDomainFailure(result);
