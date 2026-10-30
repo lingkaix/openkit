@@ -26,7 +26,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 [`src/request-id.ts`](src/request-id.ts) owns missing request identity insertion. Sub-clients use `withRequestId` for body-carried command identities; explicit header-carried identities remain at the routes that own that contract.
 
-[`src/events.ts`](src/events.ts) shares event URL construction between Fetch and EventSource while each transport retains its own streaming, cursor, and reconnect lifecycle.
+[`src/events.ts`](src/events.ts) shares event URL construction between Fetch and EventSource while each transport retains its own streaming, cursor, and reconnect lifecycle. On validation or replacement-construction failure, the transport stops immediately; the iterator drains its already validated prefix, rejects once, then returns done.
 
 [`src/operations.ts`](src/operations.ts) derives `client.operations[id](input)` from the composed shared operation tables, including request-id insertion, canonical JSON POST placement and output validation. Migrated Workspace, Thread, Turn and Goal operations have no `client.core` or `client.app` method or old route alias. `workspace.list({})` returns authorized summaries; select `entry.workspace` when a consumer needs a Workspace record. Thread creation accepts one object containing `workspaceId`, `name`, optional `visibility`, and optional `requestId`. Turn events retain their SSE transport. The mapped client type preserves each operation's input and result rather than a family-wide union. Run `pnpm --filter @openkit/core-client exec vitest run src/operations.test.ts` for this transport boundary; package typecheck also compiles the negative join probes.
 

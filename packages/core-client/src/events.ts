@@ -234,7 +234,6 @@ function subscribeTurnEventsWithFetch(
 
       wake();
     } catch (error) {
-      queue.values.length = 0;
       pushError(error);
     }
   };
@@ -371,7 +370,6 @@ function subscribeTurnEventsWithEventSource(
 
         wake();
       } catch (error) {
-        queue.values.length = 0;
         queue.errors.push(error);
         stopped = true;
         source?.close();
@@ -391,7 +389,6 @@ function subscribeTurnEventsWithEventSource(
       try {
         reopen();
       } catch (error) {
-        queue.values.length = 0;
         queue.errors.push(error);
         stopped = true;
         wake();
@@ -425,16 +422,16 @@ function createIterator(
       return {
         async next(): Promise<IteratorResult<SseEventEnvelope>> {
           while (true) {
-            const error = queue.errors.shift();
-
-            if (error !== undefined) {
-              throw error;
-            }
-
             const value = queue.values.shift();
 
             if (value !== undefined) {
               return { value, done: false };
+            }
+
+            const error = queue.errors.shift();
+
+            if (error !== undefined) {
+              throw error;
             }
 
             if (isStopped()) {

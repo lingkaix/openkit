@@ -5221,7 +5221,7 @@ describe('createCoreClient', () => {
     });
   });
 
-  it('discards queued fetch events when protocol validation fails', async () => {
+  it('drains queued fetch events before reporting protocol validation failure', async () => {
     let activeSignal: AbortSignal | null | undefined;
     let fetchCalls = 0;
     let resolveAbort = (): void => {};
@@ -5232,7 +5232,12 @@ describe('createCoreClient', () => {
       fetchCalls += 1;
       activeSignal = init?.signal;
       activeSignal?.addEventListener('abort', resolveAbort, { once: true });
-      return sseResponse([turnEvent(1), { ...turnEvent(2), sequence: 'bad' }, turnEvent(3)]);
+      return sseResponse([
+        turnEvent(1),
+        turnEvent(2),
+        { ...turnEvent(3), sequence: 'bad' },
+        turnEvent(4),
+      ]);
     };
     const iterator = subscribeTurnEvents({
       baseUrl: 'https://nanocore.test',
@@ -5243,6 +5248,10 @@ describe('createCoreClient', () => {
     })[Symbol.asyncIterator]();
 
     await aborted;
+    expect(activeSignal?.aborted).toBe(true);
+    for (const sequence of [1, 2]) {
+      await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { sequence } });
+    }
     await expect(iterator.next()).rejects.toBeInstanceOf(ProtocolValidationError);
     await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
     expect(activeSignal?.aborted).toBe(true);
@@ -5516,7 +5525,7 @@ describe('createCoreClient', () => {
     });
   });
 
-  it('discards queued EventSource events when embedded Turn validation fails', async () => {
+  it('drains queued EventSource events before reporting embedded Turn validation failure', async () => {
     FakeEventSource.instances = [];
     const iterator = subscribeTurnEvents({
       baseUrl: '',
@@ -5526,9 +5535,10 @@ describe('createCoreClient', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     })[Symbol.asyncIterator]();
     const source = FakeEventSource.instances[0]!;
-    const invalidEvent = turnEvent(2, 'turn.completed');
+    const invalidEvent = turnEvent(3, 'turn.completed');
 
     source.emit('message', turnEvent(1));
+    source.emit('message', turnEvent(2));
     source.emit('message', {
       ...invalidEvent,
       data: {
@@ -5537,9 +5547,13 @@ describe('createCoreClient', () => {
       },
     });
     const closedAfterValidation = source.closed;
-    source.emit('message', turnEvent(3));
+    source.emit('message', turnEvent(4));
     source.emit('error', null);
 
+    expect(closedAfterValidation).toBe(true);
+    for (const sequence of [1, 2]) {
+      await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { sequence } });
+    }
     await expect(iterator.next()).rejects.toBeInstanceOf(ProtocolValidationError);
     expect({
       closedAfterValidation,
@@ -5582,7 +5596,7 @@ describe('createCoreClient', () => {
     expect(reopenedSource.closed).toBe(true);
   });
 
-  it('discards queued EventSource events when replacement construction fails', async () => {
+  it('drains queued EventSource events before reporting replacement construction failure', async () => {
     const constructionError = new Error('replacement EventSource construction failed');
     let constructionCount = 0;
 
@@ -5593,6 +5607,7 @@ describe('createCoreClient', () => {
         constructionCount += 1;
 
         if (constructionCount > 1) {
+          expect(new URL(url).searchParams.get('since')).toBe('2');
           throw constructionError;
         }
 
@@ -5611,10 +5626,15 @@ describe('createCoreClient', () => {
     const source = FakeEventSource.instances[0]!;
 
     source.emit('message', turnEvent(1));
-    expect(() => source.emit('error', null)).not.toThrow();
     source.emit('message', turnEvent(2));
+    expect(() => source.emit('error', null)).not.toThrow();
+    source.emit('message', turnEvent(3));
     source.emit('error', null);
 
+    expect(source.closed).toBe(true);
+    for (const sequence of [1, 2]) {
+      await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { sequence } });
+    }
     await expect(iterator.next()).rejects.toBe(constructionError);
     await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
     expect({
