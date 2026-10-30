@@ -7256,6 +7256,55 @@
         }
       }
     },
+    "/api/app/operations/knowledge.schema.preview": {
+      "post": {
+        "operationId": "knowledge.schema.preview",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Check a draft schema against the complete current Notebook without activation or a complete migration claim.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/knowledge.schema.preview.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Check a draft schema against the complete current Notebook without activation or a complete migration claim.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/knowledge.schema.preview.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/knowledge.notebook.history": {
       "post": {
         "operationId": "knowledge.notebook.history",
@@ -70776,6 +70825,137 @@
           "proposalId",
           "reviewId",
           "application"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.schema.preview.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schemaText": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "requestId",
+          "baseRevision",
+          "schemaText"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.schema.preview.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baseSchemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "candidateSchemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "coverage": {
+            "type": "string",
+            "const": "notebook"
+          },
+          "completeMigration": {
+            "type": "boolean",
+            "const": false
+          },
+          "schemaDiagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "valid",
+                    "invalid-draft",
+                    "needs-review"
+                  ]
+                },
+                "diagnostics": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "field": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "path",
+                "status",
+                "diagnostics"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "workspaceId",
+          "notebookRevision",
+          "baseSchemaDigest",
+          "candidateSchemaDigest",
+          "coverage",
+          "completeMigration",
+          "schemaDiagnostics",
+          "records"
         ],
         "additionalProperties": false
       },
@@ -154388,5 +154568,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b71b135e0f37e1c18cf9e4a4cc4ba924e50615e9c0e34fc475e56d0321bf41c1"
+  "x-openkit-source-digest": "sha256:af8a73a2c3ec4322841c8234ed24dc014b2b57b300e0e5f73c519212c2b87428"
 }

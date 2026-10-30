@@ -36,6 +36,8 @@ Dashboard work-status and active-work schemas carry recorded activity and output
 
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
+`knowledge-schema.ts` projects the read-only Workspace schema draft preview. Exact schema digests and the Notebook base identify the inspected bytes; `coverage: notebook` and `completeMigration: false` prevent this partial inspection from claiming the complete reviewed migration or authorizing activation. Existing scope, Source and human authority remain native joins.
+
 `src/workspace-freeze.ts` defines the public lifecycle refusal, typed blockers and one quick-action union using existing operation inputs. The snapshot owner supplies authoritative facts and disclosure filtering; schemas grant no authority or cleanup proof. `src/workspace-snapshot-operations.ts` freezes ten administrator snapshot contracts. Capture, verify, download, same-deployment backup-restore and selected recovery inspect/finish/abandon have complete scoped handlers in the composed table; MOVE remains uncomposed until backend activation supplies its complete handlers. Only sealed-bundle download and MOVE-in are streaming. Inputs name owned identities, never server paths. The [snapshot owner](../../docs/specs/20260704-workspace_backup_export_import.md#scoped-freeze-and-blockers) defines refusal, freeze, consistency and recovery.
 
 The Skill row returned by `catalog.read` optionally exposes `pinAuditRef`, the recorded winning pin command's Audit identity. An absent field means that attribution was not retained; a digest alone does not identify the actor who last pinned it.

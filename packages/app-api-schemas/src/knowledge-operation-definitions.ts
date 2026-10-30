@@ -51,6 +51,10 @@ import {
   ReadKnowledgeProposalRequestSchema,
   ReadKnowledgeProposalResponseSchema,
 } from './knowledge-proposal-preview.js';
+import {
+  PreviewKnowledgeSchemaRequestSchema,
+  PreviewKnowledgeSchemaResponseSchema,
+} from './knowledge-schema.js';
 import type { OperationDefinition } from './operation-contract.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -294,6 +298,20 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
 
 /** One public Notebook page lifecycle; all mutations use the existing publisher. */
 export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
+  'knowledge.schema.preview': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Check a draft schema against the complete current Notebook without activation or a complete migration claim.',
+    inputSchema: PreviewKnowledgeSchemaRequestSchema,
+    outputSchema: PreviewKnowledgeSchemaResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'knowledge.write',
+    mutating: false,
+  },
   'knowledge.notebook.history': {
     binding: 'json',
     returnsOneTimeSecret: false,

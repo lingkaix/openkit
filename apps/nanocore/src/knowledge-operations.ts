@@ -50,6 +50,7 @@ import {
   parseOkfDocument,
   stringFrontmatterField,
 } from './knowledge/okf.js';
+import { previewNotebookSchema } from './knowledge/scope-schema-migration.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import {
   checkKnowledgeHealth,
@@ -549,6 +550,49 @@ export function createKnowledgeOperationImplementations(
       });
     },
     ...createNotebookHistoryOperations(dependencies, notebookCommandFailure),
+    'knowledge.schema.preview': (input, context) =>
+      withGovernedNotebook(
+        { ...input, changes: [], summary: 'Inspect a draft Scope Schema' },
+        context,
+        (owner) => {
+          const access = sourceReadInput(input.workspaceId, context);
+          admitKnowledgeRetrieval(access);
+          const admission = owner.revalidate();
+          if (owner.notebook.publishedRevision() !== input.baseRevision)
+            throw new NotebookError('conflict');
+          const entries = Object.keys(owner.notebook.inspectRevision(input.baseRevision).entries);
+          const pageIds = entries
+            .filter((path) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
+            .map((path) => path.slice(0, -3));
+          const sources = Object.keys(owner.notebook.readSourcePointers(input.baseRevision));
+          const revalidate = () => {
+            const current = owner.revalidate();
+            if (
+              current.scopeSchemaText !== admission.scopeSchemaText ||
+              owner.notebook.publishedRevision() !== input.baseRevision
+            )
+              throw new NotebookError('conflict');
+            const selected = readAuthorizedWorkspaceNotebookPages({
+              ...access,
+              dataRoot: store.getDataRoot()!,
+              notebookRevision: input.baseRevision,
+              pageIds,
+            });
+            if (selected.notebookRevision !== input.baseRevision)
+              throw new NotebookError('conflict');
+            for (const id of sources) requireSourceAudience(input.workspaceId, id, context);
+          };
+          return previewNotebookSchema({
+            workspaceId: input.workspaceId,
+            notebook: owner.notebook,
+            scopeSchemaText: admission.scopeSchemaText,
+            candidateSchemaText: input.schemaText,
+            pageScopeId: admission.pageScopeId!,
+            registeredSources: admission.registeredSources,
+            revalidate,
+          });
+        }
+      ),
     'knowledge.notebook.update': async (input, context) => {
       const dataRoot = store.getDataRoot();
       const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;

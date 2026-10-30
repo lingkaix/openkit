@@ -331,7 +331,7 @@ describe('Knowledge operation definition cutover', () => {
       ].sort()
     );
     expect(Object.keys(tables.KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
-      [...entryIds].sort()
+      ['knowledge.schema.preview', ...entryIds].sort()
     );
     const ids = [
       ...Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS!),

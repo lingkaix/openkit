@@ -2312,7 +2312,7 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(23);
+    expect(Object.keys(definitions)).toHaveLength(24);
     for (const id of [
       'knowledge.observation.list',
       'knowledge.observation.record',
@@ -2332,6 +2332,7 @@ describe('Knowledge OpenAPI derivation', () => {
         'knowledge.tell',
         'knowledge.maintain',
         'knowledge.proposal.read',
+        'knowledge.schema.preview',
         'knowledge.notebook.history',
         'knowledge.notebook.diff',
         'knowledge.notebook.restore',
@@ -2361,7 +2362,8 @@ describe('Knowledge OpenAPI derivation', () => {
       });
       const components = document.components.schemas as Record<string, unknown>;
       const expectedInput = z.toJSONSchema(definition.inputSchema);
-      if ('requestId' in definition.inputSchema.shape) {
+      // Operation Definition's HTTP projection binds command identity only for mutations.
+      if (definition.mutating && 'requestId' in definition.inputSchema.shape) {
         delete expectedInput.properties?.requestId;
         if (expectedInput.required) {
           expectedInput.required = expectedInput.required.filter((name) => name !== 'requestId');

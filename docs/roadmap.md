@@ -217,6 +217,7 @@ OpenKit remains in internal developer preview with a small number of known users
 - [ ] R070 — The semantic Knowledge Manager can search sources, prepare context, explain exclusions, and draft governed Knowledge changes through the shared Internal Agent Runtime.
 - [ ] R071 — OpenKit extracts source-linked Knowledge candidates from real user-Agent work, corrections, Reviews, Artifacts, and interactions without self-authorizing their publication.
 - [ ] R072 — Generated Knowledge can be reviewed, applied, updated, merged, superseded, archived, reversed, and reused with exact source and content lineage.
+- [ ] R114 — Scope Schema changes use the [accepted reviewed migration flow](specs/20260702-knowledge_store_governance_rules.md#format-and-schema-contract): complete dry-run and validation report, exact required human Review, authorized complete activation, and retained previous schema and report. Partial Notebook previews do not complete or authorize that flow.
 - [ ] R075 — A real Worker Skill is delivered as a verified versioned package and consumed by a supported Worker path.
 - [ ] R076 — Skill versions support immutable identity, a current version, Workspace pinning, reviewed promotion, verified delivery, and safe rollback without a marketplace.
 - [ ] R108 — Users can import, install, update, and pin Skill versions and assign them to specific Worker Agents through the App surface, without editing repository or runtime files.
