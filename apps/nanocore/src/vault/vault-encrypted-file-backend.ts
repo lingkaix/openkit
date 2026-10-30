@@ -29,8 +29,10 @@ import { assertEncryptedFileVaultDirectory } from './vault-store-directory.js';
 
 const SAFE_REFERENCE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ENTRY_FILE_PATTERN = /^([1-9][0-9]*)\.enc$/;
-const ENTRY_TEMP_FILE_PATTERN = /^\.([1-9][0-9]*)\.enc\.([1-9][0-9]*)\.tmp$/;
-const STATE_TEMP_FILE_PATTERN = /^\.state\.json\.([1-9][0-9]*)\.tmp$/;
+const ENTRY_TEMP_FILE_PATTERN =
+  /^\.([1-9][0-9]*)\.enc\.([1-9][0-9]*)(?:\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?\.tmp$/;
+const STATE_TEMP_FILE_PATTERN =
+  /^\.state\.json\.([1-9][0-9]*)(?:\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?\.tmp$/;
 
 /** Input used to create an unlocked encrypted-file vault backend. */
 interface CreateEncryptedFileVaultBackendInput {
@@ -252,6 +254,9 @@ class EncryptedFileVaultBackend implements VaultBackend {
       throw new VaultBackendError('reference-revoked', 'Vault reference material is revoked.');
     }
 
+    for (const version of snapshot.entries.keys()) {
+      if (this.isExpired(snapshot.state, version)) this.destroyVersion(input.referenceId, version);
+    }
     const updatedAt = this.now();
     if (snapshot.state.currentVersion === Number.MAX_SAFE_INTEGER) {
       throw unavailable('Encrypted-file vault material version cannot be rotated further.');
@@ -372,16 +377,25 @@ class EncryptedFileVaultBackend implements VaultBackend {
   }
 
   /**
-   * Lists authenticated non-secret reference inventory.
+   * Lists authenticated non-secret inventory, optionally for one exact reference.
    *
-   * @param input Optional owner filters.
+   * @param input Optional exact reference and owner filters.
    * @returns Sorted inventory rows that match the filters.
-   * @throws VaultBackendError when any reference is inconsistent.
+   * @throws VaultBackendError when a selected reference is inconsistent.
    */
   public listReferences(input: VaultListReferencesInput = {}): VaultReferenceInventoryEntry[] {
     this.assertKeyActive();
-    return this.referenceIds()
-      .map((referenceId) => this.inventory(referenceId, this.requireSnapshot(referenceId)))
+    if (input.referenceId !== undefined) this.assertReferenceId(input.referenceId);
+    const referenceIds =
+      input.referenceId === undefined ? this.referenceIds() : [input.referenceId];
+    return referenceIds
+      .map((referenceId) => {
+        const snapshot = this.requireSnapshot(referenceId);
+        for (const version of snapshot.entries.keys()) {
+          if (this.isExpired(snapshot.state, version)) this.destroyVersion(referenceId, version);
+        }
+        return this.inventory(referenceId, snapshot);
+      })
       .filter((entry) => matchesFilter(entry, input));
   }
 
@@ -852,7 +866,7 @@ function metadataFields(metadata: VaultEntryMetadata): VaultEntryMetadata {
  * Checks one inventory row against an optional scope filter.
  *
  * @param entry Inventory row to inspect.
- * @param input Optional owner filters.
+ * @param input Optional exact reference and owner filters.
  * @returns True when every supplied filter matches.
  */
 function matchesFilter(

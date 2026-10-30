@@ -20,6 +20,10 @@ import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.
 import { sealEncryptedFileVaultEntry } from './vault-encrypted-file-store.js';
 
 const STALE_WRITER_PID = process.pid === 1_234_567 ? 1_234_568 : 1_234_567;
+const WRITER_TEMP_SUFFIXES = [
+  ['retained PID', `${STALE_WRITER_PID}`],
+  ['UUIDv4 nonce', `${STALE_WRITER_PID}.f47ac10b-58cc-4372-a567-0e02b2c3d479`],
+] as const;
 
 describe('encrypted-file vault backend', () => {
   it('uses retained v1 markers and reopens existing entries with the same key', () => {
@@ -849,7 +853,9 @@ describe('encrypted-file vault backend', () => {
     ).toThrow('reference-revoked');
   });
 
-  it('fails ordinary operations closed but explicit revoke cleans an exact complete entry temp', () => {
+  it.each(
+    WRITER_TEMP_SUFFIXES
+  )('fails ordinary operations closed but explicit revoke cleans an exact complete entry temp (%s)', (_kind, suffix) => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const masterKey = Buffer.alloc(32, 9);
     const timestamps = ['2026-07-05T01:00:00.000Z', '2026-07-05T01:20:00.000Z'];
@@ -861,7 +867,7 @@ describe('encrypted-file vault backend', () => {
     const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-7703-a0ed-bba6a2bbc169');
     const firstEntryPath = join(referenceDir, '1.enc');
     const secondEntryPath = join(referenceDir, '2.enc');
-    const entryTempPath = join(referenceDir, `.2.enc.${STALE_WRITER_PID}.tmp`);
+    const entryTempPath = join(referenceDir, `.2.enc.${suffix}.tmp`);
 
     backend.store({
       material: 'first_secret',
@@ -901,7 +907,9 @@ describe('encrypted-file vault backend', () => {
     expect(backend.listReferences()).toEqual([revoked]);
   });
 
-  it('fails ordinary operations closed but explicit revoke cleans an exact complete state temp', () => {
+  it.each(
+    WRITER_TEMP_SUFFIXES
+  )('fails ordinary operations closed but explicit revoke cleans an exact complete state temp (%s)', (_kind, suffix) => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const backend = createEncryptedFileVaultBackend({
       masterKey: Buffer.alloc(32, 9),
@@ -911,7 +919,7 @@ describe('encrypted-file vault backend', () => {
     const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-75ef-936c-e9644868d706');
     const entryPath = join(referenceDir, '1.enc');
     const statePath = join(referenceDir, 'state.json');
-    const stateTempPath = join(referenceDir, `.state.json.${STALE_WRITER_PID}.tmp`);
+    const stateTempPath = join(referenceDir, `.state.json.${suffix}.tmp`);
 
     backend.store({
       material: 'state_temp_secret',
@@ -936,50 +944,128 @@ describe('encrypted-file vault backend', () => {
     expect(backend.listReferences()).toEqual([revoked]);
   });
 
-  it.each([
-    'malformed',
-    'unverifiable',
-  ] as const)('leaves state and every file untouched for an exact %s entry temp', (corruption) => {
+  it('revokes complete state residue after reopening with the same process PID', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
-    const backend = createEncryptedFileVaultBackend({
-      masterKey: Buffer.alloc(32, 9),
-      storeDir,
-    });
-    const referenceId = testEntityId('vault', `vault_${corruption}_entry_temp`);
+    const referenceId = testEntityId('vault', 'same_pid_restart_state_residue');
     const referenceDir = join(storeDir, 'entries', referenceId);
-    const firstEntryPath = join(referenceDir, '1.enc');
-    const entryTempPath = join(referenceDir, `.2.enc.${STALE_WRITER_PID}.tmp`);
+    const statePath = join(referenceDir, 'state.json');
+    const stateTempPath = join(referenceDir, `.state.json.${process.pid}.tmp`);
+    try {
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        storeDir,
+      });
+      backend.store({
+        material: 'synthetic_restart_material',
+        metadata: { ownerScope: 'server' },
+        referenceId,
+      });
+      // Preserve a complete interrupted state write, then recreate the public backend owner.
+      writeFileSync(stateTempPath, readFileSync(statePath), { mode: 0o600 });
+      const reopened = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        storeDir,
+      });
+      expect(() => reopened.resolve({ referenceId })).toThrow('backend-unavailable');
+      expect(() => reopened.listReferences()).toThrow('backend-unavailable');
 
-    backend.store({
-      material: 'must_remain_until_attribution_succeeds',
-      metadata: { ownerScope: 'server' },
-      referenceId,
-    });
+      const revoked = reopened.revoke({ referenceId });
 
-    if (corruption === 'malformed') {
-      writeFileSync(entryTempPath, '{"formatVersion":', { mode: 0o600 });
-    } else {
-      const entry = JSON.parse(readFileSync(firstEntryPath, 'utf8')) as {
-        associatedData: { version: number };
-        version: number;
-      };
-      entry.version = 2;
-      entry.associatedData.version = 2;
-      writeFileSync(entryTempPath, `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 });
+      expect(revoked).toMatchObject({ referenceId, currentVersion: 1, revoked: true });
+      expect(existsSync(join(referenceDir, '1.enc'))).toBe(false);
+      expect(existsSync(stateTempPath)).toBe(false);
+      expect(readdirSync(referenceDir)).toEqual(['state.json']);
+      expect(() => reopened.resolve({ referenceId })).toThrow('reference-revoked');
+      expect(reopened.listReferences()).toEqual([revoked]);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
     }
+  });
 
-    const fileNamesBefore = readdirSync(referenceDir).sort();
-    const filesBefore = fileNamesBefore.map(
-      (fileName) => [fileName, readFileSync(join(referenceDir, fileName))] as const
-    );
+  describe.each(WRITER_TEMP_SUFFIXES)('entry attribution with %s names', (_kind, suffix) => {
+    it.each([
+      'malformed',
+      'unverifiable',
+    ] as const)('leaves state and every file untouched for an exact %s entry temp', (corruption) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        storeDir,
+      });
+      const referenceId = testEntityId('vault', `vault_${corruption}_entry_temp`);
+      const referenceDir = join(storeDir, 'entries', referenceId);
+      const firstEntryPath = join(referenceDir, '1.enc');
+      const entryTempPath = join(referenceDir, `.2.enc.${suffix}.tmp`);
 
-    expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect.soft(() => backend.resolve({ referenceId })).toThrow('backend-unavailable');
-    expect.soft(() => backend.revoke({ referenceId })).toThrow('backend-unavailable');
+      backend.store({
+        material: 'must_remain_until_attribution_succeeds',
+        metadata: { ownerScope: 'server' },
+        referenceId,
+      });
 
-    expect(readdirSync(referenceDir).sort()).toEqual(fileNamesBefore);
-    for (const [fileName, content] of filesBefore) {
-      expect(readFileSync(join(referenceDir, fileName))).toEqual(content);
+      if (corruption === 'malformed') {
+        writeFileSync(entryTempPath, '{"formatVersion":', { mode: 0o600 });
+      } else {
+        const entry = JSON.parse(readFileSync(firstEntryPath, 'utf8')) as {
+          associatedData: { version: number };
+          version: number;
+        };
+        entry.version = 2;
+        entry.associatedData.version = 2;
+        writeFileSync(entryTempPath, `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 });
+      }
+
+      const fileNamesBefore = readdirSync(referenceDir).sort();
+      const filesBefore = fileNamesBefore.map(
+        (fileName) => [fileName, readFileSync(join(referenceDir, fileName))] as const
+      );
+
+      expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
+      expect.soft(() => backend.resolve({ referenceId })).toThrow('backend-unavailable');
+      expect.soft(() => backend.revoke({ referenceId })).toThrow('backend-unavailable');
+
+      expect(readdirSync(referenceDir).sort()).toEqual(fileNamesBefore);
+      for (const [fileName, content] of filesBefore) {
+        expect(readFileSync(join(referenceDir, fileName))).toEqual(content);
+      }
+    });
+  });
+
+  it.each([
+    ['unknown', 'unknown-nonce'],
+    ['noncanonical', 'F47AC10B-58CC-4372-A567-0E02B2C3D479'],
+  ] as const)('preserves every file for an %s entry-temp nonce spelling', (_kind, nonce) => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+    const referenceId = testEntityId('vault', `invalid_temp_nonce_${_kind}`);
+    const referenceDir = join(storeDir, 'entries', referenceId);
+    try {
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        storeDir,
+      });
+      backend.store({
+        material: 'synthetic_attributable_material',
+        metadata: { ownerScope: 'server' },
+        referenceId,
+      });
+      writeFileSync(
+        join(referenceDir, `.1.enc.${STALE_WRITER_PID}.${nonce}.tmp`),
+        readFileSync(join(referenceDir, '1.enc')),
+        { mode: 0o600 }
+      );
+      const namesBefore = readdirSync(referenceDir).sort();
+      const filesBefore = namesBefore.map(
+        (name) => [name, readFileSync(join(referenceDir, name))] as const
+      );
+      expect(() => backend.listReferences()).toThrow('backend-unavailable');
+      expect(() => backend.resolve({ referenceId })).toThrow('backend-unavailable');
+      expect(() => backend.revoke({ referenceId })).toThrow('backend-unavailable');
+      expect(readdirSync(referenceDir).sort()).toEqual(namesBefore);
+      expect(
+        filesBefore.every(([name, bytes]) => readFileSync(join(referenceDir, name)).equals(bytes))
+      ).toBe(true);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
     }
   });
 
@@ -1005,6 +1091,83 @@ describe('encrypted-file vault backend', () => {
     expect(readFileSync(statePath, 'utf8')).toBe(stateBefore);
     expect(existsSync(firstEntryPath)).toBe(true);
     expect(existsSync(malformedEntryPath)).toBe(true);
+  });
+
+  it.each([
+    'rotation',
+    'inventory',
+  ] as const)('destroys expired prior material on addressed %s after validating the complete reference', (operation) => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+    const referenceId = testEntityId('vault', `expired_material_${operation}`);
+    const referenceDir = join(storeDir, 'entries', referenceId);
+    let now = '2026-07-05T01:00:00.000Z';
+    const backend = createEncryptedFileVaultBackend({
+      masterKey: Buffer.alloc(32, 9),
+      now: () => now,
+      rotationGraceMs: 60_000,
+      storeDir,
+    });
+    try {
+      backend.store({
+        material: 'synthetic_first_material',
+        metadata: { ownerScope: 'server' },
+        referenceId,
+      });
+      now = '2026-07-05T01:00:10.000Z';
+      backend.rotate({ referenceId, material: 'synthetic_second_material' });
+      now = '2026-07-05T01:00:20.000Z';
+      backend.rotate({ referenceId, material: 'synthetic_third_material' });
+      expect(existsSync(join(referenceDir, '1.enc'))).toBe(true);
+      expect(
+        Buffer.from(backend.resolve({ referenceId, version: 1 })).equals(
+          Buffer.from('synthetic_first_material')
+        )
+      ).toBe(true);
+
+      now = '2026-07-05T01:01:11.000Z';
+      const address = () =>
+        operation === 'rotation'
+          ? backend.rotate({ referenceId, material: 'synthetic_fourth_material' })
+          : backend.listReferences();
+      // Expired material must survive until the entire addressed reference authenticates.
+      const currentPath = join(referenceDir, '3.enc');
+      const currentBefore = readFileSync(currentPath);
+      writeFileSync(currentPath, '{"schemaVersion":', { mode: 0o600 });
+      const filesBefore = readdirSync(referenceDir).sort();
+      const bytesBefore = filesBefore.map((name) => readFileSync(join(referenceDir, name)));
+      expect(() => address()).toThrow('backend-unavailable');
+      expect(readdirSync(referenceDir).sort()).toEqual(filesBefore);
+      expect(
+        filesBefore.every((name, index) =>
+          readFileSync(join(referenceDir, name)).equals(bytesBefore[index]!)
+        )
+      ).toBe(true);
+      writeFileSync(currentPath, currentBefore, { mode: 0o600 });
+
+      address();
+
+      // Version one is never requested after expiry; the addressed boundary owns destruction.
+      expect.soft(existsSync(join(referenceDir, '1.enc'))).toBe(false);
+      expect(existsSync(join(referenceDir, '2.enc'))).toBe(true);
+      expect(existsSync(currentPath)).toBe(true);
+      expect(
+        Buffer.from(backend.resolve({ referenceId, version: 2 })).equals(
+          Buffer.from('synthetic_second_material')
+        )
+      ).toBe(true);
+      const currentVersion = operation === 'rotation' ? 4 : 3;
+      const currentMaterial =
+        operation === 'rotation' ? 'synthetic_fourth_material' : 'synthetic_third_material';
+      expect(existsSync(join(referenceDir, `${currentVersion}.enc`))).toBe(true);
+      expect(
+        Buffer.from(backend.resolve({ referenceId })).equals(Buffer.from(currentMaterial))
+      ).toBe(true);
+      expect(backend.listReferences()).toMatchObject([
+        { referenceId, currentVersion, versionCount: currentVersion, revoked: false },
+      ]);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
   });
 
   it('expires prior versions after rotation grace', () => {

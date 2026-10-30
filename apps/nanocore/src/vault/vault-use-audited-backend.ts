@@ -99,13 +99,14 @@ class VaultUseAuditedBackend implements VaultBackend {
    */
   public resolve(resolveInput: VaultResolveInput): VaultSecretMaterial {
     try {
-      this.assertResolutionScope(resolveInput.referenceId);
-      const material = this.input.backend.resolve(resolveInput);
-      this.recordUse(resolveInput, 'succeeded', null);
+      const entry = this.assertResolutionScope(resolveInput.referenceId);
+      const version = resolveInput.version ?? entry.currentVersion;
+      const material = this.input.backend.resolve({ ...resolveInput, version });
+      this.recordUse(resolveInput, 'succeeded', null, version);
       return material;
     } catch (error) {
       if (error instanceof VaultBackendError) {
-        this.recordUse(resolveInput, 'failed', error.code);
+        this.recordUse(resolveInput, 'failed', error.code, resolveInput.version ?? null);
       }
 
       throw error;
@@ -145,7 +146,7 @@ class VaultUseAuditedBackend implements VaultBackend {
   /**
    * Delegates inventory listing to the wrapped backend.
    *
-   * @param listInput Optional owner-scope filters.
+   * @param listInput Optional exact reference and owner-scope filters.
    * @returns Non-secret inventory metadata rows.
    */
   public listReferences(listInput: VaultListReferencesInput = {}): VaultReferenceInventoryEntry[] {
@@ -156,15 +157,16 @@ class VaultUseAuditedBackend implements VaultBackend {
    * Rejects implicit cross-scope secret resolution before material leaves the backend.
    *
    * @param referenceId Vault reference id requested by the caller.
+   * @returns Authenticated addressed inventory for the exact admitted scope.
    * @throws VaultBackendError when the stored owner scope does not match this wrapper scope.
    */
-  private assertResolutionScope(referenceId: string): void {
+  private assertResolutionScope(referenceId: string): VaultReferenceInventoryEntry {
     const entry = this.input.backend
-      .listReferences()
+      .listReferences({ referenceId })
       .find((candidate) => candidate.referenceId === referenceId);
 
     if (!entry) {
-      return;
+      throw new VaultBackendError('reference-not-found', 'Vault reference material was not found.');
     }
 
     const matches =
@@ -177,6 +179,7 @@ class VaultUseAuditedBackend implements VaultBackend {
         'Vault reference scope does not match resolution scope.'
       );
     }
+    return entry;
   }
 
   /**
@@ -185,11 +188,13 @@ class VaultUseAuditedBackend implements VaultBackend {
    * @param resolveInput Reference and optional version resolved.
    * @param outcome Resolve outcome.
    * @param failureCode Failure code for failed attempts.
+   * @param materialVersion Exact resolved version, explicit failed version, or null.
    */
   private recordUse(
     resolveInput: VaultResolveInput,
     outcome: 'succeeded' | 'failed',
-    failureCode: string | null
+    failureCode: string | null,
+    materialVersion: number | null
   ): void {
     const auditEventId = this.auditEventId();
 
@@ -200,7 +205,7 @@ class VaultUseAuditedBackend implements VaultBackend {
       capabilityCallId: this.input.capabilityCallId ?? null,
       failureCode,
       grantId: this.input.grantId ?? null,
-      materialVersion: this.materialVersion(resolveInput, outcome),
+      materialVersion,
       outcome,
       ownerScope: this.input.ownerScope,
       planId: this.input.planId ?? null,
@@ -258,32 +263,6 @@ class VaultUseAuditedBackend implements VaultBackend {
     }
 
     return allocateEntityId('aud');
-  }
-
-  /**
-   * Returns the resolved material version when known.
-   *
-   * @param resolveInput Reference and optional version resolved.
-   * @param outcome Resolve outcome.
-   * @returns Explicit version, current inventory version, or null for unknown failed references.
-   */
-  private materialVersion(
-    resolveInput: VaultResolveInput,
-    outcome: 'succeeded' | 'failed'
-  ): number | null {
-    if (resolveInput.version != null) {
-      return resolveInput.version;
-    }
-
-    if (outcome === 'failed') {
-      return null;
-    }
-
-    return (
-      this.input.backend
-        .listReferences()
-        .find((entry) => entry.referenceId === resolveInput.referenceId)?.currentVersion ?? null
-    );
   }
 }
 

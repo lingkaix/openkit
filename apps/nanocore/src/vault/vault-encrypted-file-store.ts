@@ -1,4 +1,9 @@
-import { createCipheriv, createDecipheriv, randomBytes as nodeRandomBytes } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes as nodeRandomBytes,
+  randomUUID,
+} from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -591,9 +596,9 @@ function entrySourcePath(input: ReadEncryptedFileVaultEntryInput): string {
   const referenceDirectory = assertEncryptedFileVaultDirectory(join(entriesDir, input.referenceId));
   const canonicalFileName = `${input.version}.enc`;
   const sourceFileName = input.sourceFileName ?? canonicalFileName;
-  const tempMatch = new RegExp(`^\\.${input.version}\\.enc\\.([1-9][0-9]*)\\.tmp$`).exec(
-    sourceFileName
-  );
+  const tempMatch = new RegExp(
+    `^\\.${input.version}\\.enc\\.([1-9][0-9]*)(?:\\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?\\.tmp$`
+  ).exec(sourceFileName);
   const tempPid = tempMatch ? Number(tempMatch[1]) : undefined;
 
   if (
@@ -636,7 +641,8 @@ function headerAssociatedDataBuffer(createdAt: string): Buffer {
  * @param value JSON-serializable value.
  */
 export function writeEncryptedFileVaultJsonAtomically(path: string, value: unknown): void {
-  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+  // A fresh nonce prevents a restarted process from colliding with its earlier temporary.
+  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
   let fileDescriptor: number | undefined;
 
   try {

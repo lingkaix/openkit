@@ -114,6 +114,8 @@ export interface VaultRevokeInput {
 
 /** Input used to list non-secret reference metadata. */
 export interface VaultListReferencesInput {
+  /** Exact reference to authenticate without inspecting unrelated references. */
+  readonly referenceId?: string;
   /** Optional owner scope filter. */
   readonly ownerScope?: VaultOwnerScope;
   /** Optional workspace id filter. */
@@ -163,7 +165,7 @@ export interface VaultBackend {
   /**
    * Lists non-secret inventory metadata.
    *
-   * @param input Optional owner-scope filters.
+   * @param input Optional exact reference and owner-scope filters.
    * @returns Non-secret reference inventory rows.
    * @throws VaultBackendError when the backend cannot list references.
    */

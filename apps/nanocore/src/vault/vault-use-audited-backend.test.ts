@@ -1,11 +1,12 @@
-import { mkdtempSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { createLockedVaultBackend } from './vault-backend.js';
+import { createLockedVaultBackend, VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
 import { createVaultGrant, revokeVaultGrant } from './vault-grants.js';
 import { createVaultReference } from './vault-references.js';
@@ -27,6 +28,87 @@ function createDbs(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
 }
 
 describe('vault use audited backend', () => {
+  it('resolves an intact reference with exact audited version despite unrelated corruption', () => {
+    const { coreDb, workspaceDb } = createDbs();
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-isolated-resolution-'));
+    const backend = createEncryptedFileVaultBackend({
+      masterKey: Buffer.alloc(32, 9),
+      now: () => '2026-07-05T02:00:00.000Z',
+      storeDir,
+    });
+    const referenceId = 'vault_00000000-0000-7f73-bffa-d96a61ee4d70';
+    const unrelatedId = 'vault_00000000-0000-731b-8bf2-16a1252c2b27';
+    const firstMaterial = randomBytes(24).toString('base64url');
+    const currentMaterial = randomBytes(24).toString('base64url');
+    const unrelatedMaterial = randomBytes(24).toString('base64url');
+    try {
+      backend.store({ referenceId, material: firstMaterial, metadata: { ownerScope: 'server' } });
+      const rotated = backend.rotate({ referenceId, material: currentMaterial });
+      expect(rotated.currentVersion).toBe(2);
+      backend.store({
+        referenceId: unrelatedId,
+        material: unrelatedMaterial,
+        metadata: { ownerScope: 'server' },
+      });
+      // Deliberately damage only unrelated owner-produced state in this private fixture.
+      rmSync(join(storeDir, 'entries', unrelatedId, 'state.json'));
+      expect(() => backend.listReferences()).toThrow('backend-unavailable');
+      expect(() => backend.resolve({ referenceId: unrelatedId })).toThrow('backend-unavailable');
+      expect(
+        Buffer.from(backend.resolve({ referenceId })).equals(Buffer.from(currentMaterial))
+      ).toBe(true);
+      const audited = createVaultUseAuditedBackend({
+        backend,
+        db: coreDb,
+        ownerScope: 'server',
+        resolvingPath: 'admin',
+        now: () => '2026-07-05T02:01:00.000Z',
+      });
+      let failureCode: string | null = null;
+      let matchesCurrent = false;
+      try {
+        matchesCurrent = Buffer.from(audited.resolve({ referenceId })).equals(
+          Buffer.from(currentMaterial)
+        );
+      } catch (error) {
+        failureCode = error instanceof VaultBackendError ? error.code : 'unexpected-error';
+      }
+      // Compare only booleans/codes so a failed check cannot print generated material.
+      expect.soft(failureCode).toBeNull();
+      expect.soft(matchesCurrent).toBe(true);
+      const uses = listVaultUseRecords(coreDb);
+      expect.soft(uses).toEqual([
+        expect.objectContaining({
+          vaultReferenceId: referenceId,
+          outcome: 'succeeded',
+          failureCode: null,
+          materialVersion: 2,
+          ownerScope: 'server',
+          workspaceId: null,
+        }),
+      ]);
+      const auditRows = coreDb.sqlite
+        .prepare("SELECT * FROM audit_events WHERE action = 'vault.resolve'")
+        .all();
+      expect.soft(auditRows).toEqual([
+        expect.objectContaining({
+          audit_event_id: uses[0]?.auditEventId,
+          resource: `vault:${referenceId}`,
+          outcome: 'succeeded',
+          error_code: null,
+        }),
+      ]);
+      const evidence = JSON.stringify({ uses, auditRows });
+      for (const material of [firstMaterial, currentMaterial, unrelatedMaterial]) {
+        expect(evidence.includes(material)).toBe(false);
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
   it('records successful server secret resolution without storing secret material', () => {
     const { coreDb, workspaceDb } = createDbs();
     const backend = createEncryptedFileVaultBackend({
@@ -172,6 +254,8 @@ describe('vault use audited backend', () => {
       storeDir: mkdtempSync(join(tmpdir(), 'openkit-vault-backend-')),
     });
 
+    const delegatedResolve = vi.spyOn(backend, 'resolve');
+
     try {
       backend.store({
         material: 'server_only_secret',
@@ -213,6 +297,7 @@ describe('vault use audited backend', () => {
       expect(() =>
         audited.resolve({ referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860' })
       ).toThrow('backend-unavailable: Vault reference scope does not match resolution scope.');
+      expect(delegatedResolve).not.toHaveBeenCalled();
       expect(listVaultUseRecords(workspaceDb)).toEqual([
         expect.objectContaining({
           failureCode: 'backend-unavailable',
@@ -227,6 +312,7 @@ describe('vault use audited backend', () => {
       ]);
       expect(JSON.stringify(listVaultUseRecords(workspaceDb))).not.toContain('server_only_secret');
     } finally {
+      delegatedResolve.mockRestore();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
