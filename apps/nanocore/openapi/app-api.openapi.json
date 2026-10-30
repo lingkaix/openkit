@@ -12096,6 +12096,126 @@
         }
       }
     },
+    "/api/app/operations/catalog.mcp-stage-version": {
+      "post": {
+        "operationId": "catalog.mcp-stage-version",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Stage an immutable MCP configuration without changing current selection.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.mcp-stage-version.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stage an immutable MCP configuration without changing current selection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.mcp-stage-version.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/catalog.mcp-remove": {
+      "post": {
+        "operationId": "catalog.mcp-remove",
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Remove an MCP entry while retaining configuration history and process data.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/catalog.mcp-remove.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Remove an MCP entry while retaining configuration history and process data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.mcp-remove.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/catalog.mcp-select": {
       "post": {
         "operationId": "catalog.mcp-select",
@@ -105919,6 +106039,243 @@
         ],
         "additionalProperties": false
       },
+      "catalog.mcp-stage-version.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "allowedTools": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "declaration": {},
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "allowedTools",
+          "declaration",
+          "displayName",
+          "expectedRevision",
+          "workspaceId",
+          "mcpId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.mcp-stage-version.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "entry": {
+            "type": "object",
+            "properties": {
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "removed"
+                ]
+              },
+              "bindingRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "currentVersionDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "allowedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "schemaPolicy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "pinned",
+                      "tracking"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "timeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transportKind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "stdio",
+                      "http"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "createdAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "transportKind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "stdio",
+                            "http"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "createdAt",
+                    "digest",
+                    "transportKind"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "availability",
+              "bindingRevision",
+              "currentVersionDigest",
+              "displayName",
+              "enabled",
+              "id",
+              "allowedTools",
+              "schemaPolicy",
+              "timeoutMs",
+              "transportKind",
+              "versions"
+            ],
+            "additionalProperties": false
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "versionDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "entry",
+          "revision",
+          "versionDigest"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.mcp-remove.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "mcpId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "workspaceId",
+          "mcpId"
+        ],
+        "additionalProperties": false
+      },
+      "catalog.mcp-remove.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
       "catalog.mcp-select.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -105926,6 +106283,17 @@
           "digest": {
             "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "expectedCurrentDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "expectedRevision": {
             "type": "integer",
@@ -105943,6 +106311,7 @@
         },
         "required": [
           "digest",
+          "expectedCurrentDigest",
           "expectedRevision",
           "workspaceId",
           "mcpId"
@@ -153082,5 +153451,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:09807077cf088f064724f5cc03b0529bcb9ea3b732011d9ca8c9fed886275b14"
+  "x-openkit-source-digest": "sha256:61af405079bce7babe57723c4a824852903507192f9ae778b108b6b5db71f1b5"
 }

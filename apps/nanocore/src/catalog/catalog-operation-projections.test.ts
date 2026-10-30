@@ -92,6 +92,89 @@ const tree = (text: string) => [
 ];
 
 describe('B5 catalog operation projections', () => {
+  it('stages, selects by current digest and removes MCP entries through public admission', async () => {
+    const f = await fixture();
+    const send = (operation: string, input: object) =>
+      f.app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-openkit-request-id': crypto.randomUUID(),
+        },
+        body: JSON.stringify({ workspaceId: f.workspace.id, ...input }),
+      });
+    const config = {
+      displayName: 'Echo',
+      allowedTools: ['echo'],
+      declaration: { kind: 'http', endpoint: 'https://example.test/first' },
+    };
+    try {
+      const created = await send('catalog.mcp-create', {
+        ...config,
+        id: 'echo',
+        expectedRevision: 0,
+      });
+      expect(created.status, await created.clone().text()).toBe(201);
+      const first = await created.json();
+      const staged = await send('catalog.mcp-stage-version', {
+        ...config,
+        mcpId: 'echo',
+        declaration: { kind: 'http', endpoint: 'https://example.test/second' },
+        expectedRevision: 1,
+      });
+      expect(staged.status, await staged.clone().text()).toBe(201);
+      const second = await staged.json();
+      expect(second.entry.currentVersionDigest).toBe(first.versionDigest);
+      expect(second.versionDigest).not.toBe(first.versionDigest);
+      const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+      const stale = await send('catalog.mcp-select', {
+        mcpId: 'echo',
+        digest: second.versionDigest,
+        expectedCurrentDigest: null,
+        expectedRevision: 2,
+      });
+      expect(stale.status).toBe(409);
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
+      const selected = await send('catalog.mcp-select', {
+        mcpId: 'echo',
+        digest: second.versionDigest,
+        expectedCurrentDigest: first.versionDigest,
+        expectedRevision: 2,
+      });
+      expect(selected.status, await selected.clone().text()).toBe(200);
+      expect(await selected.json()).toEqual({ revision: 3 });
+      const removed = await send('catalog.mcp-remove', { mcpId: 'echo', expectedRevision: 3 });
+      expect(removed.status, await removed.clone().text()).toBe(200);
+      expect(await removed.json()).toEqual({ revision: 4 });
+      const retained = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+      expect(retained.mcp.entries[0]?.availability).toBe('removed');
+      expect(retained.mcp.versions).toEqual(before.mcp.versions);
+      for (const [operation, input] of [
+        [
+          'catalog.mcp-select',
+          { digest: first.versionDigest, expectedCurrentDigest: second.versionDigest },
+        ],
+        [
+          'catalog.mcp-binding',
+          {
+            enabled: true,
+            allowedTools: ['echo'],
+            bindingRevision: retained.mcp.bindings[0]?.revision ?? 0,
+            schemaPolicy: 'tracking',
+          },
+        ],
+      ] as const) {
+        const refused = await send(operation, { ...input, mcpId: 'echo', expectedRevision: 4 });
+        expect(refused.status, operation).toBe(404);
+        expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(retained);
+      }
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('reaches all thirteen catalog owned outcomes with exact immutable selection and revisions', async () => {
     const f = await fixture();
     const requestId = () => crypto.randomUUID();
@@ -191,6 +274,7 @@ describe('B5 catalog operation projections', () => {
         mcpId: 'echo',
         ...{
           digest: mcp.versionDigest,
+          expectedCurrentDigest: mcp.versionDigest,
           expectedRevision: 6,
           requestId: requestId(),
         },
@@ -597,7 +681,24 @@ function mutations(workspaceId: string) {
       expectedRevision: 0,
       requestId,
     },
-    'catalog.mcp-select': { workspaceId, mcpId: 'echo', digest, expectedRevision: 0, requestId },
+    'catalog.mcp-stage-version': {
+      workspaceId,
+      mcpId: 'echo',
+      displayName: 'Echo',
+      allowedTools: ['echo'],
+      declaration: { kind: 'http', endpoint: 'https://example.test/mcp' },
+      expectedRevision: 0,
+      requestId,
+    },
+    'catalog.mcp-remove': { workspaceId, mcpId: 'echo', expectedRevision: 0, requestId },
+    'catalog.mcp-select': {
+      workspaceId,
+      mcpId: 'echo',
+      digest,
+      expectedCurrentDigest: null,
+      expectedRevision: 0,
+      requestId,
+    },
     'catalog.mcp-binding': {
       workspaceId,
       mcpId: 'echo',

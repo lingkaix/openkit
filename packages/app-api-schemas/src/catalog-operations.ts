@@ -338,6 +338,40 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.configure',
     mutating: true,
   },
+  'catalog.mcp-stage-version': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 201,
+    description: 'Stage an immutable MCP configuration without changing current selection.',
+    inputSchema: CreateMcpConfigRequestSchema.omit({ id: true })
+      .safeExtend({
+        workspaceId: WorkspaceIdSchema,
+        mcpId: z.string().min(1),
+      })
+      .strict(),
+    outputSchema: CreateMcpConfigResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.configure',
+    mutating: true,
+  },
+  'catalog.mcp-remove': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Remove an MCP entry while retaining configuration history and process data.',
+    inputSchema: RemoveSkillRequestSchema.safeExtend({
+      workspaceId: WorkspaceIdSchema,
+      mcpId: z.string().min(1),
+    }).strict(),
+    outputSchema: CatalogMutationResponseSchema,
+    credentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.configure',
+    mutating: true,
+  },
   'catalog.mcp-select': {
     binding: 'json',
     returnsOneTimeSecret: false,

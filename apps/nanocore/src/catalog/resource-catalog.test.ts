@@ -23,6 +23,7 @@ import {
   CatalogForbiddenError,
   CatalogInputError,
   CatalogIntegrityError,
+  CatalogNotFoundError,
   catalogDocumentPath,
   createMcpConfig,
   importWorkspacePlugin,
@@ -31,6 +32,7 @@ import {
   materializeCatalogTree,
   projectEffectiveWorkspaceMcpCatalog,
   publishWorkspaceResourceCatalog,
+  removeMcpEntry,
   replaceWorkspaceEffectiveMcpCatalog,
   selectMcpVersion,
   selectWorkspaceSkillDefault,
@@ -105,6 +107,81 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
+  it.each([
+    'stale-current',
+    'removed-selection',
+    'removed-binding',
+  ] as const)('refuses %s without changing MCP history or admission', (scenario) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-lifecycle-'));
+    const owner = { kind: 'workspace' as const, workspaceId: testEntityId('ws', scenario) };
+    try {
+      const first = createMcpConfig({
+        dataRoot,
+        owner,
+        id: 'echo',
+        displayName: 'Echo',
+        allowedTools: ['echo'],
+        declaration: { kind: 'http', endpoint: 'https://example.test/first' },
+        createdAt: '2026-10-30T00:00:00.000Z',
+        expectedRevision: 0,
+        selectCurrent: true,
+      });
+      const staged = createMcpConfig({
+        dataRoot,
+        owner,
+        id: 'echo',
+        displayName: 'Echo',
+        allowedTools: ['echo'],
+        declaration: { kind: 'http', endpoint: 'https://example.test/second' },
+        createdAt: '2026-10-30T00:01:00.000Z',
+        expectedRevision: first.catalog.revision,
+        selectCurrent: false,
+      });
+      expect(staged.catalog.mcp.entries[0]?.currentVersionDigest).toBe(first.version.digest);
+      const before =
+        scenario === 'stale-current'
+          ? staged.catalog
+          : removeMcpEntry({
+              dataRoot,
+              owner,
+              mcpId: 'echo',
+              expectedRevision: staged.catalog.revision,
+            });
+      const select = {
+        dataRoot,
+        owner,
+        entryId: 'echo',
+        digest: staged.version.digest,
+        expectedRevision: before.revision,
+        expectedCurrentDigest: scenario === 'stale-current' ? null : first.version.digest,
+      };
+      expect
+        .soft(() =>
+          scenario === 'removed-binding'
+            ? updateMcpBinding({
+                dataRoot,
+                owner,
+                entryId: 'echo',
+                expectedRevision: before.revision,
+                binding: {
+                  allowedTools: ['echo'],
+                  credentialBindings: [],
+                  enabled: true,
+                  revision: before.mcp.bindings[0]?.revision ?? 0,
+                  schemaPolicy: 'tracking',
+                  timeoutMs: 60_000,
+                },
+              })
+            : selectMcpVersion(select)
+        )
+        .toThrow(scenario === 'stale-current' ? CatalogConflictError : CatalogNotFoundError);
+      expect(loadWorkspaceResourceCatalog(dataRoot, owner.workspaceId)).toEqual(before);
+      expect(before.mcp.versions).toEqual(staged.catalog.mcp.versions);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('retains an original installation data key when a new version replaces every MCP member', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-legacy-data-'));
     const treeRoot = join(dataRoot, 'source');

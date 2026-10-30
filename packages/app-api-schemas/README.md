@@ -283,3 +283,5 @@ Plugin import accepts optional `pluginId` and `memberIds` to name explicit scope
 Same-deployment Workspace backup restore now joins the composed operation table. Its existing selectors, safety acknowledgement and report are unchanged; capture-selected recovery and MOVE activation remain separate.
 
 Workspace recovery inspection uses the existing path-free report and capture/admission selectors. Its complete composition reads current administrator-authorized facts; finish, abandonment and MOVE remain with their separate activation work.
+
+Workspace MCP management exposes `catalog.mcp-stage-version` and `catalog.mcp-remove` alongside create, select and binding. Select requires nullable `expectedCurrentDigest` from the observed entry; stage preserves current selection and removal retains history.

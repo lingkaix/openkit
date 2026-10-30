@@ -31,7 +31,7 @@ describe('Agent, Worker and resource catalog definitions', () => {
       ...WORKER_OPERATION_DEFINITIONS,
       ...CATALOG_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(25);
+    expect(Object.keys(definitions)).toHaveLength(27);
     const digest = `sha256:${'a'.repeat(64)}`;
     const tree = [{ kind: 'file', path: 'SKILL.md', contentBase64: 'cHJvb2Y=' }];
     const validModelInputs = {
@@ -85,7 +85,20 @@ describe('Agent, Worker and resource catalog definitions', () => {
         allowedTools: ['proof'],
         declaration: { kind: 'http', endpoint: 'https://example.com/mcp' },
       },
-      'catalog.mcp-select': { mcpId: 'proof', digest, expectedRevision: 1 },
+      'catalog.mcp-stage-version': {
+        mcpId: 'proof',
+        displayName: 'Proof MCP',
+        expectedRevision: 1,
+        allowedTools: ['proof'],
+        declaration: { kind: 'http', endpoint: 'https://example.com/mcp' },
+      },
+      'catalog.mcp-remove': { mcpId: 'proof', expectedRevision: 1 },
+      'catalog.mcp-select': {
+        mcpId: 'proof',
+        digest,
+        expectedCurrentDigest: null,
+        expectedRevision: 1,
+      },
       'catalog.mcp-binding': {
         mcpId: 'proof',
         allowedTools: ['proof'],
@@ -118,6 +131,20 @@ describe('Agent, Worker and resource catalog definitions', () => {
     expect(CATALOG_OPERATION_DEFINITIONS['catalog.skill-import'].policyOperation).toBe(
       'workspace.configure'
     );
+    for (const id of ['catalog.mcp-stage-version', 'catalog.mcp-remove'] as const) {
+      expect(CATALOG_OPERATION_DEFINITIONS[id]).toMatchObject({
+        binding: 'json',
+        mutating: true,
+        policyOperation: 'workspace.configure',
+        scope: { kind: 'body-workspace', field: 'workspaceId' },
+        target: { kind: 'workspace' },
+      });
+    }
+    const model = operationModelInput(
+      CATALOG_OPERATION_DEFINITIONS['catalog.mcp-select'].inputSchema,
+      ['workspaceId', 'requestId']
+    );
+    expect(model.safeParse({ mcpId: 'proof', digest, expectedRevision: 1 }).success).toBe(false);
   });
 
   it('admits null pin removal and refuses null default selection through complete and model inputs', () => {

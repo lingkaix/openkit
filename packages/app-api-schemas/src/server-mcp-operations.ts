@@ -182,7 +182,7 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
   ),
   'administration.server-mcp-select-version': serverOperation(
     'Select a retained Server MCP version.',
-    SelectMcpVersionRequestSchema.safeExtend({ mcpId }),
+    SelectMcpVersionRequestSchema.omit({ expectedCurrentDigest: true }).safeExtend({ mcpId }),
     CatalogMutationResponseSchema,
     true
   ),

@@ -950,6 +950,9 @@ export function updateMcpBinding(input: {
   if (current.revision !== input.expectedRevision) {
     throw new CatalogConflictError();
   }
+  if (current.mcp.entries.find((entry) => entry.id === input.entryId)?.availability === 'removed') {
+    throw new CatalogNotFoundError('MCP entry was removed.');
+  }
   if (existing && existing.revision !== input.binding.revision) {
     throw new CatalogConflictError('MCP binding revision conflict.');
   }
@@ -998,10 +1001,19 @@ export function selectMcpVersion(input: {
   readonly digest: string;
   readonly entryId: string;
   readonly expectedRevision: number;
+  readonly expectedCurrentDigest?: string | null;
   readonly stdioHostAuthorized?: boolean;
   readonly owner: ResourceCatalogOwner;
 }): ResourceCatalogDocument {
   const current = readResourceCatalog(input.dataRoot, input.owner);
+  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
+  const entry = current.mcp.entries.find((item) => item.id === input.entryId);
+  if (entry?.availability !== 'available') throw new CatalogNotFoundError('MCP entry not found.');
+  if (
+    Object.hasOwn(input, 'expectedCurrentDigest') &&
+    entry.currentVersionDigest !== input.expectedCurrentDigest
+  )
+    throw new CatalogConflictError('MCP current digest conflict.');
   const version = current.mcp.versions.find(
     (item) => item.entryId === input.entryId && item.digest === input.digest
   );
@@ -1009,7 +1021,6 @@ export function selectMcpVersion(input: {
     throw new CatalogNotFoundError(`MCP configuration version not found: ${input.digest}`);
   }
   const binding = current.mcp.bindings.find((item) => item.entryId === input.entryId);
-  const entry = current.mcp.entries.find((item) => item.id === input.entryId);
   const currentVersion = current.mcp.versions.find(
     (item) => item.entryId === input.entryId && item.digest === entry?.currentVersionDigest
   );
@@ -1425,7 +1436,7 @@ export function setSharedMcpDisabled(input: {
   });
 }
 
-/** Tombstones a Server entry without deleting its retained versions or reviving a local binding. */
+/** Tombstones a scope-owned MCP entry without deleting versions or reviving its binding. */
 export function removeMcpEntry(input: {
   readonly dataRoot: string;
   readonly owner: ResourceCatalogOwner;

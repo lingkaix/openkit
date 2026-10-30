@@ -342,6 +342,7 @@ export const CreateMcpConfigResponseSchema = z
 export const SelectMcpVersionRequestSchema = z
   .object({
     digest: z.string().regex(SHA256),
+    expectedCurrentDigest: z.string().regex(SHA256).nullable(),
     expectedRevision: z.number().int().nonnegative(),
     requestId: RequestIdSchema,
   })

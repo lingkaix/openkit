@@ -47,6 +47,7 @@ import {
   loadWorkspaceResourceCatalog,
   McpBindingValidationError,
   materializeCatalogTree,
+  removeMcpEntry,
   type SkillCandidateDecisionContext,
   selectMcpVersion,
   submitWorkspaceSkillCandidate,
@@ -458,6 +459,54 @@ export function createCatalogOperationImplementations(
     currentCandidate();
     return response;
   };
+  /** Create and stage share immutable publication; only create moves the current selection. */
+  const createMcp = (
+    input: OperationInput<'catalog.mcp-create'> | OperationInput<'catalog.mcp-stage-version'>,
+    context: AdmittedOperationContext
+  ) => {
+    const stage = 'mcpId' in input;
+    const operation = stage ? 'catalog.mcp-stage-version' : 'catalog.mcp-create';
+    const workspaceDb = mutationAuditDb(input.workspaceId);
+    try {
+      if (
+        stage &&
+        !loadWorkspaceResourceCatalog(root(), input.workspaceId).mcp.entries.some(
+          (entry) => entry.id === input.mcpId
+        )
+      )
+        throw new CatalogNotFoundError('MCP entry not found.');
+      const result = createMcpConfig({
+        allowedTools: input.allowedTools,
+        createdAt: new Date().toISOString(),
+        dataRoot: root(),
+        declaration: input.declaration,
+        displayName: input.displayName,
+        expectedRevision: input.expectedRevision,
+        ...(stage ? { id: input.mcpId } : input.id ? { id: input.id } : {}),
+        selectCurrent: !stage,
+        stdioHostAuthorized: administrator(context),
+        owner: { kind: 'workspace', workspaceId: input.workspaceId },
+      });
+      auditMutation(
+        workspaceDb,
+        input,
+        context,
+        operation,
+        `mcp:${result.version.entryId}@${result.version.digest}`,
+        result.catalog.revision
+      );
+      afterMutation(input.workspaceId);
+      return {
+        entry: mcpEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
+        revision: result.catalog.revision,
+        versionDigest: result.version.digest,
+      };
+    } catch (error) {
+      catalogFailure(error, 'mcp_create_failed');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  };
   return {
     'catalog.read': (input) => {
       try {
@@ -784,37 +833,29 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'mcp_catalog_list_failed');
       }
     },
-    'catalog.mcp-create': (input, context) => {
+    'catalog.mcp-create': createMcp,
+    'catalog.mcp-stage-version': createMcp,
+    'catalog.mcp-remove': (input, context) => {
       const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
-        const result = createMcpConfig({
-          allowedTools: input.allowedTools,
-          createdAt: new Date().toISOString(),
+        const catalog = removeMcpEntry({
           dataRoot: root(),
-          declaration: input.declaration,
-          displayName: input.displayName,
-          expectedRevision: input.expectedRevision,
-          ...(input.id ? { id: input.id } : {}),
-          selectCurrent: true,
-          stdioHostAuthorized: administrator(context),
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
+          mcpId: input.mcpId,
+          expectedRevision: input.expectedRevision,
         });
         auditMutation(
           workspaceDb,
           input,
           context,
-          'catalog.mcp-create',
-          `mcp:${result.version.entryId}@${result.version.digest}`,
-          result.catalog.revision
+          'catalog.mcp-remove',
+          `mcp:${input.mcpId}`,
+          catalog.revision
         );
         afterMutation(input.workspaceId);
-        return {
-          entry: mcpEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
-          revision: result.catalog.revision,
-          versionDigest: result.version.digest,
-        };
+        return { revision: catalog.revision };
       } catch (error) {
-        catalogFailure(error, 'mcp_create_failed');
+        catalogFailure(error, 'mcp_remove_failed');
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -827,6 +868,7 @@ export function createCatalogOperationImplementations(
           digest: input.digest,
           entryId: input.mcpId,
           expectedRevision: input.expectedRevision,
+          expectedCurrentDigest: input.expectedCurrentDigest,
           stdioHostAuthorized: administrator(context),
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });

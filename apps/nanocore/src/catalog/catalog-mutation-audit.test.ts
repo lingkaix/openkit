@@ -57,6 +57,7 @@ describe('Catalog mutation Audit', () => {
         expectedRevision: 1,
         mcpId: 'stub',
         digest: mcp.versionDigest,
+        expectedCurrentDigest: mcp.versionDigest,
       });
       expect(selected.status, await selected.clone().text()).toBe(200);
       const binding = await call('catalog.mcp-binding', {
@@ -121,6 +122,7 @@ describe('Catalog mutation Audit', () => {
         expectedRevision: 0,
         mcpId: 'stub',
         digest: mcp.versionDigest,
+        expectedCurrentDigest: mcp.versionDigest,
       });
       expect(refused.status).toBe(409);
       expect(listWorkspaceAuditEvents(workspaceDb, workspace.id)).toEqual(events);
