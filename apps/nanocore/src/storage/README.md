@@ -1,5 +1,7 @@
 # Storage
 
+Offline Workspace recovery sends private candidate Workspace provenance and private Thread account rebinding through the existing native writer. It shares one admitted candidate lifetime with terminal and Pending history recovery and closes that writer before candidate sealing or placement. Current safety, capability, capture, Audit and byte-preparation closure still has separate pending migration work; live restore and MOVE remain unactivated.
+
 File-backed Workspace `createItem` and `persistTurnEvent` send complete addressed intents to the existing native writer. That owner resolves the Turn and Item heads, checks identity and human attribution, prepares exact retained bytes, and applies the sequence/revision CAS in its existing savepoint and grouped FULL commit before ACK. In-memory Stores share the same pure validation; Server Items and other producer migrations remain separate slices.
 
 An addressed event validates the referenced Item's retained head, including required semantics, before preparing a new reference. Item existence alone cannot authorize publication over an unsupported retained representation.

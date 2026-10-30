@@ -374,6 +374,62 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('WM target admission: candidate metadata refusal preserves the original Workspace and history', async () => {
+    const f = await fixture();
+    const originalPath = workspaceDbPath(f.dataRoot, workspaceId);
+    const originalIdentity = statSync(originalPath);
+    const originalBytes = sha(readFileSync(originalPath));
+    const originalWorkspace = rows(originalPath, 'control_workspaces');
+    const originalThreads = rows(originalPath, 'control_threads');
+    const originalTurns = rows(originalPath, 'control_turns');
+    const originalRegistry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+    const originalMembers = rows(coreDbPath(f.dataRoot), 'workspace_members');
+    // Fault only the verified candidate's metadata transition after valid owner-created setup.
+    const candidatePath = join(f.bundleRoot, 'db/workspace.sqlite');
+    const candidate = new Database(candidatePath, { fileMustExist: true });
+    try {
+      candidate.exec(`CREATE TRIGGER refuse_candidate_metadata BEFORE UPDATE ON control_workspaces
+        BEGIN SELECT RAISE(ABORT, 'CANDIDATE_METADATA_FAULT'); END`);
+    } finally {
+      candidate.close();
+    }
+    const bytes = readFileSync(candidatePath);
+    const inventory = f.manifest.inventory.map((entry) =>
+      entry.path === 'db/workspace.sqlite'
+        ? { ...entry, bytes: bytes.length, sha256: sha(bytes) }
+        : entry
+    );
+    f.writeManifest({ ...f.manifest, inventory, inventoryDigest: sha(JSON.stringify(inventory)) });
+    await refuses(f, 'recovery-required');
+    await expect(
+      runCli(
+        [
+          'inspect',
+          '--data-root',
+          f.dataRoot,
+          '--workspace-id',
+          workspaceId,
+          '--request-id',
+          f.requestId,
+        ],
+        () => {},
+        f
+      )
+    ).resolves.toMatchObject({ disposition: 'quarantined', workspaceId });
+    // Target Admission's pre-publication refusal must leave the live authority and exact history intact.
+    const currentIdentity = statSync(originalPath);
+    expect({ dev: currentIdentity.dev, ino: currentIdentity.ino }).toEqual({
+      dev: originalIdentity.dev,
+      ino: originalIdentity.ino,
+    });
+    expect(sha(readFileSync(originalPath))).toBe(originalBytes);
+    expect(rows(originalPath, 'control_workspaces')).toEqual(originalWorkspace);
+    expect(rows(originalPath, 'control_threads')).toEqual(originalThreads);
+    expect(rows(originalPath, 'control_turns')).toEqual(originalTurns);
+    expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(originalRegistry);
+    expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toEqual(originalMembers);
+  });
+
   it('WM restore step 4: a captured unfinished Turn without a Pending Request is interrupted without replacement work', async () => {
     const f = await fixture(false, true);
     expect(f.capturedTurnId).toBeDefined();
