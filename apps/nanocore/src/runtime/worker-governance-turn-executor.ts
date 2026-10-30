@@ -30,6 +30,7 @@ import { publishedErrorMessage } from '../api-errors.js';
 import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
+  readCurrentWorkspacePolicy,
 } from '../auth/operation-authorizer.js';
 import {
   canDiscloseThreadToAudience,
@@ -504,6 +505,41 @@ export async function prepareWorkerTurnContextPackage(
   const materialExclusions: WorkerContextPackageMaterialExclusion[] = [];
   let queuedMaterialSelection: QueuedThreadMaterialSelection | null = null;
   const bindingCandidate = queuedMaterial;
+  /** Distinguishes a current Kernel denial from missing or corrupt policy dependencies. */
+  const materialPolicyAllowed = () => {
+    try {
+      if (!coreDb || !sourceAdmission) throw new Error('Material policy lineage is unavailable.');
+      store.getWorkspace(input.workspaceId);
+      const thread = store.getThread(input.workspaceId, input.threadId);
+      readCurrentWorkspacePolicy({
+        coreDb,
+        workspaceId: input.workspaceId,
+        policy: store.getWorkspaceResourceAccess(input.workspaceId),
+      });
+      return (
+        currentSchedulerAdmissionWorkspaceAuthority(coreDb, sourceAdmission, 'thread.read', true, {
+          dependencyFailure: 'throw',
+          mutating: false,
+        }) !== null &&
+        isThreadVisible(
+          store,
+          thread,
+          responsibleUserId,
+          sourceAdmission.serverAdminTokenId !== null,
+          'thread.read',
+          resourcePolicyActor
+        )
+      );
+    } catch (error) {
+      const refusal = new TurnStartValidationError(
+        'source_unavailable',
+        'Current Material policy authority is unavailable.',
+        503
+      );
+      refusal.cause = error;
+      throw refusal;
+    }
+  };
   if (bindingCandidate?.inclusionState === 'excluded') {
     materialExclusions.push({
       materialId: bindingCandidate.materialId,
@@ -515,6 +551,13 @@ export async function prepareWorkerTurnContextPackage(
     materialExclusions.push({
       materialId: bindingCandidate.materialId,
       reason: 'sensitive_content',
+      revisionId: bindingCandidate.revisionId,
+      sensitivity: bindingCandidate.sensitivity,
+    });
+  } else if (bindingCandidate && !materialPolicyAllowed()) {
+    materialExclusions.push({
+      materialId: bindingCandidate.materialId,
+      reason: 'policy_excluded',
       revisionId: bindingCandidate.revisionId,
       sensitivity: bindingCandidate.sensitivity,
     });
@@ -626,6 +669,7 @@ export async function prepareWorkerTurnContextPackage(
     if (
       isSealedTurnTerminal(current.status) ||
       !isDeepStrictEqual(current.fileInputs ?? [], originalInputs) ||
+      (materialSelections.length > 0 && !materialPolicyAllowed()) ||
       !admission ||
       !currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, 'thread.read', true) ||
       !isThreadVisible(
@@ -711,6 +755,34 @@ export async function prepareWorkerTurnContextPackage(
         selection,
         assertCurrent: assertCurrentMaterial,
       });
+      try {
+        // Verify the original first; only its bounded delivered representation competes for allowance.
+        admitModelRequest({
+          payload: {
+            request: input.workerRequest,
+            overview: knowledgeOverview.text,
+            material: material.selection.deliveredContent,
+            sources: sourceFiles.map((entry) => Buffer.from(entry.deliveredBytes).toString('utf8')),
+          },
+          contextWindowTokens: contextBudgetTokens,
+          outputReserveTokens: undefined,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof ModelRequestAdmissionError) ||
+          error.code !== 'internal_agent_context_exceeded'
+        )
+          throw error;
+        materialExclusions.push({
+          materialId: selection.materialId,
+          reason: 'budget_exceeded',
+          revisionId: selection.revisionId,
+          sensitivity: selection.sensitivity,
+        });
+        materialSelections.splice(index, 1);
+        queuedMaterialSelection = null;
+        continue;
+      }
       materialSelections[index] = material.selection;
       sourceFiles.push(material.source);
     }

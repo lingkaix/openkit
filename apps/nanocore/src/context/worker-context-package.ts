@@ -2211,7 +2211,11 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   for (const exclusion of trace.materialExclusions) {
     assertSafeWorkspacePathSegment(exclusion.materialId, 'excluded Material id');
     assertSafeWorkspacePathSegment(exclusion.revisionId, 'excluded Material revision id');
-    if (exclusion.sensitivity === 'restricted' && exclusion.reason !== 'sensitive_content') {
+    if (
+      exclusion.sensitivity === 'restricted' &&
+      exclusion.reason !== 'sensitive_content' &&
+      exclusion.reason !== 'explicit_scope_excluded'
+    ) {
       throw new Error('Restricted Material exclusion reason is invalid.');
     }
   }

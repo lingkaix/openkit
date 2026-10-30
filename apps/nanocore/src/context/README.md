@@ -96,3 +96,5 @@ Canonical Turn and Item authority snapshots carry the Protocol work owner. Conte
 The fixed LLM projection tuple uses the shared Protocol canonical digest, preserving ordered messages, policy decisions and the `ctxpkg_sha256_` tag. The switch preserves valid-Unicode tuple bytes and does not rewrite delivered Context Packages or alter their manifest/trace readers. Run `llm-projection.test.ts` and `projection-policy.test.ts` for the projection contract.
 
 Knowledge package-budget exclusions retain the exact selected Notebook commit with the existing page identity and original digest. The retained reader preserves this revision when present and leaves older revision-absent exclusions unchanged; it never infers an old revision from current Notebook state.
+
+Material exclusions keep the first matching S39 predicate. A restricted Material uses `explicit_scope_excluded` when explicitly excluded and otherwise `sensitive_content`; neither exclusion carries its title, content, digest, package path or derived summary into the worker-visible package. The retained reader accepts only those two existing reasons for restricted exclusions.

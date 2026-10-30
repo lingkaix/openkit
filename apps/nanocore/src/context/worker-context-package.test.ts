@@ -280,6 +280,11 @@ async function createAcceptedFixture(
     readonly threadId?: string;
     readonly knowledge?: boolean;
     readonly exclusionNotebookRevision?: string;
+    readonly restrictedExclusionReason?:
+      | 'sensitive_content'
+      | 'explicit_scope_excluded'
+      | 'policy_excluded'
+      | 'budget_exceeded';
     readonly sourceFiles?: readonly WorkerContextPackageSourceFileInput[];
   } = {}
 ): Promise<{
@@ -361,7 +366,7 @@ async function createAcceptedFixture(
     materialExclusions: [
       {
         materialId: 'mat_00000000-0000-7d3d-a336-0dbae085eb7e',
-        reason: 'sensitive_content',
+        reason: options.restrictedExclusionReason ?? 'sensitive_content',
         revisionId: 'mrev_00000000-0000-7000-8000-000000000004',
         sensitivity: 'restricted',
       },
@@ -1441,6 +1446,48 @@ describe('worker Context Package owner', () => {
         workspaceRoot,
       })
     ).toThrow(/conflict/);
+  });
+
+  it('accepts an explicitly excluded restricted Material through immutable trace publication and readback', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-explicit-restricted-'));
+    const fixture = await createAcceptedFixture(workspaceRoot, {
+      restrictedExclusionReason: 'explicit_scope_excluded',
+    });
+    // S39's first matching Material predicate retains explicit exclusion before sensitivity.
+    const exclusion = {
+      materialId: 'mat_00000000-0000-7d3d-a336-0dbae085eb7e',
+      revisionId: 'mrev_00000000-0000-7000-8000-000000000004',
+      sensitivity: 'restricted',
+      reason: 'explicit_scope_excluded',
+    };
+    expect(fixture.trace.materialExclusions).toEqual([exclusion]);
+    writeWorkerContextPackageTrace({ ...fixture, workspaceRoot });
+    const reopened = readWorkerContextPackageTrace({
+      authorities: fixture.authorities,
+      workspaceRoot,
+      workspaceId: fixture.trace.workspaceId,
+      threadId: fixture.trace.threadId,
+      turnId: fixture.trace.turnId,
+    });
+    expect(reopened?.materialExclusions).toEqual([exclusion]);
+    const excludedRoot = `workspace/materials/${exclusion.materialId}/`;
+    expect(fixture.packageFiles.files.some((file) => file.path.startsWith(excludedRoot))).toBe(
+      false
+    );
+    expect(reopened?.fileInventory.some((file) => file.path.startsWith(excludedRoot))).toBe(false);
+  });
+
+  it.each([
+    'policy_excluded',
+    'budget_exceeded',
+  ] as const)('refuses a restricted Material trace mislabeled %s', async (reason) => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-restricted-reason-'));
+    const fixture = await createAcceptedFixture(workspaceRoot, {
+      restrictedExclusionReason: reason,
+    });
+    expect(() => writeWorkerContextPackageTrace({ ...fixture, workspaceRoot })).toThrow(
+      'Restricted Material exclusion reason is invalid.'
+    );
   });
 
   it('retains the exact excluded Knowledge notebook revision across trace publication and reopening', async () => {

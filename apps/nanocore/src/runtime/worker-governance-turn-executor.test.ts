@@ -75,13 +75,16 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
+import { isThreadVisible } from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import * as materialSourceReader from '../context/material-source-files.js';
+import { admitModelRequest } from '../context/model-request-admission.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
@@ -148,6 +151,7 @@ import {
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -159,6 +163,7 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
+  excludeThreadMaterial,
   getWorkspaceMaterialRevision,
   saveWorkspaceMaterialRevision,
   selectQueuedThreadMaterialRevision,
@@ -570,6 +575,7 @@ async function createWorkerContextExecutorFixture(
     /** Native outcome and turn.start delivery have no Task checkpoint to prepare. */
     readonly prepareTaskCheckpoint?: boolean;
     readonly materialContent?: string;
+    readonly materialSensitivity?: 'public' | 'internal' | 'restricted';
     readonly knowledge?: Parameters<typeof seedDemoWorkspace>[2];
     readonly maxContextTokens?: number;
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
@@ -756,7 +762,7 @@ async function createWorkerContextExecutorFixture(
     actor: { kind: 'user', id: LOCAL_USER_ID },
     kind: 'markdown',
     requestId: `request_create_context_${name}`,
-    sensitivity: 'internal',
+    sensitivity: options.materialSensitivity ?? 'internal',
     title: 'Context material',
   });
   const revision = saveWorkspaceMaterialRevision(workspaceDb, {
@@ -9620,6 +9626,336 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it('refuses a Material policy author revoked across real source preparation while the Worker stays eligible', async () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const originatingThreadId = 'th_00000000-0000-7000-8000-000000000001';
+    const fixture = await createWorkerContextExecutorFixture('material-policy-author-recheck', {
+      skipInitialKnowledgeSelection: true,
+      originatingThreadId,
+      turnId: expectedTaskModeTurnId(
+        'conversation.submit.task',
+        LOCAL_USER_ID,
+        workspaceId,
+        originatingThreadId,
+        '00000000-0000-4000-8000-000000000270'
+      ),
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const authorId = allocateEntityId('usr');
+    const timestamp = new Date().toISOString();
+    // Use the existing Core User/member fixture shape; this author is distinct from the caller.
+    fixture.coreDb.sqlite
+      .prepare(
+        "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status) VALUES (?, 'Material Policy author', 'material-policy-author@example.test', 0, ?, ?, 'human', 'active')"
+      )
+      .run(authorId, Date.now(), Date.now());
+    fixture.coreDb.sqlite
+      .prepare(
+        "INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)"
+      )
+      .run(workspaceId, authorId, timestamp, timestamp, timestamp);
+    writeManagedThreadPolicyFixture({
+      dataRoot: fixture.coreDb.dataRoot,
+      workspaceId,
+      threadId: fixture.turn.threadId,
+      userId: LOCAL_USER_ID,
+      operations: ['thread.read'],
+      agentId: fixture.turn.agentId!,
+    });
+    const policy = fixture.store.getWorkspaceResourceAccess(workspaceId);
+    const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
+    const authoredPolicy = {
+      ...policy,
+      statements: [
+        ...policy.statements,
+        { ...permission, id: `${permission.id}-caller`, grant: { kind: 'ordinary' as const } },
+      ].map((statement) => ({
+        ...statement,
+        author: { kind: 'human' as const, id: authorId },
+        authority: { kind: 'human' as const, userId: authorId },
+      })),
+    };
+    const path = join(
+      fixture.coreDb.dataRoot,
+      'workspaces',
+      workspaceId,
+      'config',
+      'workspace.jsonc'
+    );
+    const config = parseJsoncObject(readFileSync(path, 'utf8'));
+    const workspace = config.workspace as Record<string, unknown>;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...config,
+        workspace: {
+          ...workspace,
+          policy: { ...(workspace.policy as Record<string, unknown>), mediation: authoredPolicy },
+        },
+      })
+    );
+    const policyInput = { coreDb: fixture.coreDb, workspaceId, policy: authoredPolicy };
+    const thread = fixture.store.getThread(workspaceId, fixture.turn.threadId);
+    const worker = {
+      kind: 'agent' as const,
+      userId: LOCAL_USER_ID,
+      agentId: fixture.turn.agentId!,
+      processId: fixture.agentSessionId,
+    };
+    const actualPrepare = materialSourceReader.prepareMaterialSourceInput;
+    let revoked = false;
+    const preparation = vi
+      .spyOn(materialSourceReader, 'prepareMaterialSourceInput')
+      .mockImplementation(async (...args) => {
+        const result = await actualPrepare(...args);
+        // S39 current Policy authority must survive this await, not just initial selection.
+        expect(
+          fixture.coreDb.sqlite.transaction(() => disableCanonicalUser(fixture.coreDb, authorId))()
+        ).toMatchObject({ changed: true, user: { userId: authorId, status: 'disabled' } });
+        revoked = true;
+        return result;
+      });
+    try {
+      expect(operationAuthorizer.readCurrentWorkspacePolicy(policyInput)).toEqual(authoredPolicy);
+      expect(isThreadVisible(fixture.store, thread, LOCAL_USER_ID)).toBe(true);
+      expect(
+        isThreadVisible(fixture.store, thread, LOCAL_USER_ID, false, 'thread.read', worker)
+      ).toBe(true);
+      const result = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(workspaceDb, workspaceId, fixture.turn.threadId, fixture.turn.id)!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: fixture.workerRequest,
+          workspaceId,
+        },
+        new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+      ).then(
+        () => 'prepared',
+        (error: unknown) => error
+      );
+      expect(revoked).toBe(true);
+      expect(preparation).toHaveBeenCalledOnce();
+      expect(
+        operationAuthorizer.currentWorkspaceAuthority(
+          fixture.coreDb,
+          workspaceId,
+          { kind: 'user', id: LOCAL_USER_ID },
+          'thread.read',
+          true
+        )
+      ).not.toBeNull();
+      expect(isThreadVisible(fixture.store, thread, LOCAL_USER_ID)).toBe(true);
+      expect(
+        isThreadVisible(fixture.store, thread, LOCAL_USER_ID, false, 'thread.read', worker)
+      ).toBe(true);
+      expect(() => operationAuthorizer.readCurrentWorkspacePolicy(policyInput)).toThrow(
+        'Workspace Policy author no longer has current authority.'
+      );
+      expect(result).toMatchObject({ code: 'source_unavailable', status: 503 });
+    } finally {
+      preparation.mockRestore();
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  }, 60_000);
+
+  it.each([
+    {
+      name: 'allowed verified candidate fits',
+      sensitivity: 'internal',
+      denied: false,
+      excluded: false,
+      budget: 12_000,
+      reason: null,
+    },
+    {
+      name: 'worker policy precedes budget',
+      sensitivity: 'internal',
+      denied: true,
+      excluded: false,
+      budget: 4_500,
+      reason: 'policy_excluded',
+    },
+    {
+      name: 'verified candidate exceeds remaining budget',
+      sensitivity: 'internal',
+      denied: false,
+      excluded: false,
+      budget: 4_500,
+      reason: 'budget_exceeded',
+    },
+    {
+      name: 'restricted sensitivity precedes policy and budget',
+      sensitivity: 'restricted',
+      denied: true,
+      excluded: false,
+      budget: 4_500,
+      reason: 'sensitive_content',
+    },
+    {
+      name: 'explicit exclusion precedes restricted sensitivity',
+      sensitivity: 'restricted',
+      denied: true,
+      excluded: true,
+      budget: 4_500,
+      reason: 'explicit_scope_excluded',
+    },
+    {
+      name: 'malformed current policy is unavailable',
+      sensitivity: 'internal',
+      denied: false,
+      excluded: false,
+      budget: 12_000,
+      reason: 'source_unavailable',
+    },
+  ] as const)('Material predicate order: $name', async ({
+    name,
+    sensitivity,
+    denied,
+    excluded,
+    budget,
+    reason,
+  }) => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const originatingThreadId = 'th_00000000-0000-7000-8000-000000000001';
+    const fixture = await createWorkerContextExecutorFixture(`material-predicate-${name}`, {
+      materialContent: 'MATERIAL_PREDICATE_PRIVATE '.repeat(300),
+      materialSensitivity: sensitivity,
+      maxContextTokens: budget,
+      skipInitialKnowledgeSelection: true,
+      originatingThreadId,
+      turnId: expectedTaskModeTurnId(
+        'conversation.submit.task',
+        LOCAL_USER_ID,
+        workspaceId,
+        originatingThreadId,
+        '00000000-0000-4000-8000-000000000270'
+      ),
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    try {
+      // The required request fits independently; only the verified Material loses the allowance.
+      expect(() =>
+        admitModelRequest({
+          payload: { request: fixture.workerRequest, materials: [], sources: [], knowledge: [] },
+          contextWindowTokens: budget,
+          outputReserveTokens: undefined,
+        })
+      ).not.toThrow();
+      if (excluded)
+        excludeThreadMaterial(workspaceDb, {
+          acceptedAt: '2026-07-18T00:00:03.000Z',
+          expectedBindingState: 'bound',
+          expectedInclusionState: 'included',
+          expectedQueuedRevisionId: fixture.revision.revisionId,
+          materialId: fixture.material.materialId,
+          requestId: 'material-predicate-exclusion',
+          threadId: fixture.turn.threadId,
+        });
+      if (denied) {
+        writeManagedThreadPolicyFixture({
+          dataRoot: fixture.coreDb.dataRoot,
+          workspaceId,
+          threadId: fixture.turn.threadId,
+          userId: LOCAL_USER_ID,
+          operations: ['thread.read'],
+        });
+        const thread = fixture.store.getThread(workspaceId, fixture.turn.threadId);
+        expect(isThreadVisible(fixture.store, thread, LOCAL_USER_ID)).toBe(true);
+        expect(
+          isThreadVisible(fixture.store, thread, LOCAL_USER_ID, false, 'thread.read', {
+            kind: 'agent',
+            userId: LOCAL_USER_ID,
+            agentId: fixture.turn.agentId!,
+            processId: fixture.agentSessionId,
+          })
+        ).toBe(false);
+      }
+      if (reason === 'source_unavailable') {
+        const path = join(
+          fixture.coreDb.dataRoot,
+          'workspaces',
+          workspaceId,
+          'config',
+          'workspace.jsonc'
+        );
+        const config = parseJsoncObject(readFileSync(path, 'utf8'));
+        writeFileSync(
+          path,
+          JSON.stringify({
+            ...config,
+            workspace: {
+              ...(config.workspace as Record<string, unknown>),
+              policy: { mediation: { schemaVersion: 999, statements: [] } },
+            },
+          })
+        );
+      }
+      const preparation = prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(workspaceDb, workspaceId, fixture.turn.threadId, fixture.turn.id)!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: fixture.workerRequest,
+          workspaceId,
+        },
+        new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+      );
+      if (reason === 'source_unavailable') {
+        await expect(preparation).rejects.toMatchObject({
+          code: 'source_unavailable',
+          status: 503,
+        });
+        return;
+      }
+      const prepared = await preparation;
+      if (reason === null) {
+        expect(prepared.materialExclusions).toEqual([]);
+        expect(prepared.packageFiles.materialSelections).toEqual([
+          expect.objectContaining({
+            materialId: fixture.material.materialId,
+            revisionId: fixture.revision.revisionId,
+          }),
+        ]);
+      } else {
+        // S39 Material predicates record exactly the first matching reason and deliver no excluded source.
+        expect(prepared.materialExclusions).toEqual([
+          {
+            materialId: fixture.material.materialId,
+            revisionId: fixture.revision.revisionId,
+            sensitivity,
+            reason,
+          },
+        ]);
+        expect(prepared.packageFiles.materialSelections).toEqual([]);
+        expect(
+          prepared.packageFiles.sourceFileInputs?.some(
+            (entry) => entry.source.kind === 'material'
+          ) ?? false
+        ).toBe(false);
+        expect(
+          prepared.packageFiles.files.some((file) =>
+            Buffer.from(file.bytes).includes('MATERIAL_PREDICATE_PRIVATE')
+          )
+        ).toBe(false);
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  }, 60_000);
+
   it('refuses a superseded Material selection before acceptance', async () => {
     const fixture = await createWorkerContextExecutorFixture('material-selection-superseded');
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
@@ -9672,7 +10008,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('delivers a bounded Material excerpt and the exact admitted original without bytes-per-token guessing', async () => {
     const fixture = await createWorkerContextExecutorFixture('binding-budget', {
       materialContent: 'B'.repeat(5_000),
-      maxContextTokens: 1_000,
+      maxContextTokens: 8_000,
     });
     const {
       agentSessionId,
