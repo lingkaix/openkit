@@ -150,7 +150,7 @@ The OpenKit delta taxonomy should be easy for runtime adapters to project from n
 Core item delta kinds are a closed enum:
 
 | Delta kind | Source shape category | Meaning |
-| --- | --- |
+| --- | --- | --- |
 | `text-delta` | Text stream append | Append ordinary text to a text-bearing item. |
 | `indexed-text-delta` | Named content-part text stream | Append text to a named or indexed content part inside an item. |
 | `part-started` | Section or part boundary | Mark a new streamed part or section boundary inside an item. |
@@ -319,11 +319,11 @@ closed
 
 ## Current Implementation Projection
 
-The shared protocol package supplies schemas, identifier allocation and derivation, and conformance fixtures. Its concrete implementations remain subject to the contracts above; this relocation makes no activation claim.
+The shared protocol package supplies schemas, identifier allocation and derivation, and conformance fixtures in `packages/protocol/src/common/entity-id.ts`, `packages/protocol/src/common/item-delta.ts`, `packages/protocol/src/events/envelope.ts`, and `packages/protocol/conformance/`. The delta schemas reject an undeclared item type and delta kind combination when an event is parsed, and they check that correlation fields are present but not that a part or request was introduced earlier. No `core.protocol.*` error code or audit event exists for a delta violation. The code names the context delta kind and item type `knowledge-injection-updated` and `knowledge-injection`, and it has two item types outside the table above, `generative-ui-reference` (with `snapshot-updated`) and `context-summary` (with no delta kind).
 
 ## Rollout / Migration Plan
 
-This change relocates documentation and updates inbound references. It changes no identifier, enum value, retained record, wire shape, capture implementation, or runtime behavior. The existing identifier cutover boundary above remains binding and this relocation performs no data reset.
+This specification adds no migration. The identifier cutover boundary in the IDs section remains binding.
 
 ## Testing Strategy / Acceptance Criteria
 
@@ -331,4 +331,3 @@ This change relocates documentation and updates inbound references. It changes n
 - Verify canonical derivation bytes and kind-specific validation across retry and restart under the existing identifier acceptance contract.
 - Verify item-type/delta-kind admission, correlation, bounded payloads, and completed-Item reconciliation under the existing delta contract.
 - Verify closed enum values and reasoning-effort order against the machine-readable schema projections.
-- Check inbound links and regenerate the documentation index after relocating these inventories.

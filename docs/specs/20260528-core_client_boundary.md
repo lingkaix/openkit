@@ -77,10 +77,11 @@ This specification keeps route and client projection detail. That detail is tran
 
 The public client is grouped by boundary:
 
-- `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
-- `client.app`: dashboards, Goal reads and the Goal operations, search, quick chat and feedback for families awaiting cutover; archive streams retain their owned methods.
+- `client.core`: meta and the turn event stream (`subscribeTurnEvents`).
+- `client.app`: the current Workspace archive stream methods. The import methods await removal under [Online Workspace Snapshots And Scoped Recovery](../decisions/20261027-online_workspace_snapshots_and_recovery.md).
+- `client.artifactFiles` and `client.conversationFiles`: exact original Artifact file upload and download streams, and exact Turn-input file submission on the canonical conversation operation.
 - `client.operations[id]` for the runtime family: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
-- `client.operations[id]` for the provider-subscription family: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
+- `client.operations[id]` for the provider-subscription family: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, quota, auto-top-up, Codex settings, and account use-reset routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.operations`: Canonical Agent inventory, detail and health refresh operations, plus `diagnostics.app` and `diagnostics.setup` with empty logical input objects.
@@ -92,7 +93,7 @@ There is no `getMeta`, `createMemoryEntry`, `updateMemoryEntry`, `respondToAppro
 
 ## App API Schema Package
 
-`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, workspace synchronization, Goal reads and Goal operations, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
+`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, search, turn feedback, workspace synchronization, Goal reads and Goal operations, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
 
 `@openkit/app-api-schemas` is runtime-neutral and browser-safe: no module reachable from its entry may import Node built-ins or use Node globals. The built-graph regression enforces this invariant. The reason is recorded in [App API Schemas Browser-Safe Subpaths](../decisions/20261001-app_api_schemas_browser_safe_subpaths.md).
 
@@ -100,7 +101,7 @@ It must remain runtime-neutral and must not import NanoCore services, filesystem
 
 ## Provider Subscription Slice
 
-The eleven provider-subscription operations use `client.operations[id](input)` with their canonical `provider-subscription.*` identities and complete logical provider and slot selectors. `provider-subscription.provider-list` takes `{}`; account list takes `{ subscriptionProviderId }`; addressed account operations take `{ subscriptionProviderId, accountSlotId }` plus the existing strict mutation payload fields. The family includes the separate auto-top-up read. Deletion maps the empty HTTP 204 response to logical `null`; every other operation validates its complete response schema. There is no provider-subscription namespace or alias.
+The thirteen provider-subscription operations use `client.operations[id](input)` with their canonical `provider-subscription.*` identities and complete logical provider and slot selectors. `provider-subscription.provider-list` takes `{}`; account list takes `{ subscriptionProviderId }`; addressed account operations take `{ subscriptionProviderId, accountSlotId }` plus the existing strict mutation payload fields. The family includes the separate auto-top-up read. Deletion maps the empty HTTP 204 response to logical `null`; every other operation validates its complete response schema. There is no provider-subscription namespace or alias.
 
 Provider inventory returns `ProviderSubscriptionsResponse`; account list returns `ProviderSubscriptionAccountsResponse`; account create, update, status, login start, login cancel, and logout return the strict `ProviderSubscriptionAccount` union; account delete returns `Promise<null>`; account quota returns `ProviderSubscriptionQuota`; account auto-top-up returns `ProviderSubscriptionAutoTopup`. Create, update, login-start, and login-cancel inputs retain the strict request objects defined by the provider-subscription specification, extended with their logical selectors. These input and response types come directly from `@openkit/app-api-schemas`; the client adds no defaults, aliases, provider-family inference, credential handling, or alternate response shapes.
 
@@ -155,7 +156,7 @@ Workspace synchronization derives its public methods through `client.operations`
 
 Workspace synchronization uses the fifteen definition-derived `client.operations['sync.*']` methods with one complete selector object, including review and recovery decisions. The former hand-maintained synchronization members of `client.app` are absent.
 
-Goal client operations are create Goal, revise intent, card create, card edit, card cancel, Plan propose, Plan approval through a Pending Request, Goal cancel, completion acceptance through a Pending Request, and reads. This specification does not define their transport, catalog shape, or wire names. The current implementation may still expose the legacy summary, start, plan, approval, step, steering, and Goal Review methods until the Goal implementation; that exposure is current implementation, not this contract.
+Goal client operations are create Goal, revise intent, card create, card edit, card cancel, Plan propose, Plan approval through a Pending Request, Goal cancel, completion acceptance through a Pending Request, and reads. This specification does not define their transport, catalog shape, or wire names. The legacy summary, start, plan, approval, step, steering, and Goal Review client methods are absent.
 
 The current implementation's deterministic test supervise-step route remains outside the public product client surface until the Goal implementation removes it.
 
@@ -175,7 +176,7 @@ Auth responses now use concrete schemas instead of `unknown`.
 
 `artifact.read` returns the `GetArtifactResponseSchema` payload type.
 
-Definition-derived empty deletions return their declared logical `null`; retained hand-maintained empty delete methods return `void` without parsing through `z.never`.
+Definition-derived empty deletions return their declared logical `null`.
 
 For Turn SSE, `@openkit/core-client` is the sole decoder of terminal-affiliated envelopes and projects the Core-owned classification, cursor, delivery, termination, and recovery semantics through its async iterator. Web and other consumers receive only admitted events and do not repeat outer-envelope, embedded-Turn, terminal-status, or exact-owner decoding.
 
@@ -199,19 +200,19 @@ The former `client.repositories` namespace and Workspace repository list, diagno
 
 `diagnostics.app` and `diagnostics.setup` derive their JSON routes, OpenAPI, Core Client and CLI projections from `diagnostics-operations.ts`, with exact native joins beside the diagnostics owners. Their former routes and named App methods are absent. Connection metadata, health, raw diagnostics and OpenAPI serving remain support bindings outside operation discovery; metadata and the capability helpers retain their existing Core Client plumbing. The three definition-owned archive operations retain only the existing stream methods and routes, with Web and administrator CLI local-file transfer coverage and remote MCP refusal before processing.
 
-The four Automation, three Scheduler and two Recovery operations use the definition-derived `client.operations[id](input)` map. Their former `client.app` members and mappings are absent. The generic transport maps a declared bodyless HTTP 204 to logical `null` through the operation output schema, while retaining normal API-error conversion and JSON response validation. Recovery input contains the exact Workspace, Thread, Turn and request identities; the UI checkpoint identifier remains local.
+The five Automation, three Scheduler and two Recovery operations use the definition-derived `client.operations[id](input)` map. Their former `client.app` members and mappings are absent. The generic transport maps a declared bodyless HTTP 204 to logical `null` through the operation output schema, while retaining normal API-error conversion and JSON response validation. Recovery input contains the exact Workspace, Thread, Turn and request identities; the UI checkpoint identifier remains local.
 
 The three server-managed JSON transfer operations `workspace.export`, `workspace.import-dry-run`, and `workspace.import` derive their schemas, HTTP bindings, Core Client methods and CLI entries from `packages/app-api-schemas/src/workspace-transfer.ts`. `apps/nanocore/src/storage/workspace-transfer-operations.ts` joins the existing verifier, collision preview and staged publication owners. Import retains canonical-user admission and source-export effect checks; the three archive operations retain their streaming bindings.
 
 The fifteen Workspace synchronization methods derive from `packages/app-api-schemas/src/sync-operations.ts` as `client.operations[<sync.id>](input)`, with complete Workspace and child selectors and the original decision request identity. Their former `client.app` members and transport mappings are absent; the [Workspace Synchronization implementation projection](20260703-workspace_synchronization.md#current-implementation-projection) describes their native owners.
 
-The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.
+The ordinary Workspace, Thread and Turn commands, Workspace dashboard and opaque Turn feedback now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.
 
 Web's [built browser package graph regression](../../apps/web/test/browser-package-boundary.test.ts) follows the shipped schema and client entries with browser package resolution and rejects reachable Node imports and globals, including delayed schema refinements.
 
-The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.operations[id]` for the provider-subscription family with exactly the eleven accepted operations, strict request and response validation, logical `null` handling for the empty HTTP 204 delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.operations['conversation.targets']` and `client.operations['conversation.submit']` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
+The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.operations[id]` for the provider-subscription family with exactly the thirteen accepted operations, strict request and response validation, logical `null` handling for the empty HTTP 204 delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.operations['conversation.targets']` and `client.operations['conversation.submit']` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
 
-NanoCore's checked App API catalog, generated OpenAPI projection, Core Client methods, and bundled administrator CLI catalog share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Hand-maintained mappings remain for families awaiting cutover under Operation Definition Projection. Artifact, Knowledge, retained Knowledge Entry, Conversation, Task, Attention, Pending Request, Runtime Configuration, and Provider Subscription operations now use the definition-derived `client.operations` map; their former family mappings are absent.
+NanoCore's checked App API catalog, generated OpenAPI projection, Core Client methods, and bundled administrator CLI catalog share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Artifact, Knowledge, retained Knowledge Entry, Conversation, Task, Attention, Pending Request, Runtime Configuration, and Provider Subscription operations now use the definition-derived `client.operations` map; their former family mappings are absent.
 
 Provider-neutral Web consumption is now complete. This spec remains `Partial` only because the items named in Future Slices stay outside this spec until their owning specifications, NanoCore routes, schemas, and client methods land.
 
@@ -219,4 +220,4 @@ Kernel and Generative UI now use the typed `client.operations` map with complete
 
 ## Future Slices
 
-Sustained Mode, Delegation, Vault, Policy, gateway audit streams, and canonical Knowledge Store injection records remain out of the client until their specs, NanoCore routes, and schemas land in the same slice.
+Sustained Mode, Delegation, Policy, gateway audit streams, and canonical Knowledge Store injection records remain out of the client until their specs, NanoCore routes, and schemas land in the same slice.
