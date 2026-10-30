@@ -872,11 +872,14 @@ describe('worker MCP gateway', () => {
   it('reaps a credential-bearing stdio descendant with its owned process group', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-process-group-'));
     const pidFile = join(dataRoot, 'descendant.pid');
+    const requestFile = join(dataRoot, 'tool-requests');
     const credential = 'stdio-descendant-private-value';
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const gateway = createDefaultWorkerMcpGateway(coreDb);
     const server = stdioTestServer(10_000);
+    if (server.transport.kind !== 'stdio') throw new Error('Expected stdio fixture.');
+    server.transport.args.push(requestFile);
     const gatewayInput = {
       credentials: {
         environment: {
@@ -904,6 +907,11 @@ describe('worker MCP gateway', () => {
       expect(descendant.credentialDigest).toBe(
         createHash('sha256').update(credential).digest('hex')
       );
+      // A descendant receipt precedes initialization; prove the Tool request is in flight.
+      await vi.waitFor(() => {
+        expect(existsSync(requestFile)).toBe(true);
+        expect(readFileSync(requestFile, 'utf8')).toContain('timeout');
+      });
       await gateway.closeWorkspace('ws_00000000-0000-7000-8000-000000000001');
       expect(await activeCallOutcome).toMatchObject({ code: 'mcp-call-failed' });
       expect(() => process.kill(descendantPid, 0)).toThrow(

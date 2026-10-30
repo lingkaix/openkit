@@ -137,6 +137,8 @@ export interface OperationInvocationDependencies {
   /** Closes only Server-origin MCP connections across consuming Workspaces. */
   readonly closeServerMcpSessions?: (workspaceId?: string, mcpId?: string) => Promise<void>;
   readonly closeWorkspaceMcpSessions?: (workspaceId: string) => Promise<void>;
+  /** Joins the existing Gateway's physical closure for exact revoked Vault grants. */
+  readonly closeMcpCredentialGrants?: (grantIds: readonly string[]) => Promise<void>;
   /** Reconciles existing deletion fences after canonical user disable commits. */
   readonly afterUserDisabled?: (userId: string) => Promise<void> | void;
   /** Existing conversation owner, including process-local interruption handles. */

@@ -480,6 +480,8 @@ export async function executeCapturedPendingCall(input: {
   try {
     const result = await input.workerMcpGateway.callTool({
       ...(input.prepared?.credentials ? { credentials: input.prepared.credentials } : {}),
+      credentialGrantIds:
+        input.prepared?.injections?.map((injection) => injection.grant.grantId) ?? [],
       arguments: args,
       server: resolved,
       signal: AbortSignal.timeout(resolved.timeoutMs),

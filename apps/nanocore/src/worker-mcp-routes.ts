@@ -1930,6 +1930,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       const result = await input.input.workerMcpGateway.callTool({
         arguments: input.arguments,
         ...(dispatchCredentials ? { credentials: dispatchCredentials } : {}),
+        credentialGrantIds: observed.injections.map((injection) => injection.grant.grantId),
         server: input.resolved,
         signal: input.signal,
         toolName: input.toolName,
@@ -2804,6 +2805,7 @@ async function observeWorkerMcpTools(input: {
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   const gatewayInput = {
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
+    credentialGrantIds: resolvedCredentials.injections.map((injection) => injection.grant.grantId),
     server: input.resolved,
     signal: input.signal,
     workspaceId: input.environmentPackage.scope.workspaceId,
@@ -2822,6 +2824,21 @@ async function observeWorkerMcpTools(input: {
   };
   let live: Awaited<ReturnType<WorkerMcpGateway['listTools']>>;
   try {
+    try {
+      // No await may separate current grant admission from synchronous Gateway registration.
+      assertCurrentMcpVaultBindings(input, resolvedCredentials.injections, input.operation);
+    } catch {
+      try {
+        await input.input.workerMcpGateway.closeServer(gatewayInput);
+      } catch {
+        throw new WorkerControlGatewayError(
+          'recovery_required',
+          'MCP credential cleanup recovery is required.',
+          409
+        );
+      }
+      throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+    }
     live = await input.input.workerMcpGateway.listTools(gatewayInput);
   } catch (error) {
     if (error instanceof WorkerMcpGatewayCallError && error.credentialsMaterialized) {
@@ -3198,10 +3215,11 @@ export function assertCurrentMcpVaultAuthority(
   }
 }
 
-/** Rechecks every credential binding immediately before the tool effect boundary. */
+/** Rechecks every credential binding immediately before Gateway registration or tool contact. */
 function assertCurrentMcpVaultBindings(
-  input: WorkerMcpToolCallInput,
-  injections: readonly PendingMcpVaultInjection[]
+  input: Pick<WorkerMcpToolCallInput, 'input' | 'environmentPackage' | 'resolved'>,
+  injections: readonly PendingMcpVaultInjection[],
+  operation: 'mcp.list-tools' | 'mcp.call-tool' = 'mcp.call-tool'
 ): void {
   assertCurrentSharedMcpBinding(input);
   if (
@@ -3220,7 +3238,7 @@ function assertCurrentMcpVaultBindings(
     assertCurrentMcpVaultAuthority(
       {
         environmentPackage: input.environmentPackage,
-        operation: 'mcp.call-tool',
+        operation,
         resolved: input.resolved,
       },
       grant,

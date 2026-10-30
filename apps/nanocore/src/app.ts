@@ -859,7 +859,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           vaultBackend: () => vaultUnlockState.backend(),
           onReferenceRevoked: (referenceId): Promise<void> =>
             closeRevokedCredentialBindings(
-              { coreDb: options.coreDb, store: sharedStore, turnExecutor },
+              {
+                coreDb: options.coreDb,
+                store: sharedStore,
+                turnExecutor,
+                closeMcpCredentialGrants,
+              },
               { referenceId }
             ),
         })
@@ -926,6 +931,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const workerMcpGateway =
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
+  /** Joins the unique Gateway owner without treating missing cleanup as success. */
+  const closeMcpCredentialGrants = async (grantIds: readonly string[]): Promise<void> => {
+    if (!workerMcpGateway.closeCredentialGrants)
+      throw new Error('MCP credential cleanup is unavailable.');
+    await workerMcpGateway.closeCredentialGrants(grantIds);
+  };
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
@@ -1454,7 +1465,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         if (revoked && referenceId) {
           try {
             await closeRevokedCredentialBindings(
-              { coreDb: options.coreDb, store, turnExecutor },
+              { coreDb: options.coreDb, store, turnExecutor, closeMcpCredentialGrants },
               { referenceId }
             );
           } catch (error) {
@@ -2591,6 +2602,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(workerEnvironmentPreparation ? { prepare: workerEnvironmentPreparation.prepare } : {}),
       ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
     },
+    closeMcpCredentialGrants,
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     closeServerMcpSessions: async (workspaceId, mcpId) => {
       if (!workerMcpGateway.closeServerScope)
@@ -2654,6 +2666,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(workerEnvironmentPreparation ? { prepare: workerEnvironmentPreparation.prepare } : {}),
       ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
     },
+    closeMcpCredentialGrants,
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     closeServerMcpSessions: async (workspaceId, mcpId) => {
       if (!workerMcpGateway.closeServerScope)

@@ -104,6 +104,8 @@ export interface WorkerMcpGateway {
   closeServer(input: WorkerMcpGatewayServerInput): Promise<void>;
   /** Stops cached clients for one server only when no operation is using them. */
   closeServerIfIdle(input: Omit<WorkerMcpGatewayServerInput, 'credentials'>): Promise<void>;
+  /** Stops cached or initializing clients carrying any of the exact revoked grants. */
+  closeCredentialGrants?(grantIds: readonly string[]): Promise<void>;
   /** Stops every cached client owned by one Workspace. */
   closeWorkspace(workspaceId: string): Promise<void>;
   /** Stops Server-origin sessions while preserving local bindings with the same id. */
@@ -116,6 +118,8 @@ export interface WorkerMcpGateway {
 export interface WorkerMcpGatewayServerInput {
   /** Gateway-private credentials already authorized for this operation. */
   readonly credentials?: WorkerMcpGatewayCredentials;
+  /** Trusted grant identities captured when the credentials were resolved; never public input. */
+  readonly credentialGrantIds?: readonly string[];
   /** Cancellation signal for this operation only. */
   readonly signal?: AbortSignal;
   /** Current strict catalog entry. */
@@ -422,6 +426,17 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     await Promise.all(keys.map((key) => this.discard(key, 'inactive')));
   }
 
+  /** Joins every affected physical teardown, including failures, before reporting revocation. */
+  public async closeCredentialGrants(grantIds: readonly string[]): Promise<void> {
+    const revoked = new Set(grantIds);
+    const keys = [...this.sessionInputs.entries()]
+      .filter(([, cached]) => cached.credentialGrantIds?.some((id) => revoked.has(id)))
+      .map(([key]) => key);
+    const results = await Promise.allSettled(keys.map((key) => this.discard(key, 'inactive')));
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map((result) => result.reason));
+  }
+
   /** Stops every cached session before its Workspace can be deleted. */
   public async closeWorkspace(workspaceId: string): Promise<void> {
     const keys = [...this.sessions.keys()].filter(
@@ -481,11 +496,14 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     if (!pending) {
       pending = this.connect(input);
       this.sessions.set(key, pending);
-      this.sessionInputs.set(key, input);
+      this.sessionInputs.set(key, {
+        ...input,
+        ...(input.credentialGrantIds ? { credentialGrantIds: [...input.credentialGrantIds] } : {}),
+      });
       const started = pending;
       void started.then(
         (session) => {
-          if (this.sessions.get(key) === started) {
+          if (this.sessions.get(key) === started && !this.teardownRequired.has(key)) {
             this.scheduleHealthCheck(key, input, started, session.client);
           }
         },
@@ -659,8 +677,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     // The cached promise retains cleanup ownership, but late results must not restore its authority or health.
     this.teardownRequired.add(key);
     const teardown = Promise.resolve().then(async () => {
-      await pending?.catch(() => null);
+      // Close the registered transport first: initialization may be waiting on that same child.
       await this.sessionTeardowns.get(key)?.();
+      await pending?.catch(() => null);
       this.sessions.delete(key);
       this.sessionInputs.delete(key);
       this.sessionTeardowns.delete(key);

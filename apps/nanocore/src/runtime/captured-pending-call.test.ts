@@ -40,6 +40,10 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
+import type { VaultBackend } from '../vault/vault-backend.js';
+import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
+import { createVaultGrant } from '../vault/vault-grants.js';
+import { createVaultReference } from '../vault/vault-references.js';
 import * as workerMcpRoutes from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -106,7 +110,8 @@ async function fixture(
   schemaPolicy: 'tracking' | 'pinned' = 'tracking',
   credentialRequired = false,
   mediated?: boolean,
-  sourceResult: 'require_approval' | 'require_escalation' = 'require_escalation'
+  sourceResult: 'require_approval' | 'require_escalation' = 'require_escalation',
+  createVault?: (coreDb: ReturnType<typeof openCoreDb>, dataRoot: string) => VaultBackend
 ) {
   const reviewByDefault = mediated === undefined;
   mediated ??= true;
@@ -115,6 +120,7 @@ async function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  const vaultBackend = createVault?.(coreDb, dataRoot);
   const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -177,6 +183,28 @@ async function fixture(
     workspaceMcpServerCatalog: catalog,
     workspaceRoots: [],
   });
+  if (createVault) {
+    // Real credential preparation publishes VaultUse with the captured AgentSession lineage.
+    recordAgentEnvironmentPackageSnapshot(db, {
+      environmentPackage,
+      createdAt: turn.startedAt,
+    });
+    await store.createAgentSession({
+      id: environmentPackage.scope.agentSessionId,
+      workspaceId: environmentPackage.scope.workspaceId,
+      threadId: environmentPackage.scope.threadId,
+      agentId: environmentPackage.agent.agentId,
+      status: 'busy',
+      message: null,
+      environmentPackageSnapshotId: environmentPackage.snapshotId,
+      createdAt: turn.startedAt,
+      updatedAt: turn.startedAt,
+    });
+    await store.updateTurn(turn.id, {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      agentId: environmentPackage.agent.agentId,
+    });
+  }
   const retain = async (nextTools: Tool[], schemaSnapshotId = 'schema_current') =>
     await recordMcpToolSchemaSnapshot({
       environmentPackage,
@@ -261,6 +289,7 @@ async function fixture(
     requestItemId: 'it_00000000-0000-74e7-bec8-70d5a20db395',
     kind: 'approval',
     requesterKind: 'worker',
+    ...(createVault ? { agentSessionId: environmentPackage.scope.agentSessionId } : {}),
     agentId: 'agent_demo',
     responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     call: {
@@ -270,15 +299,15 @@ async function fixture(
       toolName: 'echo',
       canonicalArgumentsJson: JSON.stringify({ message: 'approved' }),
       argumentsDigest: mcpToolArgumentsContentDigest({ message: 'approved' }),
-      packageDigest: null,
+      packageDigest: createVault ? environmentPackage.snapshotId : null,
       policyDecisionId: sourceDecisionId,
       authorizationContext: {
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
-        agentSessionId: null,
+        agentSessionId: createVault ? environmentPackage.scope.agentSessionId : null,
         agentId: 'agent_demo',
         responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        packageDigest: null,
+        packageDigest: createVault ? environmentPackage.snapshotId : null,
         policyDecisionId: sourceDecisionId,
       },
     },
@@ -357,7 +386,7 @@ async function fixture(
           record,
           catalog,
           coreDb,
-          vaultBackend: undefined,
+          vaultBackend: vaultBackend ? () => vaultBackend : undefined,
           workerMcpGateway: gateway,
           workspaceDb: db,
         });
@@ -942,6 +971,60 @@ describe('captured pending MCP schema identity at grant', () => {
       },
     });
     expect(readPolicyStatementUseCount(f.db, statement)).toBe(1);
+  });
+
+  it('forwards admitted credential grant provenance when executing an approved captured call', async () => {
+    let issuedGrant: ReturnType<typeof createVaultGrant> | undefined;
+    const f = await fixture(
+      'tracking',
+      true,
+      undefined,
+      'require_escalation',
+      (coreDb, dataRoot) => {
+        const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+        const referenceId = allocateEntityId('vault');
+        const backend = createEncryptedFileVaultBackend({
+          masterKey: Buffer.alloc(32, 7),
+          storeDir: join(dataRoot, 'approval-vault'),
+        });
+        backend.store({
+          referenceId,
+          material: 'ordinary synthetic approval fixture',
+          metadata: { ownerScope: 'workspace', workspaceId },
+        });
+        createVaultReference(coreDb, {
+          referenceId,
+          ownerScope: 'workspace',
+          workspaceId,
+          displayName: 'Approved MCP fixture',
+          secretKind: 'mcp-credential',
+          backendKind: backend.kind,
+        });
+        issuedGrant = createVaultGrant(coreDb, {
+          grantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
+          vaultReferenceId: referenceId,
+          ownerScope: 'workspace',
+          workspaceId,
+          allowedInjectionPaths: ['gateway-only'],
+          lifetime: 'workspace',
+        });
+        return backend;
+      }
+    );
+    expect(await f.grant()).toMatchObject({
+      resolution: 'granted',
+      claim: 'finished',
+      disposition: 'approved-executed',
+    });
+    // This external-boundary double proves forwarding, not physical child closure.
+    expect(f.callTool).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        credentialGrantIds: [issuedGrant!.grantId],
+        credentials: { environment: { ECHO_AUTH: expect.any(String) } },
+        toolName: 'echo',
+        arguments: { message: 'approved' },
+      })
+    );
   });
 
   it.each([

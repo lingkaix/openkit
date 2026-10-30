@@ -69,7 +69,10 @@ const administrationStates = new WeakMap<
 
 /** Joins possibly exposed bindings after metadata revocation, through the current runtime owner. */
 export async function closeRevokedCredentialBindings(
-  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'turnExecutor'>,
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'store' | 'turnExecutor' | 'closeMcpCredentialGrants'
+  >,
   target: { grantId: string } | { referenceId: string }
 ): Promise<void> {
   const { coreDb } = dependencies;
@@ -84,6 +87,7 @@ export async function closeRevokedCredentialBindings(
     );
     const agentSessionIds = new Set<string>();
     let missingSession = false;
+    let gatewayExposure = false;
     // VaultUse precedes private material delivery; a receipt follows acknowledged completion.
     // Either can identify an affected owner, but neither proves physical exposure or removal.
     for (const evidence of [
@@ -93,19 +97,33 @@ export async function closeRevokedCredentialBindings(
       if (evidence.grantId === null || !grantIds.has(evidence.grantId)) continue;
       const plan = evidence.planId ? getVaultInjectionPlan(coreDb, evidence.planId) : null;
       // Only exact Gateway-only lineage proves that no runtime material was exposed.
-      if (plan?.grantId === evidence.grantId && plan.injectionVisibility === 'gateway-only')
+      if (plan?.grantId === evidence.grantId && plan.injectionVisibility === 'gateway-only') {
+        gatewayExposure = true;
         continue;
+      }
       if (evidence.agentSessionId) agentSessionIds.add(evidence.agentSessionId);
       else missingSession = true;
     }
-    if (agentSessionIds.size > 0) {
-      if (!dependencies.store || !dependencies.turnExecutor?.revokeCredentialBindings)
-        throw new Error('Runtime credential revocation is unavailable.');
-      await dependencies.turnExecutor.revokeCredentialBindings(dependencies.store, [
-        ...agentSessionIds,
-      ]);
-    }
-    if (missingSession) throw new Error('Runtime credential lineage requires inspection.');
+    // Each existing physical owner must settle even if the other cleanup fails.
+    const results = await Promise.allSettled([
+      (async () => {
+        if (dependencies.closeMcpCredentialGrants)
+          await dependencies.closeMcpCredentialGrants([...grantIds]);
+        else if (gatewayExposure) throw new Error('Gateway credential revocation is unavailable.');
+      })(),
+      (async () => {
+        if (agentSessionIds.size > 0) {
+          if (!dependencies.store || !dependencies.turnExecutor?.revokeCredentialBindings)
+            throw new Error('Runtime credential revocation is unavailable.');
+          await dependencies.turnExecutor.revokeCredentialBindings(dependencies.store, [
+            ...agentSessionIds,
+          ]);
+        }
+        if (missingSession) throw new Error('Runtime credential lineage requires inspection.');
+      })(),
+    ]);
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map((result) => result.reason));
   } catch (error) {
     throw new OperationError(
       'recovery_required',
@@ -128,6 +146,7 @@ export function createVaultOperationImplementations(
     | 'vaultUnlockState'
     | 'pendingRequestServices'
     | 'runtimeConfigManager'
+    | 'closeMcpCredentialGrants'
   >
 ) {
   const { coreDb, dataRoot, repositoryWorkspaceDb, vaultUnlockState } = dependencies;

@@ -565,6 +565,11 @@ const providerSubscriptionAccountManager = new ProviderSubscriptionAccountManage
     closeRevokedCredentialBindings(
       {
         coreDb: activeCoreDb,
+        closeMcpCredentialGrants: async (grantIds) => {
+          if (!workerMcpGateway.closeCredentialGrants)
+            throw new Error('MCP credential cleanup is unavailable.');
+          await workerMcpGateway.closeCredentialGrants(grantIds);
+        },
         store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
         turnExecutor: requireBootValue(
           workerLifecycleRuntime,
