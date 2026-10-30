@@ -3679,7 +3679,7 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(createChatCompletion.mock.calls[0]?.[2]?.models).toBe(models);
   });
 
-  it('preserves explicit prompt cache keys for native Responses providers', async () => {
+  it('hashes explicit prompt cache hints for native Responses providers', async () => {
     const seenRequests: unknown[] = [];
     const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
     onTestFinished(async () => {
@@ -3719,13 +3719,14 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(res.status).toBe(200);
     expect(seenRequests).toEqual([
       expect.objectContaining({
-        prompt_cache_key: 'client-key',
+        prompt_cache_key: expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
         prompt_cache_retention: 'in-memory',
       }),
     ]);
+    expect(JSON.stringify(seenRequests)).not.toContain('client-key');
   });
 
-  it('preserves explicit prompt cache keys for native Chat Completions providers', async () => {
+  it('hashes explicit prompt cache hints for native Chat Completions providers', async () => {
     const seenRequests: unknown[] = [];
     const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
     onTestFinished(async () => {
@@ -3766,10 +3767,11 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(res.status).toBe(200);
     expect(seenRequests).toEqual([
       expect.objectContaining({
-        prompt_cache_key: 'chat-client-key',
+        prompt_cache_key: expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
         prompt_cache_retention: 'in-memory',
       }),
     ]);
+    expect(JSON.stringify(seenRequests)).not.toContain('chat-client-key');
   });
 
   it('derives prompt cache keys from OpenKit metadata for Chat Completions requests', async () => {

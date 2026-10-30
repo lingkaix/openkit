@@ -110,32 +110,97 @@ describe('PromptCacheKeyResolver', () => {
     expect(supplemented.prompt_cache_key).toBe(baseline.prompt_cache_key);
   });
 
-  it('keeps an explicit request prompt cache key', () => {
-    const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
-    const request = resolver.withPromptCacheKey(
-      providerConfig(),
-      responsesRequest({ prompt_cache_key: 'client-key' })
-    );
+  it('removes private cache metadata before provider use without changing the caller request', () => {
+    const resolver = new PromptCacheKeyResolver();
+    const metadata = {
+      label: 'public-label',
+      openkit: { promptCacheKey: 'private-routing-label', workspaceId: 'private-workspace' },
+    };
+    const request = chatRequest({ metadata });
+    const keyed = resolver.withPromptCacheKey(providerConfig(), request);
 
-    expect(request.prompt_cache_key).toBe('client-key');
+    expect(keyed.metadata).toEqual({ label: 'public-label' });
+    expect(JSON.stringify(keyed)).not.toMatch(/private-routing-label|private-workspace/);
+    expect(request.metadata).toEqual(metadata);
+    expect(metadata.openkit).toEqual({
+      promptCacheKey: 'private-routing-label',
+      workspaceId: 'private-workspace',
+    });
   });
 
-  it('uses metadata.openkit.promptCacheKey before derived scopes', () => {
+  it.each([
+    'request',
+    'metadata',
+  ] as const)('hashes admitted %s hints within the current provider, model, account and trusted scope', (source) => {
     const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
-    const request = resolver.withPromptCacheKey(
-      providerConfig(),
-      responsesRequest({
-        metadata: {
-          openkit: {
-            promptCacheKey: 'metadata-key',
-            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-            threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
-          },
-        },
-      })
-    );
+    const hint = 'sample routing label';
+    const provider = providerConfig({
+      id: 'codex-team-a',
+      accountSlotId: 'shared_slot',
+      subscriptionProviderId: 'openai-codex',
+    });
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
+    const openkit = {
+      promptCacheKey: source === 'metadata' ? hint : 'secondary routing label',
+      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+    };
+    const request = responsesRequest({
+      ...(source === 'request' ? { prompt_cache_key: hint } : {}),
+      metadata: { openkit },
+    });
+    const first = resolver.withPromptCacheKey(provider, request, scope).prompt_cache_key;
+    const variants = [
+      [providerConfig({ ...provider, accountSlotId: 'other_slot' }), request],
+      [providerConfig({ ...provider, subscriptionProviderId: 'xai' }), request],
+      [providerConfig({ ...provider, id: 'codex-team-b' }), request],
+      [providerConfig({ ...provider, models: ['gpt-5.2'] }), { ...request, model: 'gpt-5.2' }],
+    ] as const;
+    const otherHint = responsesRequest({
+      ...request,
+      ...(source === 'request'
+        ? { prompt_cache_key: 'alternate routing label' }
+        : { metadata: { openkit: { ...openkit, promptCacheKey: 'alternate routing label' } } }),
+    });
+    const keys = [
+      first,
+      ...variants.map(
+        ([variantProvider, variantRequest]) =>
+          resolver.withPromptCacheKey(variantProvider, variantRequest, scope).prompt_cache_key
+      ),
+      resolver.withPromptCacheKey(provider, otherHint, scope).prompt_cache_key,
+      resolver.withPromptCacheKey(provider, request, {
+        ...scope,
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+      }).prompt_cache_key,
+    ];
 
-    expect(request.prompt_cache_key).toBe('metadata-key');
+    expect(first).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
+    expect(resolver.withPromptCacheKey(provider, request, scope).prompt_cache_key).toBe(first);
+    expect(new Set(keys)).toHaveProperty('size', keys.length);
+    expect(JSON.stringify(keys)).not.toMatch(
+      /sample routing label|alternate routing label|codex-team|openai-codex|shared_slot|other_slot|ws_|th_/
+    );
+    expect(
+      resolver.withPromptCacheKey(
+        provider,
+        responsesRequest({
+          ...request,
+          metadata: {
+            openkit: {
+              ...openkit,
+              ...(source === 'request' ? { promptCacheKey: 'ignored routing label' } : {}),
+              workspaceId: 'advisory-workspace',
+              threadId: 'advisory-thread',
+            },
+          },
+        }),
+        scope
+      ).prompt_cache_key
+    ).toBe(first);
   });
 
   it('hashes the configured provider, model, and exact subscription pair without raw ids', () => {
@@ -239,8 +304,10 @@ describe('PromptCacheKeyResolver', () => {
       })
     );
 
-    expect(explicit.prompt_cache_key).toBe('chat-client-key');
-    expect(metadata.prompt_cache_key).toBe('chat-metadata-key');
+    expect(explicit.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
+    expect(explicit.prompt_cache_key).not.toContain('chat-client-key');
+    expect(metadata.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
+    expect(metadata.prompt_cache_key).not.toContain('chat-metadata-key');
     expect(derived.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
     expect(derived.prompt_cache_key).not.toContain('ws_00000000-0000-7308-ad05-7997f99b7505');
   });

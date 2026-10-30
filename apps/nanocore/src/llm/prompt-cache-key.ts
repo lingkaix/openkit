@@ -121,30 +121,30 @@ export class PromptCacheKeyResolver {
     request: TRequest,
     scope: PromptCacheKeyScope = {}
   ): TRequest {
-    const explicit = readNonEmptyString(request.prompt_cache_key);
-
-    if (explicit) {
-      return request;
-    }
-
     const metadataScope = readOpenKitMetadataScope(request.metadata);
-    const metadataKey = readNonEmptyString(metadataScope.promptCacheKey);
-
-    if (metadataKey) {
-      return { ...request, prompt_cache_key: metadataKey };
+    const hint = readNonEmptyString(request.prompt_cache_key) ?? metadataScope.promptCacheKey;
+    const stableScope = mergeStableScope(scope, metadataScope);
+    let upstreamRequest = request;
+    if (
+      request.metadata &&
+      typeof request.metadata === 'object' &&
+      !Array.isArray(request.metadata)
+    ) {
+      const metadata = { ...(request.metadata as Record<string, unknown>) };
+      // OpenKit attribution is a local cache input, never Provider metadata.
+      delete metadata.openkit;
+      upstreamRequest = { ...request, metadata };
     }
 
-    const stableScope = mergeStableScope(scope, metadataScope);
-
-    if (hasStableScope(stableScope)) {
+    if (hint || hasStableScope(stableScope)) {
       return {
-        ...request,
-        prompt_cache_key: derivePromptCacheKey(provider, request.model, stableScope),
+        ...upstreamRequest,
+        prompt_cache_key: derivePromptCacheKey(provider, request.model, stableScope, hint),
       };
     }
 
     return {
-      ...request,
+      ...upstreamRequest,
       prompt_cache_key: `openkit:responses:request:${this.randomId()}`,
     };
   }
@@ -233,9 +233,11 @@ function hasStableScope(scope: PromptCacheKeyScope): boolean {
 function derivePromptCacheKey(
   provider: ResolvedLLMProviderConfig,
   model: string,
-  scope: PromptCacheKeyScope
+  scope: PromptCacheKeyScope,
+  hint?: string
 ): string {
   const digest = sha256CanonicalJson({
+    ...(hint ? { promptCacheKey: hint } : {}),
     accountSlotId: provider.accountSlotId ?? null,
     agentSessionId: scope.agentSessionId ?? null,
     model,
