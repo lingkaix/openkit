@@ -16,6 +16,8 @@ This directory owns the existing scoped catalog records and immutable installed 
 
 ## Boundaries
 
+- Light App exact reimport matches the existing entry, canonical digest and retained definition bytes before fresh authoring admission. It retains the original stable IDs and version facts; unmatched input still needs its existing parent and native admission.
+
 - `resource-catalog.ts` validates retained catalog authority, admits complete bounded trees and publishes one revision-protected catalog document. Exact version digests identify installed bytes; producer and source provenance explain their origin without granting current access.
 - `validateCatalogTree` normalizes physical ancestor directories and applies the existing bounded tree validator and hash without filesystem effects. Direct Skill admission and Artifact admission use this same boundary.
 - `catalog-tree.ts` holds that stateless transport preparation separately from catalog storage, so caller-side local uploads use the same validation without importing database or publication code.

@@ -89,6 +89,22 @@ export function importWorkspaceLightAppDefinition(
     throw new CatalogNotFoundError(`Light App definition parent not found: ${id}/${parentDigest}`);
   }
   const definitionJson = inputValue(() => {
+    const canonicalInput = canonicalJsonText(LightAppSchemaInputSchema.parse(input.definition));
+    const inputDigest = definitionDigest(canonicalInput);
+    const exactRetained = current.lightApps.versions.find(
+      (version) =>
+        version.entryId === id &&
+        version.digest === inputDigest &&
+        version.definitionJson === canonicalInput
+    );
+    // An exact retained definition already owns its IDs; reimport does not author new entities.
+    if (exactRetained) return exactRetained.definitionJson;
+    if (
+      parentDigest === null &&
+      current.lightApps.versions.some((version) => version.entryId === id)
+    ) {
+      throw new CatalogInputError('Select a parent/default before importing a revision.');
+    }
     const previous = parent
       ? (JSON.parse(parent.definitionJson) as LightAppSchemaInput)
       : undefined;
@@ -119,13 +135,6 @@ export function importWorkspaceLightAppDefinition(
   const retained = current.lightApps.versions.find(
     (version) => version.entryId === id && version.digest === digest
   );
-  if (
-    !retained &&
-    parentDigest === null &&
-    current.lightApps.versions.some((version) => version.entryId === id)
-  ) {
-    throw new CatalogInputError('Select a parent/default before importing a revision.');
-  }
   const version =
     retained ??
     inputValue(() =>

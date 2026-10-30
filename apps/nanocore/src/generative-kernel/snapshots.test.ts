@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
+import { LightAppAdmittedSchemaSchema, type LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { lightAppDbPath, lightAppRoot } from '../storage/app-db.js';
@@ -22,7 +22,7 @@ import {
   upgradeLightAppFormat,
 } from './commands.js';
 import { collectionTableName, fieldColumnName } from './native.js';
-import { admitLightAppDefinition, admitLightAppSchema } from './schema.js';
+import { admitLightAppDefinition } from './schema.js';
 import { readLightAppSnapshots } from './snapshots.js';
 
 const roots: string[] = [];
@@ -191,8 +191,16 @@ describe('Light App migration recovery', () => {
 
   it('admits reusable definitions once and preserves their stable identities across app instances and template renames', () => {
     const definition = admitLightAppDefinition(schema);
-    const first = admitLightAppSchema(definition, randomUUID(), 1);
-    const second = admitLightAppSchema(definition, randomUUID(), 1);
+    const first = LightAppAdmittedSchemaSchema.parse({
+      ...definition,
+      appId: randomUUID(),
+      schemaRevision: 1,
+    });
+    const second = LightAppAdmittedSchemaSchema.parse({
+      ...definition,
+      appId: randomUUID(),
+      schemaRevision: 1,
+    });
     expect(first.collections).toEqual(second.collections);
     expect(definition).not.toHaveProperty('appId');
     expect(definition).not.toHaveProperty('schemaRevision');
@@ -206,14 +214,22 @@ describe('Light App migration recovery', () => {
 
   it('binds catalog request replay to the raw selector and direct replay to the effective source', async () => {
     const ctx = await context();
+    const definition = admitLightAppDefinition(schema);
     const source = { entryId: 'contacts-template', digest: `sha256:${'a'.repeat(64)}` };
     const changedSource = { ...source, digest: `sha256:${'b'.repeat(64)}` };
     const requested = { entryId: source.entryId };
-    const app = await createLightApp(ctx, schema, source, requested);
+    const app = await createLightApp(ctx, definition, source, requested);
     expect(
-      await createLightApp(ctx, { ...schema, title: 'Changed pointer' }, changedSource, requested)
+      await createLightApp(
+        ctx,
+        { ...definition, title: 'Changed pointer' },
+        changedSource,
+        requested
+      )
     ).toEqual(app);
-    await expect(createLightApp(ctx, schema, changedSource, changedSource)).rejects.toMatchObject({
+    await expect(
+      createLightApp(ctx, definition, changedSource, changedSource)
+    ).rejects.toMatchObject({
       code: 'idempotency_key_conflict',
     });
     const update = request(ctx);
@@ -235,15 +251,16 @@ describe('Light App migration recovery', () => {
       1
     );
     const direct = request(ctx);
-    await createLightApp(direct, schema, source);
-    await expect(createLightApp(direct, schema, changedSource)).rejects.toMatchObject({
+    await createLightApp(direct, definition, source);
+    await expect(createLightApp(direct, definition, changedSource)).rejects.toMatchObject({
       code: 'idempotency_key_conflict',
     });
   });
 
   it('adds collections and optional fields, renames and removes fields, then restores snapshot data after restart', async () => {
     const ctx = await context();
-    const app = await createLightApp(ctx, schema, {
+    const definition = admitLightAppDefinition(schema);
+    const app = await createLightApp(ctx, definition, {
       entryId: 'contacts-template',
       digest: `sha256:${'a'.repeat(64)}`,
     });

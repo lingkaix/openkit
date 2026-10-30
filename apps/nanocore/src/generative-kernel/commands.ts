@@ -192,10 +192,10 @@ export function listLightApps(
 }
 
 /**
- * Creates one Light App from a file-authored schema.
+ * Creates one Light App from an authored proposal or an exact Core-selected definition.
  *
  * @param context Command context.
- * @param schema Schema proposal.
+ * @param schema Authored proposal, or the Core-admitted definition when sourceSelection is present.
  * @param sourceSelection Explicit exact catalog source, when selected.
  * @param requestedDefinition Raw catalog selector bound on fresh execution and replay.
  * @returns Created app.
@@ -296,7 +296,7 @@ export function getLightApp(
  * @param appId App UUID.
  * @param expectedAppRevision Expected app revision.
  * @param expectedSchemaRevision Expected schema revision.
- * @param schema Next schema proposal.
+ * @param schema Next authored proposal, or the Core-admitted selected definition.
  * @param sourceSelection Explicit exact catalog source; direct edits clear source selection.
  * @param requestedDefinition Raw catalog selector bound independently of mutable selection pointers.
  * @returns Updated app.

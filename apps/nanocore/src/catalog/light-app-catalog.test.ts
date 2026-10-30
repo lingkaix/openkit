@@ -472,6 +472,18 @@ describe('Light App definition catalog', () => {
       })
     ).toThrow('Select a parent/default before importing a revision');
     expect(readFileSync(inactivePath, 'utf8')).toBe(inactiveBefore);
+    // Retention in one entry does not assign these IDs to a fresh entry.
+    expect
+      .soft(() =>
+        importWorkspaceLightAppDefinition({
+          ...inactive,
+          entryId: 'other-admissions',
+          expectedRevision: repeated.catalog.revision,
+          definition: admitted,
+        })
+      )
+      .toThrow(CatalogInputError);
+    expect(readFileSync(inactivePath, 'utf8')).toBe(inactiveBefore);
   });
 
   it('refuses malformed retained definitions and broken pin references on owner reads', () => {
