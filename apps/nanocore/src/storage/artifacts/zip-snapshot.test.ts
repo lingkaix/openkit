@@ -51,7 +51,12 @@ async function fixture(id: string) {
   const item = corpus.archives.find((entry) => entry.id === id)!;
   const original = Buffer.from(item.base64, 'base64');
   await writeFile(archivePath, original);
-  const reservation = new FileStorageAdmission(root, () => 0n).reserve({
+  // Isolate parser checks from host free space; extraction still uses real filesystem writes.
+  const reservation = new FileStorageAdmission(
+    root,
+    () => 0n,
+    () => 4_000_000_000n
+  ).reserve({
     stagingBytes: 0n,
     extractionBytes: 4_000_000_000n,
     derivativeBytes: 0n,
