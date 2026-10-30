@@ -103,6 +103,11 @@ export function ensureServerBootstrapToken(
   return { expiresAt, issuedAt, token };
 }
 
+/** Reports completed bootstrap independently of current administrator Token usability. */
+export function isServerBootstrapComplete(coreDb: CoreDb): boolean {
+  return Boolean(readBootstrapSetting(coreDb)?.consumedAt);
+}
+
 /**
  * Writes the one-time bootstrap token to an owner-only operator file.
  *

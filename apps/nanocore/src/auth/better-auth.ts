@@ -7,6 +7,7 @@ import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
 import { type CoreDb, getCoreDb } from '../storage/db.js';
 import * as betterAuthSchema from '../storage/schema/better-auth/index.js';
+import { isServerBootstrapComplete } from './bootstrap-token.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const LOCAL_DEVELOPMENT_SECRET = 'openkit-local-development-secret-at-least-32-characters';
@@ -99,6 +100,15 @@ export function createBetterAuth(
       schema: betterAuthSchema,
     }),
     databaseHooks: {
+      user: {
+        create: {
+          before: async () => {
+            if (mode === 'server' && !isServerBootstrapComplete(coreDb)) {
+              throw new APIError('FORBIDDEN', { message: 'Server bootstrap is incomplete.' });
+            }
+          },
+        },
+      },
       session: {
         create: {
           before: async (session) => {
