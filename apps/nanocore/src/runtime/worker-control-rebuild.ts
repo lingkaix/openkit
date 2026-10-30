@@ -18,7 +18,6 @@ import {
 import type {
   WorkerControlArtifactNotice,
   WorkerControlGateway,
-  WorkerControlHeartbeat,
   WorkerControlLineage,
   WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
@@ -186,7 +185,6 @@ function readAcceptedRecords(
   artifacts: WorkerControlArtifactNotice[];
   capabilitySummaries: WorkerCapabilityCallSummary[];
   events: WorkerCanonicalEventRecord[];
-  heartbeat: WorkerControlHeartbeat | null;
   supplyRefreshAcks: WorkerControlSupplyRefreshAck[];
 } {
   const rows = coreDb.sqlite
@@ -196,6 +194,7 @@ function readAcceptedRecords(
       FROM worker_control_records
       WHERE agent_session_id = ?
         AND package_snapshot_id = ?
+        AND operation <> 'heartbeat'
       ORDER BY accepted_at ASC, operation ASC
       `
     )
@@ -204,16 +203,14 @@ function readAcceptedRecords(
     artifacts: [] as WorkerControlArtifactNotice[],
     capabilitySummaries: [] as WorkerCapabilityCallSummary[],
     events: [] as WorkerCanonicalEventRecord[],
-    heartbeat: null as WorkerControlHeartbeat | null,
     supplyRefreshAcks: [] as WorkerControlSupplyRefreshAck[],
   };
 
   for (const row of rows) {
     const record = readRetainedV1(row, () => JSON.parse(row.recordJson) as unknown);
 
-    if (row.operation === 'heartbeat') {
-      result.heartbeat = record as WorkerControlHeartbeat;
-    } else if (row.operation === 'artifact_notice') {
+    // Historical heartbeat snapshots are inert; only the attempt and sequence owners survive restart.
+    if (row.operation === 'artifact_notice') {
       result.artifacts.push(record as WorkerControlArtifactNotice);
     } else if (row.operation === 'supply_refresh_ack') {
       result.supplyRefreshAcks.push(record as WorkerControlSupplyRefreshAck);

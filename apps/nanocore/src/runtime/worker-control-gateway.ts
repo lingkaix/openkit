@@ -15,7 +15,6 @@ import {
   WorkerCapabilityCallSummaryReaderSchema,
   type WorkerControlHeartbeatRequest,
   WorkerControlHeartbeatRequestReaderSchema,
-  WorkerControlHeartbeatStatusSchema,
   type WorkerControlResponseEnvelope,
   WorkerControlResponseEnvelopeSchema,
   WorkerControlSupplyRefreshAckBodyReaderSchema,
@@ -23,14 +22,6 @@ import {
   WorkerSequenceSchema,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
-
-/** Descriptive retained heartbeat view; the lease remains the liveness authority. */
-const WorkerControlHeartbeatSnapshotReaderSchema = z.object({
-  lastHeartbeatAt: z.iso.datetime(),
-  message: z.string().min(1).nullable(),
-  sequence: WorkerSequenceSchema,
-  status: WorkerControlHeartbeatStatusSchema,
-});
 
 /** Descriptive retained refresh result; acknowledgement never grants refresh authority. */
 const WorkerControlSupplyRefreshAckSnapshotReaderSchema =
@@ -223,8 +214,6 @@ export interface WorkerControlSessionRestoreInput {
   readonly lineage: WorkerControlLineage;
   /** Timestamp recorded when the session was originally registered or acquired. */
   readonly registeredAt: string;
-  /** Latest heartbeat, when one was durably accepted. */
-  readonly heartbeat?: WorkerControlHeartbeat | null;
   /** Durable artifact notices. */
   readonly artifacts?: readonly WorkerControlArtifactNotice[];
   /** Durable supply refresh acknowledgements. */
@@ -704,9 +693,7 @@ export class WorkerControlGateway {
         cloneCapabilitySummary(WorkerCapabilityCallSummaryReaderSchema.parse(summary))
       ),
       events,
-      heartbeat: input.heartbeat
-        ? WorkerControlHeartbeatSnapshotReaderSchema.parse(input.heartbeat)
-        : null,
+      heartbeat: null,
       packageSnapshotId: input.lineage.packageSnapshotId,
       registeredAt: input.registeredAt,
       supplyRefreshAcks: [...(input.supplyRefreshAcks ?? [])].map((ack) =>
@@ -740,11 +727,11 @@ export class WorkerControlGateway {
    * Records one live worker heartbeat.
    *
    * @param input Authenticated heartbeat request.
-   * @returns Updated heartbeat snapshot.
+   * @returns Canonical acknowledgement; exact retries do not renew attempt liveness.
    */
   public recordHeartbeat(
     input: AuthenticatedWorkerControlInput & WorkerControlHeartbeatRequest
-  ): WorkerControlHeartbeat {
+  ): WorkerControlResponseEnvelope {
     const request = WorkerControlHeartbeatRequestReaderSchema.parse({
       body: input.body,
       lineage: input.lineage,
@@ -760,9 +747,11 @@ export class WorkerControlGateway {
       schemaVersion: request.schemaVersion,
       sequence: request.sequence,
     };
+    let acceptedState: WorkerControlSessionState | undefined;
+    let previousHeartbeat: WorkerControlHeartbeat | null = null;
 
     /** Accepts and publishes the heartbeat inside the configured transaction boundary. */
-    const accept = (): WorkerControlHeartbeat => {
+    const accept = (): WorkerControlResponseEnvelope => {
       const acceptedAt = this.now();
       const state = this.requireSession(
         {
@@ -787,15 +776,17 @@ export class WorkerControlGateway {
         this.sequenceRecorder
       );
 
-      if (sequence.duplicate) {
-        const heartbeat = state.snapshot.heartbeat;
-
-        if (!heartbeat) {
-          throw new Error('Sequenced heartbeat retry has no recorded heartbeat.');
-        }
-
-        return { ...heartbeat };
+      if (!sequence.duplicate) {
+        acceptedState = state;
+        previousHeartbeat = state.snapshot.heartbeat;
       }
+      const acknowledgement = WorkerControlResponseEnvelopeSchema.parse({
+        schemaVersion: 2,
+        accepted: true,
+        nextExpectedSequence: sequence.nextExpectedSequence,
+        diagnostics: [],
+      });
+      if (sequence.duplicate) return acknowledgement;
 
       const heartbeat: WorkerControlHeartbeat = {
         lastHeartbeatAt: acceptedAt,
@@ -804,33 +795,29 @@ export class WorkerControlGateway {
         status: request.body.status,
       };
 
-      try {
-        this.onHeartbeatAccepted?.({
-          heartbeat: { ...heartbeat },
-          lineage: { ...request.lineage },
-          sandboxBindingRef: this.requireSandboxBindingRef(state),
-          ...(request.body.processKeyHash
-            ? { workerProcessKeyHash: request.body.processKeyHash }
-            : {}),
-        });
-        this.recordAcceptedRecord({
-          acceptedAt: heartbeat.lastHeartbeatAt,
-          lineage: request.lineage,
-          operation: 'heartbeat',
-          record: heartbeat,
-          recordKey: String(request.sequence),
-          sequence: request.sequence,
-        });
-        state.snapshot.heartbeat = heartbeat;
-      } catch (error) {
-        rollbackSequencedControlOperation(state, 'heartbeat', request.sequence);
-        throw error;
-      }
+      this.onHeartbeatAccepted?.({
+        heartbeat: { ...heartbeat },
+        lineage: { ...request.lineage },
+        sandboxBindingRef: this.requireSandboxBindingRef(state),
+        ...(request.body.processKeyHash
+          ? { workerProcessKeyHash: request.body.processKeyHash }
+          : {}),
+      });
+      state.snapshot.heartbeat = heartbeat;
 
-      return { ...heartbeat };
+      return acknowledgement;
     };
 
-    return this.runHeartbeatTransaction ? this.runHeartbeatTransaction(accept) : accept();
+    try {
+      return this.runHeartbeatTransaction ? this.runHeartbeatTransaction(accept) : accept();
+    } catch (error) {
+      // Only the enclosing transaction can establish durability; a failed commit must not leave a cache-only ACK.
+      if (acceptedState) {
+        rollbackSequencedControlOperation(acceptedState, 'heartbeat', request.sequence);
+        acceptedState.snapshot.heartbeat = previousHeartbeat;
+      }
+      throw error;
+    }
   }
 
   /**

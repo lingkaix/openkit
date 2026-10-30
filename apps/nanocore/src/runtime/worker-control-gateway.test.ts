@@ -1308,7 +1308,13 @@ describe('WorkerControlGateway', () => {
     });
     const snapshot = gateway.getSessionSnapshot(environmentPackage.snapshotId);
 
-    expect(heartbeat).toMatchObject({
+    expect(heartbeat).toEqual({
+      schemaVersion: 2,
+      accepted: true,
+      nextExpectedSequence: 2,
+      diagnostics: [],
+    });
+    expect(snapshot?.heartbeat).toMatchObject({
       lastHeartbeatAt: '2026-06-16T00:00:01.000Z',
       status: 'running',
     });
@@ -1358,7 +1364,16 @@ describe('WorkerControlGateway', () => {
     ).toThrow('missing a valid sandbox token');
     expect(
       gateway.recordHeartbeat(heartbeatRequest(`Bearer ${secondRegistration.token}`, lineage, 1))
-    ).toMatchObject({ sequence: 1, status: 'running' });
+    ).toEqual({
+      schemaVersion: 2,
+      accepted: true,
+      nextExpectedSequence: 2,
+      diagnostics: [],
+    });
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).toMatchObject({
+      packageSnapshotId: environmentPackage.snapshotId,
+      heartbeat: { sequence: 1, status: 'running' },
+    });
   });
 
   it('exposes no worker command queue; private Harness turn.interrupt is the only interrupt', async () => {
@@ -1523,7 +1538,7 @@ describe('WorkerControlGateway', () => {
     expect(snapshot?.capabilitySummaries).toHaveLength(1);
   });
 
-  it('retries heartbeat projection before durably recording or publishing its snapshot', async () => {
+  it('retries attempt heartbeat acceptance before publishing its live projection', async () => {
     const { environmentPackage, lineage } = await createWorkerControlFixture();
     const observations: string[] = [];
     let projectionAttempts = 0;
@@ -1563,8 +1578,13 @@ describe('WorkerControlGateway', () => {
 
     expect(() => gateway.recordHeartbeat(heartbeat)).toThrow('heartbeat projection unavailable');
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat).toBeNull();
-    expect(gateway.recordHeartbeat(heartbeat)).toMatchObject({ sequence: 1, status: 'running' });
-    expect(observations).toEqual(['hook:pending', 'hook:pending', 'record:pending']);
+    expect(gateway.recordHeartbeat(heartbeat)).toEqual({
+      schemaVersion: 2,
+      accepted: true,
+      nextExpectedSequence: 2,
+      diagnostics: [],
+    });
+    expect(observations).toEqual(['hook:pending', 'hook:pending']);
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.heartbeat).toMatchObject({
       sequence: 1,
       status: 'running',

@@ -85,12 +85,12 @@ export function registerWorkerControlRoutes({
     );
     const authentication = workerControlTokenHashAuthentication(c);
     try {
-      const response = c.json({
-        heartbeat: workerControlGateway.recordHeartbeat({
+      const response = c.json(
+        workerControlGateway.recordHeartbeat({
           ...parsed.data,
           ...authentication.input,
-        }),
-      });
+        })
+      );
       diagnose(response.status);
       return response;
     } catch (error) {

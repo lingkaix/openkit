@@ -1,5 +1,7 @@
 # Runtime
 
+Worker heartbeat acceptance uses the existing canonical control acknowledgement and durably joins only the original sequence fingerprint and NanoHost attempt liveness transaction. Duplicate acceptance never renews liveness or needs a retained heartbeat snapshot. A failed enclosing transaction restores the prior live view and clears its uncommitted sequence cache before retry, preserving the original error and forcing the durable owner to decide acceptance. The live heartbeat view is process-local; restart ignores historical heartbeat payload rows without deleting or decoding them. Exact-next process-key adoption, absolute deadlines and current authority remain with their existing owners.
+
 Artifact notices carry optional worker-announced `digest` and `collectionHint` through the control client, bounded HTTP reader, original sequence fingerprint and durable notice. Restart and exact replay preserve the supplied text; omitted fields stay omitted. These descriptive values neither prove collected bytes nor authorize collection or canonical Artifact publication.
 
 Queued dispatch enters the existing Workspace mutation gate before persisting an attempt or preparing physical work. A frozen target is skipped in the current dispatch pass so an eligible sibling can still advance. The admission lasts through closeout. Direct native Workspace commands also check the same gate before posting; refusals release their existing admission capacity and are never replayed after the freeze.

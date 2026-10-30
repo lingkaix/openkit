@@ -23,6 +23,7 @@ import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js'
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
+import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 
 interface RestorableWorkerControlFixture {
   /** Migrated Core database containing the live execution attempt. */
@@ -206,6 +207,50 @@ describe('worker control gateway restart hydration', () => {
     } finally {
       fixture.coreDb.sqlite.close();
     }
+  });
+
+  it('ignores damaged historical heartbeat snapshots without changing their retained bytes', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
+    const lineage = {
+      agentSessionId: fixture.environmentPackage.scope.agentSessionId,
+      packageSnapshotId: fixture.environmentPackage.snapshotId,
+      requestId: fixture.environmentPackage.scope.requestId,
+      threadId: fixture.environmentPackage.scope.threadId,
+      turnId: fixture.environmentPackage.scope.turnId,
+      workspaceId: fixture.environmentPackage.scope.workspaceId,
+    };
+    // This historical descriptive row grants no sequence or attempt acceptance.
+    recordWorkerControlAcceptedRecord(fixture.coreDb, {
+      acceptedAt: '2026-07-13T00:00:05.000Z',
+      lineage,
+      operation: 'heartbeat',
+      record: {
+        lastHeartbeatAt: '2026-07-13T00:00:05.000Z',
+        message: null,
+        sequence: 0,
+        status: 'starting',
+      },
+      recordKey: '0',
+      sequence: 0,
+    });
+    fixture.coreDb.sqlite
+      .prepare("UPDATE worker_control_records SET record_json = '{' WHERE operation = 'heartbeat'")
+      .run();
+    const rows = () =>
+      fixture.coreDb.sqlite
+        .prepare("SELECT * FROM worker_control_records WHERE operation = 'heartbeat'")
+        .all();
+    const historicalRows = rows();
+    expect(historicalRows).toHaveLength(1);
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+    });
+    rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
+    expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toEqual(
+      redactAgentEnvironmentPackageSnapshot(fixture.environmentPackage)
+    );
+    expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toBeNull();
+    expect(rows()).toEqual(historicalRows);
   });
 
   it('fails closed when the durable AEP snapshot is missing or mismatched', async () => {

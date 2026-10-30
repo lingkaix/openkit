@@ -16,6 +16,7 @@ import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-le
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
   acceptNanoHostAttemptHeartbeat,
+  acceptNanoHostAttemptHeartbeatByBinding,
   bindNanoHostAttemptRouteTokenHashes,
   requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
@@ -1129,18 +1130,14 @@ describe('worker control routes', () => {
 
       expect(heartbeat.status).toBe(200);
       expect(event.status).toBe(200);
-      expect(rows).toHaveLength(2);
+      // Durable Worker-Control State forbids a second retained heartbeat payload.
+      expect(rows).toHaveLength(1);
       expect(rows.map((row) => [row.operation, row.recordKey, row.sequence])).toEqual([
         ['event_append', '3', 3],
-        ['heartbeat', '1', 1],
       ]);
       expect(JSON.parse(rows[0].recordJson)).toMatchObject({
         event: { type: 'item.delta' },
         sequence: 3,
-      });
-      expect(JSON.parse(rows[1].recordJson)).toMatchObject({
-        status: 'running',
-        sequence: 1,
       });
     } finally {
       await shutdownControlStoreWorkerClient();
@@ -1259,9 +1256,11 @@ describe('worker control routes', () => {
       expect(fingerprints.map(({ operation }) => operation)).toEqual(
         requests.map(({ operation }) => operation).sort()
       );
-      expect(records.map(({ operation }) => operation)).toEqual(
-        requests.map(({ operation }) => operation).sort()
-      );
+      // Heartbeat replay evidence remains durable; its liveness payload has no second owner.
+      expect(records.map(({ operation }) => operation)).toEqual([
+        'artifact_notice',
+        'supply_refresh_ack',
+      ]);
       expect(JSON.stringify(fingerprints)).not.toContain(token);
       expect(JSON.stringify(records)).not.toContain(token);
       coreDb.sqlite.close();
@@ -1630,11 +1629,12 @@ describe('worker control routes', () => {
       .run(heartbeatBaseline.lastWorkerSequence, testEntityId('attempt', 'lease_default_binding'));
 
     coreDb.sqlite.exec(`
-      CREATE TRIGGER reject_second_heartbeat_record
-      BEFORE INSERT ON worker_control_records
-      WHEN NEW.operation = 'heartbeat' AND NEW.record_key = '2'
+      CREATE TRIGGER reject_second_heartbeat_acceptance
+      BEFORE UPDATE ON scheduler_execution_attempts
+      WHEN NEW.attempt_id = '${testEntityId('attempt', 'lease_default_binding')}'
+        AND NEW.last_worker_sequence = 2
       BEGIN
-        SELECT RAISE(ABORT, 'injected heartbeat record failure');
+        SELECT RAISE(ABORT, 'injected attempt heartbeat acceptance failure');
       END
     `);
     const failedHeartbeatResponse = await app.request('/api/worker-control/heartbeat', {
@@ -1645,7 +1645,7 @@ describe('worker control routes', () => {
       },
       method: 'POST',
     });
-    coreDb.sqlite.exec('DROP TRIGGER reject_second_heartbeat_record');
+    coreDb.sqlite.exec('DROP TRIGGER reject_second_heartbeat_acceptance');
     const failedSequence = coreDb.sqlite
       .prepare(
         "SELECT COUNT(*) AS count FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
@@ -3078,7 +3078,7 @@ describe('worker control routes', () => {
   });
 
   it('accepts sandbox bearer heartbeats without a browser session cookie', async () => {
-    const { app, lineage, token } = await createWorkerControlRouteFixture();
+    const { app, gateway, lineage, token } = await createWorkerControlRouteFixture();
 
     const res = await app.request('/api/worker-control/heartbeat', {
       body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
@@ -3088,10 +3088,17 @@ describe('worker control routes', () => {
       },
       method: 'POST',
     });
-    const body = (await res.json()) as { heartbeat: { status: string; lastHeartbeatAt: string } };
+    const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.heartbeat).toMatchObject({
+    // Worker Control Protocol: the ACK is descriptive; only the attempt owns liveness.
+    expect(body).toEqual({
+      schemaVersion: 2,
+      accepted: true,
+      nextExpectedSequence: 2,
+      diagnostics: [],
+    });
+    expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toMatchObject({
       lastHeartbeatAt: '2026-06-16T00:00:02.000Z',
       status: 'running',
     });
@@ -3232,8 +3239,102 @@ describe('worker control routes', () => {
     }
   });
 
-  it('rebuilds live worker-control sessions from durable gateway rows', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-')));
+  it('retries durable heartbeat acceptance after the transaction fails beyond its callback', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-transaction-tail-'));
+    const coreDb = openCoreDb(dataRoot);
+    const { environmentPackage, lineage } = await createWorkerControlRouteFixture();
+    const injectedFailure = new Error('injected heartbeat transaction tail failure');
+    let failAfterCallback = true;
+
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: lineage.workspaceId,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const binding = createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'heartbeat_transaction_tail'
+      );
+      const gateway = new WorkerControlGateway({
+        resolveTokenBinding: (input) => resolveNanoHostAttemptTokenBinding(coreDb, input),
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+        onHeartbeatAccepted: (input) => {
+          acceptNanoHostAttemptHeartbeatByBinding(coreDb, {
+            acceptedAt: input.heartbeat.lastHeartbeatAt,
+            lineage: input.lineage,
+            sandboxBindingRef: input.sandboxBindingRef,
+            workerSequence: input.heartbeat.sequence,
+          });
+        },
+        runHeartbeatTransaction: (operation) =>
+          coreDb.sqlite.transaction(() => {
+            const acknowledgement = operation();
+            // The callback succeeded, but this transaction must still roll back before COMMIT.
+            if (failAfterCallback) {
+              failAfterCallback = false;
+              throw injectedFailure;
+            }
+            return acknowledgement;
+          })(),
+      });
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
+      const request = {
+        authorization: `Bearer ${registration.token}`,
+        ...heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.'),
+      };
+      const attemptId = testEntityId('attempt', 'lease_heartbeat_transaction_tail');
+      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      const fingerprints = () =>
+        coreDb.sqlite
+          .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
+            WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = 'heartbeat'`)
+          .all(lineage.agentSessionId, lineage.packageSnapshotId);
+
+      const firstResult = (() => {
+        try {
+          return gateway.recordHeartbeat(request);
+        } catch (error) {
+          return error;
+        }
+      })();
+      expect(firstResult).toBe(injectedFailure);
+      expect(fingerprints()).toEqual([]);
+      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+
+      expect(gateway.recordHeartbeat(request)).toEqual({
+        schemaVersion: 2,
+        accepted: true,
+        nextExpectedSequence: 2,
+        diagnostics: [],
+      });
+      // Exact-request acceptance must be durable; a process-local retry cache grants no success.
+      expect.soft(fingerprints()).toHaveLength(1);
+      const afterRetry = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      expect.soft(afterRetry).toMatchObject({
+        lastWorkerSequence: 1,
+        lastAcceptedHeartbeatAt: expect.any(String),
+      });
+      expect.soft(afterRetry.heartbeatDeadline).not.toBe(before.heartbeatDeadline);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('replays the heartbeat ACK after database reopen without a retained heartbeat or liveness renewal', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
+    let coreDb = openCoreDb(dataRoot);
     const store = await createDemoStore();
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3337,6 +3438,8 @@ describe('worker control routes', () => {
       });
 
       const absoluteDeadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
+      const attemptId = testEntityId('attempt', 'lease_rebuild');
+      const beforeHeartbeat = requireNanoHostExecutionAttempt(coreDb, attemptId);
       const firstHeartbeatResponse = await firstApp.request('/api/worker-control/heartbeat', {
         body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
         headers: {
@@ -3345,9 +3448,26 @@ describe('worker control routes', () => {
         },
         method: 'POST',
       });
-      const firstHeartbeatBody = (await firstHeartbeatResponse.json()) as {
-        heartbeat: { lastHeartbeatAt: string; sequence: number; status: string };
-      };
+      const firstHeartbeatBody = await firstHeartbeatResponse.json();
+      const acceptedAttempt = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      expect(firstHeartbeatResponse.status).toBe(200);
+      expect.soft(firstHeartbeatBody).toEqual({
+        schemaVersion: 2,
+        accepted: true,
+        nextExpectedSequence: 2,
+        diagnostics: [],
+      });
+      expect(acceptedAttempt.lastWorkerSequence).toBe(1);
+      expect(acceptedAttempt.lastAcceptedHeartbeatAt).not.toBeNull();
+      expect(acceptedAttempt.lastAcceptedHeartbeatAt).not.toBe(
+        beforeHeartbeat.lastAcceptedHeartbeatAt
+      );
+      expect(acceptedAttempt.heartbeatDeadline).not.toBe(beforeHeartbeat.heartbeatDeadline);
+      const heartbeatRows = () =>
+        coreDb.sqlite
+          .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
+          .all();
+      expect.soft(heartbeatRows()).toEqual([]);
       await firstApp.request('/api/worker-control/events/append', {
         body: JSON.stringify({
           lineage,
@@ -3377,16 +3497,29 @@ describe('worker control routes', () => {
         workspaceDb.sqlite.close();
       }
 
+      closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
       vi.useFakeTimers();
-      vi.setSystemTime(new Date(Date.parse(firstHeartbeatBody.heartbeat.lastHeartbeatAt) + 1_000));
+      vi.setSystemTime(new Date(Date.parse(acceptedAttempt.lastAcceptedHeartbeatAt!) + 1_000));
       const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
+      expect
+        .soft(rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat)
+        .toBeNull();
+      const restartedApp = createApp({
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: rebuiltGateway,
+      });
       const authorization = `Bearer ${workerRouteToken(
         'lease-binding:lease_rebuild',
         'worker-control'
       )}`;
-      const retryHeartbeat = rebuiltGateway.recordHeartbeat({
-        authorization,
-        ...heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.'),
+      const retryHeartbeat = await restartedApp.request('/api/worker-control/heartbeat', {
+        body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
       });
       const snapshot = rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId);
       const leaseAfterRetry = requireNanoHostExecutionAttempt(
@@ -3394,19 +3527,31 @@ describe('worker control routes', () => {
         testEntityId('attempt', 'lease_rebuild')
       );
       expect(absoluteAttemptDeadline(coreDb, lineage.turnId)).toBe(absoluteDeadline);
-      expect.soft(retryHeartbeat).toEqual(firstHeartbeatBody.heartbeat);
-      expect.soft(snapshot?.heartbeat).toEqual(firstHeartbeatBody.heartbeat);
-      expect
-        .soft(leaseAfterRetry.lastAcceptedHeartbeatAt)
-        .toBe(firstHeartbeatBody.heartbeat.lastHeartbeatAt);
+      expect(retryHeartbeat.status).toBe(200);
+      expect.soft(await retryHeartbeat.json()).toEqual(firstHeartbeatBody);
+      expect.soft(snapshot?.heartbeat).toBeNull();
+      expect(leaseAfterRetry).toMatchObject({
+        lastAcceptedHeartbeatAt: acceptedAttempt.lastAcceptedHeartbeatAt,
+        heartbeatDeadline: acceptedAttempt.heartbeatDeadline,
+        lastWorkerSequence: acceptedAttempt.lastWorkerSequence,
+      });
+      expect.soft(heartbeatRows()).toEqual([]);
+      const conflict = await restartedApp.request('/api/worker-control/heartbeat', {
+        body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Changed heartbeat.')),
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ code: 'worker_control_sequence_conflict' });
       expect(snapshot).toMatchObject({
         agentSessionId: testEntityId('as', 'session_rebuild'),
         events: [expect.objectContaining({ sequence: 3 })],
-        heartbeat: expect.objectContaining({ status: 'running' }),
+        heartbeat: null,
         packageSnapshotId: lineage.packageSnapshotId,
       });
     } finally {
       vi.useRealTimers();
+      closeWorkspaceProductReadHandles(dataRoot);
       coreDb.sqlite.close();
     }
   });
