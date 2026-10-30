@@ -7026,16 +7026,14 @@ describe('MCP native admission and original closeout', () => {
     ]);
     const privateCanary = 'private Item publication failure /private/mcp-item-canary';
     const failure = new Database.SqliteError(privateCanary, 'SQLITE_IOERR');
-    const products = client.products.bind(client);
+    const appendItem = client.appendItem.bind(client);
     let injected = 0;
     const nativePublication = vi
-      .spyOn(client, 'products')
+      .spyOn(client, 'appendItem')
       .mockImplementation(async (key, input) => {
         if (
           key === database &&
-          input.entries.some(
-            (entry) => entry.kind === 'item' && entry.turnId === f.environmentPackage.scope.turnId
-          ) &&
+          input.item.turnId === f.environmentPackage.scope.turnId &&
           listWorkspaceCapabilityCalls(f.db, f.workspaceId).some(
             (call) => call.id === callId && call.status === 'succeeded'
           )
@@ -7043,7 +7041,7 @@ describe('MCP native admission and original closeout', () => {
           injected += 1;
           throw failure;
         }
-        return products(key, input);
+        return appendItem(key, input);
       });
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
