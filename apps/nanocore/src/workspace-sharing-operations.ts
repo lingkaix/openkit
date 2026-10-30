@@ -1099,7 +1099,7 @@ function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
     workspaceId === quickChatWorkspaceIdForUser(registry.ownerUserId, coreDb.dataRoot)
   ) {
     throw new OperationError(
-      'personal_workspace_not_shareable',
+      'quick_chat_not_shareable',
       'Personal Workspaces cannot be shared.',
       409
     );
