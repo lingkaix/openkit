@@ -442,3 +442,7 @@ MCP snapshot and Pending argument readers verify the raw retained JSON text agai
 Scheduler publication proofs use query-only Workspace handles, including the existing activation receipt census, so a healthy sibling dispatch cannot migrate a capture-frozen Workspace.
 
 The existing Workspace gate keeps capture ownership separate from ordinary deletion closure. Capture excludes low-level settlement as well as new producers; ordinary deletion keeps its existing terminal and physical cleanup settlement while ordinary admissions and canonical late output remain refused. Releasing capture cannot clear deletion ownership. Durable Store startup binds that same gate to the existing native client before restart producers; quarantine restores capture exclusion.
+
+## Snapshot maintenance join
+
+The existing scheduler-attempt maintenance service accepts an optional `snapshots` callback after scheduler, native and checkpoint recovery. It runs within the same single-flight pass; overlapping ticks share that pass, and `stop()` joins accepted snapshot work. Snapshot policy stays with the Workspace backup owner. This join adds no independent timer or retry.

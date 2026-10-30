@@ -3,6 +3,72 @@ import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 
 describe('scheduler attempt maintenance service', () => {
+  it('runs snapshot maintenance after recovery in the same single-flight pass and joins it on stop', async () => {
+    const order: string[] = [];
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const callbacks: Array<() => void> = [];
+    const clearInterval = vi.fn();
+    const runRecoveryMaintenance = {
+      scheduler: async () => {
+        order.push('scheduler');
+      },
+      native: async () => {
+        order.push('native');
+      },
+      checkpoints: async () => {
+        order.push('checkpoints');
+      },
+      snapshots: async () => {
+        order.push('snapshots');
+        entered.resolve();
+        await release.promise;
+      },
+    };
+    const service = startSchedulerAttemptMaintenanceService({
+      intervalMs: 30_000,
+      runRecoveryMaintenance,
+      setInterval: (callback) => {
+        callbacks.push(callback);
+        return 'snapshot-maintenance-timer';
+      },
+      clearInterval,
+    });
+    const active = service.runOnce();
+    let stopped = false;
+    let stopping: Promise<void> | undefined;
+    try {
+      // An ignored optional callback reaches this assertion instead of waiting for entry forever.
+      await Promise.race([entered.promise, active]);
+      // Online Snapshot Policy uses the existing tick after its recovery stages.
+      expect(order).toEqual(['scheduler', 'native', 'checkpoints', 'snapshots']);
+      expect(service.runOnce()).toBe(active);
+      callbacks[0]!();
+      await Promise.resolve();
+      expect(order).toHaveLength(4);
+      stopping = service.stop().then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      expect(clearInterval).toHaveBeenCalledExactlyOnceWith('snapshot-maintenance-timer');
+      callbacks[0]!();
+      await service.runOnce();
+      expect(order).toHaveLength(4);
+      release.resolve();
+      await active;
+      await stopping;
+      expect(stopped).toBe(true);
+      callbacks[0]!();
+      await service.runOnce();
+      expect(order).toEqual(['scheduler', 'native', 'checkpoints', 'snapshots']);
+    } finally {
+      release.resolve();
+      await stopping;
+      await service.stop();
+    }
+  });
+
   it('keeps stage exceptions private in the default timer warning', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});

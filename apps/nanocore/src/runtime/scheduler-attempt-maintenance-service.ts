@@ -5,7 +5,10 @@ import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target.js';
 export interface SchedulerAttemptMaintenanceInput {
   readonly intervalMs: number;
   readonly runRecoveryMaintenance: Readonly<
-    Record<'scheduler' | 'native' | 'checkpoints', () => Promise<unknown>>
+    Record<'scheduler' | 'native' | 'checkpoints', () => Promise<unknown>> & {
+      /** Runs idle snapshots after recovery inside the same accepted pass and stop join. */
+      readonly snapshots?: () => Promise<unknown>;
+    }
   >;
   readonly onError?: (error: unknown) => void;
   readonly setInterval?: (callback: () => void, intervalMs: number) => unknown;
@@ -62,6 +65,12 @@ export function startSchedulerAttemptMaintenanceService(
           }
           errors.push(error);
         }
+      }
+      try {
+        await input.runRecoveryMaintenance.snapshots?.();
+      } catch (error) {
+        expectedFenceOnly = false;
+        errors.push(error);
       }
       if (errors.length) throw new SchedulerAttemptMaintenanceFailure(errors, expectedFenceOnly);
     });
