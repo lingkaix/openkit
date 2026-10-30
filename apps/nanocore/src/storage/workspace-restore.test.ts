@@ -50,7 +50,10 @@ import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { writeHotDataRootBackup } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
@@ -61,10 +64,15 @@ import {
 import { protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import {
+  bindWorkspaceRecoveryNativeOwner,
+  readRecoveryAdmission,
+} from './workspace-recovery-admissions.js';
+import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+import { admitWorkspaceBackup } from './workspace-restore.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) };
@@ -404,6 +412,143 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('keeps native recovery authority exact through freeze, rebinding and deferred posting', async () => {
+    const f = await fixture();
+    let reachedPlacement = false;
+    await expect(
+      admitWorkspaceBackup(
+        {
+          command: 'restore',
+          dataRoot: f.dataRoot,
+          bundleRoot: f.bundleRoot,
+          workspaceId,
+          requestId: f.requestId,
+          acknowledgeLostSafety: false,
+          expectedRelease: f.manifest.release,
+        },
+        {
+          atBoundary: (point) => {
+            if (point === 'before-target-rename') {
+              reachedPlacement = true;
+              throw new Error('Stop the valid private candidate before placement.');
+            }
+          },
+        }
+      )
+    ).rejects.toMatchObject({ code: 'recovery-required' });
+    expect(reachedPlacement).toBe(true);
+    const core = openCoreDb(f.dataRoot);
+    const owned = readRecoveryAdmission(core, f.requestId)!;
+    expect(owned.state).toBe('prepared');
+    const gate = new WorkspaceMutationAdmission();
+    const otherGate = new WorkspaceMutationAdmission();
+    const frozen = gate.tryFreeze(workspaceId, () => []);
+    const other = otherGate.tryFreeze(workspaceId, () => []);
+    if (frozen.status !== 'frozen' || other.status !== 'frozen')
+      throw new Error('Expected independent admitted freezes.');
+    const client = getControlStoreWorkerClient(gate);
+    const canonicalScope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId });
+    const privateRoot = dirname(dirname(owned.candidate_ref));
+    const candidateScope = nativeProductScope(
+      privateRoot,
+      { kind: 'workspace', workspaceId },
+      owned.candidate_ref
+    );
+    const canonicalCommand = {
+      database: `workspace:${canonicalScope.path}`,
+      path: canonicalScope.path,
+      dataRoot: f.dataRoot,
+      productOwner: canonicalScope.owner,
+      contentMount: canonicalScope.contentMount,
+      create: false,
+      initialize: 'workspace' as const,
+    };
+    const candidateCommand = {
+      database: `workspace:${candidateScope.path}`,
+      path: candidateScope.path,
+      dataRoot: privateRoot,
+      productOwner: candidateScope.owner,
+      contentMount: candidateScope.contentMount,
+      create: false,
+      initialize: 'workspace' as const,
+    };
+    const canonicalBefore = rows(canonicalScope.path, 'control_workspaces');
+    const threadsBefore = rows(canonicalScope.path, 'control_threads');
+    const candidateBefore = rows(candidateScope.path, 'control_workspaces');
+    try {
+      const native = bindWorkspaceRecoveryNativeOwner(core, owned, gate, frozen);
+      if (!native.canonical) throw new Error('Restore must retain its canonical native binding.');
+      await client.open(canonicalCommand, native.canonical);
+      await client.close(canonicalCommand.database, native.canonical);
+      await client.open(candidateCommand, native.candidate);
+      await client.close(candidateCommand.database, native.candidate);
+      await client.open(candidateCommand, native.candidate);
+      await expect(
+        f.store.createThread(workspaceId, 'Ordinary publisher stays frozen')
+      ).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      await expect(client.open(candidateCommand)).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      await expect(client.open(canonicalCommand, native.candidate)).rejects.toBeInstanceOf(Error);
+      const foreign = bindWorkspaceRecoveryNativeOwner(core, owned, otherGate, other);
+      await expect(client.open(candidateCommand, foreign.candidate)).rejects.toBeInstanceOf(Error);
+      expect(() =>
+        bindWorkspaceRecoveryNativeOwner(
+          core,
+          { ...owned, revision: owned.revision + 1 },
+          gate,
+          frozen
+        )
+      ).toThrow(WorkspaceRecoveryError);
+      const replacement = bindWorkspaceRecoveryNativeOwner(core, owned, gate, frozen);
+      await expect(client.open(candidateCommand, native.candidate)).rejects.toBeInstanceOf(Error);
+      await client.open(candidateCommand, replacement.candidate);
+      const resume = await client.pauseForDataRootBackup(candidateCommand.database);
+      let settled = false;
+      const queued = client
+        .write(
+          candidateCommand.database,
+          [
+            {
+              mode: 'run',
+              sql: 'UPDATE control_workspaces SET revision=revision+1 WHERE id=?',
+              parameters: [workspaceId],
+            },
+          ],
+          replacement.candidate
+        )
+        .then(
+          () => ({ accepted: true }),
+          (error: unknown) => ({ accepted: false, error })
+        )
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        frozen.release();
+      } finally {
+        resume();
+      }
+      expect(await queued).toMatchObject({ accepted: false, error: expect.any(Error) });
+      await expect(client.open(candidateCommand, replacement.candidate)).rejects.toBeInstanceOf(
+        Error
+      );
+      await client.close(candidateCommand.database);
+      expect(rows(candidateScope.path, 'control_workspaces')).toEqual(candidateBefore);
+      expect(rows(canonicalScope.path, 'control_workspaces')).toEqual(canonicalBefore);
+      expect(rows(canonicalScope.path, 'control_threads')).toEqual(threadsBefore);
+      expect(readRecoveryAdmission(core, f.requestId)).toEqual(owned);
+    } finally {
+      frozen.release();
+      other.release();
+      core.sqlite.close();
+    }
+  }, 120_000);
+
   it('WM target admission: candidate metadata refusal preserves the original Workspace and history', async () => {
     const f = await fixture();
     const originalPath = workspaceDbPath(f.dataRoot, workspaceId);

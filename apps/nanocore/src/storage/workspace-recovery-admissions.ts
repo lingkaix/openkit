@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { lstatSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 import { configureOwnedSqlite } from './control-store.js';
 import { closeWorkspaceProductReadHandles } from './control-store-products.js';
+import type {
+  ControlRecoveryNativeBinding,
+  ControlRecoveryNativeCall,
+} from './control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck } from './db.js';
 import { coreDbPath } from './fs-layout.js';
 import {
@@ -17,7 +26,7 @@ import {
   parseWorkspaceBackupManifest,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
-import { assertCanonicalDirectory } from './workspace-file-records.js';
+import { assertCanonicalDirectory, nativeProductScope } from './workspace-file-records.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
@@ -47,6 +56,75 @@ export interface RecoveryAdmission {
   readonly revision: number;
   readonly candidate_ref: string;
   readonly proof: RecoveryProof;
+}
+
+/** Binds the exact prepared recovery's physical databases to its still-live mutation freeze. */
+export function bindWorkspaceRecoveryNativeOwner(
+  core: CoreDb,
+  owned: RecoveryAdmission,
+  admission: WorkspaceMutationAdmission,
+  freeze: WorkspaceFrozenAdmission
+): {
+  readonly canonical?: ControlRecoveryNativeCall;
+  readonly candidate: ControlRecoveryNativeCall;
+} {
+  const current = readRecoveryAdmission(core, owned.admission_id);
+  const sourceDataRoot = resolve(core.dataRoot);
+  const privateDataRoot = `${sourceDataRoot}.workspace-recovery-${owned.admission_id}`;
+  if (
+    !current ||
+    current.state !== 'prepared' ||
+    current.revision !== owned.revision ||
+    current.workspace_id !== owned.workspace_id ||
+    current.candidate_ref !== owned.candidate_ref ||
+    !isDeepStrictEqual(current.proof.input, owned.proof.input) ||
+    !RequestIdSchema.safeParse(owned.admission_id).success ||
+    !['restore', 'move-in'].includes(current.proof.input.command) ||
+    current.candidate_ref !== join(privateDataRoot, 'workspaces', current.workspace_id) ||
+    !admission.ownsFreeze(current.workspace_id, freeze)
+  )
+    refuseRecovery('recovery-required');
+  const bind = (dataRoot: string, root: string): ControlRecoveryNativeBinding => {
+    assertCanonicalDirectory(root);
+    const scope = nativeProductScope(
+      dataRoot,
+      { kind: 'workspace', workspaceId: current.workspace_id },
+      root
+    );
+    const stat = lstatSync(scope.path, { throwIfNoEntry: false });
+    if (!stat?.isFile() || stat.isSymbolicLink() || stat.size === 0)
+      refuseRecovery('recovery-required');
+    const command = Object.freeze({
+      database: `workspace:${scope.path}`,
+      path: scope.path,
+      dataRoot,
+      productOwner: Object.freeze(scope.owner),
+      contentMount: Object.freeze(scope.contentMount),
+      create: false as const,
+      initialize: 'workspace' as const,
+    });
+    return Object.freeze({
+      command,
+      path: realpathSync(scope.path),
+      identity: `${stat.dev}:${stat.ino}`,
+      sourceDataRoot,
+    });
+  };
+  assertCanonicalDirectory(privateDataRoot);
+  assertCanonicalDirectory(join(privateDataRoot, 'workspaces'));
+  const candidate = bind(privateDataRoot, current.candidate_ref);
+  const root = join(sourceDataRoot, 'workspaces', current.workspace_id);
+  const canonical = lstatSync(root, { throwIfNoEntry: false })
+    ? bind(sourceDataRoot, root)
+    : undefined;
+  admission.bindRecovery(current.workspace_id, freeze, {
+    ...(canonical ? { canonical } : {}),
+    candidate,
+  });
+  return Object.freeze({
+    ...(canonical ? { canonical: Object.freeze({ freeze, binding: canonical }) } : {}),
+    candidate: Object.freeze({ freeze, binding: candidate }),
+  });
 }
 /** Keeps original identities under the existing private recovery container, outside live discovery. */
 export function workspaceRecoveryPredecessorRoot(owned: RecoveryAdmission): string {

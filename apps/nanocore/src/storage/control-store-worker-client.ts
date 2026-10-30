@@ -37,7 +37,10 @@ import {
   type ControlMaterialCommandResult,
   prepareControlMaterialTransfer,
 } from '../workspace-materials.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 import {
   FileAdmissionError,
   FileStorageAdmission,
@@ -118,6 +121,18 @@ export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
 
 type Success = Extract<ControlWorkerReply, { status: 'ok' }>;
 type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
+/** Immutable native binding selected by the current Core recovery admission, not caller pathname text. */
+export interface ControlRecoveryNativeBinding {
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly path: string;
+  readonly identity: string;
+  readonly sourceDataRoot: string;
+}
+/** Transient per-call proof; never serialized, cached on an Opening or inherited by ordinary publishers. */
+export interface ControlRecoveryNativeCall {
+  readonly freeze: WorkspaceFrozenAdmission;
+  readonly binding: ControlRecoveryNativeBinding;
+}
 /** Native requests own release; the filesystem owner retains all physical admission semantics. */
 type NativeCapacityReservation = Pick<FileStorageReservation, 'release'>;
 /** Queued backing belongs to one database; host attribution preserves it after channel loss. */
@@ -175,6 +190,7 @@ interface Pending {
   readonly host: WriterHost;
   readonly command: ControlWorkerCommand;
   readonly request: ControlWorkerRequest;
+  readonly recovery?: ControlRecoveryNativeCall;
   /** Unposted capture waiters share this same finite admission map and byte budget. */
   posted: boolean;
   /** The original admitted scope ACK gates posting after finite request admission. */
@@ -717,6 +733,79 @@ class ControlStoreWorkerClient {
     return { path, identity, host };
   }
 
+  /** Checks the existing freeze/physical owner again at each trusted lifecycle submission. */
+  private assertRecovery(
+    command: ControlWorkerCommand,
+    recovery: ControlRecoveryNativeCall | undefined,
+    opening?: Opening
+  ): void {
+    if (recovery === undefined) {
+      const owner =
+        command.operation === 'open'
+          ? command.productOwner
+          : (opening?.command.productOwner ??
+            ('database' in command
+              ? this.openings.get(command.database)?.command.productOwner
+              : undefined));
+      if (
+        owner?.kind === 'workspace' &&
+        this.workspaceMutationAdmission?.isClosed(owner.workspaceId, 'capture')
+      )
+        throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+          details: {
+            workspaceId: owner.workspaceId,
+            operation: 'capture',
+            retryable: true,
+            blockers: [
+              {
+                kind: 'publication',
+                reason: 'frozen',
+                reference: { workspaceId: owner.workspaceId },
+                actions: [],
+              },
+            ],
+          },
+        });
+      return;
+    }
+    try {
+      const { binding, freeze } = recovery;
+      const owner = binding.command.productOwner;
+      const physical =
+        opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
+      let admitted = physical?.command;
+      if (command.operation === 'open') {
+        // Request framing is assigned after admission; it is not part of the physical open binding.
+        const {
+          operation: _operation,
+          version: _version,
+          id: _id,
+          ...input
+        } = command as Extract<ControlWorkerRequest, { operation: 'open' }>;
+        admitted = input;
+      }
+      const current = statSync(binding.path);
+      if (
+        owner?.kind !== 'workspace' ||
+        !this.workspaceMutationAdmission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
+        !('database' in command) ||
+        command.database !== binding.command.database ||
+        binding.command.create !== false ||
+        binding.command.initialize !== 'workspace' ||
+        realpathSync(binding.command.path) !== binding.path ||
+        `${current.dev}:${current.ino}` !== binding.identity ||
+        (physical !== undefined &&
+          (physical.path !== binding.path || physical.identity !== binding.identity)) ||
+        !isDeepStrictEqual(binding.command, admitted) ||
+        (command.operation === 'recovery-safety' &&
+          resolve(command.input.sourceDataRoot) !== binding.sourceDataRoot)
+      )
+        throw new Error('Recovery binding is not current.');
+    } catch {
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    }
+  }
+
   /**
    * Opens an admitted physical scope and optionally applies its existing native journal.
    *
@@ -725,7 +814,10 @@ class ControlStoreWorkerClient {
    *
    * @returns After connection policy and requested initialization have completed in the worker.
    */
-  async open(command: Omit<OpenCommand, 'operation'>): Promise<void> {
+  async open(
+    command: Omit<OpenCommand, 'operation'>,
+    recovery?: ControlRecoveryNativeCall
+  ): Promise<void> {
     this.assertAccepting();
     if (
       !isControlWorkerRequest({
@@ -736,12 +828,14 @@ class ControlStoreWorkerClient {
       })
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    this.assertRecovery({ ...command, operation: 'open' }, recovery);
     const existing = this.openings.get(command.database);
     if (existing) {
       if (existing.host.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
       if (!isDeepStrictEqual(existing.command, command))
         throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       await existing.promise;
+      this.assertRecovery({ ...command, operation: 'open' }, recovery);
       return;
     }
     const binding = structuredClone(command);
@@ -750,21 +844,25 @@ class ControlStoreWorkerClient {
       command: binding,
       ...physical,
       acknowledged: false,
-      promise: this.request({ ...binding, operation: 'open' }, undefined, physical.host).then(
-        () => {
-          try {
-            const current = statSync(physical.path);
-            const identity = `${current.dev}:${current.ino}`;
-            if (opening.identity !== undefined && opening.identity !== identity)
-              throw new Error('Physical database changed.');
-            opening.identity = identity;
-            opening.acknowledged = true;
-          } catch {
-            this.fail(physical.host);
-            throw new ControlStoreWorkerError('unavailable', 'unknown');
-          }
+      promise: this.request(
+        { ...binding, operation: 'open' },
+        undefined,
+        physical.host,
+        false,
+        recovery
+      ).then(() => {
+        try {
+          const current = statSync(physical.path);
+          const identity = `${current.dev}:${current.ino}`;
+          if (opening.identity !== undefined && opening.identity !== identity)
+            throw new Error('Physical database changed.');
+          opening.identity = identity;
+          opening.acknowledged = true;
+        } catch {
+          this.fail(physical.host);
+          throw new ControlStoreWorkerError('unavailable', 'unknown');
         }
-      ),
+      }),
     };
     this.openings.set(command.database, opening);
     try {
@@ -786,30 +884,64 @@ class ControlStoreWorkerClient {
    */
   async write(
     database: string,
-    statements: readonly ControlSqlStatement[]
+    statements: readonly ControlSqlStatement[],
+    recovery?: ControlRecoveryNativeCall
   ): Promise<readonly ControlSqlResult[]> {
-    const reply = await this.request({ operation: 'write', database, statements });
+    const reply = await this.request(
+      { operation: 'write', database, statements },
+      undefined,
+      undefined,
+      false,
+      recovery
+    );
     return (reply as Extract<Success, { operation: 'write' }>).results;
   }
 
   /** Advances one original captured history unit and acknowledges only its native covering commit. */
-  async recoveryHistory(database: string, workspaceId: string): Promise<boolean> {
-    const reply = await this.request({ operation: 'recovery-history', database, workspaceId });
+  async recoveryHistory(
+    database: string,
+    workspaceId: string,
+    recovery?: ControlRecoveryNativeCall
+  ): Promise<boolean> {
+    const reply = await this.request(
+      { operation: 'recovery-history', database, workspaceId },
+      undefined,
+      undefined,
+      false,
+      recovery
+    );
     return (reply as Extract<Success, { operation: 'recovery-history' }>).done;
   }
 
   /** Copies proved current safety into an admitted private candidate, acknowledged only after FULL COMMIT. */
   async recoverySafety(
     database: string,
-    input: ControlRecoverySafetyInput
+    input: ControlRecoverySafetyInput,
+    recovery?: ControlRecoveryNativeCall
   ): Promise<ControlRecoverySafetyResult> {
-    const reply = await this.request({ operation: 'recovery-safety', database, input });
+    const reply = await this.request(
+      { operation: 'recovery-safety', database, input },
+      undefined,
+      undefined,
+      false,
+      recovery
+    );
     return (reply as Extract<Success, { operation: 'recovery-safety' }>).result;
   }
 
   /** Cleans an admitted private recovery candidate through the existing native transaction and FULL ACK. */
-  async recoveryCleanup(database: string, input: ControlRecoveryCleanupInput): Promise<void> {
-    await this.request({ operation: 'recovery-cleanup', database, input });
+  async recoveryCleanup(
+    database: string,
+    input: ControlRecoveryCleanupInput,
+    recovery?: ControlRecoveryNativeCall
+  ): Promise<void> {
+    await this.request(
+      { operation: 'recovery-cleanup', database, input },
+      undefined,
+      undefined,
+      false,
+      recovery
+    );
   }
 
   /**
@@ -1211,12 +1343,13 @@ class ControlStoreWorkerClient {
   }
 
   /** Closes a scope only after its previously accepted writes have finished. */
-  async close(database: string): Promise<void> {
+  async close(database: string, recovery?: ControlRecoveryNativeCall): Promise<void> {
+    this.assertRecovery({ operation: 'close', database }, recovery);
     const opening = this.openings.get(database);
     try {
       // Idle readers must not prevent the writer's final close from checkpointing at rest.
       if (opening) closeWorkspaceProductReadHandles(opening.path);
-      await this.request({ operation: 'close', database });
+      await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
       if (this.openings.get(database) === opening) this.openings.delete(database);
     } finally {
       if (opening) closeWorkspaceProductReadHandles(opening.path);
@@ -1224,7 +1357,11 @@ class ControlStoreWorkerClient {
   }
 
   /** Closes the admitted private candidate before sealing; null proves close but never a usable seal. */
-  async sealRecovery(database: string): Promise<string | null> {
+  async sealRecovery(
+    database: string,
+    recovery?: ControlRecoveryNativeCall
+  ): Promise<string | null> {
+    this.assertRecovery({ operation: 'recovery-seal', database }, recovery);
     const opening = this.openings.get(database);
     try {
       // The caller excludes new publishers. Accepted same-Turn producers can still be waiting
@@ -1235,7 +1372,13 @@ class ControlStoreWorkerClient {
       const failed = settled.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
       if (opening) closeWorkspaceProductReadHandles(opening.path);
-      const reply = await this.request({ operation: 'recovery-seal', database });
+      const reply = await this.request(
+        { operation: 'recovery-seal', database },
+        undefined,
+        undefined,
+        false,
+        recovery
+      );
       if (this.openings.get(database) === opening) this.openings.delete(database);
       return (reply as Extract<Success, { operation: 'recovery-seal' }>).digest;
     } finally {
@@ -1376,7 +1519,8 @@ class ControlStoreWorkerClient {
     command: ControlWorkerCommand,
     materialParts?: readonly string[],
     target?: WriterHost,
-    deferPost = false
+    deferPost = false,
+    recovery?: ControlRecoveryNativeCall
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -1404,6 +1548,11 @@ class ControlStoreWorkerClient {
         command.operation === 'publication' ||
         command.operation === 'item');
     const opening = database === undefined ? undefined : this.openings.get(database);
+    try {
+      this.assertRecovery(command, recovery, opening);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const host = target ?? opening?.host;
     // An ACK may be validated before older scope reactions run. They keep their prefix.
     const ready =
@@ -1545,6 +1694,7 @@ class ControlStoreWorkerClient {
         host,
         command: admittedRequest,
         request: admittedRequest,
+        ...(recovery ? { recovery } : {}),
         posted: false,
         ready: ready === undefined,
         materialBytes,
@@ -1598,14 +1748,9 @@ class ControlStoreWorkerClient {
     if (entry.posted) return;
     const opening =
       'database' in entry.command ? this.openings.get(entry.command.database) : undefined;
-    const owner =
-      entry.command.operation === 'open'
-        ? entry.command.productOwner
-        : opening?.command.productOwner;
-    if (
-      owner?.kind === 'workspace' &&
-      this.workspaceMutationAdmission?.isClosed(owner.workspaceId, 'capture')
-    ) {
+    try {
+      this.assertRecovery(entry.command, entry.recovery, opening);
+    } catch (error) {
       const members = entry.cohort?.frame.requests.map(
         (request) => this.pending.get(request.id)!
       ) ?? [entry];
@@ -1613,21 +1758,7 @@ class ControlStoreWorkerClient {
         this.complete(
           member.request.id,
           undefined,
-          new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
-            details: {
-              workspaceId: owner.workspaceId,
-              operation: 'capture',
-              retryable: true,
-              blockers: [
-                {
-                  kind: 'publication',
-                  reason: 'frozen',
-                  reference: { workspaceId: owner.workspaceId },
-                  actions: [],
-                },
-              ],
-            },
-          })
+          error as ControlStoreWorkerError | OperationError
         );
       return;
     }
@@ -1642,6 +1773,22 @@ class ControlStoreWorkerClient {
       (request) => this.pending.get(request.id)!
     ) ?? [entry];
     if (members.some((member) => !member.ready)) return;
+    try {
+      for (const member of members)
+        this.assertRecovery(
+          member.command,
+          member.recovery,
+          'database' in member.command ? this.openings.get(member.command.database) : undefined
+        );
+    } catch (error) {
+      for (const member of members)
+        this.complete(
+          member.request.id,
+          undefined,
+          error as ControlStoreWorkerError | OperationError
+        );
+      return;
+    }
     for (const member of members) member.posted = true;
     try {
       const request = entry.request;

@@ -4,13 +4,25 @@ import type { WorkspaceBlocker } from '@openkit/app-api-schemas';
 export type WorkspaceFreezeAdmission =
   | { readonly status: 'busy' }
   | { readonly status: 'blocked'; readonly blockers: readonly WorkspaceBlocker[] }
-  | { readonly status: 'frozen'; readonly release: () => void };
+  | WorkspaceFrozenAdmission;
+
+/** Exact process-local owner of one successful freeze; release invalidates its native bindings. */
+export interface WorkspaceFrozenAdmission {
+  readonly status: 'frozen';
+  readonly release: () => void;
+}
+
+/** Recovery uses the same closure, with at most its canonical and owned candidate bindings. */
+interface CaptureClosure {
+  owner: WorkspaceFrozenAdmission | null;
+  recovery?: { readonly canonical?: object; readonly candidate: object };
+}
 
 /** Process-local mutation admission state for one Workspace. */
 interface WorkspaceMutationGateState {
   admitted: number;
   closed: boolean;
-  captureClosed: boolean;
+  captureClosed: CaptureClosure | null;
   waiters: Set<() => void>;
 }
 
@@ -32,7 +44,8 @@ export class WorkspaceMutationAdmission {
   ): WorkspaceFreezeAdmission {
     const state = this.state(workspaceId);
     if (this.isClosed(workspaceId) || state.admitted !== 0) return { status: 'busy' };
-    state.captureClosed = true;
+    const closure: CaptureClosure = { owner: null };
+    state.captureClosed = closure;
     let blockers: readonly WorkspaceBlocker[];
     try {
       blockers = readBlockers();
@@ -40,18 +53,49 @@ export class WorkspaceMutationAdmission {
       blockers = [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
     }
     if (blockers.length !== 0) {
-      state.captureClosed = false;
+      if (state.captureClosed === closure) state.captureClosed = null;
       return { status: 'blocked', blockers };
     }
+    if (state.captureClosed !== closure) return { status: 'busy' };
     let released = false;
-    return {
+    const owner: WorkspaceFrozenAdmission = {
       status: 'frozen',
       release: () => {
         if (released) return;
         released = true;
-        this.reopen(workspaceId, 'capture');
+        if (state.captureClosed === closure) this.reopen(workspaceId, 'capture');
       },
     };
+    closure.owner = owner;
+    return owner;
+  }
+
+  /** Tests this exact live freeze without creating a gate or recovering permission from a Boolean. */
+  public ownsFreeze(workspaceId: string, owner: WorkspaceFrozenAdmission): boolean {
+    const state = this.gates.get(workspaceId);
+    return !!state && !state.closed && state.captureClosed?.owner === owner;
+  }
+
+  /** The recovery admission owner installs its exact two native bindings; replacing them retires old calls. */
+  public bindRecovery(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    bindings: { readonly canonical?: object; readonly candidate: object }
+  ): void {
+    if (!this.ownsFreeze(workspaceId, owner))
+      throw new Error('Workspace recovery freeze is not current.');
+    this.gates.get(workspaceId)!.captureClosed!.recovery = { ...bindings };
+  }
+
+  /** A native exception belongs only to the current closure and exact installed binding object. */
+  public isRecoveryBinding(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    binding: object
+  ): boolean {
+    if (!this.ownsFreeze(workspaceId, owner)) return false;
+    const bindings = this.gates.get(workspaceId)!.captureClosed!.recovery;
+    return !!bindings && (bindings.canonical === binding || bindings.candidate === binding);
   }
 
   /** Counts ordinary admission or existing settlement; capture exclusion fences both without changing legacy deletion settlement. */
@@ -107,21 +151,21 @@ export class WorkspaceMutationAdmission {
     if (state.admitted !== 0) {
       throw new Error('Workspace mutation gate cannot reopen while mutations remain admitted.');
     }
-    if (closure === 'capture') state.captureClosed = false;
+    if (closure === 'capture') state.captureClosed = null;
     else state.closed = false;
   }
 
   /** Restores an owned closure without clearing a different lifecycle owner's exclusion. */
   public restoreClosed(workspaceId: string, closure: 'ordinary' | 'capture' = 'ordinary'): void {
     const state = this.state(workspaceId);
-    if (closure === 'capture') state.captureClosed = true;
+    if (closure === 'capture') state.captureClosed = { owner: null };
     else state.closed = true;
   }
 
   /** Tests ordinary exclusion or the capture-only exclusion required by already-owned low-level settlement. */
   public isClosed(workspaceId: string, exclusion: 'ordinary' | 'capture' = 'ordinary'): boolean {
     const state = this.state(workspaceId);
-    return state.captureClosed || (exclusion === 'ordinary' && state.closed);
+    return state.captureClosed !== null || (exclusion === 'ordinary' && state.closed);
   }
 
   /** Serializes deletion-request admission for one Workspace. */
@@ -150,7 +194,7 @@ export class WorkspaceMutationAdmission {
   private state(workspaceId: string): WorkspaceMutationGateState {
     let state = this.gates.get(workspaceId);
     if (!state) {
-      state = { admitted: 0, closed: false, captureClosed: false, waiters: new Set() };
+      state = { admitted: 0, closed: false, captureClosed: null, waiters: new Set() };
       this.gates.set(workspaceId, state);
     }
     return state;

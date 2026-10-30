@@ -94,6 +94,61 @@ describe('Workspace freeze admission', () => {
     expect(releaseMutation).toBeTypeOf('function');
     releaseMutation!();
   });
+
+  it('limits recovery bindings to the exact live gate, Workspace and current binding objects', () => {
+    const gate = new WorkspaceMutationAdmission();
+    const otherGate = new WorkspaceMutationAdmission();
+    const frozen = gate.tryFreeze(workspaceId, () => []);
+    const sibling = gate.tryFreeze(siblingId, () => []);
+    const other = otherGate.tryFreeze(workspaceId, () => []);
+    if (frozen.status !== 'frozen' || sibling.status !== 'frozen' || other.status !== 'frozen')
+      throw new Error('Expected independent admitted freezes.');
+    const canonical = {};
+    const candidate = {};
+    gate.bindRecovery(workspaceId, frozen, { canonical, candidate });
+    expect(gate.ownsFreeze(workspaceId, frozen)).toBe(true);
+    expect(gate.isRecoveryBinding(workspaceId, frozen, canonical)).toBe(true);
+    expect(gate.isRecoveryBinding(workspaceId, frozen, candidate)).toBe(true);
+    expect(gate.isRecoveryBinding(workspaceId, frozen, {})).toBe(false);
+    expect(gate.isRecoveryBinding(siblingId, frozen, candidate)).toBe(false);
+    expect(gate.isRecoveryBinding(workspaceId, sibling, candidate)).toBe(false);
+    expect(otherGate.isRecoveryBinding(workspaceId, frozen, candidate)).toBe(false);
+    expect(gate.isRecoveryBinding(workspaceId, other, candidate)).toBe(false);
+    const replacement = {};
+    gate.bindRecovery(workspaceId, frozen, { canonical, candidate: replacement });
+    expect(gate.isRecoveryBinding(workspaceId, frozen, candidate)).toBe(false);
+    expect(gate.isRecoveryBinding(workspaceId, frozen, replacement)).toBe(true);
+    expect(gate.enter(workspaceId)).toBeNull();
+    frozen.release();
+    expect(gate.ownsFreeze(workspaceId, frozen)).toBe(false);
+    expect(gate.isRecoveryBinding(workspaceId, frozen, replacement)).toBe(false);
+    sibling.release();
+    other.release();
+  });
+
+  it('never lets an old freeze release restore permission or clear another owner closure', async () => {
+    const gate = new WorkspaceMutationAdmission();
+    const frozen = gate.tryFreeze(workspaceId, () => []);
+    if (frozen.status !== 'frozen') throw new Error('Expected an admitted freeze.');
+    const candidate = {};
+    gate.bindRecovery(workspaceId, frozen, { candidate });
+    gate.restoreClosed(workspaceId, 'capture');
+    expect(gate.ownsFreeze(workspaceId, frozen)).toBe(false);
+    expect(gate.isRecoveryBinding(workspaceId, frozen, candidate)).toBe(false);
+    frozen.release();
+    expect(gate.isClosed(workspaceId, 'capture')).toBe(true);
+    gate.reopen(workspaceId, 'capture');
+    const replacement = gate.tryFreeze(workspaceId, () => []);
+    if (replacement.status !== 'frozen') throw new Error('Expected a fresh admitted freeze.');
+    frozen.release();
+    expect(gate.ownsFreeze(workspaceId, replacement)).toBe(true);
+    await gate.close(workspaceId);
+    replacement.release();
+    expect(gate.isClosed(workspaceId)).toBe(true);
+    expect(gate.isClosed(workspaceId, 'capture')).toBe(false);
+    expect(gate.ownsFreeze(workspaceId, replacement)).toBe(false);
+    gate.reopen(workspaceId);
+  });
 });
 
 /** R2947 public blocker contract owns these wire predicates; the schema grants no authority. */
