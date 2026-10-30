@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
   computeSessionCompatibilityKey,
   planSessionWorkspaceMaterialization,
   SessionWorkspaceLayoutSchema,
+  type SessionWorkspacePlanningPackage,
 } from './index.js';
 
 /**
@@ -87,6 +89,28 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('session workspace layout schema', () => {
+  it.each(['retained', '..retained', ''])('rejects retained-root overlap at "/%s"', (child) => {
+    const hostEffects = JSON.parse(
+      readFileSync(
+        new URL('../../../apps/nanohost/src/core-effect-command-fixture.json', import.meta.url),
+        'utf8'
+      )
+    ) as Array<{ kind: string; command: { slot?: string; body?: { hex: string } } }>;
+    const packageImport = hostEffects.find(
+      (effect) => effect.kind === 'reference.import' && effect.command.slot === 'package-config'
+    )!;
+    const environmentPackage = JSON.parse(
+      Buffer.from(packageImport.command.body!.hex, 'hex').toString('utf8')
+    ) as SessionWorkspacePlanningPackage;
+    const baseline = planSessionWorkspaceMaterialization({ environmentPackage });
+    const turnInputs = baseline.layout.slots.find((slot) => slot.id === 'turn-inputs')!;
+
+    // Concurrency And Slot Hygiene forbids Turn cleanup from containing retained working bytes.
+    expect(turnInputs).toMatchObject({ access: 'read-only', retention: 'turn' });
+    environmentPackage.workspace!.root = `${turnInputs.path}/${child}`;
+    expect(() => planSessionWorkspaceMaterialization({ environmentPackage })).toThrow();
+  });
+
   it('keeps every default Turn-retention slot in the disposable AgentSession namespace', () => {
     const environmentPackage = packageFixture();
     const planned = planSessionWorkspaceMaterialization({ environmentPackage });

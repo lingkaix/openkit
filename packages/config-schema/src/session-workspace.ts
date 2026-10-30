@@ -108,8 +108,9 @@ export const SessionWorkspaceLayoutSchema = z
           safePath === '/openkit/threads' ||
           isAncestorPath('/openkit/threads', safePath) ||
           !retainedRoot ||
-          safePath === retainedRoot ||
-          isAncestorPath(retainedRoot, safePath))
+          posix.relative(retainedRoot, safePath) === '' ||
+          isAncestorPath(retainedRoot, safePath) ||
+          isAncestorPath(safePath, retainedRoot))
       ) {
         ctx.addIssue({
           code: 'custom',
@@ -724,7 +725,12 @@ function isAllowedWorkerPath(root: string, path: string): boolean {
  */
 function isAncestorPath(parent: string, child: string): boolean {
   const relative = posix.relative(parent, child);
-  return relative !== '' && !relative.startsWith('..') && !posix.isAbsolute(relative);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith('../') &&
+    !posix.isAbsolute(relative)
+  );
 }
 
 /**

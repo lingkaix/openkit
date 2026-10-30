@@ -152,3 +152,5 @@ MCP declaration and configuration digests reuse Protocol canonical JSON while re
 The Session workspace planner keeps every Turn-cleared slot beneath the disposable `/openkit/sessions/<agentSessionId>/` tree. Layout admission rejects automatic cleanup inside the retained workspace root. Each planned input must match the selected slot's source kind, access and materialization mode before launch; the planner never widens a slot to fit an input.
 
 Version-four Agent Environment Package LLM sections admit only Gateway inference with placeholder visibility, an OpenAI-compatible endpoint and a NanoCore Gateway upstream. Coherent direct-provider and backend-local alternatives are refused rather than supplied through a fallback.
+
+Session Workspace planning rejects Turn-cleared slots that equal, contain, or descend from the retained root, including read-only input slots. Cleanup admission therefore keeps the disposable subtree separate from retained working bytes.
