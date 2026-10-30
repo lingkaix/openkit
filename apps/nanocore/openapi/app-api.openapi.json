@@ -22489,8 +22489,7 @@
         "type": "object",
         "properties": {
           "accountSlotId": {
-            "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            "type": "string"
           },
           "displayName": {
             "type": "string",
@@ -26702,10 +26701,6 @@
                   "type": "object",
                   "properties": {
                     "id": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "label": {
                       "type": "string",
                       "minLength": 1
                     },
@@ -154393,5 +154388,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:ee693c0ebb8cb36909e1ba79f9248f27fd57df389f039734652c3de1ea4d67c0"
+  "x-openkit-source-digest": "sha256:b71b135e0f37e1c18cf9e4a4cc4ba924e50615e9c0e34fc475e56d0321bf41c1"
 }
