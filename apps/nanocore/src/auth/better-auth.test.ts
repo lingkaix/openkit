@@ -20,6 +20,130 @@ import {
 } from './bootstrap-token.js';
 
 describe('createBetterAuth', () => {
+  it('keeps real browser auth admission on configured origins despite environment overrides', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-origin-'));
+    const coreDb = openCoreDb(dataRoot);
+    const baseURL = 'http://127.0.0.1:3000';
+    const configuredOrigin = 'https://console.openkit.example';
+    const ambientOrigin = 'https://ambient-origin.example.test';
+    const suppliedOrigin = 'https://supplied-origin.example.test';
+    vi.stubEnv('BETTER_AUTH_TRUSTED_ORIGINS', ambientOrigin);
+    try {
+      applyMigrations(coreDb);
+      const auth = createBetterAuth(coreDb, {
+        env: { BETTER_AUTH_URL: baseURL, BETTER_AUTH_TRUSTED_ORIGINS: suppliedOrigin },
+        openKitConfig: { server: { cors: { origins: [configuredOrigin] } } },
+      });
+      // The SDK skips origin checks under its test environment by default. Use
+      // its production check here without changing any other environment key.
+      (await auth.$context).skipOriginCheck = false;
+      for (const { name, origin, status } of [
+        { name: 'configured', origin: configuredOrigin, status: 200 },
+        { name: 'same-origin', origin: baseURL, status: 200 },
+        { name: 'ambient override', origin: ambientOrigin, status: 403 },
+        { name: 'supplied override', origin: suppliedOrigin, status: 403 },
+        { name: 'unconfigured', origin: 'https://unconfigured-origin.example.test', status: 403 },
+      ]) {
+        const response = await auth.handler(
+          new Request(`${baseURL}/api/auth/sign-out`, {
+            body: '{}',
+            headers: { 'content-type': 'application/json', cookie: '', origin },
+            method: 'POST',
+          })
+        );
+        // Cookie presence activates the real browser origin boundary; no
+        // account, session credential or secret input is needed for sign-out.
+        expect.soft(response.status, name).toBe(status);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps concurrent browser auth admission isolated from another request origin refresh', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-concurrent-origin-'));
+    const coreDb = openCoreDb(dataRoot);
+    const baseURL = 'http://127.0.0.1:3000';
+    const ambientOrigin = 'https://ambient-origin.example.test';
+    const bodyRead = Promise.withResolvers<void>();
+    const releaseBody = Promise.withResolvers<void>();
+    const providerRead = Promise.withResolvers<void>();
+    const releaseProvider = Promise.withResolvers<void>();
+    const pending: Promise<Response>[] = [];
+    vi.stubEnv('BETTER_AUTH_TRUSTED_ORIGINS', ambientOrigin);
+    try {
+      applyMigrations(coreDb);
+      const auth = createBetterAuth(coreDb, {
+        env: { BETTER_AUTH_URL: baseURL },
+        openKitConfig: { server: { cors: { origins: ['https://console.openkit.example'] } } },
+      });
+      const context = await auth.$context;
+      context.skipOriginCheck = false;
+      const originalAccount = context.options.account;
+      try {
+        const init: RequestInit & { duplex: 'half' } = {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: '', origin: ambientOrigin },
+          duplex: 'half',
+          body: new ReadableStream(
+            {
+              async pull(controller) {
+                bodyRead.resolve();
+                await releaseBody.promise;
+                controller.enqueue(new TextEncoder().encode('{}'));
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 }
+          ),
+        };
+        const first = auth.handler(new Request(`${baseURL}/api/auth/sign-out`, init));
+        pending.push(first);
+        // Body consumption follows SDK onRequest hooks. Early refusal is also valid.
+        const earlyResponse = await Promise.race([bodyRead.promise.then(() => null), first]);
+        if (!earlyResponse) {
+          // Pause only external provider resolution, after the second request's
+          // SDK origin refresh but before its router and onRequest hooks.
+          context.options.account = {
+            ...originalAccount,
+            accountLinking: {
+              ...originalAccount?.accountLinking,
+              trustedProviders: async () => {
+                providerRead.resolve();
+                await releaseProvider.promise;
+                return [];
+              },
+            },
+          };
+        }
+        const second = auth.handler(
+          new Request(`${baseURL}/api/auth/sign-out`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', cookie: '', origin: baseURL },
+            body: '{}',
+          })
+        );
+        pending.push(second);
+        if (!earlyResponse) await providerRead.promise;
+        releaseBody.resolve();
+        expect.soft((await first).status, 'unconfigured concurrent origin').toBe(403);
+        releaseProvider.resolve();
+        expect((await second).status, 'same-origin concurrent control').toBe(200);
+      } finally {
+        releaseBody.resolve();
+        releaseProvider.resolve();
+        await Promise.allSettled(pending);
+        context.options.account = originalAccount;
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each(
     [
       { signup: 'default', enabled: undefined },

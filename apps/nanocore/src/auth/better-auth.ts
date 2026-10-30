@@ -70,6 +70,9 @@ export function createBetterAuth(
     baseURL = `http://${urlHost}:${resolveBindPort(env, config)}`;
   }
 
+  const trustedOrigins = [...(config.server?.cors?.origins ?? [])];
+  const browserOrigins = [new URL(baseURL).origin, ...trustedOrigins];
+
   return betterAuth({
     baseURL,
     advanced: {
@@ -124,8 +127,24 @@ export function createBetterAuth(
       disableSignUp: config.auth?.signup?.enabled === false,
       enabled: true,
     },
+    plugins: [
+      {
+        id: 'openkit-configured-origins',
+        init: (context) => {
+          // The SDK recomputes ambient origins on its shared context before each HTTP request.
+          // Keep the operator snapshot fixed, including while another request awaits its body.
+          Object.defineProperty(context, 'trustedOrigins', {
+            enumerable: true,
+            get: () => [...browserOrigins],
+            set: () => {
+              // SDK recomputation cannot replace the validated deployment snapshot.
+            },
+          });
+        },
+      },
+    ],
     secret,
-    trustedOrigins: readTrustedOrigins(env, config),
+    trustedOrigins,
     user: {
       modelName: 'users',
       fields: {
@@ -160,21 +179,4 @@ export function createBetterAuth(
       },
     },
   });
-}
-
-/**
- * Reads comma-separated Better Auth browser origins from the environment.
- *
- * @param env Process environment.
- * @param config Loaded operator config.
- * @returns Trusted origins for browser auth requests.
- */
-function readTrustedOrigins(env: NodeJS.ProcessEnv, config: OpenKitConfig): string[] {
-  if (env.BETTER_AUTH_TRUSTED_ORIGINS === undefined) {
-    return [...(config.server?.cors?.origins ?? [])];
-  }
-
-  return env.BETTER_AUTH_TRUSTED_ORIGINS.split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
 }
