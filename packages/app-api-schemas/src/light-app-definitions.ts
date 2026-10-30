@@ -1,9 +1,11 @@
 import { RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
-  GetLightAppResponseSchema,
+  CreateLightAppResponseSchema,
   LightAppSchemaInputSchema,
   ListLightAppSnapshotsResponseSchema,
+  RollbackLightAppSnapshotResponseSchema,
+  UpdateLightAppSchemaResponseSchema,
 } from './light-apps.js';
 import type { OperationDefinition } from './operation-contract.js';
 import { SkillCatalogProducerSchema } from './resource-catalog.js';
@@ -195,7 +197,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     inputSchema: z
       .object({ ...workspace, requestId: RequestIdSchema, entryId, digest: digest.optional() })
       .strict(),
-    outputSchema: GetLightAppResponseSchema,
+    outputSchema: CreateLightAppResponseSchema,
     credentials,
     scope,
     target: workspaceTarget,
@@ -216,7 +218,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
         digest: digest.optional(),
       })
       .strict(),
-    outputSchema: GetLightAppResponseSchema,
+    outputSchema: UpdateLightAppSchemaResponseSchema,
     credentials,
     scope,
     target: appTarget,
@@ -243,7 +245,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     description:
       'Restore one selected data snapshot, discarding later data without a down migration.',
     inputSchema: z.object({ ...appCommand, snapshotId: RequestIdSchema }).strict(),
-    outputSchema: GetLightAppResponseSchema,
+    outputSchema: RollbackLightAppSnapshotResponseSchema,
     credentials,
     scope,
     target: appTarget,
@@ -257,7 +259,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     description:
       'Upgrade a known older app format through the current native journal after an automatic snapshot.',
     inputSchema: z.object(appCommand).strict(),
-    outputSchema: GetLightAppResponseSchema,
+    outputSchema: UpdateLightAppSchemaResponseSchema,
     credentials,
     scope,
     target: appTarget,

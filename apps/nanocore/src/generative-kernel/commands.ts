@@ -4,6 +4,7 @@ import {
   constants,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -79,7 +80,6 @@ const RECORD_LIMIT = 10_000;
 const DATA_OBJECT_BYTE_LIMIT = 16 * 1024;
 const BATCH_POST = /^\/api\/collections\/([^/]+)\/records$/;
 const BATCH_PATCH = /^\/api\/collections\/([^/]+)\/records\/([^/]+)$/;
-const EMPTY_DIGEST = `sha256:${createHash('sha256').update('').digest('hex')}`;
 
 /** Discoverable Kernel vocabulary returned by app get. */
 export const LIGHT_APP_CAPABILITIES = {
@@ -266,6 +266,14 @@ export function getLightApp(
   workspaceId: string,
   appId: string
 ): GetLightAppResponse {
+  try {
+    lstatSync(lightAppRoot(dataRoot, workspaceId, appId));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new KernelCommandError('not_found', 'Light App was not found.');
+    }
+    // An inspection failure does not prove absence; the existing reader projects unavailable.
+  }
   const item = inspectCatalogItem(dataRoot, workspaceId, appId);
   if (item.lifecycle === 'unavailable') {
     return { ...item, schema: null, capabilities: LIGHT_APP_CAPABILITIES };
@@ -298,7 +306,7 @@ export async function updateLightAppSchema(
   schema: LightAppSchemaInput,
   sourceSelection?: LightAppDefinitionSource,
   requestedDefinition?: LightAppRequestedDefinition
-): Promise<GetLightAppResponse> {
+): Promise<CreateLightAppResponse> {
   if (sourceSelection) LightAppDefinitionSourceSchema.parse(sourceSelection);
   return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) => {
     return runKernelCommand(context, appDb, {
@@ -402,7 +410,7 @@ export async function upgradeLightAppFormat(
   context: KernelCommandContext,
   appId: string,
   expectedAppRevision: number
-): Promise<GetLightAppResponse> {
+): Promise<CreateLightAppResponse> {
   const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId, 'format-upgrade');
   const input = { expectedAppRevision };
   try {
@@ -474,7 +482,7 @@ export async function rollbackLightAppSnapshot(
   appId: string,
   expectedAppRevision: number,
   snapshotId: string
-): Promise<GetLightAppResponse> {
+): Promise<CreateLightAppResponse> {
   const currentDb = openExistingAppDb(
     context.dataRoot,
     context.workspaceId,
@@ -610,7 +618,7 @@ function hasCommandReplay(
 }
 
 /** Projects a restored migration base without admitting old-format data operations. */
-function projectRestoredApp(appDb: AppDb): GetLightAppResponse {
+function projectRestoredApp(appDb: AppDb): CreateLightAppResponse {
   const hasMarker = (
     appDb.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>
   ).some((column) => column.name === 'kernel_format_version');
@@ -650,7 +658,7 @@ export async function retireLightApp(
   context: KernelCommandContext,
   appId: string,
   expectedAppRevision: number
-): Promise<GetLightAppResponse> {
+): Promise<CreateLightAppResponse> {
   return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
     runKernelCommand(context, appDb, {
       command: 'kernel.apps.retire',
@@ -1033,7 +1041,7 @@ function commitNewApp(
     schemaJson: string;
     sourceSelection?: LightAppDefinitionSource;
   }
-): GetLightAppResponse {
+): CreateLightAppResponse {
   const now = new Date().toISOString();
   for (const statement of createSchemaDdl(input.admitted)) {
     appDb.sqlite.exec(statement);
@@ -1622,7 +1630,7 @@ function parseBatchEntries(
  * @param appDb Open app database.
  * @returns App projection.
  */
-function projectApp(appDb: AppDb): GetLightAppResponse {
+function projectApp(appDb: AppDb): CreateLightAppResponse {
   const metadata = readMetadata(appDb);
   return {
     ...catalogItemFromMetadata(metadata),
@@ -1914,9 +1922,9 @@ function inspectCatalogItem(
       appId,
       title: 'Unavailable app',
       purpose: '',
-      appRevision: 1,
-      schemaRevision: 1,
-      schemaDigest: EMPTY_DIGEST,
+      appRevision: null,
+      schemaRevision: null,
+      schemaDigest: null,
       kernelFormatVersion: null,
       definitionVersion: null,
       definitionSource: null,
@@ -1931,7 +1939,7 @@ function inspectCatalogItem(
  * @param metadata Metadata row.
  * @returns Catalog item.
  */
-function catalogItemFromMetadata(metadata: AppMetadataRow): LightAppCatalogItem {
+function catalogItemFromMetadata(metadata: AppMetadataRow) {
   return {
     appId: metadata.appId,
     title: metadata.title,

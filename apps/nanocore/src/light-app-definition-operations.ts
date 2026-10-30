@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import type {
-  GetLightAppResponse,
+  CreateLightAppResponse,
   LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
@@ -106,7 +106,7 @@ export function createLightAppDefinitionOperationImplementations(
     appId: string,
     command: 'kernel.apps.create' | 'kernel.schema.update',
     input: object
-  ): GetLightAppResponse | null => {
+  ): CreateLightAppResponse | null => {
     if (!existsSync(lightAppDbPath(context.dataRoot, context.workspaceId, appId))) return null;
     const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId, 'format-upgrade');
     try {
@@ -127,7 +127,16 @@ export function createLightAppDefinitionOperationImplementations(
     } finally {
       appDb.sqlite.close();
     }
-    return getLightApp(context.dataRoot, context.workspaceId, appId);
+    const app = getLightApp(context.dataRoot, context.workspaceId, appId);
+    if (app.appRevision === null || app.schemaRevision === null || app.schemaDigest === null) {
+      throw new KernelCommandError('unavailable', 'Light App authority is unavailable.');
+    }
+    return {
+      ...app,
+      appRevision: app.appRevision,
+      schemaRevision: app.schemaRevision,
+      schemaDigest: app.schemaDigest,
+    };
   };
   /** Existing completed receipts point to catalog resources; publication adds no separate ledger. */
   const mutate = async <T>(

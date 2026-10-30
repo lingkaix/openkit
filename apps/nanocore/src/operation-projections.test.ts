@@ -1118,12 +1118,17 @@ describe('operation projection cutover', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         appId: child.appId,
       };
-      const ownerRead = commands.getLightApp(
-        f.command.dataRoot,
-        wrongChild.workspaceId,
-        wrongChild.appId
-      );
-      expect(ownerRead).toMatchObject({ lifecycle: 'unavailable', schema: null });
+      let ownerReadFailure: unknown;
+      try {
+        commands.getLightApp(f.command.dataRoot, wrongChild.workspaceId, wrongChild.appId);
+      } catch (error) {
+        ownerReadFailure = error;
+      }
+      expect(ownerReadFailure).toMatchObject({ code: 'not_found', status: 404 });
+      const { code: readCode, message: readMessage } = ownerReadFailure as {
+        code: string;
+        message: string;
+      };
       const input = {
         ...wrongChild,
         collection: 'entries',
@@ -1153,7 +1158,10 @@ describe('operation projection cutover', () => {
           code,
           message,
         });
-        await expect(project('kernel.apps.get', wrongChild)).resolves.toEqual(ownerRead);
+        await expect(project('kernel.apps.get', wrongChild)).rejects.toMatchObject({
+          code: readCode,
+          message: readMessage,
+        });
         for (const [workspaceId, appId] of [
           ['ws_00000000-0000-7000-8000-000000000001', f.appRecord.appId],
           [other.id, child.appId],
@@ -1168,7 +1176,7 @@ describe('operation projection cutover', () => {
       f.coreDb.sqlite.close();
     }
   });
-  it('preserves the owner unavailable entry for a missing app through every projection', async () => {
+  it('preserves the owner not_found refusal for a never-created app through every projection', async () => {
     const f = await operationFixture();
     try {
       const { projections } = await operationProjections(f);
@@ -1176,18 +1184,16 @@ describe('operation projection cutover', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         appId: randomUUID(),
       };
-      const ownerRead = commands.getLightApp(
-        f.command.dataRoot,
-        selector.workspaceId,
-        selector.appId
-      );
-      expect(ownerRead).toMatchObject({
-        appId: selector.appId,
-        lifecycle: 'unavailable',
-        schema: null,
-      });
+      let ownerReadFailure: unknown;
+      try {
+        commands.getLightApp(f.command.dataRoot, selector.workspaceId, selector.appId);
+      } catch (error) {
+        ownerReadFailure = error;
+      }
+      expect(ownerReadFailure).toMatchObject({ code: 'not_found', status: 404 });
+      const { code, message } = ownerReadFailure as { code: string; message: string };
       for (const project of Object.values(projections)) {
-        await expect(project('kernel.apps.get', selector)).resolves.toEqual(ownerRead);
+        await expect(project('kernel.apps.get', selector)).rejects.toMatchObject({ code, message });
       }
       expect(
         listRecords(

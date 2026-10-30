@@ -344,15 +344,18 @@ export const RollbackLightAppSnapshotRequestSchema = z
   })
   .strict();
 
-/** One Light App catalog row. */
+/** One Light App catalog row; null authority facts are unknown, never inferred. */
 export const LightAppCatalogItemSchema = z
   .object({
     appId: z.string().uuid(),
     title: z.string().min(1),
     purpose: z.string(),
-    appRevision: z.number().int().positive(),
-    schemaRevision: z.number().int().positive(),
-    schemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    appRevision: z.number().int().positive().nullable(),
+    schemaRevision: z.number().int().positive().nullable(),
+    schemaDigest: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .nullable(),
     kernelFormatVersion: z.number().int().positive().nullable(),
     definitionVersion: z
       .string()
@@ -396,14 +399,18 @@ export const GetLightAppResponseSchema = LightAppCatalogItemSchema.extend({
   meaning: z.array(LightAppMeaningResolutionSchema).optional(),
 }).strict();
 
-/** Snapshot restore returns the app authority selected by the recovery copy. */
-export const RollbackLightAppSnapshotResponseSchema = GetLightAppResponseSchema;
-
 /** Create-app body is the schema proposal. */
 export const CreateLightAppRequestSchema = LightAppSchemaInputSchema;
 
-/** Create-app result. */
-export const CreateLightAppResponseSchema = GetLightAppResponseSchema;
+/** Successful app mutation with known current revision and digest facts. */
+export const CreateLightAppResponseSchema = GetLightAppResponseSchema.extend({
+  appRevision: LightAppCatalogItemSchema.shape.appRevision.unwrap(),
+  schemaRevision: LightAppCatalogItemSchema.shape.schemaRevision.unwrap(),
+  schemaDigest: LightAppCatalogItemSchema.shape.schemaDigest.unwrap(),
+}).strict();
+
+/** Snapshot restore returns the app authority selected by the recovery copy. */
+export const RollbackLightAppSnapshotResponseSchema = CreateLightAppResponseSchema;
 
 /** Schema update body. */
 export const UpdateLightAppSchemaRequestSchema = z
@@ -415,7 +422,7 @@ export const UpdateLightAppSchemaRequestSchema = z
   .strict();
 
 /** Schema update result. */
-export const UpdateLightAppSchemaResponseSchema = GetLightAppResponseSchema;
+export const UpdateLightAppSchemaResponseSchema = CreateLightAppResponseSchema;
 
 /** Retire-app body. */
 export const RetireLightAppRequestSchema = z
@@ -425,7 +432,7 @@ export const RetireLightAppRequestSchema = z
   .strict();
 
 /** Retire-app result. */
-export const RetireLightAppResponseSchema = GetLightAppResponseSchema;
+export const RetireLightAppResponseSchema = CreateLightAppResponseSchema;
 
 /** Canonical RFC3339 millisecond UTC timestamp used by date fields. */
 export const LightAppDateValueSchema = z
@@ -508,7 +515,11 @@ export const LightAppBatchRequestSchema = z
 /** Batch result: current app metadata plus ordered current records. */
 export const LightAppBatchResponseSchema = z
   .object({
-    app: LightAppCatalogItemSchema,
+    app: LightAppCatalogItemSchema.extend({
+      appRevision: CreateLightAppResponseSchema.shape.appRevision,
+      schemaRevision: CreateLightAppResponseSchema.shape.schemaRevision,
+      schemaDigest: CreateLightAppResponseSchema.shape.schemaDigest,
+    }).strict(),
     items: z.array(LightAppRecordSchema),
   })
   .strict();

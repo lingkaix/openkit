@@ -32899,18 +32899,39 @@
             "type": "string"
           },
           "appRevision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "schemaRevision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "schemaDigest": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "kernelFormatVersion": {
             "anyOf": [
@@ -33435,18 +33456,39 @@
                   "type": "string"
                 },
                 "appRevision": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "schemaRevision": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "schemaDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "kernelFormatVersion": {
                   "anyOf": [
@@ -154351,5 +154393,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:988606ab18f595c4e06372938122eebfb6d08b230f9941e41473defec41d18d0"
+  "x-openkit-source-digest": "sha256:ee693c0ebb8cb36909e1ba79f9248f27fd57df389f039734652c3de1ea4d67c0"
 }

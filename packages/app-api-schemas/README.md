@@ -287,3 +287,5 @@ Workspace recovery inspection uses the existing path-free report and capture/adm
 Workspace MCP management exposes `catalog.mcp-stage-version` and `catalog.mcp-remove` alongside create, select and binding. Select requires nullable `expectedCurrentDigest` from the observed entry; stage preserves current selection and removal retains history.
 
 `vault.unlock` accepts an empty request and reloads only the configured external key file through the native bounded loader. It accepts no request key material; the other secret-bearing Vault operations retain their secret-stdin metadata.
+
+Light App catalog and get projections permit null app/schema revisions and schema digest when retained authority is unreadable. Null means unknown; clients must inspect it before sending numeric command preconditions. Existing successful mutation and Batch response schemas retain required numeric revisions and digest. These projections grant no authority and change no retained format.

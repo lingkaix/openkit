@@ -1,10 +1,19 @@
+// openkit-test-platform: posix
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { FsStore } from './lib/store.js';
-import { lightAppDbPath } from './storage/app-db.js';
+import { lightAppDbPath, lightAppRoot } from './storage/app-db.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -292,6 +301,26 @@ it('reports unknown retained Light App facts as unavailable while other apps rem
     const { schema: _schema, capabilities: _capabilities, ...healthyMetadata } = healthy;
     expect(inventory.items.find((item: { appId: string }) => item.appId === healthy.appId)).toEqual(
       healthyMetadata
+    );
+    // Preserve the retained authority outside inventory while its original root becomes dangling.
+    const retainedRoot = lightAppRoot(fixture.dataRoot, fixture.workspaceId, unreadable.appId);
+    const preservedRoot = join(fixture.dataRoot, 'preserved-app-authority');
+    renameSync(retainedRoot, preservedRoot);
+    const absentTarget = join(fixture.dataRoot, 'absent-app-authority');
+    expect(existsSync(absentTarget)).toBe(false);
+    symlinkSync(absentTarget, retainedRoot, 'dir');
+    const dangling = await fixture.call('kernel.apps.get', { appId: unreadable.appId });
+    expect.soft(dangling.status, await dangling.clone().text()).toBe(200);
+    expect.soft(await dangling.json()).toMatchObject({
+      appId: unreadable.appId,
+      lifecycle: 'unavailable',
+      schema: null,
+      appRevision: null,
+      schemaRevision: null,
+      schemaDigest: null,
+    });
+    expect(readFileSync(join(preservedRoot, 'data.sqlite'), 'utf8')).toBe(
+      'Deliberately unreadable SQLite authority.'
     );
   } finally {
     await fixture.close();
