@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { hashPassword } from 'better-auth/crypto';
@@ -114,24 +114,32 @@ export function writeServerBootstrapTokenEmission(
   dataRoot: string,
   issue: ServerBootstrapTokenIssue
 ): ServerBootstrapTokenEmission {
-  const root = resolveDataRootPath(dataRoot, 'server', 'files', 'auth');
-  const path = join(root, 'bootstrap-token.txt');
-  mkdirSync(root, { recursive: true });
-  writeFileSync(
-    path,
+  const emission = writeServerBootstrapTokenFile(
+    dataRoot,
     [
       'OpenKit server bootstrap credential. This owner-only file contains the one-time value in plaintext.',
       `Expires at: ${issue.expiresAt}`,
       `Token: ${issue.token}`,
       '',
-    ].join('\n'),
-    { mode: 0o600 }
+    ].join('\n')
   );
-  chmodSync(path, 0o600);
   console.warn(
     `OpenKit server bootstrap credential delivered through its one-time owner-readable file. It expires at ${issue.expiresAt} and cannot be recovered from NanoCore.`
   );
 
+  return emission;
+}
+
+/** Shares the existing owner-only delivery write for emission and consumed-material clearing. */
+function writeServerBootstrapTokenFile(
+  dataRoot: string,
+  contents: string
+): ServerBootstrapTokenEmission {
+  const root = resolveDataRootPath(dataRoot, 'server', 'files', 'auth');
+  const path = join(root, 'bootstrap-token.txt');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(path, contents, { mode: 0o600 });
+  chmodSync(path, 0o600);
   return { path };
 }
 
@@ -177,17 +185,9 @@ export async function consumeServerBootstrapToken(
     ) {
       return { status: 'invalid' };
     }
-    // Remove the delivery before database writes so cleanup failure cannot discard an issued credential.
+    // Clear delivery material before database writes so cleanup failure cannot discard an issued credential.
     try {
-      rmSync(
-        join(
-          resolveDataRootPath(coreDb.dataRoot, 'server', 'files', 'auth'),
-          'bootstrap-token.txt'
-        ),
-        {
-          force: true,
-        }
-      );
+      writeServerBootstrapTokenFile(coreDb.dataRoot, '');
     } catch {
       return { status: 'unavailable' };
     }

@@ -13,7 +13,7 @@
     "apps/nanocore/src/auth/admin-recovery.ts\tfs:writeFileSync\tdab05ddb305a09af390f76f30d277de51cd4e5df9c342bf8c08a1c64faea257a": 1,
     "apps/nanocore/src/auth/bootstrap-token.ts\tfs:chmodSync\tee55d6cc02f48cca8d70f1b0d1a3f129a2673f4b318743e6eee6c967f56c6749": 1,
     "apps/nanocore/src/auth/bootstrap-token.ts\tfs:mkdirSync\t189a9063c93043f665813811667877c4568130688650b85fe94f8508652c25c8": 1,
-    "apps/nanocore/src/auth/bootstrap-token.ts\tfs:writeFileSync\t130da8f58fc7d007a08b18ece35c54316ddab302d532bfde4ddeb76b05607921": 1,
+    "apps/nanocore/src/auth/bootstrap-token.ts\tfs:writeFileSync\tb1a93bee2f78c9b4d516c99ba09cc3d0b5abf85ec33039ee9d9d3394583cc506": 1,
     "apps/nanocore/src/auth/nanohost-transport-sink.ts\tfs:chmodSync\t3aec70fc72c56644c7951796a492a2b7e9b9f868022f141c3b4443cec0d7d153": 2,
     "apps/nanocore/src/auth/nanohost-transport-sink.ts\tfs:chmodSync\t4d3617d85002159632c982ceabca2a9784cb54e188e81321a826d9ace854776a": 2,
     "apps/nanocore/src/auth/nanohost-transport-sink.ts\tfs:mkdirSync\t17492cb400a746e2e7dcba533ee2740c8befb346c1875793e8f9d88be7da5c1f": 1,

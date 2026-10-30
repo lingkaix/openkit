@@ -210,7 +210,12 @@ describe('server bootstrap token', () => {
 
       expect(issued?.token).toMatch(/^okt_/);
       expect(secondIssue).toBeNull();
-      expect.soft(existsSync(emission.path)).toBe(false);
+      // #468 permits removal of the file or its token line; file identity is not the safety oracle.
+      const remainingEmission = existsSync(emission.path)
+        ? readFileSync(emission.path, 'utf8')
+        : '';
+      expect.soft(remainingEmission.includes(issued!.token)).toBe(false);
+      expect.soft(/^\s*Token:/im.test(remainingEmission)).toBe(false);
       expect(consumed).toMatchObject({
         record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
       });
