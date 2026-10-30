@@ -17,8 +17,6 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
-import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import {
   publishWorkspaceResourceCatalog,
   readWorkspaceResourceCatalog,
@@ -56,7 +54,6 @@ import {
   WORKSPACE_BACKUP_MANIFEST_FILE,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
-import { completeCapture } from './workspace-capture-protection.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -601,18 +598,9 @@ async function bindTargetCandidate(
         ],
       },
     ]);
-    recoverRunningCapabilityCalls({ workspaceDb: db });
-    const captures = sqlite
-      .prepare("SELECT capture_id FROM workspace_capture_records WHERE state='active'")
-      .pluck()
-      .all() as string[];
-    for (const capture of captures) completeCapture(db, workspaceId, capture);
-    recordWorkspaceAuditEvent({
-      workspaceDb: db,
+    await client.recoveryCleanup(database, {
       workspaceId,
       action: input.command === 'restore' ? 'workspace.restore' : 'workspace.move-in',
-      resource: `workspace:${workspaceId}`,
-      outcome: 'succeeded',
       summary: JSON.stringify({
         backupId: manifest.backupId,
         manifestDigest: owned.proof.capture.manifestDigest,

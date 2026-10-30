@@ -129,25 +129,34 @@ function endCapture(
 ): WorkspaceCaptureRecord {
   assertCaptureScope(db, workspaceId, captureId);
   if (db.sqlite.inTransaction) throw new Error('Workspace capture requires its own commit.');
-  return db.sqlite
-    .transaction(() => {
-      const existing = inspectCapture(db, workspaceId, captureId);
-      if (!existing) throw new Error('Workspace capture record is missing.');
-      if (existing.state === state) return existing;
-      if (existing.state !== 'active') {
-        throw new Error('Workspace capture has a conflicting terminal decision.');
-      }
-      const endedAt = new Date().toISOString();
-      const result = db.sqlite
-        .prepare(
-          `UPDATE workspace_capture_records SET state = ?, ended_at = ?
+  return db.sqlite.transaction(() => endCaptureInDb(db, workspaceId, captureId, state)).immediate();
+}
+
+/** Decides the existing terminal mutation inside its caller's transaction; this never acknowledges durability. */
+export function endCaptureInDb(
+  db: WorkspaceDb,
+  workspaceId: string,
+  captureId: string,
+  state: 'finished' | 'abandoned'
+): WorkspaceCaptureRecord {
+  assertCaptureScope(db, workspaceId, captureId);
+  if (!db.sqlite.inTransaction)
+    throw new Error('Workspace capture requires an owning transaction.');
+  const existing = inspectCapture(db, workspaceId, captureId);
+  if (!existing) throw new Error('Workspace capture record is missing.');
+  if (existing.state === state) return existing;
+  if (existing.state !== 'active') {
+    throw new Error('Workspace capture has a conflicting terminal decision.');
+  }
+  const endedAt = new Date().toISOString();
+  const result = db.sqlite
+    .prepare(
+      `UPDATE workspace_capture_records SET state = ?, ended_at = ?
          WHERE capture_id = ? AND workspace_id = ? AND state = 'active'`
-        )
-        .run(state, endedAt, captureId, workspaceId);
-      if (result.changes !== 1) throw new Error('Workspace capture transition did not commit.');
-      return { ...existing, state, endedAt };
-    })
-    .immediate();
+    )
+    .run(state, endedAt, captureId, workspaceId);
+  if (result.changes !== 1) throw new Error('Workspace capture transition did not commit.');
+  return { ...existing, state, endedAt };
 }
 
 /**

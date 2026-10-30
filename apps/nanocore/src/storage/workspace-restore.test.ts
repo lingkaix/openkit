@@ -22,6 +22,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { createChannelServices } from '../channel-services.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
@@ -52,6 +53,7 @@ import {
   parseWorkspaceBackupManifest,
   withVerifiedWorkspaceBackupBundle,
 } from './workspace-backup-bundle.js';
+import { protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import {
   runWorkspaceRecoveryCli,
@@ -152,6 +154,8 @@ async function fixture(channelHistory = false, unfinished = false) {
     db.sqlite.close();
   }
   let capturedTurnId: string | undefined;
+  let capturedCallId: string | undefined;
+  let capturedCaptureId: string | undefined;
   if (unfinished) {
     const turn = await store.createTurn(workspaceId, DEMO_THREAD_ID, 'Captured unfinished Turn', {
       kind: 'user',
@@ -159,6 +163,25 @@ async function fixture(channelHistory = false, unfinished = false) {
     });
     capturedTurnId = turn.id;
     expect(['completed', 'interrupted', 'cancelled', 'failed']).not.toContain(turn.status);
+    const history = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      await openTestNativeWorkspace(history);
+      capturedCallId = (
+        await startCapabilityCall({
+          authorityActor: { kind: 'user', id: ownerId },
+          capabilityId: 'mcp.recovery.probe',
+          family: 'mcp',
+          operation: 'mcp.call-tool',
+          redactionClass: 'metadata-only',
+          workspaceDb: history,
+          workspaceId,
+        })
+      ).id;
+      capturedCaptureId = randomUUID();
+      protectCapture(history, workspaceId, capturedCaptureId);
+    } finally {
+      history.sqlite.close();
+    }
   }
   const pendingId = randomUUID();
   if (channelHistory) {
@@ -358,6 +381,8 @@ async function fixture(channelHistory = false, unfinished = false) {
     argv,
     inspectChannel,
     capturedTurnId,
+    capturedCallId,
+    capturedCaptureId,
   };
 }
 
@@ -428,6 +453,50 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(originalPath, 'control_turns')).toEqual(originalTurns);
     expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(originalRegistry);
     expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toEqual(originalMembers);
+  });
+
+  it('WM restore preparation: a refused recovery Audit publishes no replacement or success', async () => {
+    const f = await fixture(false, true);
+    const originalPath = workspaceDbPath(f.dataRoot, workspaceId);
+    const original = statSync(originalPath);
+    const before = sha(readFileSync(originalPath));
+    const authority = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+    const candidatePath = join(f.bundleRoot, 'db/workspace.sqlite');
+    const candidate = new Database(candidatePath, { fileMustExist: true });
+    try {
+      candidate.exec(`CREATE TRIGGER refuse_recovery_audit BEFORE INSERT ON audit_events
+        WHEN NEW.action = 'workspace.restore'
+        BEGIN SELECT RAISE(ABORT, 'RECOVERY_AUDIT_FAULT'); END`);
+    } finally {
+      candidate.close();
+    }
+    const bytes = readFileSync(candidatePath);
+    const inventory = f.manifest.inventory.map((entry) =>
+      entry.path === 'db/workspace.sqlite'
+        ? { ...entry, bytes: bytes.length, sha256: sha(bytes) }
+        : entry
+    );
+    f.writeManifest({ ...f.manifest, inventory, inventoryDigest: sha(JSON.stringify(inventory)) });
+    await refuses(f, 'recovery-required');
+    // Same-Deployment Restore publishes only after complete private preparation, including Audit.
+    expect(statSync(originalPath).ino).toBe(original.ino);
+    expect(sha(readFileSync(originalPath))).toBe(before);
+    expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(authority);
+    await expect(
+      runCli(
+        [
+          'inspect',
+          '--data-root',
+          f.dataRoot,
+          '--workspace-id',
+          workspaceId,
+          '--request-id',
+          f.requestId,
+        ],
+        () => {},
+        f
+      )
+    ).resolves.toMatchObject({ disposition: 'quarantined', workspaceId });
   });
 
   it('WM restore step 4: a captured unfinished Turn without a Pending Request is interrupted without replacement work', async () => {
@@ -502,6 +571,29 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(dbPath, 'control_executions')).toEqual([]);
     expect(rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries')).toEqual(beforeAdmissions);
     expect(rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts')).toEqual(beforeAttempts);
+    // Restore step 4 retains uncertain effects as unknown and closes captured protection without replay.
+    expect(rows(dbPath, 'capability_calls')).toEqual([
+      expect.objectContaining({
+        call_id: f.capturedCallId,
+        status: 'unknown',
+        error_code: 'capability_call_recovered_after_restart',
+      }),
+    ]);
+    expect(rows(dbPath, 'workspace_capture_records')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capture_id: f.capturedCaptureId, state: 'finished' }),
+      ])
+    );
+    expect(rows(dbPath, 'audit_events')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          capability_call_id: f.capturedCallId,
+          action: 'capability.finish',
+          outcome: 'unknown',
+        }),
+        expect.objectContaining({ action: 'workspace.restore', outcome: 'succeeded' }),
+      ])
+    );
   }, 120_000);
 
   it.each([

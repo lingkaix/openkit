@@ -560,7 +560,7 @@ Current source and destination-audience checks cover payloads, names, digests, p
 
 ## Current Implementation Projection
 
-Private candidate Workspace provenance and private Thread account rebinding use the existing control-store worker and its covering FULL acknowledgement. The same admitted candidate writer serves terminal and Pending history recovery and closes before candidate sealing or placement. Current safety, capability, capture and Audit writes, byte preparation, and live target-only restore/MOVE activation remain pending migration work. This partial implementation does not change the restore rule: captured in-flight work is interrupted, unknown effects stay unknown, and no live binding is reconstructed.
+Private candidate Workspace provenance and private Thread account rebinding use the existing control-store worker and its covering FULL acknowledgement. Captured Capability recovery, inherited capture completion and recovery Audit now compose one native cleanup transition through their original domain owners. The same admitted candidate writer serves terminal and Pending history recovery and closes before candidate sealing or placement. Current-safety copying, byte preparation, and live target-only restore/MOVE activation remain pending migration work. This partial implementation does not change the restore rule: captured in-flight work is interrupted, unknown effects stay unknown, and no live binding is reconstructed.
 
 Per-Workspace operational backup, restore, and identity-preserving offline move are design requirements, not implemented capabilities. The following descriptions concern the existing analytical transfer and whole-data-root tooling. They do not establish the new operational acceptance predicates.
 

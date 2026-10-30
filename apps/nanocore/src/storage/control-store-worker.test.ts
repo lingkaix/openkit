@@ -11,6 +11,7 @@ import {
   type ControlSqlStatement,
   type ControlWorkerReply,
   type ControlWorkerRequest,
+  isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 
 const require = createRequire(import.meta.url);
@@ -126,6 +127,23 @@ afterEach(async () => {
 });
 
 describe('native control database worker', () => {
+  it('rejects a non-string recovery action without coercion', () => {
+    // Contract Evolution's closed core refuses unsupported values at effect admission.
+    expect(
+      isControlWorkerRequest({
+        version: CONTROL_WORKER_VERSION,
+        id: 0,
+        database: 'workspace',
+        operation: 'recovery-cleanup',
+        input: {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          action: ['workspace.restore'],
+          summary: '{}',
+        },
+      })
+    ).toBe(false);
+  });
+
   it('does not misreport a pending write when a malformed message reuses its identity', async () => {
     const f = fixture();
     expect(await f.send({ operation: 'open', path: f.path, create: true })).toMatchObject({

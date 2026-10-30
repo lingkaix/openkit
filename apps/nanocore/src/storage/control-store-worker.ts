@@ -102,6 +102,7 @@ import {
   prepareControlTerminal,
   readProduct,
 } from './control-store-products.js';
+import { applyControlRecoveryCleanup } from './control-store-recovery.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -136,6 +137,7 @@ type WriteCommand = Extract<
   {
     operation:
       | 'write'
+      | 'recovery-cleanup'
       | 'transition'
       | 'products'
       | 'item'
@@ -604,6 +606,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       if (request.input.pendingItem) lanes.add(request.input.pendingItem.entry.turnId);
       break;
     case 'write':
+    case 'recovery-cleanup':
     case 'material':
       break;
   }
@@ -1325,6 +1328,15 @@ function flush(owner: OwnedDatabase): void {
               operation: 'capability',
               result,
             };
+          } else if (request.operation === 'recovery-cleanup') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            applyControlRecoveryCleanup(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-cleanup',
+            };
           } else if (request.operation === 'maintenance') {
             if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
             const result = applyControlMaintenanceAdmission(owner.scopeDb, request.input);
@@ -1761,6 +1773,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     }
     if (
       value.operation === 'write' ||
+      value.operation === 'recovery-cleanup' ||
       value.operation === 'transition' ||
       value.operation === 'products' ||
       value.operation === 'item' ||
@@ -1804,6 +1817,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           finish,
           cohort,
           barrier:
+            value.operation === 'recovery-cleanup' ||
             archivedThreads(value).length > 0 ||
             (value.operation === 'write' && owner.scopeDb !== undefined),
           ready: false,
