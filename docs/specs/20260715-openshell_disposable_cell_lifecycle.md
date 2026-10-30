@@ -1,6 +1,6 @@
 ---
 status: Deprecated
-implementation: Partial
+implementation: N/A
 kind: topology
 status-changed: 2026-08-02
 current-guidance: "`docs/specs/20260802-nanohost_runtime_and_transport.md`"

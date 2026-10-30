@@ -6,7 +6,7 @@ updated: "2026-10-09"
 ---
 # Codex Worker Adapter
 
-## Generic Volume Retention Amendment
+## Retained Native Data
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch and control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory; closing still invalidates the exact binding and proves writer absence. Retained native histories, memory, configuration and unknown files do not select a conversation, grant OpenKit credentials, or grant external model, tool, provider, or network authority; admitted in-Sandbox configuration follows Retained Native Home And Configuration Authority below.
 
@@ -23,6 +23,7 @@ The adapter is worker-side integration code. It is not a NanoCore runtime, trans
 - Codex session-local state, native thread identity, and the restricted resume reference outside the disposable control root
 - App Server v2 session configuration for the trusted relay and the exact resolved MCP servers, including the built-in servers
 - Translation of App Server events into the shared Harness result
+- The ephemeral native inference hint consumed by [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md) and [Agent Runtime Context Management And Compaction](20260902-agent_runtime_context_compaction.md)
 - The provenance attachment boundary; the evidence projection is owned by [Worker Runtime Subagent Provenance](20260711-worker_runtime_subagent_provenance.md)
 - Codex-specific version and native event compatibility tests
 - Codex-specific failure mapping and conformance evidence for manifest-declared capabilities
@@ -74,7 +75,7 @@ A new `session.open` performs the native handshake and reports `pending` until t
 
 For each exact server id in resolved MCP supply, the adapter projects only that id onto App Server session MCP aimed at the loopback class `http://127.0.0.1:17892/capabilities/mcp/<id>`, authenticated with the capability loopback credential. The raw credential never enters argv. Unselected OpenKit-managed external MCP entries receive no managed projection; independently configured local MCP follows Retained Native Home And Configuration Authority, and native plugins and hooks follow the same in-Sandbox support boundary. Retained data and configuration do not widen current authority, and sibling AgentSessions remain separately addressed. The adapter must not discover, install, connect directly, authorize, or broaden supply. An empty manifest MCP selection does not disable the capability plane: resolved supply still includes the built-in servers supplied by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md). A missing capability loopback credential fails `session.open` before native work. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns the Gateway plane. In-Sandbox MCP servers are the worker's under the Sandbox rule and are not an approval surface. Each managed server is configured with `default_tools_approval_mode` set to approve so tool calls proceed without client approval, consistent with the full-permission rule above, and [Operation Definition](20261002-operation_definition.md) recommends that same setting for external Codex installations.
 
-The adapter declares whether the Codex MCP client lists tools again at Turn start. The implementation slice establishes that declaration by probe, and this specification does not invent the answer. When the runtime does not list tools again, a changed supply is a setup change: [AgentSession](../core/agent-session.md) replaces the live binding with a successor that resumes the native conversation. Narrowing and revocation apply at the next call as `capability_denied`. The Turn boundary order is fence the earlier Turn, admit and bind the new Turn, discover tools, verify the snapshot the model will see, then prompt. A researched `config/mcpServer/reload` method is not a settled requirement.
+The Codex MCP client does not list tools again at Turn start. A changed supply is a setup change: [AgentSession](../core/agent-session.md) replaces the live binding with a successor that resumes the native conversation. Narrowing and revocation apply at the next call as `capability_denied`. The Turn boundary order is fence the earlier Turn, admit and bind the new Turn, discover tools, verify the snapshot the model will see, then prompt. A researched `config/mcpServer/reload` method is not a settled requirement.
 
 ### Retained Native Home And Configuration Authority
 
@@ -94,7 +95,7 @@ Before native work, the adapter must prove that the selected native configuratio
 
 Qualification must cover startup with no base config, byte-preserving authored configuration, attempted retained overrides of model/provider/Gateway/credential bindings, retained auth-store behavior, zero capability contact during resumed open, local in-Sandbox MCP use without an external bypass, and exact native resume after the old control root is removed. Credential absence must be checked across the complete retained home, including native databases, WAL files, and logs, for the qualified configuration and logging posture.
 
-The engineer accepted this amendment in [Codex Retains Its Whole Native Home Under Fixed External Authority](../decisions/20260930-codex_home_retained_whole.md).
+The decision and its reason are recorded in [Codex Retains Its Whole Native Home Under Fixed External Authority](../decisions/20260930-codex_home_retained_whole.md).
 
 ## Session Operations
 
@@ -147,7 +148,7 @@ The final assistant response is the correlated App Server terminal result, not a
 
 App Server events are not imported directly into NanoCore product state. When runtime provenance is enabled, the evidence projection is owned by the provenance specification. The accepted design replaces exec JSONL stdout capture. The retention boundary in Provenance stays here.
 
-Outside the separately bounded streaming provenance path, native result content is limited to 16 MiB. The shared process runner retains at most a 16 KiB prefix from each of stdout and stderr for failure diagnostics before redaction.
+Outside the separately bounded streaming provenance path, native result content is limited to 16 MiB. The resident adapter attaches only stderr produced during the addressed Turn as diagnostics. The prefix keeps its existing byte bound (current default: 16 KiB) and is redacted before exposure. Protocol stdout is never a diagnostic. Process-lifetime output stays with host-level diagnostics.
 
 Malformed native events may invalidate provenance evidence, but they must not bypass candidate terminal classification or cause NanoCore to accept native Codex schemas.
 
@@ -286,6 +287,8 @@ Native final-result and diagnostic guards are parser/capture limits, not raw-out
 Supply finite native `tool_output_token_limit` and per-MCP-tool `output_token_limit` only where the selected pin supports them. Qualify function-tool and code-mode results separately. OpenKit-supplied reads remain bounded under [Context Package](20260703-worker_context_package.md#bounded-model-projection) before native handling. Native configuration is a second layer, not an OpenKit bound or a reason to patch the native context manager.
 
 ## Implementation Evidence And Limit
+
+The adapter maps validated native request metadata to the existing ephemeral inference hint under [Native Compaction Phase Hint](../decisions/20261016-native_compaction_phase_hint.md). It cross-checks `x-codex-turn-metadata` against its native projections and carries request kind and native lineage to the Gateway. The hint remains ephemeral under those owners.
 
 The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
 

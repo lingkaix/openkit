@@ -142,7 +142,7 @@ In-Sandbox MCP follows native local configuration. OpenKit-managed MCP remains e
 
 The two supplied loopback bearers are what the native process uses for inference and MCP. Mint, attribution, the Turn-barrier drain, and destruction belong to [Worker Agent Capability](20260703-worker_agent_capability.md). The native process never holds upstream Turn tokens, and the worker-control token never enters the runtime. An unsupported route fails closed. Idle refusal, sibling refusal, and Turn-barrier behavior are consumed from that contract.
 
-The adapter must accept an admitted Gateway route whose model declares `reasoning: true`; that flag alone cannot make the route unsupported or refuse the prompt. Acceptance requires such a reasoning route to reach native inference through the same protected Gateway binding without direct Provider authority. This replaces the earlier refusal under [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md) and is distinct from the Reasoning Effort Delivery contract above.
+The adapter must accept an admitted Gateway route whose model declares `reasoning: true`; that flag alone cannot make the route unsupported or refuse the prompt. Acceptance requires such a reasoning route to reach native inference through the same protected Gateway binding without direct Provider authority. [The tier-routing decision](../decisions/20261001-gateway_tier_routing_rulings.md) supplies the reason; Reasoning Effort Delivery above owns effort selection.
 
 The native field that carries each loopback credential is established by probe and is not named here. Credential values never appear in diagnostics or evidence.
 
@@ -210,6 +210,8 @@ The 16 MiB native-byte/session-update guard and diagnostic prefixes remain parse
 Use native spill storage and a finite `spill-policy.maxInlineTokens` only when the effective admitted ACP profile supports that plugin. Source availability of a plugin is not proof of activation. Qualify spill retrieval, image offload, cancellation, and save failure. OpenKit must bound its own projections under [Context Package](20260703-worker_context_package.md#bounded-model-projection), including save-failure behavior that could otherwise remain inline. Do not replace the native context manager.
 
 ## Implementation Evidence And Limit
+
+The retained state root contains the adapter-written `openkit-deepseek-binding.json` sidecar with `cwd`, `mcpServerIds`, `model`, `models`, `sessionId`, and `skillTargetPaths`. Each model descriptor carries `model`, `contextWindow`, `maxTokens`, `input`, and optional `reasoning`. Resume validates the known identity and catalog fields and ignores unknown additive sidecar members. The `private-home` child holds native-owned data. These bytes remain within the existing retained-volume boundary; the sidecar does not select another conversation or grant current authority.
 
 The implementation evidence below does not qualify live steer; the current ACP pin explicitly remains unsupported under the refusal boundary above.
 

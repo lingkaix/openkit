@@ -51,7 +51,7 @@ Before the first heartbeat the startup deadline applies; afterwards the heartbea
 
 The existing bounded reconnect window remains (current default five minutes, capped by the attempt's absolute deadline). Core holds the worker process-key hash and refuses routes while awaiting exact process adoption even if the grant is unexpired. Adoption requires the exact process key, product/backend/binding/package lineage, next sequence, deadline, conditional attempt ownership, and predecessor-fenced authoritative NanoHost connection. A wrong reconnect request does not shorten an already armed window; successful exact adoption or its deadline owner alone wins. Reconnect restores the same worker and attempt and never resubmits native work.
 
-The adapter reuses current transport, Integration, and NanoHost lifecycle behavior; this amendment adds no NanoHost Rust stop timer. Core disconnect makes new mediated effects unavailable but is not physical fencing of already accepted work or separately admitted local effects. The heartbeat gate remains equally strict. This amendment does not fix #108.
+The adapter reuses current transport, Integration, and NanoHost lifecycle behavior; it adds no NanoHost Rust stop timer. Core disconnect makes new mediated effects unavailable but is not physical fencing of already accepted work or separately admitted local effects. The heartbeat gate remains equally strict.
 
 ## Carriage, Normalization, And Acceptance
 
@@ -123,11 +123,11 @@ This document is the release-neutral overview for worker runtime communication. 
 - Preserve backend portability for OpenShell first and later Docker, VM, Kubernetes, managed sandbox, or custom worker runtimes.
 - Prepare the design for controlled NanoCore-managed Skill, MCP, Knowledge Store, context, and tool supply without allowing Worker Agents to modify NanoCore-managed supply authority.
 - Keep all worker-produced repository changes behind NanoCore-owned staged review and apply gates.
-- Prove a stable runtime extension boundary for Codex, OpenCode, Pi, and DeepSeek so a further Worker Agent adds only one authored `AgentManifest`, one worker-side adapter module plus its static registry entry, inside the one multi-runtime Sandbox image. `worker-common` remains the public base. A new runtime does not add a deployment leaf image.
+- Prove a stable runtime extension boundary for Codex, OpenCode, Pi, and DeepSeek so a further Worker Agent adds only one authored `AgentManifest`, one worker-side adapter registry entry with adapter-owned modules and packages, inside the one multi-runtime Sandbox image. `worker-common` remains the public base. A new runtime does not add a deployment leaf image.
 
 ## Primary Extensibility Criterion
 
-> The real outcome is not three adapters. A further Worker Agent must require only one authored `AgentManifest`, one worker-side adapter module plus its static registry entry, inside the one multi-runtime image. Opaque runtime ids remain. NanoCore gains no runtime-name branch, command builder, native output parser, or image-selection branch for that addition. Lifecycle and Gateway amendments this change already accepted are not a failure of that boundary.
+> The real outcome is not three adapters. A further Worker Agent must require only one authored `AgentManifest`, one worker-side adapter registry entry with adapter-owned modules and packages, inside the one multi-runtime image. Opaque runtime ids remain. NanoCore gains no runtime-name branch, command builder, native output parser, or image-selection branch for that addition. The accepted lifecycle and Gateway boundaries are part of this contract.
 
 Runtime ids are opaque to NanoCore. A new runtime must not require a NanoCore enum member, runtime-name branch, command builder, native output parser, provider special case, image-selection branch, canonical schema variant, or governance rule.
 
@@ -218,7 +218,7 @@ Each adapter declares whether its runtime lists tools again at Turn start, and i
 
 ### Control Plane
 
-The control plane uses `openkit-worker-control-v2` end to end.
+[Worker Control Protocol](20260703-worker_control_protocol.md) owns the control envelope version, operations, and event contract.
 
 The worker-visible endpoint is the AEP-resolved sandbox-local `/worker-control/*` Integration binding. Sandbox Integration is the outer adapter, not a capability gateway or Core participant. Its outer carriage adapter carries the unchanged protocol through one standard HTTP/2 session inside one stock OpenShell RelayStream; it does not authorize, inspect, retry, reorder, or reinterpret worker-control messages. The worker-control client inside Sandbox Integration applies only the retry semantics owned by the worker-control protocol.
 
@@ -230,7 +230,8 @@ Current worker-control families are:
 
 - heartbeat
 - artifact notice
-- interrupt delivery
+
+Private Harness `turn.interrupt` delivers interruption under that protocol owner.
 
 Current worker-to-NanoCore record families also include:
 
@@ -404,6 +405,8 @@ The four concrete adapter contracts are owned by:
 
 ## Current Implementation Projection
 
+The AEP producer and schema retain the literal `control.protocol: openkit-worker-control-v1` and a descriptive event list. Neither selects envelope admission or event support. The version-2 envelope and closed event readers remain owned by [Worker Control Protocol](20260703-worker_control_protocol.md); the AEP label does not admit version-1 control envelopes.
+
 NanoCore implements Artifact and Review exact-value rejection and transcript Item replacement through one shared byte matcher, requiring complete original-materialization evidence and exact-version restart reconstruction before canonical admission. Synchronous file submission replaces closeout declaration publication under the accepted submission contract above.
 
 The current implementation is a partial projection of this broader communication model. The facts in this subsection describe code and completed local evidence only; they do not replace the owning acceptance predicates or refreshed real-host proof:
@@ -499,6 +502,8 @@ The first live append surface should accept schema-conformant candidate worker r
 - `item.completed`
 - `artifact.created`
 - `artifact.updated`
+- `observation.recorded`
+- `observation.content.chunk`
 - `turn.completed`
 - `turn.failed`
 
@@ -666,7 +671,7 @@ Required real-host verification:
 
 - run NanoCore in server mode
 - run the configured NanoHost with one fresh, verified-empty Runtime Epoch
-- provide each sandbox one stock RelayStream carrying one standard HTTP/2 session with the sandbox-local `/worker-control/*` and `/inference/*` bindings, while proving that `/capabilities/*` remains absent and disabled
+- provide each sandbox one stock RelayStream carrying one standard HTTP/2 session with sandbox-local `/worker-control/*`, `/inference/*`, and `/capabilities/*` bindings; prove that the capability binding enables exactly `mcp.list-servers`, `mcp.list-tools`, and `mcp.call-tool`
 - connect from an MCP-capable agent app through the remote guide and tools
 - create or resume a real thread
 - run two Turns on one non-Goal resident binding through that RuntimeTarget. Goal worker execution is not this acceptance path

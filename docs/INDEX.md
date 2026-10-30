@@ -110,7 +110,7 @@ and are not listed here.
 - `docs/specs/20260713-work_resource_interaction_model.md` — Accepted, Partial — This spec owns the implementation-facing interaction model that lets users express precise intent against work resources without requiring every interaction to…
 - `docs/specs/20260715-contract_stability_baseline.md` — Accepted, Partial — The current OpenKit stability classification for contract families that matter before a product release.
 - `docs/specs/20260715-multi_user_workspace_system.md` — Accepted, Partial — The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
-- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` — Deprecated, Partial — The per-AgentSession disposable Cell contract is deprecated because the accepted target moves all OpenShell lifecycle effects onto one configured NanoHost and…
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` — Deprecated, N/A — The per-AgentSession disposable Cell contract is deprecated because the accepted target moves all OpenShell lifecycle effects onto one configured NanoHost and…
 - `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Partial — Codex session-local state, native thread identity, and the restricted resume reference outside the disposable control root
 - `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Partial — OpenCode V2 server configuration, native session identity, and event translation for one resident binding
 - `docs/specs/20260716-pi_worker_adapter.md` — Accepted, Partial — Exact native-session identity, inspection, and close proof for one resident SDK host
@@ -259,6 +259,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261025-independent_doc_audit_process.md` — Independent Documentation Audit: Process Group
 - `docs/audits/20261025-independent_doc_audit_supplement.md` — Independent Documentation Audit: Supplement From A Second Session
 - `docs/audits/20261030-independent_doc_audit_answers_p2b.md` — Independent Documentation Audit: Answers For Identity And Policy
+- `docs/audits/20261030-independent_doc_audit_answers_p4.md` — Independent Documentation Audit: Answers For Sandbox And AgentSession
 - `docs/audits/20261030-independent_doc_audit_review_part1.md` — Independent Documentation Audit: Team Review Of Part 1
 - `docs/audits/20261030-independent_doc_audit_review_part2.md` — Independent Documentation Audit: Team Review Of Part 2
 - `docs/audits/20261030-independent_doc_audit_review_part3.md` — Independent Documentation Audit: Team Review Of Part 3

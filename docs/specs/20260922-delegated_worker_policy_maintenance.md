@@ -20,7 +20,7 @@ General Permissions, a new grant store, the internal agent loop, policy language
 
 ## Summary
 
-Simon accepted bounded delegated worker policy maintenance on 2026-09-22: an internal operator may choose and apply ordinary non-secret corrections within explicit administrator-defined workload/resource limits without per-candidate human confirmation. On 2026-10-15, [D06 accepted the first finite apply scope](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md): registered Worker network-policy Git-read corrections only. This owner and the administration owners admit that exact exception. The finite candidate, Policy and application path is implemented; real Sandbox enforcement qualification remains separate.
+An internal operator may choose and apply ordinary non-secret corrections within explicit administrator-defined workload/resource limits without per-candidate human confirmation. [The delegated-apply decision](../decisions/20261015-cleanup_pinning_and_delegated_apply_rulings.md) limits the first apply scope to registered Worker network-policy Git-read corrections only. This owner and the administration owners admit that exact exception. The finite candidate, Policy and application path is implemented; real Sandbox enforcement qualification remains separate.
 
 ## Goals / Non-goals
 

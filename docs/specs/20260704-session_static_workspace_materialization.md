@@ -10,7 +10,7 @@ updated: 2026-09-30
 
 The terminal remote fetch attempt reports bounded private subprocess facts through the [durable Git fetch explanation](20260531-worker_turn_reliability_envelope.md#durable-git-fetch-failure-explanation). Git's completed HTTP 401/403 refusal is `git_fetch_http_refused`; its source remains unattributed without separately trusted enforcement evidence. Earlier direct-fetch observations do not override the terminal advertised-ref attempt. Local object-type checks keep their existing classification. Fixed safe explanations never publish private stderr, alter credential-free Git environment rules, clean an incomplete slot or prove cleanup/storage reuse. Host-local repository diagnostics do not establish sandbox remote access.
 
-## Persistent Working Volumes Amendment
+## Persistent Working Volumes
 
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) separates generic retained volumes from the existing per-Turn generated input/control slots. Persistence is whole-volume and does not enumerate file kinds. Existing slot examples with `retention: session` describe execution-local materialization; writable working data is retained under its storageRef across session/Sandbox replacement. A successor never inherits old route credentials, authority, a claimed successful outcome or an unproved native handle, but may use the same authorized working bytes after predecessor fencing.
 
@@ -165,13 +165,13 @@ The conceptual shape is:
 {
   "schemaVersion": 1,
   "layoutId": "swl_01jz...",
-  "root": "/workspace/threads/<thread-id>",
-  "workingDirectory": "/workspace/threads/<thread-id>",
+  "root": "/workspace",
+  "workingDirectory": "/workspace/worktrees/<workSlotRef>",
   "slots": [
     {
       "id": "main-worktree",
       "kind": "worktree",
-      "path": "/workspace/threads/<thread-id>/worktrees/main",
+      "path": "/workspace/worktrees/<workSlotRef>",
       "access": "read-write",
       "allowedSourceKinds": ["git", "workspace-dir"],
       "allowedMaterializationModes": ["checkout", "fetch", "bind", "copy", "upload", "rsync"],
@@ -195,7 +195,7 @@ The conceptual shape is:
       "path": "/workspace/threads/<thread-id>/data",
       "access": "read-only",
       "allowedSourceKinds": ["s3", "r2", "gcs", "azure-blob", "box", "s3-files"],
-      "allowedMaterializationModes": ["object-store-sync", "provider-file-sync", "gateway-read", "fuse-mount"],
+      "allowedMaterializationModes": ["object-store-sync", "provider-file-sync", "gateway-read"],
       "writeBack": "artifact-only",
       "retention": "policy"
     },
@@ -211,7 +211,7 @@ The conceptual shape is:
     }
   ],
   "control": {
-    "transcriptRoot": "/openkit/sessions/<agent-session-id>/transcript",
+    "transcriptRoot": "/openkit/threads",
     "contextRoot": "/openkit/sessions/<agent-session-id>/context",
     "instructionsRoot": "/openkit/sessions/<agent-session-id>/instructions"
   }
@@ -244,15 +244,15 @@ Rules:
 
 ### Default Directory Skeleton
 
-The default reusable worker filesystem skeleton should be:
+The fixed OpenShell Worker layout follows the work-slot and retained-volume owners below:
 
 ```text
 /workspace/                                   whole retained volume
+  worktrees/
+    <workSlotRef>/                            admitted retained working slot
   threads/
-    <thread-id>/                              stable mutable working slot
-      worktrees/main/
-      data/
-  shared-working/                            retained non-canonical work
+    <thread-id>/data/                         private declared data slot
+  shared-working/                             optional retained non-canonical work
 /sandbox/                                     whole retained home volume
 /openkit/                                     disposable control root
   sessions/
@@ -262,13 +262,16 @@ The default reusable worker filesystem skeleton should be:
       scratch/
       context/
       instructions/
-      transcript/
       control/
+  threads/                                    separate retained volume
+    <thread-id>/<runtime>/
+      native/                                 retained native state
+      capture/<turn-id>/                       retained Turn transcript capture
 ```
 
-The default worker working directory SHOULD be its `/workspace/threads/<thread-id>` namespace rather than the Sandbox root or one specific repository path.
+The fixed image's worker working directory is its admitted `/workspace/worktrees/<workSlotRef>` slot under [NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md).
 
-Agents should receive the active root for the current turn as context, such as `/workspace/threads/<thread-id>/worktrees/main`, instead of baking a repository path into the session's base working directory.
+Agents should receive the active root for the current turn as context, such as `/workspace/worktrees/<workSlotRef>`, instead of baking a repository path into the session's base working directory.
 
 Backends MAY use different concrete paths when required, but the AEP and materialization records MUST expose a stable OpenKit path summary and preserve slot identity. The fixed OpenShell Worker image uses such paths: [NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md) places `main-worktree` at `/workspace/worktrees/<workSlotRef>` and uses that path as the runtime working directory, and [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) retains `/openkit/threads`, which holds Turn transcript capture; those later owners decide that realization.
 
@@ -425,7 +428,7 @@ Each AgentSession supports exactly one active Turn. Turn-scoped slots (`input`, 
 
 Separately, one Harness may hold multiple open AgentSessions for distinct Threads and may execute one Turn in each such AgentSession concurrently up to its declared capacity. Runtime-native child agents remain inside one outer AgentSession and do not create additional slots or Core AgentSession identities. Several compatibility-keyed Harness Instances may share one Sandbox under the runtime and Sandbox owners; this specification neither selects a Harness nor grants capacity beyond those owners.
 
-Every automatically cleared input, output, transcript, evidence or scratch slot MUST be physically outside retained volumes, under the disposable `/openkit` root in this realization. Reject a layout that assigns automatic cleanup beneath a retained mount. Immutable Turn-input slots, including the canonical AEP and Context Package, MUST be cleared before reuse by the next Turn, including while the same AgentSession binding remains. That clear does not wait for process-group absence and is not the workspace-collection gate. Output, transcript, and evidence slots with `retention: turn` MUST be cleared only after their contents are collected. Collecting those contents does not wait for process exit or process-group absence. If clearing fails, the AgentSession MUST be marked stale for reuse so prior-Turn contents cannot leak into the next Turn; a stale-for-hygiene AgentSession is replaced, not silently reused. `retention: session` contents persist across Turns within that AgentSession; `retention: policy` contents follow Workspace policy.
+Every automatically cleared input, output, transcript, evidence or scratch slot MUST be physically outside retained volumes, under the disposable `/openkit` root in this realization. Reject a layout that assigns automatic cleanup beneath a retained mount. Immutable Turn-input slots, including the canonical AEP and Context Package, MUST be cleared before reuse by the next Turn, including while the same AgentSession binding remains. That clear does not wait for process-group absence and is not the workspace-collection gate. Output, transcript, and evidence slots with `retention: turn` MUST be cleared only after their contents are collected. Collecting those contents does not wait for process exit or process-group absence. If clearing fails, the AgentSession MUST be marked stale for reuse so prior-Turn contents cannot leak into the next Turn; a stale-for-hygiene AgentSession is replaced, not silently reused. Cleanup uncertainty follows the wider-fence rule in AgentSession Namespaces And Turn Slots. `retention: session` contents persist across Turns within that AgentSession; `retention: policy` contents follow Workspace policy.
 
 ### Non-canonical Shared Working Material
 

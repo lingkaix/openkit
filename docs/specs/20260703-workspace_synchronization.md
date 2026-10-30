@@ -123,7 +123,7 @@ workspace input snapshot
   -> recovery or reconciliation when interrupted
 ```
 
-NanoCore owns every lifecycle record. Backends implement lifecycle effects.
+NanoCore owns every lifecycle record. Backends implement lifecycle effects. The review and apply stages serve non-Git Workspace changes; Git sources follow Git Strategy below.
 
 Restart handling consults the exact scheduler and worker-control outcome before synchronization acts. `awaiting-reconnect` preserves the existing materialization and backend handle without collection or teardown, exact adoption keeps using those same records, and key, lineage, sequence, or deadline failure enters the existing reconciliation lifecycle. That collection prohibition is the `awaiting-reconnect` window. Turn-end, release, and pre-successor scans remain collection points outside that window.
 
@@ -190,13 +190,13 @@ Observable acceptance requires two resident AgentSessions to carry distinct snap
 
 ## Snapshot Chain
 
-[Runtime](../core/runtime-model.md) states that workspace changes are collected by a read-only scan from outside the Sandbox, at Turn end, at AgentSession release, and before a successor uses the same work volume, without stopping the running worker. This section states the link, the cursor, and the handoff to review. The decision and its reason are recorded in [a decision record](../decisions/20260930-workspace_collection_is_a_snapshot_chain.md). The admitted Git use is the narrow amendment in [NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md).
+[Runtime](../core/runtime-model.md) states that workspace changes are collected by a read-only scan from outside the Sandbox, at Turn end, at AgentSession release, and before a successor uses the same work volume, without stopping the running worker. This section states the link, the cursor, and the handoff to review. The decision and its reason are recorded in [a decision record](../decisions/20260930-workspace_collection_is_a_snapshot_chain.md). The admitted Git use is defined in [NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md).
 
 ### Definition And Exclusions
 
 A changed-capture link records one captured transition; a nonempty immutable candidate against Core's accepted base produces the reviewable `WorkspaceChangeSet`. That link's `base` is the previous captured snapshot on that work volume and its `head` is the new scan, so successive changed-capture links telescope with no duplicate and no omission of captured bytes. The guarantee holds for captured states. Bytes that exist only between the two scans are not a captured head. An unstable `no_new_head` observation uses the same collection-link owner with `base` and `head` both equal to `previousHead` and does not advance the cursor. A stable unchanged capture needs no additional link.
 
-The scan is read-only, runs outside the Sandbox, and uses the private host-side Git index and object store named by the data-boundary amendment. That store is not the worker repository and not canonical Workspace truth. The in-Sandbox publisher of `workspace-changes.json` and `workspace.patch` is removed. It is not retained beside the scan.
+The scan is read-only, runs outside the Sandbox, and uses the private host-side Git index and object store defined by NanoHost Workspace Data Boundary. That store is not the worker repository and not canonical Workspace truth. The in-Sandbox publisher of `workspace-changes.json` and `workspace.patch` is removed. It is not retained beside the scan.
 
 A work volume's first link starts from Core's accepted base for that work slot, the materialized or last applied state. The capture cursor before any link is that accepted base's snapshot pair. When that base is unknown, ordinary collection returns the chain `recovery_required` result with cause `accepted_base_unknown`. First collection never adopts the current worktree as an inferred accepted base. An absent or unverifiable accepted pair yields `recovery_required` with cause `accepted_base_unknown`.
 
@@ -337,25 +337,7 @@ Workspace synchronization MUST write general `EvidenceBundle` rows automatically
 
 ## State Model
 
-Materialization states:
-
-- `planned`
-- `prepared`
-- `uploaded`
-- `mounted`
-- `ready`
-- `failed`
-- `abandoned`
-
-Collection states:
-
-- `pending`
-- `collecting`
-- `collected`
-- `verified`
-- `partial`
-- `failed`
-- `quarantined`
+Materialization and collection progress follow the lifecycle and records above. They do not define separate persisted state machines.
 
 Durable Workspace Sync Review states:
 
@@ -367,24 +349,18 @@ Durable Workspace Sync Review states:
 
 Staging and collection progress remain in their existing owners and are not additional review states. `unstable` is a recorded fact on one collected link, not a new review state and not a failed collection by itself.
 
-Apply states:
+Persisted `WorkspaceApplyResult.status` values:
 
-- `planned`
-- `preflighted`
-- `applying`
 - `applied`
 - `conflicted`
-- `failed`
-- `rolled-back`
+- `blocked`
 
-Recovery states:
+Persisted `WorkspaceReconciliationRecord.stateAfter` values:
 
-- `not-needed`
-- `needs-reconcile`
-- `reconciling`
 - `recovered`
 - `requires-human`
 - `unrecoverable`
+- `quarantined`
 
 `awaiting-reconnect` is a NanoHost adapter observation of the exact open attempt, and exact adoption is a scheduler and worker-control outcome. Neither is an additional workspace reconciliation state. They gate whether this spec preserves the current lifecycle or starts reconciliation.
 
@@ -492,6 +468,8 @@ The first implementation should prefer sync-on-start or gateway-mediated read fo
 
 ## Review And Apply
 
+This section applies to non-Git Workspace changes. Git-source captures provide inspection evidence under Git Strategy; they do not stage a Workspace Sync Review or authorize host checkout apply.
+
 A worker step that produces changes should normally end in a review phase. Each collected link whose candidate contains a content, path, file-kind, deletion, or supported permission delta stages one Workspace Sync Review of that immutable candidate. An empty candidate does not stage a review, and a changed capture still records the link and advances the cursor. `unstable` does not skip review and does not by itself accept the bytes. An unstable `no_new_head` stages no review because it creates no candidate. Action Center should show a row for the staged change set.
 
 A Workspace Sync Review decision is exactly one of `accepted`, `needs_refinement`, `rejected`, or `blocked`. The workspace-sync decision command accepts those values verbatim; `accept`, `reject`, `defer`, `deferred`, and `redo` are invalid rather than aliases. Presentation labels may be human-readable, but clients and Action Center actions MUST submit the canonical value without translation.
@@ -543,10 +521,10 @@ A backend session whose exact open attempt is observed by the NanoHost adapter a
 
 The recovery-facing records named in the Record Contract are first-class durable records, not optional evidence enrichment. The persistence and lifecycle requirements are:
 
-- `BackendWorkspaceHandle` is now persisted in first-slice form at materialization time with redacted materialized-root transport refs, backend kind, worker session id, retention mode, and cleanup status. Worker-control terminal acceptance preserves matching handles until their existing recovery or cleanup owner changes them; it does not make an optimistic Workspace write after the Core commit. Governed worker teardown updates matching handles to `cleaned` after successful backend teardown or `failed` after backend teardown failure.
-- `WorkerOutputManifest` is now persisted in first-slice form from the accepted scan's change-set declarations before reviewed change-set readback. Later backend transport collection should enrich log refs, test output refs, ignored outputs, and backend-native evidence while preserving this write-before-review discipline.
-- `WorkspaceApplyPlan` is now persisted in first-slice form before accepted Git patch or filesystem staging apply mutations, carrying approval state, planned writes, baseline review validation, binary risks, permission-change paths, and a policy acceptance check. Filesystem apply preflight now reports existing target paths that are no longer files and added-file parents that are blocked by non-directory paths or parent escapes before any workspace mutation.
-- As pre-amendment implementation evidence, `WorkspaceReconciliationRecord` is now persisted in first-slice form for recovery transitions, carrying trigger reason, affected lifecycle records, backend handle summary, reachability result, collected output manifests, evidence bundles, before/after state, quarantine refs, human-decision need, retention decision, and start/finish timestamps. Scheduler lease maintenance now records `requires-human` reconciliation triggers for stale leases tied to pending backend workspace handles. Human recovery decisions now produce terminal `recovered`, `quarantined`, or `unrecoverable` states and mark the backend retention decision as `teardown-backend`. The accepted recovery contract does not persist a separate synchronization-specific evidence linkage record. `WorkspaceReconciliationRecord.evidenceBundleIds` plus `collectedOutputManifestIds` provide the required recovery linkage; owning lifecycle records provide domain refs and digests, while the general `EvidenceBundle` ledger owns cross-record evidence indexing, retention, sensitivity, promotion, and import status.
+- `BackendWorkspaceHandle` is persisted at materialization time with redacted materialized-root transport refs, backend kind, worker session id, retention mode, and cleanup status. Worker-control terminal acceptance preserves matching handles until their existing recovery or cleanup owner changes them; it does not make an optimistic Workspace write after the Core commit. Governed worker teardown updates matching handles to `cleaned` after successful backend teardown or `failed` after backend teardown failure.
+- `WorkerOutputManifest` is persisted from the accepted scan's change-set declarations before reviewed change-set readback. Later backend transport collection should enrich log refs, test output refs, ignored outputs, and backend-native evidence while preserving this write-before-review discipline.
+- `WorkspaceApplyPlan` is persisted before accepted filesystem staging apply mutations, carrying approval state, planned writes, baseline review validation, binary risks, permission-change paths, and a policy acceptance check. Filesystem apply preflight now reports existing target paths that are no longer files and added-file parents that are blocked by non-directory paths or parent escapes before any workspace mutation.
+- `WorkspaceReconciliationRecord` is persisted for recovery transitions, carrying trigger reason, affected lifecycle records, backend handle summary, reachability result, collected output manifests, evidence bundles, before/after state, quarantine refs, human-decision need, retention decision, and start/finish timestamps. Scheduler lease maintenance now records `requires-human` reconciliation triggers for stale leases tied to pending backend workspace handles. Human recovery decisions now produce terminal `recovered`, `quarantined`, or `unrecoverable` states and mark the backend retention decision as `teardown-backend`. The accepted recovery contract does not persist a separate synchronization-specific evidence linkage record. `WorkspaceReconciliationRecord.evidenceBundleIds` plus `collectedOutputManifestIds` provide the required recovery linkage; owning lifecycle records provide domain refs and digests, while the general `EvidenceBundle` ledger owns cross-record evidence indexing, retention, sensitivity, promotion, and import status.
 
 Quarantine is a record, not just a state. A `WorkspaceQuarantineRecord` MUST carry: quarantine id, the lifecycle record ids it isolates, the validation failure kind (digest mismatch, lineage mismatch, path violation, schema failure), the quarantined material's storage reference, retention class, required human decision, and resolution (released to review, discarded, or retained). Quarantined material follows the restricted-evidence handling rules in `docs/specs/20260703-audit_usage_evidence_records.md` and is never deleted silently.
 
@@ -562,7 +540,7 @@ The row source is the durable Workspace Sync Review and exact `reviewId`; its re
 
 When recovery evidence is partial or ambiguous, Action Center should project `requires-human` with links to the materialization record, collection state, available evidence, and next safe recovery choices.
 
-The current implementation surfaces durable workspace review decisions for staged reviews whose artifact row is no longer available in the current store projection, first-slice workspace recovery rows for `requires-human` reconciliation records, and executable recovery decisions for resume collection, stage verified, quarantine, and abandon. Resume collection recovers records when matching durable worker output manifests already exist and fails closed when no durable output manifest matches the recovery record.
+The current implementation surfaces durable workspace review decisions for staged reviews whose artifact row is no longer available in the current store projection, workspace recovery rows for `requires-human` reconciliation records, and executable recovery decisions for resume collection, stage verified, quarantine, and abandon. Resume collection recovers records when matching durable worker output manifests already exist and fails closed when no durable output manifest matches the recovery record.
 
 Workspace-linked backing Artifacts remain available for inspection and may supply the current read-only legacy projection when no durable review exists, but no generic Artifact Review decision or Artifact projection can select, resolve, or apply a Workspace Sync Review.
 
@@ -659,7 +637,7 @@ Retained apply-result verification and reconciliation root/reachability observat
 - Exact adoption after a transport loss or a NanoCore restart preserves the current materialization and backend handle when the surviving binding is proved exactly, including exact lineage, sequence, and execution attempt, with no duplicate effect. A binding that cannot be proved exactly after either event is not adopted: the predecessor is closed or fenced with its records kept, and only a newly admitted successor that resumes the native conversation continues. Synchronization also collects at Turn end while the AgentSession stays open, at AgentSession release, and before a successor on the same volume, and it still collects or reconciles on adoption, accepted terminal handoff, or the scheduler's existing interrupted outcome. Restart adds no settlement coordinator or copied domain state.
 - Permission-only changes use the reviewed filesystem staging path when the staged review records `mode_changed` summaries and apply preflight succeeds; unsupported permission mutations are blocked or quarantined with diagnostics.
 - Long-lived host Codex sessions do not define the product materialization model because host execution is not a product Worker Agent runtime. Governed worker work uses this workspace synchronization model; direct human-driven local work remains outside it unless it needs review-gated workspace synchronization.
-- Previously open questions are resolved by accepted V1 defaults: binary files become artifact-only when they are not safely text-decodable or when a binary payload exceeds 1 MiB. Artifact-only handling carries summaries, digests, media type, byte size, explicit review affordances through staged-review readback, and typed diagnostics when a worker attempts to present binary content as a normal text patch.
+- Binary files become artifact-only when they are not safely text-decodable or exceed the current policy size threshold (current default: 1 MiB). Artifact-only handling carries summaries, digests, media type, byte size, explicit review affordances through staged-review readback, and typed diagnostics when a worker attempts to present binary content as a normal text patch.
 
 ## Deferred / Future Work
 
