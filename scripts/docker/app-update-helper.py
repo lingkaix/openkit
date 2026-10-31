@@ -615,7 +615,7 @@ class AppUpdateHelper:
         return project_status(receipt)
 
     def status(self, request_id: str) -> Dict[str, Any]:
-        receipt = self._load_receipt(request_id, missing_code="app_update_unavailable")
+        receipt = self._load_receipt(request_id, missing_code="app_update_recovery_required")
         receipt = self._maybe_mark_unknown(receipt)
         return project_status(receipt)
 

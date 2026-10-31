@@ -1061,7 +1061,7 @@ class RC6RegressionTests(unittest.TestCase):
             root = Path(tmp)
             path = write_config(root)
             _code, body = invoke(module, {"op": "status", "requestId": str(uuid.uuid4())}, path)
-            self.assertEqual(body["error"]["code"], "app_update_unavailable")
+            self.assertEqual(body["error"]["code"], "app_update_recovery_required")
             self.assertEqual(body["helperSha256"], hashlib.sha256(HELPER_PATH.read_bytes()).hexdigest())
 
     def test_operations_archive_contains_reviewed_helper_covered_by_outer_checksum(self) -> None:
@@ -1338,11 +1338,13 @@ class ClosedStdinTests(unittest.TestCase):
 
 
 class ReceiptLifecycleTests(unittest.TestCase):
-    def test_start_missing_is_recovery_required_and_status_missing_is_unavailable(self) -> None:
+    def test_start_and_status_missing_are_recovery_required_without_new_effects(self) -> None:
         module = load_helper()
         missing = "11111111-1111-4111-8111-111111111111"
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
-            config_path = write_config(Path(tmp))
+            root = Path(tmp)
+            config_path = write_config(root)
+            effects = RecordingEffects()
             _code, start_body = invoke(
                 module,
                 {
@@ -1351,10 +1353,17 @@ class ReceiptLifecycleTests(unittest.TestCase):
                     "requestId": missing,
                 },
                 config_path,
+                effects=effects,
             )
-            _code, status_body = invoke(module, {"op": "status", "requestId": missing}, config_path)
+            _code, status_body = invoke(
+                module, {"op": "status", "requestId": missing}, config_path, effects=effects
+            )
+            self.assertEqual(effects.calls, [])
+            self.assertEqual(effects.http_calls, [])
+            self.assertEqual(list((root / "receipts").iterdir()), [])
             self.assertEqual(start_body["error"]["code"], "app_update_recovery_required")
-            self.assertEqual(status_body["error"]["code"], "app_update_unavailable")
+            # Removed IDs retain the same recovery refusal; a status read cannot create a job.
+            self.assertEqual(status_body["error"]["code"], "app_update_recovery_required")
 
     def test_expired_prepare_cannot_start_and_does_not_recreate_a_receipt(self) -> None:
         module = load_helper()

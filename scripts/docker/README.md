@@ -29,3 +29,5 @@ Run the real-container environment regression explicitly with `OPENKIT_TEST_APP_
 The App launcher leaves User directory allocation to NanoCore's recorded local User owner. Persistence smoke reads that unique User from the read-only Core database, verifies its exact directory tree and checks that the identity survives restart. It does not select an identity from a directory name.
 
 `run-app.sh` uses server mode and the existing bootstrap flow. It requires the existing deployment signing secret before any Docker command and forwards `BETTER_AUTH_SECRET` by environment name, never by value; seed-only mode needs no secret. It derives the existing `BETTER_AUTH_URL` from its published loopback port so browser admission uses the public origin. The explicit local persistence smoke sends requests through container-loopback Caddy with `docker exec`; it does not publish implicit local administration.
+
+Status and start for a missing or removed App-update receipt return `app_update_recovery_required`; absence never creates another execution.

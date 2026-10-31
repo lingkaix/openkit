@@ -11,7 +11,7 @@ This directory joins the administrator App update operations to the restricted h
 
 ## Receipt Inspection
 
-Use the saved request ID to inspect an uncertain update. Status reads require safe deployment configuration and receipt-location validation, but do not require a current compatibility assessment. A pre-removal commit-only receipt returns `app_update_recovery_required` for its ID. A valid retained release receipt stays readable with a stale, missing, or malformed assessment. Neither result authorizes another execution.
+Use the saved request ID to inspect an uncertain update. Status and start for a missing or removed receipt return `app_update_recovery_required`; absence does not create another execution. Status reads require safe deployment configuration and receipt-location validation, but do not require a current compatibility assessment. A pre-removal commit-only receipt returns `app_update_recovery_required` for its ID. A valid retained release receipt stays readable with a stale, missing, or malformed assessment. Neither result authorizes another execution.
 
 Prepare, start, and the supervised apply job still require the compatibility assessment. A pre-removal assessment must be re-authored for a release candidate before these operations. The assessment binds the exact current image, published release source, and observed applied migrations; an operator must establish those facts under the existing authorization. Receipt inspection supplies no migration or recovery approval. If the helper or transport is unavailable, use the authorized offline inspection path in the [operations reference](../../../../skills/openkit-ops/references/nanocore-operations.en.md); never infer success or submit another start from missing evidence.
 
