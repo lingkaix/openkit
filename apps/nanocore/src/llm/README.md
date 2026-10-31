@@ -143,3 +143,5 @@ Fresh system-prompt attribution applies its existing NFC string-value projection
 The prompt-cache resolver hashes admitted caller hints with the existing Provider, model, full subscription-account pair and trusted scope. Hint priority and trusted attribution precedence remain unchanged. OpenKit metadata is consumed locally and removed from the provider request without mutating the caller; unrelated public metadata remains.
 
 Worker inference refuses a syntactically valid model outside its authenticated AEP with `worker_logical_model_not_allowed` before Provider or capability effects. Caller-supplied scope, Provider, state and other lineage authority retain `worker_inference_lineage_mismatch`; request-shape validation remains separate.
+
+A failed account create removes only its own exclusively created, still-identical empty directory when current account and Vault inventory prove no published authority. Existing, replaced, nonempty, published or credential-bearing residue remains refused for ordinary recovery. Exclusive creation uses the Storage byte owner; account deletion and unpublished cleanup share the existing account removal path.

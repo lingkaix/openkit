@@ -142,6 +142,29 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     expect(RequestIdSchema.safeParse(retained.metadata.changeRequest.requestId).success).toBe(true);
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
     try {
+      const selected = readWorkspaceNotebookSelection({
+        workspaceDb,
+        workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
+        knowledgeBaseId: readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId: workspace.id },
+        }),
+      });
+      expect(
+        execFileSync(
+          'git',
+          [
+            '--git-dir',
+            join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
+            'for-each-ref',
+          ],
+          { encoding: 'utf8' }
+        )
+      ).toBe('');
+      expect(selected.notebook.validateRetainedGraph()).toEqual({
+        publishedRevision: revision,
+        revisions: [revision],
+      });
       const rows = workspaceDb.sqlite
         .prepare(
           'SELECT action, notebook_admission_json AS evidence FROM audit_events ORDER BY rowid'
@@ -188,6 +211,29 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     expect(
       readFileSync(join(f.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')
     ).toBe(schemaText);
+  });
+
+  it('keeps a non-commit retained ref recovery-required', async () => {
+    const f = fixture();
+    await f.initialize();
+    const gitOptions = {
+      encoding: 'utf8' as const,
+      env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'] as const,
+    };
+    const blob = execFileSync(
+      'git',
+      ['--git-dir', f.repositoryPath, 'hash-object', '-w', '--stdin'],
+      { ...gitOptions, input: 'retained non-commit fault' }
+    ).trim();
+    execFileSync(
+      'git',
+      ['--git-dir', f.repositoryPath, 'update-ref', 'refs/tags/non-commit', blob],
+      gitOptions
+    );
+    expect(() => f.notebook().validateRetainedGraph()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
   });
 
   it('creates initial root navigation from imported files and preserves valid reserved bytes', async () => {
