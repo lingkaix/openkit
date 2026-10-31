@@ -3123,7 +3123,10 @@ describe('createCoreClient', () => {
           citations: [
             {
               reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' },
-              kind: 'project-context',
+              revision: notebookCandidateRevision,
+              contentDigest: retrievedPageDigest,
+              observedAt: timestamp,
+              sourceCitations: [],
               title: 'Release plan',
               excerpt: 'Release cadence is weekly.',
             },
@@ -3669,6 +3672,12 @@ describe('createCoreClient', () => {
     expect(knowledgeAnswer).toMatchObject({
       outcome: 'answered',
       citations: [{ reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' } }],
+    });
+    expect(knowledgeAnswer.citations[0]).toMatchObject({
+      revision: notebookCandidateRevision,
+      contentDigest: retrievedPageDigest,
+      observedAt: timestamp,
+      sourceCitations: [],
     });
     expect(knowledgeAnswer).not.toHaveProperty('retrievalTraceRef');
     expect(knowledgeAnswer).not.toHaveProperty('retrievalTraceId');

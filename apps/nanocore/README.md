@@ -675,3 +675,5 @@ The opt-in native load instrument separately reports `failedCertain` and the for
 Light App catalog and get reads return `not_found` for a never-created app. An existing app with unreadable authority remains visible as unavailable, with unknown `appRevision`, `schemaRevision` and `schemaDigest` set to null. Validated current and supported old-format reads retain their known facts. Successful mutations require known revisions and digest; unreadable replay authority returns the existing unavailable condition without repeating an effect.
 
 The sharing owner refuses owner-only personal Workspace sharing and administrator recovery with HTTP 409 and the published `quick_chat_not_shareable` code before membership publication.
+
+Knowledge Manager answers retain the exact authorized page revision and content digest, registered Source pins with their original owner scope, and the observation time of the pinned read. Observation time does not claim revision publication time; unresolved Source strings do not become digest-pinned citations.

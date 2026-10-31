@@ -760,11 +760,31 @@ export function createKnowledgeOperationImplementations(
               'Knowledge Manager citation is unavailable.',
               500
             );
+          const observedAt = new Date().toISOString();
           const document = parseOkfDocument({ path: page.path, content: page.content }).document!;
           const title = stringFrontmatterField(document, 'title')!;
           const body = document.body.replace(/\s+/g, ' ').trim();
           return {
             reference: { scopeId, objectId: id },
+            revision: citation.revision,
+            contentDigest: citation.contentDigest,
+            observedAt,
+            // Ask resolved these pins within the admitted page's Source owner.
+            // Bare or unresolved proof strings are not exact Source citations.
+            sourceCitations: citation.sourceReferences.flatMap((reference) => {
+              const source = /^source:([^@]+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+              return source
+                ? [
+                    {
+                      ownerScope: server
+                        ? { kind: 'server' as const }
+                        : { kind: 'workspace' as const, workspaceId: input.workspaceId },
+                      sourceId: source[1]!,
+                      contentDigest: source[2]!,
+                    },
+                  ]
+                : [];
+            }),
             title,
             excerpt: body.length > 240 ? `${body.slice(0, 237)}...` : body || title,
           };

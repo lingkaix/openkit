@@ -1179,6 +1179,10 @@ describe('app api schemas', () => {
         citations: [
           {
             reference: { scopeId: knowledgePageScopeId, objectId: 'mem_demo' },
+            revision: knowledgeCandidateRevision,
+            contentDigest: knowledgeContentDigest,
+            observedAt: timestamp,
+            sourceCitations: [],
             kind: 'project-context',
             title: 'Release plan',
             excerpt: 'Release cadence is weekly.',

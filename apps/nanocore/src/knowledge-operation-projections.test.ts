@@ -243,12 +243,24 @@ function observationView(value: unknown): unknown {
         .filter(
           ([key]) => !['operationId', 'traceId', 'retrievalTraceId', 'rebuiltAt'].includes(key)
         )
-        .map(([key, item]) => [
-          key,
-          key === 'createdAt' && ('traceId' in value || 'requestDigest' in value)
-            ? '<trace-time>'
-            : observationView(item),
-        ])
+        .map(([key, item]) => {
+          if (
+            key === 'observedAt' &&
+            'reference' in value &&
+            'revision' in value &&
+            'contentDigest' in value
+          ) {
+            expect(typeof item).toBe('string');
+            expect(new Date(item as string).toISOString()).toBe(item);
+            return [key, '<citation-observation-time>'];
+          }
+          return [
+            key,
+            key === 'createdAt' && ('traceId' in value || 'requestDigest' in value)
+              ? '<trace-time>'
+              : observationView(item),
+          ];
+        })
     );
   return value;
 }

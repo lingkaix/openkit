@@ -996,6 +996,24 @@ describe('Knowledge Manager answer operation', () => {
         uncertainty: null,
       },
     ]);
+    const sourceRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.source.register',
+        { workspaceId: DEMO_WORKSPACE_ID },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            kind: 'document',
+            title: 'Release cadence evidence',
+            content: 'Release cadence is fortnightly with a Tuesday review.',
+          }),
+        }
+      )
+    );
+    expect(sourceRes.status, await sourceRes.clone().text()).toBe(200);
+    const source = RegisterKnowledgeSourceResponseSchema.parse(await sourceRes.json()).source;
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.notebook.create',
@@ -1035,7 +1053,8 @@ describe('Knowledge Manager answer operation', () => {
                 path: `${pageId}.md`,
                 content: authoredPage(
                   'Release plan',
-                  'Release cadence is fortnightly with a Tuesday review.'
+                  'Release cadence is fortnightly with a Tuesday review.',
+                  [`source:${source.id}`]
                 ),
               },
             ],
@@ -1045,11 +1064,17 @@ describe('Knowledge Manager answer operation', () => {
       )
     );
     expect(updateRes.status, await updateRes.clone().text()).toBe(200);
+    const answerPublication = (await updateRes.json()) as { notebookRevision: string };
+    const expectedRevision = answerPublication.notebookRevision;
+    const expectedPageBytes = notebook(dataRoot).readRevision(expectedRevision, [`${pageId}.md`])
+      .files[`${pageId}.md`]!;
+    const expectedContentDigest = `sha256:${createHash('sha256').update(expectedPageBytes).digest('hex')}`;
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
 
+    const answerStartedAt = Date.now();
     const res = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.answer',
@@ -1061,6 +1086,7 @@ describe('Knowledge Manager answer operation', () => {
         }
       )
     );
+    const answerFinishedAt = Date.now();
     expect(res.status).toBe(200);
 
     const body = KnowledgeManagerAnswerResponseSchema.parse(await res.json());
@@ -1083,6 +1109,20 @@ describe('Knowledge Manager answer operation', () => {
         title: 'Release plan',
       }),
     ]);
+    // Knowledge Manager answer owner:94-96 requires the exact observed page pin.
+    expect.soft(body.citations[0]).toHaveProperty('revision', expectedRevision);
+    expect.soft(body.citations[0]).toHaveProperty('contentDigest', expectedContentDigest);
+    expect.soft(body.citations[0]).toHaveProperty('sourceCitations', [
+      {
+        ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+        sourceId: source.id,
+        contentDigest: source.contentDigest,
+      },
+    ]);
+    // Observation describes this authorized read, never authored frontmatter time.
+    const observedAt = Date.parse(Reflect.get(body.citations[0]!, 'observedAt'));
+    expect.soft(observedAt).toBeGreaterThanOrEqual(answerStartedAt);
+    expect.soft(observedAt).toBeLessThanOrEqual(answerFinishedAt);
 
     expect(
       existsSync(

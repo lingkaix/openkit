@@ -2,6 +2,7 @@ import {
   ActorRefSchema,
   ContentReferenceSchema,
   ItemIdSchema,
+  KnowledgeContentDigestSchema,
   KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
   PageReferenceSchema,
@@ -343,9 +344,20 @@ export const KnowledgeManagerAnswerRequestSchema = z
   })
   .strict();
 
-/** Source citation returned by one Knowledge Manager answer. */
+/** Exact page observation and registered Source pins returned by one Knowledge Manager answer. */
 export const KnowledgeManagerAnswerCitationSchema = z.object({
   reference: KnowledgePageReferenceSchema,
+  revision: z.string().min(1),
+  contentDigest: KnowledgeContentDigestSchema,
+  // This is the authorized pinned-read time, not the revision publication time.
+  observedAt: TimestampSchema,
+  sourceCitations: z.array(
+    z.object({
+      ownerScope: KnowledgeOwnerScopeSchema,
+      sourceId: KnowledgeSourceIdSchema,
+      contentDigest: KnowledgeContentDigestSchema,
+    })
+  ),
   title: z.string().min(1),
   excerpt: z.string().min(1),
 });

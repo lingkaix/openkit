@@ -299,3 +299,5 @@ Light App catalog and get projections permit null app/schema revisions and schem
 Subscription quota windows carry reported durations for client display labels. Quota responses retain the optional `activeUntil` display field.
 
 Authorized Workspace summaries are closed projections. Obsolete access-tier fields fail admission rather than being silently stripped; the retired access-change operation remains absent.
+
+Knowledge Manager answer citations require exact page revision/contentDigest, authorized pinned-read observedAt, and structured sourceCitations with existing ownerScope/sourceId/contentDigest. Observation time describes the read, not Notebook publication; unresolved proof strings supply no exact Source citation.
