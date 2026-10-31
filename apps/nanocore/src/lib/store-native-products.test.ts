@@ -23,9 +23,13 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
+  listNativeProducts,
   nativeProductScope,
+  readAdmittedWorkspaceKnowledgeSelection,
+  readNativeProduct,
   readNativeProductEntries,
   readNativeTurnHistory,
+  readWorkspaceKnowledgeProposalInventory,
 } from '../storage/workspace-file-records.js';
 import { createThread as createThreadCommand } from '../thread-routes.js';
 import { commandRequestKey, DISPLAY_PROJECTION_REFRESH_ADMISSION, FsStore } from './store.js';
@@ -86,6 +90,52 @@ function message(
 }
 
 describe('native Store authority and immutable closure', () => {
+  it('composes retained history and Knowledge reads on the borrowed Workspace snapshot', async () => {
+    const f = await workspaceFixture();
+    const first = await f.store.createItem(message(f.turn, 'Before snapshot'));
+    const reader = openControlStoreProductReadHandle(f.scope.path, f.scope.owner);
+    const scope = { ...f.scope, sqlite: reader.sqlite };
+    const workspaceDb = {
+      scope: 'workspace' as const,
+      workspaceId: f.workspace.id,
+      sqlite: reader.sqlite,
+    };
+    const workspaceRoot = join(f.root, 'workspaces', f.workspace.id);
+    try {
+      reader.sqlite.exec('BEGIN');
+      const before = readNativeTurnHistory(scope, f.turn.id)!;
+      expect(before.turn.items).toEqual([first]);
+      const head = readAdmittedWorkspaceKnowledgeSelection(
+        workspaceRoot,
+        f.workspace.id,
+        workspaceDb
+      );
+      expect(
+        readWorkspaceKnowledgeProposalInventory(workspaceRoot, f.workspace.id, workspaceDb)
+      ).toEqual({ knowledgeProposals: [], knowledgeProposalReviews: [] });
+      const second = await f.store.createItem(message(f.turn, 'After snapshot'));
+      expect(readNativeProduct(scope, 'turn', f.turn.id)?.revision).toBe(before.revision);
+      expect(
+        listNativeProducts(scope, 'turn').find((row) => row.record.id === f.turn.id)?.revision
+      ).toBe(before.revision);
+      expect(readNativeProductEntries(scope, f.turn.id, 'item')).toHaveLength(1);
+      expect(readNativeTurnHistory(scope, f.turn.id)?.turn.items).toEqual([first]);
+      expect(
+        readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, f.workspace.id, workspaceDb).head
+      ).toEqual(head.head);
+      expect(reader.sqlite.inTransaction).toBe(true);
+      reader.sqlite.exec('ROLLBACK');
+      expect(readNativeTurnHistory(scope, f.turn.id)?.turn.items).toEqual([first, second]);
+      expect(reader.sqlite.open).toBe(true);
+      expect(() =>
+        readWorkspaceKnowledgeProposalInventory(workspaceRoot, allocateEntityId('ws'), workspaceDb)
+      ).toThrow('binding is recovery_required');
+    } finally {
+      if (reader.sqlite.inTransaction) reader.sqlite.exec('ROLLBACK');
+      reader.close();
+    }
+  });
+
   it('acknowledges independent concurrent shared Thread creations without losing parent metadata', async () => {
     const f = fixture();
     const workspace = await f.store.createWorkspace('Concurrent parent metadata');

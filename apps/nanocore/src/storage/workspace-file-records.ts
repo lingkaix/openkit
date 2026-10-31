@@ -123,7 +123,10 @@ import {
   type ControlProductSnapshot,
   type ControlStoreProductReadHandle,
   getWorkspaceProductReadHandle,
+  listProducts,
   openControlStoreProductReadHandle,
+  readProduct,
+  readProductEntries,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
 import {
@@ -752,6 +755,8 @@ export interface NativeProductScope {
   readonly path: string;
   readonly owner: ControlProductOwner;
   readonly contentMount: ControlProductContentMount;
+  /** Optional admitted connection, borrowed without opening or closing another handle. */
+  readonly sqlite?: Database.Database;
 }
 
 /** Resolves only native owner selectors; metadata reads do not require a content grant or byte mount. */
@@ -792,21 +797,24 @@ export function nativeProductScope(
 }
 
 const rawProductStatements = new WeakMap<
-  ControlStoreProductReadHandle,
+  Database.Database,
   Map<ControlProductKind, Database.Statement>
 >();
 
-/** Materializes one validated retained metadata row in a short read-only SQL snapshot. */
+/** Materializes validated metadata in the borrowed connection or an owned short read snapshot. */
 export function readNativeProduct(
-  scope: Pick<NativeProductScope, 'path' | 'owner'>,
+  scope: Pick<NativeProductScope, 'path' | 'owner' | 'sqlite'>,
   kind: ControlProductKind,
   id: string,
   existingReader?: ControlStoreProductReadHandle
 ): ControlProductSnapshot | undefined {
-  const reader = existingReader ?? openControlStoreProductReadHandle(scope.path, scope.owner);
+  const reader =
+    existingReader ??
+    (scope.sqlite ? undefined : openControlStoreProductReadHandle(scope.path, scope.owner));
+  const sqlite = reader?.sqlite ?? scope.sqlite!;
   try {
-    return reader.sqlite.transaction(() => {
-      const known = reader.get(kind, id);
+    return sqlite.transaction(() => {
+      const known = reader ? reader.get(kind, id) : readProduct(sqlite, scope.owner, kind, id);
       if (!known) return undefined;
       const table = {
         workspace: 'control_workspaces',
@@ -814,14 +822,14 @@ export function readNativeProduct(
         turn: 'control_turns',
         'agent-session': 'control_agent_sessions',
       }[kind];
-      let prepared = rawProductStatements.get(reader);
+      let prepared = rawProductStatements.get(sqlite);
       if (!prepared) {
         prepared = new Map();
-        rawProductStatements.set(reader, prepared);
+        rawProductStatements.set(sqlite, prepared);
       }
       let statement = prepared.get(kind);
       if (!statement) {
-        statement = reader.sqlite.prepare(`SELECT record_json FROM ${table} WHERE id=?`);
+        statement = sqlite.prepare(`SELECT record_json FROM ${table} WHERE id=?`);
         prepared.set(kind, statement);
       }
       const raw = statement.get(id) as {
@@ -837,29 +845,34 @@ export function readNativeProduct(
       };
     })();
   } finally {
-    if (!existingReader) reader.close();
+    if (!existingReader) reader?.close();
   }
 }
 
-/** Reads bounded native metadata pages; no cursor or transaction reaches a downstream consumer. */
+/** Reads bounded metadata pages in the supplied snapshot, or owns and closes its read handle. */
 export function listNativeProducts(
-  scope: Pick<NativeProductScope, 'path' | 'owner'>,
+  scope: Pick<NativeProductScope, 'path' | 'owner' | 'sqlite'>,
   kind: ControlProductKind
 ): ControlProductSnapshot[] {
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const reader = scope.sqlite
+    ? undefined
+    : openControlStoreProductReadHandle(scope.path, scope.owner);
+  const sqlite = reader?.sqlite ?? scope.sqlite!;
   const result: ControlProductSnapshot[] = [];
   try {
     let after = '';
     for (;;) {
-      const page = reader.sqlite.transaction(() => {
-        const known = reader.list(kind, after);
+      const page = sqlite.transaction(() => {
+        const known = reader
+          ? reader.list(kind, after)
+          : listProducts(sqlite, scope.owner, kind, after);
         const table = {
           workspace: 'control_workspaces',
           thread: 'control_threads',
           turn: 'control_turns',
           'agent-session': 'control_agent_sessions',
         }[kind];
-        const rows = reader.sqlite
+        const rows = sqlite
           .prepare(`SELECT id,record_json FROM ${table} WHERE id>? ORDER BY id LIMIT ?`)
           .all(after, CONTROL_PRODUCT_LIMITS.pageRows) as { id: string; record_json: string }[];
         const raw = new Map(rows.map((row) => [row.id, JSON.parse(row.record_json)]));
@@ -877,7 +890,7 @@ export function listNativeProducts(
       after = page.at(-1)!.record.id as string;
     }
   } finally {
-    reader.close();
+    reader?.close();
   }
 }
 
@@ -887,14 +900,21 @@ export function readNativeProductEntries(
   turnId: string,
   kind: 'item' | 'event'
 ) {
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const reader = scope.sqlite
+    ? undefined
+    : openControlStoreProductReadHandle(scope.path, scope.owner);
+  const sqlite = reader?.sqlite ?? scope.sqlite!;
   const entries: Array<{ sequence: number; id: string; revision: number; value: unknown }> = [];
   try {
-    const turn = reader.get('turn', turnId);
+    const turn = reader
+      ? reader.get('turn', turnId)
+      : readProduct(sqlite, scope.owner, 'turn', turnId);
     if (!turn) return entries;
     let after = 0;
     for (;;) {
-      const page = reader.entries(turnId, kind, after);
+      const page = reader
+        ? reader.entries(turnId, kind, after)
+        : readProductEntries(sqlite, scope.owner, turnId, kind, after);
       if (!page.length) return entries;
       // The page SELECT has ended before any byte reads. Its descriptors remain immutable.
       for (const row of page) {
@@ -943,7 +963,7 @@ export function readNativeProductEntries(
       }
     }
   } finally {
-    reader.close();
+    reader?.close();
   }
 }
 
@@ -1799,16 +1819,18 @@ export function readPreKnowledgeWorkspaceProposalInventory(
   };
 }
 
-/** Selects exact SQL Knowledge authority through the existing Workspace read-handle lifetime. */
+/** Selects exact SQL Knowledge authority on the borrowed Workspace connection or retained read handle. */
 export function readAdmittedWorkspaceKnowledgeSelection(
   workspaceRoot: string,
-  workspaceId: string
+  workspaceId: string,
+  workspaceDb?: Pick<WorkspaceDb, 'scope' | 'workspaceId' | 'sqlite'>
 ): WorkspaceNotebookSelection {
   const owner = { kind: 'workspace' as const, workspaceId };
-  const reader = getWorkspaceProductReadHandle(
-    join(workspaceRoot, 'db', 'workspace.sqlite'),
-    owner
-  );
+  const sqlite =
+    workspaceDb?.sqlite ??
+    getWorkspaceProductReadHandle(join(workspaceRoot, 'db', 'workspace.sqlite'), owner).sqlite;
+  if (workspaceDb && (workspaceDb.scope !== 'workspace' || workspaceDb.workspaceId !== workspaceId))
+    throw new Error('Workspace Knowledge binding is recovery_required.');
   const config = readRetainedV1(
     parseJsoncObject(readCanonicalTextFile(join(workspaceRoot, 'config', 'workspace.jsonc'))),
     WorkspaceConfigSchema.parse
@@ -1817,25 +1839,30 @@ export function readAdmittedWorkspaceKnowledgeSelection(
   if (!knowledgeBaseId) throw new Error('Workspace Knowledge binding is recovery_required.');
   return readWorkspaceNotebookSelection({
     workspaceRoot,
-    workspaceDb: { scope: 'workspace', workspaceId, sqlite: reader.sqlite },
+    workspaceDb: { scope: 'workspace', workspaceId, sqlite },
     knowledgeBaseId,
   });
 }
 
-/** Reads original immutable Proposal documents and ordered Reviews only from their native rows. */
+/** Reads original Proposal/Review rows on the borrowed Workspace connection or retained read handle. */
 export function readWorkspaceKnowledgeProposalInventory(
   workspaceRoot: string,
-  workspaceId: string
+  workspaceId: string,
+  workspaceDb?: Pick<WorkspaceDb, 'scope' | 'workspaceId' | 'sqlite'>
 ): {
   knowledgeProposals: KnowledgeProposalRecord[];
   knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
 } {
-  const reader = getWorkspaceProductReadHandle(join(workspaceRoot, 'db', 'workspace.sqlite'), {
-    kind: 'workspace',
-    workspaceId,
-  });
-  const db = { scope: 'workspace' as const, workspaceId, sqlite: reader.sqlite };
-  const rows = reader.sqlite
+  if (workspaceDb && (workspaceDb.scope !== 'workspace' || workspaceDb.workspaceId !== workspaceId))
+    throw new Error('Workspace Knowledge Proposal binding is recovery_required.');
+  const sqlite =
+    workspaceDb?.sqlite ??
+    getWorkspaceProductReadHandle(join(workspaceRoot, 'db', 'workspace.sqlite'), {
+      kind: 'workspace',
+      workspaceId,
+    }).sqlite;
+  const db = { scope: 'workspace' as const, workspaceId, sqlite };
+  const rows = sqlite
     .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id')
     .all() as { proposal_id: string }[];
   const knowledgeProposals: KnowledgeProposalRecord[] = [];
