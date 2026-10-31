@@ -21,11 +21,11 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
 import { deriveManagedSourceAccess } from './managed-source-access.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import { readSourceByteRange } from './source-bytes.js';
 import { publishCapturedSource } from './source-publication.js';
@@ -54,7 +54,7 @@ async function fixture() {
     (candidate) => candidate.default
   )!;
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
+  const notebookSelection = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const runtimeConfigManager = {
     current: () => ({ workspaceConfigs: [] }),
@@ -77,11 +77,11 @@ async function fixture() {
       actor: { kind: 'user', id: userId },
       runtimeConfigManager,
       workspaceMutationAdmission,
-      notebook,
+      notebook: notebookSelection().notebook,
       request: {
         workspaceId: workspace.id,
         requestId: randomUUID(),
-        baseRevision: notebook.publishedRevision(),
+        baseRevision: notebookSelection().head.notebookCommit,
         changes: [],
         summary: 'Native Source capture.',
       },
@@ -139,7 +139,9 @@ async function fixture() {
     knowledgeBaseId,
     mount,
     root,
-    notebook,
+    get notebook() {
+      return notebookSelection().notebook;
+    },
     source,
     publish,
     revalidatePublication,

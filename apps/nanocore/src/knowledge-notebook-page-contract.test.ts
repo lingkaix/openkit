@@ -14,6 +14,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const fixtures: Array<Awaited<ReturnType<typeof fixture>>> = [];
@@ -72,6 +73,11 @@ function reopen(f: Awaited<ReturnType<typeof fixture>>) {
 /** Read immutable bytes independently of the Notebook content reader. */
 function git(f: Awaited<ReturnType<typeof fixture>>, ...args: string[]): string {
   return execFileSync('git', ['--git-dir', f.repositoryPath, ...args], { encoding: 'utf8' });
+}
+
+/** Reselect the admitted native SQL head after each publication. */
+function selectedNotebookRevision(f: Awaited<ReturnType<typeof fixture>>): string {
+  return readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit;
 }
 
 /** Hash complete Markdown, including frontmatter, independently of the public read projection. */
@@ -190,7 +196,7 @@ describe('canonical page commands compose the native Notebook publisher and read
     const f = await fixture();
     const input = {
       requestId: randomUUID(),
-      baseRevision: git(f, 'rev-parse', 'refs/heads/published').trim(),
+      baseRevision: selectedNotebookRevision(f),
       changes: [{ path: 'notes/human.md', content: page(f) }],
       summary: 'Direct full-page human edit',
     };
@@ -241,7 +247,7 @@ describe('canonical page commands compose the native Notebook publisher and read
       baseRevision: createdRevision,
     });
     expect(duplicate.status).toBe(409);
-    expect(git(f, 'rev-parse', 'refs/heads/published').trim()).toBe(createdRevision);
+    expect(selectedNotebookRevision(f)).toBe(createdRevision);
 
     const edit = {
       requestId: randomUUID(),
@@ -301,7 +307,7 @@ describe('canonical page commands compose the native Notebook publisher and read
       });
       expect(denied.status).toBeGreaterThanOrEqual(400);
       expect(denied.status).toBeLessThan(500);
-      expect(git(f, 'rev-parse', 'refs/heads/published').trim()).toBe(updatedRevision);
+      expect(selectedNotebookRevision(f)).toBe(updatedRevision);
     }
     const removed = await call(f, 'knowledge.notebook.delete', remove);
     const removedRevision = publication(f, removed, 'knowledge.notebook.delete', remove);
@@ -320,6 +326,6 @@ describe('canonical page commands compose the native Notebook publisher and read
     });
     expect(conflict.status).toBe(409);
     expect(conflict.body).toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(git(f, 'rev-parse', 'refs/heads/published').trim()).toBe(removedRevision);
+    expect(selectedNotebookRevision(f)).toBe(removedRevision);
   });
 });

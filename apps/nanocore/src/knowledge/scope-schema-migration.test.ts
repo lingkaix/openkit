@@ -9,8 +9,8 @@ import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 import { previewNotebookSchema } from './scope-schema-migration.js';
 import { readSourcePointers } from './source-pointers.js';
@@ -45,14 +45,16 @@ async function fixture() {
   });
   const ownerScope = { kind: 'workspace' as const, workspaceId: workspace.id };
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
   const scopeSchemaText = readFileSync(join(root, 'schema', 'scope-schema.yaml'), 'utf8');
   const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
   const registeredSources = new Map(
-    [...readSourcePointers({ dataRoot, ownerScope })].map(([id, pointer]) => [
-      id,
-      pointer.source.contentDigest,
-    ])
+    [
+      ...readSourcePointers(
+        { dataRoot, ownerScope },
+        undefined,
+        readTestWorkspaceNotebookSelection(dataRoot, workspace.id)
+      ),
+    ].map(([id, pointer]) => [id, pointer.source.contentDigest])
   );
   return {
     call,
@@ -61,7 +63,9 @@ async function fixture() {
     sourceId: source.source.id as string,
     input: {
       workspaceId: workspace.id,
-      notebook,
+      get notebook() {
+        return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+      },
       scopeSchemaText,
       pageScopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`,
       registeredSources,

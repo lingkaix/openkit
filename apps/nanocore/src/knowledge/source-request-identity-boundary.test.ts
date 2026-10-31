@@ -15,9 +15,9 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { readWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { KnowledgeNotebook } from './notebook.js';
 import * as sourcePublication from './source-publication.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -35,7 +35,6 @@ async function fixture() {
   applyScopedMigrations(workspaceDb);
   const app = createApp({ coreDb, dataRoot, store });
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
   const register = (requestId: string, fields: Record<string, unknown> = {}) =>
     app.request(
       ...operationRequest(
@@ -59,7 +58,19 @@ async function fixture() {
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { dataRoot, coreDb, userId, store, workspace, workspaceDb, notebook, root, register };
+  return {
+    dataRoot,
+    coreDb,
+    userId,
+    store,
+    workspace,
+    workspaceDb,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
+    root,
+    register,
+  };
 }
 
 /** Observe all managed original file bytes, including any orphan from a refused capture. */
