@@ -30,7 +30,6 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
-import { projectTurnEventRequestId } from './lib/store.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { readArtifactVersionRecord } from './storage/artifacts/artifact-version-records.js';
 import {
@@ -56,6 +55,7 @@ import {
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
+import { projectTurnEventRequestId } from './storage/retained-work-events-v1.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
 import { artifactReferenceItemId, nativeProductScope } from './storage/workspace-file-records.js';
 import {

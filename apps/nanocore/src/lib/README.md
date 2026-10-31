@@ -102,3 +102,5 @@ The target recovery owner may settle only its restored Workspace publication mar
 `conversation-write-policy.ts` owns the existing pure sealed-Turn field and replay predicates and their refusal constructors. Exact publication equality remains distinct from the named display-field refresh; callers still own native reads, admission, the complete transaction and acknowledgement.
 
 Artifact history and its producing-Item verification use `storage/artifacts/artifact-version-records.ts`; `artifact-authority.ts` owns the existing typed Artifact refusal and exact public version projection. Store no longer defines either responsibility.
+
+Protocol event request identity is projected once by `../storage/retained-work-events-v1.ts`. Store and runtime producers reuse the same canonical UUID and exact Workspace/Thread mapping without a separate identity rule.

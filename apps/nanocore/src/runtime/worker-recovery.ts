@@ -16,11 +16,7 @@ import {
 } from '@openkit/protocol';
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
-import {
-  DISPLAY_PROJECTION_REFRESH_FIELDS,
-  type FsStore,
-  projectTurnEventRequestId,
-} from '../lib/store.js';
+import { DISPLAY_PROJECTION_REFRESH_FIELDS, type FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
@@ -28,6 +24,7 @@ import {
 } from '../scheduler-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { projectTurnEventRequestId } from '../storage/retained-work-events-v1.js';
 import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,

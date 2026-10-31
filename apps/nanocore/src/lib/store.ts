@@ -78,7 +78,6 @@ import {
   PROTOCOL_VERSION,
   parseReferenceScope,
   parseReferenceUri,
-  RequestIdSchema,
   responsibleUserIdForActor,
   type ServerTurnEventEnvelope,
   ServerTurnEventEnvelopeSchema,
@@ -228,7 +227,10 @@ import {
 } from '../storage/immutable-content.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { StoredServerEventPayloadV1Schema } from '../storage/retained-server-work-v1.js';
-import { THREAD_REQUIRED_FEATURES } from '../storage/retained-work-events-v1.js';
+import {
+  projectTurnEventRequestId,
+  THREAD_REQUIRED_FEATURES,
+} from '../storage/retained-work-events-v1.js';
 import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
 import {
   assertServerItemRevision,
@@ -983,38 +985,6 @@ export function knowledgeAuthorityId(
   tuple: Readonly<Record<string, string>>
 ): string {
   return `${prefix}${createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex')}`;
-}
-
-/**
- * Projects App command request ids onto protocol event envelope identity.
- *
- * Canonical UUIDs pass through. Null remains null. Blank strings stay invalid so the envelope schema still rejects them. Other nonempty ids become a Workspace/Thread-scoped UUID from the shared RFC 4122 helper.
- *
- * @param requestId App command id, protocol UUID, blank, or null.
- * @param workspaceId Workspace carried by the event.
- * @param threadId Optional Thread carried by the event.
- * @returns Protocol envelope requestId before schema parse.
- */
-export function projectTurnEventRequestId(
-  requestId: string | null | undefined,
-  workspaceId: string,
-  threadId: string | undefined
-): string | null {
-  if (requestId == null) {
-    return null;
-  }
-
-  const canonical = RequestIdSchema.safeParse(requestId);
-  if (canonical.success) {
-    return canonical.data;
-  }
-  if (requestId.trim() === '') {
-    return requestId;
-  }
-
-  return uuidv5(
-    `openkit:protocol.turn-event.request:${JSON.stringify([workspaceId, threadId ?? '', requestId])}`
-  );
 }
 
 /**

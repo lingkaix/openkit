@@ -12,6 +12,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { uuidv5 } from '../generative-kernel/uuid.js';
 import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import {
   refineStoredArtifactV1,
@@ -647,3 +648,35 @@ export {
   StopReasonSchema as StoredStopReasonV1Schema,
   ThreadSnapshotV1Schema as StoredThreadSnapshotV1Schema,
 };
+
+/**
+ * Projects App command request ids onto protocol event envelope identity.
+ *
+ * Canonical UUIDs pass through. Null remains null. Blank strings stay invalid so the envelope schema still rejects them. Other nonempty ids become a Workspace/Thread-scoped UUID from the shared RFC 4122 helper.
+ *
+ * @param requestId App command id, protocol UUID, blank, or null.
+ * @param workspaceId Workspace carried by the event.
+ * @param threadId Optional Thread carried by the event.
+ * @returns Protocol envelope requestId before schema parse.
+ */
+export function projectTurnEventRequestId(
+  requestId: string | null | undefined,
+  workspaceId: string,
+  threadId: string | undefined
+): string | null {
+  if (requestId == null) {
+    return null;
+  }
+
+  const canonical = RequestIdSchema.safeParse(requestId);
+  if (canonical.success) {
+    return canonical.data;
+  }
+  if (requestId.trim() === '') {
+    return requestId;
+  }
+
+  return uuidv5(
+    `openkit:protocol.turn-event.request:${JSON.stringify([workspaceId, threadId ?? '', requestId])}`
+  );
+}
