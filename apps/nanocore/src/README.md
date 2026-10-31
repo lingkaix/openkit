@@ -198,3 +198,5 @@ The User readonly opener verifies the existing database is a regular file under 
 The physical product reader applies the existing 5 ms Main lock wait before serving reads, including direct and cached readers. Workspace read views reuse that policy; native writable connections keep their separate writer policy.
 
 Worker-control restart rebuild reads the retained AEP through the existing admitted readonly Workspace owner. Rebuild creates no layout and runs no migration; exact attempt/package/actor lineage, accepted Core records and read-handle closure retain their existing owners.
+
+Internal Gateway calls keep an owned admitted readonly Workspace handle through native capability, usage and terminal acknowledgements. The native owner performs the writes; Core-owned calls keep their existing writer, and calls without ledger context keep their borrowed capture handle.
