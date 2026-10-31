@@ -11,10 +11,12 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { crc32, deflateSync } from 'node:zlib';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorkerResidentSession, WorkerResidentTurnInput } from '../adapter-registry.js';
 import { startSyntheticCapability } from '../test-support/synthetic-capability.js';
@@ -641,6 +643,227 @@ it('exposes a selected parameterless MCP tool in the native CodeMode catalog and
       request.body.messages.some((message) => message.role === 'tool' && message.content === 'echo')
     )
   ).toBe(true);
+}, 60000);
+
+it.each([
+  'lines',
+  'bytes',
+] as const)('bounds actual MCP output by native %s and reads the exact spill through a native Tool', async (bound) => {
+  const tail = 'bounded-output-spill-tail';
+  const output =
+    bound === 'lines'
+      ? `${Array.from({ length: 2000 }, (_, index) => `line-${index}`).join('\n')}\n${tail}`
+      : `${'x'.repeat(50 * 1024 + 1)}\n${tail}`;
+  let stage = 0;
+  let spill = '';
+  let projected = '';
+  const f = await fixture(
+    opencodeAdapter,
+    null,
+    (request) => {
+      const texts = requestTexts(request).join('\n');
+      const path = texts.match(/\b(tools(?:\.[A-Za-z_]\w*|\["[^"]+"\])\.bounded_output)\(\)/)?.[1];
+      if (stage === 0 && path) {
+        stage = 1;
+        return { toolCall: { name: 'execute', arguments: { code: `return await ${path}({});` } } };
+      }
+      const toolTexts = request.body.messages
+        .filter((message) => message.role === 'tool' && typeof message.content === 'string')
+        .map((message) => message.content as string);
+      const bounded = toolTexts.find((text) => text.includes('full output saved to '));
+      if (stage === 1 && bounded) {
+        projected = bounded;
+        spill = bounded.match(/full output saved to ([^\]]+)\]/)?.[1] ?? '';
+        stage = 2;
+        return {
+          toolCall: {
+            name: 'read',
+            arguments: { path: spill, offset: bound === 'lines' ? 2001 : 2, limit: 1 },
+          },
+        };
+      }
+      if (stage === 2 && toolTexts.some((text) => text.includes(tail))) stage = 3;
+      return { text: 'bounded-output-qualified' };
+    },
+    [{ name: 'bounded.output', inputSchema: { type: 'object' } }]
+  );
+  f.capability.callResult = { content: [{ type: 'text', text: output }] };
+  const result = await (await f.session.startTurn(f.turn([], ['bounded-output']))).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(stage).toBe(3);
+  // The native generic guard bounds model projection, while its spill preserves original bytes.
+  expect(projected).not.toContain(tail);
+  expect(Buffer.byteLength(projected)).toBeLessThan(50 * 1024 + 1024);
+  expect(projected.split('\n').length).toBeLessThanOrEqual(2001);
+  expect(readFileSync(spill, 'utf8')).toBe(output);
+  expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toHaveLength(1);
+  const handle = await f.session.nativeHandle();
+  await f.session.close();
+  // Retained native data survives ordinary close; close is not native retention cleanup.
+  expect(readFileSync(spill, 'utf8')).toBe(output);
+  if (bound === 'lines') {
+    expect(handle.state).toBe('ready');
+    if (handle.state !== 'ready') throw new Error('missing exact native reference');
+    // Fault-inject age only after native ownership produced the real spill.
+    const expired = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(spill, expired, expired);
+    control = join(root, 'spill-cleanup-successor');
+    mkdirSync(control);
+    const successor = await fixture(opencodeAdapter, handle.reference);
+    expect(await successor.session.nativeHandle()).toEqual(handle);
+    expect((await (await successor.session.startTurn(successor.turn())).settled).status).toBe(
+      'completed'
+    );
+    // The pin's native startup retention owner removes expired Tool-output files.
+    expect(existsSync(spill)).toBe(false);
+  }
+}, 60000);
+
+it('qualifies shell producer truncation separately from the generic prefix guard', async () => {
+  const head = 'producer-head-only-in-spill';
+  const tail = 'producer-tail-still-visible';
+  const output = `${head}\n${Array.from({ length: 2000 }, (_, index) => `line-${index}`).join('\n')}\n${tail}`;
+  const input = join(work, 'producer-output.txt');
+  writeFileSync(input, output);
+  let stage = 0;
+  let spill = '';
+  let projected = '';
+  const f = await fixture(opencodeAdapter, null, (request) => {
+    if (stage === 0 && request.body.tools?.some((tool) => tool.function?.name === 'shell')) {
+      stage = 1;
+      return { toolCall: { name: 'shell', arguments: { command: `cat '${input}'` } } };
+    }
+    const texts = request.body.messages
+      .filter((message) => message.role === 'tool' && typeof message.content === 'string')
+      .map((message) => message.content as string);
+    const bounded = texts.find((text) => text.includes('full output saved to '));
+    if (stage === 1 && bounded) {
+      projected = bounded;
+      spill = bounded.match(/full output saved to ([^\]]+)\]/)?.[1] ?? '';
+      stage = 2;
+      return { toolCall: { name: 'read', arguments: { path: spill, offset: 1, limit: 1 } } };
+    }
+    if (stage === 2 && texts.some((text) => text.includes(head))) stage = 3;
+    return { text: 'producer-output-qualified' };
+  });
+  const result = await (await f.session.startTurn(f.turn())).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(stage).toBe(3);
+  // Producer-owned metadata bypasses ToolOutput.truncate; shell must preserve its own bounded tail.
+  expect(projected).not.toContain(head);
+  expect(projected).toContain(tail);
+  expect(Buffer.byteLength(projected)).toBeLessThan(50 * 1024 + 1024);
+  expect(projected.split('\n').length).toBeLessThanOrEqual(2003);
+  expect(readFileSync(spill, 'utf8')).toBe(output);
+}, 60000);
+
+it('resizes a real oversized MCP image and reports an omitted undecodable image', async () => {
+  // Generate ordinary RGBA PNGs, rather than replacing the native decoder or resizer.
+  const png = (width: number) => {
+    const chunk = (name: string, data: Buffer) => {
+      const kind = Buffer.from(name);
+      const size = Buffer.alloc(4);
+      size.writeUInt32BE(data.length);
+      const checksum = Buffer.alloc(4);
+      checksum.writeUInt32BE(crc32(Buffer.concat([kind, data])));
+      return Buffer.concat([size, kind, data, checksum]);
+    };
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(width, 0);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    header[9] = 6;
+    const row = Buffer.alloc(1 + width * 4, 255);
+    row[0] = 0;
+    return Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', header),
+      chunk('IDAT', deflateSync(row)),
+      chunk('IEND', Buffer.alloc(0)),
+    ]).toString('base64');
+  };
+  const oversized = png(2001);
+  const small = png(1);
+  let called = false;
+  const f = await fixture(
+    opencodeAdapter,
+    null,
+    (request) => {
+      const name = request.body.tools
+        ?.map((tool) => tool.function?.name)
+        .find((name) => name?.endsWith('_image_output'));
+      if (!called && name) {
+        called = true;
+        return { toolCall: { name, arguments: {} } };
+      }
+      return { text: 'image-output-qualified' };
+    },
+    [{ name: 'image.output', inputSchema: { type: 'object' } }]
+  );
+  f.capability.callResult = {
+    content: [
+      { type: 'text', text: 'image-result-marker' },
+      { type: 'image', mimeType: 'image/png', data: oversized },
+      { type: 'image', mimeType: 'image/png', data: small },
+      { type: 'image', mimeType: 'image/png', data: Buffer.from('not a PNG').toString('base64') },
+    ],
+  };
+  // Direct native MCP delivery keeps its image-omission notice observable independently of CodeMode.
+  writeFileSync(
+    join(work, 'opencode.json'),
+    JSON.stringify({
+      mcp: {
+        servers: {
+          'bounded-images': {
+            type: 'remote',
+            url: `${f.capability.url}/mcp/bounded-images`,
+            oauth: false,
+            codemode: false,
+          },
+        },
+      },
+    })
+  );
+  const turn = f.turn();
+  const route = {
+    ...turn.llmRoute,
+    modelParameters: {
+      contextWindow: 200000,
+      maxOutputTokens: 4096,
+      inputModalities: ['text', 'image'] as const,
+      reasoning: false,
+    },
+  };
+  const result = await (
+    await f.session.startTurn({ ...turn, llmRoute: route, allowedLlmRoutes: [route] })
+  ).settled;
+  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+  expect(called).toBe(true);
+  const request = f.inference.requests.find((request) =>
+    requestTexts(request).join('\n').includes('image-result-marker')
+  );
+  expect(request).toBeDefined();
+  expect(requestTexts(request!).join('\n')).toContain('1 image omitted: could not be decoded.');
+  const urls = request!.body.messages.flatMap((message) =>
+    Array.isArray(message.content)
+      ? message.content.flatMap((part: { image_url?: { url?: unknown } }) =>
+          typeof part.image_url?.url === 'string' ? [part.image_url.url] : []
+        )
+      : []
+  );
+  expect(urls).toHaveLength(2);
+  expect(urls).toContain(`data:image/png;base64,${small}`);
+  expect(urls).not.toContain(`data:image/png;base64,${oversized}`);
+  const resized = urls.find((url) => url !== `data:image/png;base64,${small}`)!;
+  expect(resized.startsWith('data:image/png;base64,')).toBe(true);
+  const bytes = Buffer.from(resized.slice(resized.indexOf(',') + 1), 'base64');
+  expect(bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  expect(bytes.readUInt32BE(16)).toBe(2000);
+  expect(bytes.readUInt32BE(20)).toBe(1);
+  expect(Buffer.byteLength(resized.slice(resized.indexOf(',') + 1))).toBeLessThanOrEqual(
+    5 * 1024 * 1024
+  );
+  expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toHaveLength(1);
 }, 60000);
 
 it.each([

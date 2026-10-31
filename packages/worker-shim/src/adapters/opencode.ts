@@ -1432,6 +1432,16 @@ function serverConfig(
       },
     },
     share: 'disabled',
+    // Keep this pin's native bounds explicit in every admitted configuration layer.
+    tool_output: { max_lines: 2_000, max_bytes: 50 * 1024 },
+    media: {
+      image: {
+        auto_resize: true,
+        max_width: 2_000,
+        max_height: 2_000,
+        max_base64_bytes: 5 * 1024 * 1024,
+      },
+    },
     skills: [skillsDir],
     update: 'disable',
     websearch: false,

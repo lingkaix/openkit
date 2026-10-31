@@ -141,6 +141,36 @@ describe('OpenCode resident adapter', () => {
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
 
+  it('installs explicit supported V2 bounded-output controls in both native configuration layers', async () => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    expect(
+      (
+        await (
+          await session.startTurn(turnInput(f.layout, f.creds, 'bounded-output', 'prompt-model'))
+        ).settled
+      ).status
+    ).toBe('completed');
+    const environment = f.environment();
+    // Bounded Context And Output Domains requires V2 controls; preserve the pinned native defaults.
+    const expected = {
+      tool_output: { max_lines: 2000, max_bytes: 50 * 1024 },
+      media: {
+        image: {
+          auto_resize: true,
+          max_width: 2000,
+          max_height: 2000,
+          max_base64_bytes: 5 * 1024 * 1024,
+        },
+      },
+    };
+    const inline = JSON.parse(environment.OPENKIT_OPENCODE_CONFIG!);
+    const explicit = JSON.parse(readFileSync(environment.OPENCODE_CONFIG!, 'utf8'));
+    expect.soft(inline).toMatchObject(expected);
+    expect.soft(explicit).toMatchObject(expected);
+  });
+
   // RET Native Transcripts And Runtime Logs: retain native rows before projection and share the pipe bound.
   it('RET E5 preserves original native row fields and order before assistant selection', async () => {
     const part = { type: 'reasoning', text: 'E5 native-only α', extra: { ordered: [3, null, 1] } };

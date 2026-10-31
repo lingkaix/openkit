@@ -10,6 +10,8 @@ export interface CapabilityHit {
 
 /** Running synthetic MCP server mounted at `/mcp/:serverId`. */
 export interface SyntheticCapability {
+  /** Static MCP `tools/call` result used to qualify real native result consumers. */
+  callResult: unknown;
   close(): Promise<void>;
   /** When true, `tools/call` accepts the connection and never replies. */
   hangCalls: boolean;
@@ -29,6 +31,7 @@ export async function startSyntheticCapability(
 ): Promise<SyntheticCapability> {
   const hits: CapabilityHit[] = [];
   const endpoint = {
+    callResult: { content: [{ text: 'echo', type: 'text' }] } as unknown,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -81,7 +84,7 @@ export async function startSyntheticCapability(
           ],
         };
       } else if (message.method === 'tools/call') {
-        result = { content: [{ text: 'echo', type: 'text' }] };
+        result = endpoint.callResult;
       }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ id: message.id, jsonrpc: '2.0', result }));
