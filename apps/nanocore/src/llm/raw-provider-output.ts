@@ -285,8 +285,8 @@ export function createRawProviderOutputObserver(
     // pi-messages already carries original field deltas before stock conversion.
     const index = event.contentIndex === undefined ? 0 : ordinal(event.contentIndex);
     if (event.type === 'text_delta') field([index], 'text', event.delta);
-    // This API declares redaction only at completion. Do not acknowledge an unproved reasoning delta.
-    if (event.type === 'thinking_delta') throw new RawOutputObservationUnavailableError();
+    // This API declares redaction only at completion. Ignore unproved reasoning deltas without refusing the stream.
+    if (event.type === 'thinking_delta') return;
     if (event.type === 'toolcall_delta') field([index], 'tool-arguments', event.delta);
     if (
       event.type === 'toolcall_end' &&

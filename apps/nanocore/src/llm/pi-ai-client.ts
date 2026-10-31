@@ -919,6 +919,32 @@ export class PiAiGatewayClient {
   }
 
   /**
+   * Applies OpenKit's default Responses reasoning summary before capture and stock mapping.
+   *
+   * @param provider Resolved OpenKit provider config.
+   * @param request Admitted Responses request.
+   * @param openkitOriginated Worker lineage or internal-agent dispatch.
+   * @param models Per-call model collection.
+   * @returns Request with `reasoning.summary: auto` when eligible and omitted.
+   */
+  public withOpenKitResponsesReasoningSummary(
+    provider: ResolvedLLMProviderConfig,
+    request: OpenAICompatibleResponsesRequest,
+    openkitOriginated: boolean,
+    models: Models = this.models
+  ): OpenAICompatibleResponsesRequest {
+    if (!openkitOriginated) return request;
+    const reasoning = readRecord(request.reasoning);
+    if (reasoning?.summary !== undefined) return request;
+    const { model } = this.resolveModel(provider, request.model, models);
+    if (!model.reasoning || !responsesReasoningSummaryApi(model.api)) return request;
+    return {
+      ...request,
+      reasoning: { ...(reasoning ?? {}), summary: 'auto' },
+    };
+  }
+
+  /**
    * Resolves the pi-ai model selected by an OpenKit provider.
    *
    * @param provider Resolved OpenKit provider config.
@@ -2164,6 +2190,15 @@ function applyProviderTransport(
 }
 
 /** Exact stock API families that can carry admitted Responses native semantics. */
+/** Whether stock pi-ai exposes a Responses reasoning summary option for this API family. */
+function responsesReasoningSummaryApi(api: string): boolean {
+  return (
+    api === 'openai-responses' ||
+    api === 'azure-openai-responses' ||
+    api === 'openai-codex-responses'
+  );
+}
+
 function isResponsesApi(api: string): boolean {
   return (
     api === 'openai-responses' ||

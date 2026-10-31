@@ -112,6 +112,11 @@ export interface LLMGatewayDispatchContext {
   readonly transport?: LLMGatewayTransportContext;
 }
 
+/** Worker lineage and internal-agent dispatch; public Gateway routes stay passthrough. */
+function openKitOriginatedDispatch(context: LLMGatewayDispatchContext): boolean {
+  return Boolean(context.transport?.rawOutput ?? context.usageEndpoint);
+}
+
 /**
  * Capability-aware dispatcher for agent-facing LLM Gateway requests.
  */
@@ -249,14 +254,20 @@ export class LLMGatewayProviderDispatcher {
   ): Promise<OpenAICompatibleResponsesResponse> {
     assertResponsesRequestAdmission(request, false);
     this.assertConfiguredModel(provider, request.model);
-    const transport = context.capture
-      ? await this.captureTransport(provider, request, context)
-      : context.transport;
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
       context.models
     );
+    const admittedRequest = this.piAiClient.withOpenKitResponsesReasoningSummary(
+      provider,
+      request,
+      openKitOriginatedDispatch(context),
+      models
+    );
+    const transport = context.capture
+      ? await this.captureTransport(provider, admittedRequest, context)
+      : context.transport;
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
 
@@ -266,7 +277,7 @@ export class LLMGatewayProviderDispatcher {
     ) {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
         provider,
-        request,
+        admittedRequest,
         context.promptCacheScope
       );
       const response = await this.piAiClient.createResponses(
@@ -297,14 +308,20 @@ export class LLMGatewayProviderDispatcher {
   ): Promise<ReadableStream<Uint8Array>> {
     assertResponsesRequestAdmission(request, true);
     this.assertConfiguredModel(provider, request.model);
-    const transport = context.capture
-      ? await this.captureTransport(provider, request, context)
-      : context.transport;
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
       context.models
     );
+    const admittedRequest = this.piAiClient.withOpenKitResponsesReasoningSummary(
+      provider,
+      request,
+      openKitOriginatedDispatch(context),
+      models
+    );
+    const transport = context.capture
+      ? await this.captureTransport(provider, admittedRequest, context)
+      : context.transport;
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
 
@@ -314,7 +331,7 @@ export class LLMGatewayProviderDispatcher {
     ) {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
         provider,
-        request,
+        admittedRequest,
         context.promptCacheScope
       );
       return this.piAiClient.createResponsesStream(

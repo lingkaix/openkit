@@ -116,6 +116,8 @@ Responses reasoning items round-trip through a stock thinking block, retaining t
 
 Across public formats or producers, only readable content moves. Chat reasoning text cannot be promoted into an attributed encrypted Responses item; Responses ciphertext and provider signatures cannot leak into Chat output or be forged for a new producer. Unattributed, foreign, evicted and post-restart reasoning follows the existing readable assistant-text handoff, including omission of empty or redacted thinking and paired function-call item IDs. A readable Responses reasoning projection from another format carries no fabricated ciphertext or signature and makes no signed-continuation promise.
 
+OpenKit-originated Responses requests (Worker lineage or internal-agent dispatch) that omit `reasoning.summary` receive `auto` when the selected model declares reasoning and the stock pi-ai API accepts `reasoningSummary`; explicit caller values and public Gateway passthrough stay unchanged.
+
 Provider-specific reasoning handling for common providers is permitted only inside the Gateway, preferring existing stock pi-ai behavior. This exception does not move ordinary upstream adapter ownership out of pi-ai and does not permit provider-specific compatibility work outside the Gateway.
 
 ### Native Channel
