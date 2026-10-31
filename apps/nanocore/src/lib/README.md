@@ -1,5 +1,7 @@
 # Library
 
+Approval refusal fixtures await the native Workspace permission-decision acknowledgement before closing its handle or exposing dependent reads. Their public recovery refusal and exact retained decision remain the deciding assertions.
+
 Explicit Workspace recovery revalidates the frozen target through the original record/history/version and Pending projection owners before replacing only its disposable Store projections. The collision census joins native indexed owners, the live Store's file-publication operands and current Source pointers; a proved duplicate refuses both Workspaces. This internal entry retains quarantine and does not admit ordinary reads or activate recovery operations. It must use the application's live shared Store, not a second or stale instance.
 
 Workspace journal settlement can carry its linked receipt-consumption intent in the same existing native request and savepoint. Callers await the covering FULL acknowledgement before Core consumption, receiver acknowledgement or release of the producer's command slot. This join adds no second transaction owner and does not treat a callback or a missing consumer as durable proof.

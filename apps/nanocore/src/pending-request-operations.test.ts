@@ -85,7 +85,7 @@ async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'revi
     completedAt: timestamp,
   });
   if (action === 'tool.use') {
-    recordProductPermissionDecision({
+    await recordProductPermissionDecision({
       workspaceDb,
       decisionId: testEntityId('pd', `pd_${actionSlug}_required`),
       ownerScope: 'workspace',
