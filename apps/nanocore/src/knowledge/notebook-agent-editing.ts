@@ -1,4 +1,5 @@
 import { posix } from 'node:path';
+import type { Turn } from '@openkit/protocol';
 import { Bash, InMemoryFs, parse } from 'just-bash';
 import type { KnowledgeNotebook } from './notebook.js';
 import { NotebookError, validateNotebookFiles } from './notebook.js';
@@ -241,6 +242,15 @@ export interface NotebookEditingResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly truncated: boolean;
+}
+
+/** Reads the admitted Turn budget at Tool access; an unpinned editor has no replacement deadline. */
+export function notebookEditingDeadline(
+  turn: Pick<Turn, 'startedAt' | 'internalExecution'>
+): number {
+  const limit = turn.internalExecution?.limits?.deadlineMs;
+  if (limit === undefined || turn.startedAt === null) throw new NotebookError('invalid_request');
+  return Date.parse(turn.startedAt) + limit;
 }
 
 /** Native admission pins all authority and exact bytes before exposing these two KM operations. */

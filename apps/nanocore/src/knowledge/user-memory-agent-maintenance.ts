@@ -28,7 +28,11 @@ import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
 import { admitMemoryContext, type MemoryContext } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
-import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
+import {
+  createNotebookAgentEditing,
+  NOTEBOOK_EDITING_LIMITS,
+  notebookEditingDeadline,
+} from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import { type NotebookPublicationAdmission, publishNotebook } from './notebook-publication.js';
@@ -545,11 +549,7 @@ export async function prepareUserMemoryMaintenance(
               signal: AbortSignal.any([input.signal, controller.signal]),
               /** The editor exists before pinning; Tool access reads the actual admitted budget. */
               get deadlineMs() {
-                const pinned = store.getTurnById(turn.id);
-                const limit = pinned.internalExecution?.limits?.deadlineMs;
-                if (limit === undefined || pinned.startedAt === null)
-                  throw new NotebookError('invalid_request');
-                return Date.parse(pinned.startedAt) + limit;
+                return notebookEditingDeadline(store.getTurnById(turn.id));
               },
               revalidate: assertCurrent,
               submit: async (edit) => {

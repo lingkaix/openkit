@@ -65,7 +65,11 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DEFAULT_NOTEBOOK_INDEX, NotebookError } from './notebook.js';
-import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
+import {
+  createNotebookAgentEditing,
+  NOTEBOOK_EDITING_LIMITS,
+  notebookEditingDeadline,
+} from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
@@ -920,11 +924,7 @@ export async function prepareKnowledgeMaintenance(
           signal: AbortSignal.any([input.signal, controller.signal]),
           /** The editor exists before pinning; Tool access reads the actual admitted budget. */
           get deadlineMs() {
-            const pinned = store.getTurnById(turn.id);
-            const limit = pinned.internalExecution?.limits?.deadlineMs;
-            if (limit === undefined || pinned.startedAt === null)
-              throw new NotebookError('invalid_request');
-            return Date.parse(pinned.startedAt) + limit;
+            return notebookEditingDeadline(store.getTurnById(turn.id));
           },
           revalidate: assertCurrent,
           submit: async (edit) => {
