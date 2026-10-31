@@ -7,15 +7,42 @@ import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import type { AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import * as knowledgeManager from '../internal-agents/knowledge-manager-agent.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { call, calls, fixture, latestToolOutput } from '../test-support/knowledge-result.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { DEFAULT_NOTEBOOK_INDEX } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
+
+/** Publishes exact human setup through the real public owner before exercising KM repair. */
+async function publishHumanFixture(
+  f: Awaited<ReturnType<typeof fixture>>,
+  changes: Record<string, string>,
+  summary: string
+): Promise<string> {
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.notebook.update',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          baseRevision: readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+            .notebookCommit,
+          changes: Object.entries(changes).map(([path, content]) => ({ path, content })),
+          summary,
+        }),
+      }
+    )
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  const result = (await response.json()) as { outcome: string; notebookRevision: string };
+  expect(result.outcome).toBe('published');
+  return result.notebookRevision;
+}
 
 /** Deliberately invalid final text, matching the real Provider probe. */
 function markdown() {
@@ -70,10 +97,8 @@ it('returns a typed HTTP refusal with the retained KM Turn after one failed repa
 // Real Git publication and the bounded role use the existing 120-second execution budget.
 it('repairs maintenance output without repeating the accepted notebook submission', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   let step = 0;
   f.createResponses.mockImplementation(async () => {
     if (++step === 1)
@@ -112,17 +137,17 @@ it('repairs maintenance output without repeating the accepted notebook submissio
   expect(turn.items).toContainEqual(
     expect.objectContaining({ type: 'tool-call', tool: 'knowledge.result', status: 'completed' })
   );
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
 }, 120_000);
 
 // The Provider first omits the native no-change outcome, then uses actual Tool feedback to repair it.
 it('repairs a premature maintenance result with one native no-change submission', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   let step = 0;
   f.createResponses.mockImplementation(async () => {
     if (++step === 2) {
@@ -166,17 +191,17 @@ it('repairs a premature maintenance result with one native no-change submission'
       (item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook-workspace.update'
     )
   ).toBe(false);
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
 }, 120_000);
 
 // A repair may finish after a refused duplicate, but cannot repeat the native submission.
 it('refuses a duplicate notebook submission during maintenance result repair', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   let step = 0;
   f.createResponses.mockImplementation(async () => {
     if (++step === 1 || step === 3)
@@ -215,30 +240,22 @@ it('refuses a duplicate notebook submission during maintenance result repair', a
   expect(turn.items).toContainEqual(
     expect.objectContaining({ type: 'tool-call', tool: 'knowledge.result', status: 'completed' })
   );
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   expect(f.createResponses).toHaveBeenCalledTimes(4);
 }, 120_000);
 
 // Organizing an empty overview is a separate editing run; the existing human fact must keep its bytes.
 it('organizes the initial root index around an existing human fact through the real editor and publisher', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
+  const notebook = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).notebook;
   // Demo import creates an overview; this case needs an empty index beside the existing fact.
-  const imported = notebook.publishedRevision();
-  const before = notebook.prepare({
-    baseRevision: imported,
-    changes: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
-    metadata: {
-      summary: 'Prepare empty overview',
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('empty overview') },
-      producer: { kind: 'user', id: f.userId },
-      authority: { kind: 'direct', instructionReference: 'Prepare the maintenance fixture.' },
-      sourceReferences: [],
-    },
-  });
-  notebook.publish({ baseRevision: imported, candidateRevision: before });
+  const before = await publishHumanFixture(
+    f,
+    { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    'Prepare empty overview'
+  );
   const initial = notebook.readRevision(before).files;
   expect(initial['index.md']).toBe(DEFAULT_NOTEBOOK_INDEX);
   expect(initial['mem_project.md']).toContain(
@@ -282,7 +299,10 @@ it('organizes the initial root index around an existing human fact through the r
     `${DEFAULT_NOTEBOOK_INDEX}\n[Product focus](mem_project.md)\n`
   );
   expect(organized.files['mem_project.md']).toBe(initial['mem_project.md']);
-  if (body.outcome === 'review-required') expect(notebook.publishedRevision()).toBe(before);
+  if (body.outcome === 'review-required')
+    expect(
+      readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+    ).toBe(before);
   const turn = f.store.getTurnById(body.turnId);
   expect(turn.status).toBe('completed');
   expect(turn.items.filter((item) => item.type === 'tool-call')).toEqual([
@@ -331,8 +351,8 @@ it.each([
     'knowledge',
     'notebook.git'
   );
-  const notebook = new KnowledgeNotebook({ repositoryPath });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   // Include unreachable commits: unchanged refs alone cannot rule out a prepared candidate.
   const commits = () =>
     execFileSync(
@@ -405,7 +425,9 @@ it.each([
   const detail = JSON.parse(feedback);
   expect(detail.code).toBe('invalid_request');
   expect(detail).not.toHaveProperty('linkDiagnostics');
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   expect(commits()).toEqual(beforeCommits);
   expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
   expect(
@@ -469,10 +491,8 @@ it.each([
 ])('repairs typed %s applicability after an actual submission refusal', async (type) => {
   const f = await fixture();
   const observed = observeNotebookTools();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   const content = updateOkfFrontmatter({
     path: 'typed.md',
     content: serializeKnowledgePageFixture(
@@ -510,7 +530,8 @@ it.each([
       ]);
     feedback = latestToolOutput(f);
     beforeRepair = {
-      revision: notebook.publishedRevision(),
+      revision: readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+        .notebookCommit,
       proposalCount: f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID).length,
     };
     return calls([
@@ -548,7 +569,9 @@ it.each([
   expect(body.outcome).toBe('review-required');
   expect(f.store.getTurnById(body.turnId).status).toBe('completed');
   expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toHaveLength(1);
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
 }, 120_000);
 
 it('makes the actual script path refusal actionable with exact native feedback', async () => {
@@ -589,10 +612,9 @@ it('makes the actual script path refusal actionable with exact native feedback',
 
 it('corrects Claim confidence before result submission through the real KM Tools', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const notebook = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).notebook;
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   const content = updateOkfFrontmatter({
     path: 'claim.md',
     content: serializeKnowledgePageFixture(
@@ -689,9 +711,7 @@ it('corrects Claim confidence before result submission through the real KM Tools
 
 it('Final-Tree Validation: same-author bounded link feedback permits one repair and publication without omitted referrer disclosure', async () => {
   const f = await fixture(true);
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
+  const notebook = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).notebook;
   const page = (title: string, content: string) =>
     serializeKnowledgePageFixture(
       {
@@ -707,19 +727,11 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
     'PRIVATE-UNSELECTED-TITLE',
     'PRIVATE-UNSELECTED-BODY [Keep](/victim.md?PRIVATE-UNSELECTED-TARGET#keep)'
   );
-  const imported = notebook.publishedRevision();
-  const before = notebook.prepare({
-    baseRevision: imported,
-    changes: { 'victim.md': victim, 'a-unselected.md': omitted },
-    metadata: {
-      summary: 'Prepare selected and omitted link fixtures',
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('link fixtures') },
-      producer: { kind: 'user', id: f.userId },
-      authority: { kind: 'direct', instructionReference: 'Prepare the link fixture.' },
-      sourceReferences: [],
-    },
-  });
-  notebook.publish({ baseRevision: imported, candidateRevision: before });
+  const before = await publishHumanFixture(
+    f,
+    { 'victim.md': victim, 'a-unselected.md': omitted },
+    'Prepare selected and omitted link fixtures'
+  );
   const targets = [
     '../missing.md?draft=1#first',
     `/${'x'.repeat(270)}.md`,
@@ -774,7 +786,9 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
   expect(refusalBody).toMatchObject({ code: 'invalid_request' });
   expect(JSON.stringify(refusalBody)).not.toContain('linkDiagnostics');
   expect(JSON.stringify(refusalBody)).not.toContain(targets[0]!);
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   let feedback = '';
   f.createResponses.mockImplementation(async () => {
     if (f.createResponses.mock.calls.length === 1) {
@@ -788,7 +802,9 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
     // The model fixture can repair only after actual feedback identifies its authored bad links.
     if (!Array.isArray(detail.linkDiagnostics)) throw new Error('Repair feedback is missing.');
     expect(detail.linkDiagnostics).toEqual(expectedLinks);
-    expect(notebook.publishedRevision()).toBe(before);
+    expect(
+      readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+    ).toBe(before);
     return calls([
       ['knowledge.notebook-workspace.update', { script: repairScript }],
       ['knowledge.notebook.update', { summary: 'Submit corrected links.' }],
@@ -857,7 +873,9 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
   expect(f.createResponses).toHaveBeenCalledTimes(2);
   const after = notebook.readRevision(body.notebookRevision);
   expect(after.parentRevision).toBe(before);
-  expect(notebook.publishedRevision()).toBe(after.revision);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(after.revision);
   expect(after.files['guide/a.md']).toContain('[Selected target](../victim.md#heading)');
   expect(after.files['guide/b.md']).toContain('[Selected target](/victim.md)');
   expect(after.files['victim.md']).toBe(victim);

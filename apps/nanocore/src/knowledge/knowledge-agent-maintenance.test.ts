@@ -9,13 +9,13 @@ import { readInternalContextEvidence } from '../internal-agents/internal-context
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { internalContextSourceDigest } from '../internal-agents/rolling-context.js';
 import { FsStore } from '../lib/store.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -24,7 +24,8 @@ import {
   prepareKnowledgeMaintenance,
 } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
-import { KnowledgeNotebook } from './notebook.js';
+import { publishWorkspaceNotebook } from './notebook-publication.js';
+import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 /** Actual owners and virtual Tools surround a fake role runner; no provider or retrieval process is needed. */
@@ -75,10 +76,8 @@ async function fixture(
     },
   });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: actor.id });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
-  const humanRevision = notebook.publishedRevision();
+  const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
+  const humanRevision = selectNotebook().head.notebookCommit;
   const ordinary = await store.createThread(workspace.id, 'Ordinary shared work');
   const ordinaryTurn = await store.createTurn(
     workspace.id,
@@ -208,7 +207,74 @@ async function fixture(
     sources: [],
     signal: new AbortController().signal,
   };
-  return { dependencies, input, notebook, humanRevision, ordinaryTurn, run, store, workspace };
+  return {
+    dependencies,
+    input,
+    get notebook() {
+      return selectNotebook().notebook;
+    },
+    humanRevision,
+    ordinaryTurn,
+    run,
+    store,
+    workspace,
+  };
+}
+
+async function publishHumanEdit(
+  f: Awaited<ReturnType<typeof fixture>>,
+  baseRevision: string,
+  changes: Record<string, string | null>,
+  summary: string
+) {
+  const dataRoot = f.dependencies.coreDb.dataRoot;
+  const selected = readTestWorkspaceNotebookSelection(dataRoot, f.workspace.id);
+  const workspaceDb = f.dependencies.openWorkspace(f.workspace.id);
+  const request = {
+    workspaceId: f.workspace.id,
+    requestId: randomUUID(),
+    baseRevision,
+    summary,
+    changes: Object.entries(changes).map(([path, content]) => ({ path, content })),
+  };
+  try {
+    const result = await publishWorkspaceNotebook(
+      {
+        store: f.store,
+        workspaceDb,
+        notebook: selected.notebook,
+        producer: f.input.actor,
+        confirmedRemovals: Object.fromEntries(
+          Object.entries(changes)
+            .filter(([, content]) => content === null)
+            .map(([path]) => [
+              path,
+              selected.notebook.readRevision(baseRevision, [path]).files[path]!,
+            ])
+        ),
+        inflightCommands: new WeakMap(),
+        revalidate: () => {
+          const current = readTestWorkspaceNotebookSelection(dataRoot, f.workspace.id);
+          return readWorkspaceNotebookAdmission({
+            store: f.store,
+            coreDb: f.dependencies.coreDb,
+            workspaceDb,
+            notebook: current.notebook,
+            scopeSchemaText: current.scopeSchemaText,
+            request,
+            requestActor: f.input.requestActor,
+            actor: f.input.actor,
+            runtimeConfigManager: f.dependencies.runtimeConfigManager,
+            workspaceMutationAdmission: f.dependencies.workspaceMutationAdmission,
+          });
+        },
+      },
+      request
+    );
+    return result.notebookRevision;
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 }
 
 describe('Workspace Knowledge Manager maintenance admission', () => {
@@ -349,18 +415,12 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
       updates: { openkit_status: 'archived', status: 'deprecated' },
     });
     const changes = { 'archive.md': archived, 'omitted.md': page('omitted') };
-    const candidateRevision = f.notebook.prepare({
+    const candidateRevision = await publishHumanEdit(
+      f,
       baseRevision,
       changes,
-      metadata: {
-        summary: 'Human authored pages',
-        producer: f.input.actor,
-        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
-        authority: { kind: 'direct', instructionReference: 'Human authored pages' },
-        sourceReferences: [],
-      },
-    });
-    f.notebook.publish({ baseRevision, candidateRevision });
+      'Human authored pages'
+    );
     f.run.mockImplementationOnce(async (run) => {
       const payload = JSON.parse(
         run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join(
@@ -540,18 +600,7 @@ An obsolete human lesson.
     });
     const changes = { 'obsolete.md': null };
     const baseRevision = f.humanRevision;
-    const candidateRevision = f.notebook.prepare({
-      baseRevision,
-      changes,
-      metadata: {
-        summary: 'Human correction',
-        producer: f.input.actor,
-        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
-        authority: { kind: 'direct', instructionReference: 'human correction' },
-        sourceReferences: [],
-      },
-    });
-    f.notebook.publish({ baseRevision, candidateRevision });
+    await publishHumanEdit(f, baseRevision, changes, 'Human correction');
     const result = await maintainKnowledgeAgent(f.dependencies, f.input);
     expect(result.outcome).toBe('published');
     const run = f.run.mock.calls[0]![0];

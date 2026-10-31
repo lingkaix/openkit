@@ -30,6 +30,7 @@ import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareKnowledgeMaintenance } from './knowledge-agent-maintenance.js';
@@ -132,13 +133,19 @@ async function fixture(
   const source = initialize ? store.listKnowledgeSources(workspace.id)[0]! : seed.source;
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const repositoryPath = join(root, 'notebook.git');
-  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
+  const notebook = selectNotebook().notebook;
   const owner = { dataRoot, ownerScope: { kind: 'workspace', workspaceId: workspace.id } } as const;
   // These captured inputs belong to the closed baseline; deciding reads below still use each copy.
   const pointer = initialize
     ? notebook.readSourcePointers(notebook.publishedRevision())[source.id]!
     : seed.pointer;
-  const parsed = parseSourcePointer(owner, source.id, pointer);
+  const parsed = parseSourcePointer(
+    owner,
+    source.id,
+    pointer,
+    readTestWorkspaceNotebookSelection(dataRoot, workspace.id)
+  );
   const rawPath = join(root, 'raw', parsed.fields.contentRef.locator.path);
   expect(readFileSync(rawPath)).toEqual(Buffer.from(original));
   const page = serializeKnowledgePageFixture(
@@ -153,13 +160,13 @@ async function fixture(
   if (initialize) {
     const seeded = await call('knowledge.notebook.update', {
       requestId: randomUUID(),
-      baseRevision: notebook.publishedRevision(),
+      baseRevision: selectNotebook().head.notebookCommit,
       summary: 'Retain unrelated human content',
       changes: [{ path: 'unrelated.md', content: page }],
     });
     expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
   }
-  const baseRevision = initialize ? notebook.publishedRevision() : baseline.baseRevision;
+  const baseRevision = initialize ? selectNotebook().head.notebookCommit : baseline.baseRevision;
   const sourcePath = `sources/${source.id}.md`;
   const path = `@sources/${source.id}.md`;
   const corrected = updateOkfFrontmatter({
@@ -187,7 +194,9 @@ async function fixture(
     source,
     root,
     repositoryPath,
-    notebook,
+    get notebook() {
+      return selectNotebook().notebook;
+    },
     owner,
     pointer,
     parsed,
@@ -279,6 +288,8 @@ describe('ordinary SourceSummary editing through native owners', () => {
               coreDb: f.coreDb,
               workspaceDb: f.workspaceDb,
               notebook: f.notebook,
+              scopeSchemaText: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+                .scopeSchemaText,
               runtimeConfigManager,
               workspaceMutationAdmission,
               currentAuthority,
@@ -288,13 +299,22 @@ describe('ordinary SourceSummary editing through native owners', () => {
         },
         request
       );
-      const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
-      expect(reopened.publishedRevision()).toBe(published.notebookRevision);
+      const reopened = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).notebook;
+      expect(
+        readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit
+      ).toBe(published.notebookRevision);
       expect(reopened.readRevision(published.notebookRevision).files).not.toHaveProperty(
         'unrelated.md'
       );
       expect(reopened.readSourcePointers(published.notebookRevision)[f.source.id]).toBe(repaired);
-      expect(parseSourcePointer(f.owner, f.source.id, repaired).fields).toEqual(f.parsed.fields);
+      expect(
+        parseSourcePointer(
+          f.owner,
+          f.source.id,
+          repaired,
+          readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+        ).fields
+      ).toEqual(f.parsed.fields);
     }
     expect(f.notebook.readRevision(linkedRevision).files['unrelated.md']).toBe(f.page);
     expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
@@ -365,8 +385,9 @@ describe('ordinary SourceSummary editing through native owners', () => {
     };
     const published = await f.call('knowledge.notebook.update', input);
     expect(published.status, JSON.stringify(published.body)).toBe(200);
-    const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
-    const revision = reopened.publishedRevision();
+    const reopened = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).notebook;
+    const revision = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head
+      .notebookCommit;
     expect(revision).toBe(published.body.notebookRevision);
     expect(reopened.readSourcePointers(revision)[f.source.id]).toBe(f.corrected);
     expect(reopened.readRevision(revision).files).toEqual(
@@ -377,7 +398,8 @@ describe('ordinary SourceSummary editing through native owners', () => {
     const after = parseSourcePointer(
       f.owner,
       f.source.id,
-      reopened.readSourcePointers(revision)[f.source.id]!
+      reopened.readSourcePointers(revision)[f.source.id]!,
+      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
     );
     expect(after.fields).toEqual(f.parsed.fields);
     expect(after.source).toMatchObject({ ...f.parsed.source, title: 'Release evidence' });
@@ -425,9 +447,15 @@ describe('ordinary SourceSummary editing through native owners', () => {
       summary: 'Stale correction',
     });
     expect(stale.status, JSON.stringify(stale.body)).toBe(409);
-    expect(reopened.publishedRevision()).toBe(later.body.notebookRevision);
+    expect(readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit).toBe(
+      later.body.notebookRevision
+    );
     expect(reopened.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
-    expect(reopened.readRevision(reopened.publishedRevision()).files['unrelated.md']).toBe(f.page);
+    expect(
+      reopened.readRevision(
+        readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit
+      ).files['unrelated.md']
+    ).toBe(f.page);
     expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
   });
 
@@ -667,6 +695,8 @@ async function runMaintenance(
       coreDb: f.coreDb,
       workspaceDb: f.workspaceDb,
       notebook: f.notebook,
+      scopeSchemaText: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+        .scopeSchemaText,
       workspaceMutationAdmission,
       runtimeConfigManager,
       currentAuthority,
@@ -876,7 +906,14 @@ it.each([
   expect(observed.result.outcome).toBe('review-required');
   const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
   const candidate = f.notebook.readSourcePointers(proposal.candidateRevision)[f.source.id]!;
-  expect(parseSourcePointer(f.owner, f.source.id, candidate).fields).toEqual(f.parsed.fields);
+  expect(
+    parseSourcePointer(
+      f.owner,
+      f.source.id,
+      candidate,
+      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+    ).fields
+  ).toEqual(f.parsed.fields);
   expect(candidate).toBe(
     updateOkfFrontmatter({
       path: f.sourcePath,
@@ -944,7 +981,14 @@ async function assertMaintenance(
       expect(result.outcome).toBe('published');
       const after = f.notebook.readSourcePointers(f.notebook.publishedRevision())[f.source.id]!;
       expect(after).toBe(expectedCandidate);
-      expect(parseSourcePointer(f.owner, f.source.id, after).fields).toEqual(f.parsed.fields);
+      expect(
+        parseSourcePointer(
+          f.owner,
+          f.source.id,
+          after,
+          readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+        ).fields
+      ).toEqual(f.parsed.fields);
       expect(f.notebook.readRevision(f.notebook.publishedRevision()).files).toEqual(
         f.notebook.readRevision(f.baseRevision).files
       );
@@ -1010,7 +1054,10 @@ async function assertMaintenance(
         ).toEqual(preview);
         expect(savedStore.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
         expect(
-          new KnowledgeNotebook({ repositoryPath: f.repositoryPath }).publishedRevision()
+          readTestWorkspaceNotebookSelection(
+            f.dataRoot,
+            f.workspace.id
+          ).notebook.publishedRevision()
         ).toBe(f.baseRevision);
         expect(
           parseOkfDocument({ path: f.sourcePath, content: candidate }).document?.frontmatter
@@ -1086,7 +1133,10 @@ async function assertMaintenance(
           store: acceptedStore,
         });
         expect(await f.call('knowledge.proposal.decide', decision, acceptedApp)).toEqual(accepted);
-        const publishedNotebook = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
+        const publishedNotebook = readTestWorkspaceNotebookSelection(
+          f.dataRoot,
+          f.workspace.id
+        ).notebook;
         expect(publishedNotebook.publishedRevision()).toBe(proposal.candidateRevision);
         expect(publishedNotebook.readSourcePointers(proposal.candidateRevision)[f.source.id]).toBe(
           candidate
@@ -1106,11 +1156,17 @@ async function assertMaintenance(
     expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
   }
   expect(reviewToolExposed).toBe(false);
-  const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
+  const reopened = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).notebook;
   expect(reopened.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
-  expect(reopened.readRevision(reopened.publishedRevision()).files['unrelated.md']).toBe(f.page);
-  expect(reopened.inspectRevision(reopened.publishedRevision()).entries).not.toHaveProperty(
-    f.sourcePath
-  );
+  expect(
+    reopened.readRevision(
+      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit
+    ).files['unrelated.md']
+  ).toBe(f.page);
+  expect(
+    reopened.inspectRevision(
+      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit
+    ).entries
+  ).not.toHaveProperty(f.sourcePath);
   expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
 }
