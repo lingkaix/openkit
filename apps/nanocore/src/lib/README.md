@@ -133,3 +133,5 @@ Lifecycle and retirement fixtures pass their existing Core to the deterministic 
 Catalog projection fixtures use their existing same-root Workspace-authority App builder without a separate standalone executor. Current manifests, stale stored Agent inputs, health and disclosure checks retain their original owners.
 
 Reload fixtures preserve their original App authority inputs. The config-only executor reads the already initialized Core through an explicit test-owned handle, closed at test finish; Workspace reload uses its existing Core-backed App builder.
+
+Deletion route fixtures share their existing App Core with the executor. Current actor rechecks, native quiescence, cleanup fences, crash recovery and exact operational backups retain their original owners and assertions.

@@ -220,7 +220,7 @@ it.each([
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workerMcpGateway: gateway,
       workspaceMutationAdmission: admission,
     });
@@ -313,7 +313,7 @@ it('resumes an exact fenced request after its registry transition without ordina
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workerMcpGateway: gateway,
       workspaceMutationAdmission: admission,
       releaseIdentity: {
@@ -558,7 +558,7 @@ it.each(
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     const requestId =
       owner === 'evidence-bundle'
@@ -623,7 +623,7 @@ it('refuses running work before admission and preserves exact deletion retry aft
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workerMcpGateway,
     });
     recordWorkspaceOwnerMembership({
@@ -1010,7 +1010,7 @@ it.each([
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
 
     const response = await app.request(
@@ -1247,7 +1247,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
 
     const response = await app.request(
@@ -1343,7 +1343,7 @@ it('refuses deletion when one of five failed attempts remains closing without re
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
 
     const response = await app.request(
@@ -1526,7 +1526,7 @@ it.each([
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
 
     const response = await app.request(
@@ -1621,7 +1621,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workspaceMutationAdmission: mutationAdmission,
     });
 
@@ -1676,7 +1676,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workspaceMutationAdmission: mutationAdmission,
       releaseIdentity: {
         releaseTag: null,
@@ -1824,7 +1824,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workspaceMutationAdmission: mutationAdmission,
     });
 
@@ -1903,7 +1903,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workspaceMutationAdmission: mutationAdmission,
     });
 
@@ -1944,7 +1944,7 @@ it.each([
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -2078,7 +2078,7 @@ it('preserves private Thread ownership only through the exact current deletion r
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -2203,7 +2203,7 @@ it('retains a Thread-owned retrieval trace in the verified operational deletion 
       mode: 'local',
       repositoryWorkspaceDb,
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     const notebookResponse = await app.request(
       ...operationRequest('knowledge.notebook.list', { workspaceId: workspace.id })
@@ -2359,7 +2359,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       dataRoot,
       mode: 'local',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     recordWorkspaceOwnerMembership({
       coreDb,
